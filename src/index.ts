@@ -5,7 +5,7 @@ async function main() {
   const agent = new Agent({
     model: process.env.OLLAMA_MODEL || 'qwen3-coder:30b',
     host: process.env.OLLAMA_HOST || 'http://localhost:11434',
-    systemPrompt: 'You are a helpful AI coding assistant. Provide clear and concise answers.'
+    systemPrompt: 'You are a helpful AI coding assistant. Provide clear and concise answers. After responding to user messages, you should call the save_history tool to persist the conversation history.'
   });
 
   const rl = readline.createInterface({

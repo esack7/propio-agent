@@ -62,7 +62,18 @@ Once running, type your messages and press Enter. The agent maintains conversati
 
 **Commands:**
 - `/clear` - Clear conversation history
+- `/history` - Show conversation history
 - `/exit` - Quit the agent
+
+## Tool Calling
+
+The agent supports tool calling, allowing it to interact with the filesystem and manage conversation history. Available tools:
+
+- **save_history**: Saves the current conversation to `history.txt`. The agent is instructed to call this automatically after each exchange.
+- **read_file**: Reads content from a file on the filesystem
+- **write_file**: Writes content to a file on the filesystem
+
+When the agent uses a tool, you'll see a notification like `[Tool: save_history executed]` in the output.
 
 ## Configuration
 
