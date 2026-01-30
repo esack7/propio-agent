@@ -1,0 +1,24 @@
+{
+  "name": "Ollama Agent Dev",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:20",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  "postCreateCommand": "npm install",
+  "containerEnv": {
+    "OLLAMA_HOST": "http://host.docker.internal:11434",
+    "OLLAMA_MODEL": "qwen3-coder:30b"
+  },
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"]
+}
