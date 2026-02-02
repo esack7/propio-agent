@@ -58,22 +58,36 @@ npm run dev
 
 ## Usage
 
-Once running, type your messages and press Enter. The agent maintains conversation history across messages.
+Once running, type your messages and press Enter. The agent maintains session context across messages.
 
 **Commands:**
-- `/clear` - Clear conversation history
-- `/history` - Show conversation history
+- `/clear` - Clear session context
+- `/context` - Show session context
 - `/exit` - Quit the agent
 
-## Tool Calling
+## Tool Calling & Agentic Loop
 
-The agent supports tool calling, allowing it to interact with the filesystem and manage conversation history. Available tools:
+The agent supports tool calling with an agentic loop, allowing it to:
+1. Call tools to perform actions
+2. See the results of those tool calls
+3. Decide whether to call more tools or respond to the user
+4. Chain multiple tool calls together to complete complex tasks
 
-- **save_history**: Saves the current conversation to `history.txt`. The agent is instructed to call this automatically after each exchange.
+### Available Tools
+
+- **save_session_context**: Saves the current session context to `session_context.txt`. The agent is instructed to call this after completing requests.
 - **read_file**: Reads content from a file on the filesystem
 - **write_file**: Writes content to a file on the filesystem
 
-When the agent uses a tool, you'll see a notification like `[Tool: save_history executed]` in the output.
+### How it Works
+
+When you send a message, the agent can:
+- Call one or more tools
+- Receive and process the tool results
+- Make additional tool calls based on the results
+- Provide a final response incorporating the information from the tools
+
+You'll see notifications like `[Executing tool: save_session_context]` and `[Tool result: ...]` showing the agent's actions in real-time.
 
 ## Configuration
 

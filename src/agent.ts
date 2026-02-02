@@ -5,24 +5,24 @@ import * as path from 'path';
 export class Agent {
   private ollama: Ollama;
   private model: string;
-  private conversationHistory: Message[];
+  private sessionContext: Message[];
   private systemPrompt: string;
-  private historyFilePath: string;
+  private sessionContextFilePath: string;
   private tools: Tool[];
 
   constructor(options: {
     model?: string;
     host?: string;
     systemPrompt?: string;
-    historyFilePath?: string;
+    sessionContextFilePath?: string;
   } = {}) {
     this.model = options.model || 'qwen3-coder:30b';
     this.ollama = new Ollama({
       host: options.host || process.env.OLLAMA_HOST || 'http://localhost:11434'
     });
     this.systemPrompt = options.systemPrompt || 'You are a helpful AI assistant.';
-    this.conversationHistory = [];
-    this.historyFilePath = options.historyFilePath || path.join(process.cwd(), 'history.txt');
+    this.sessionContext = [];
+    this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
     this.tools = this.initializeTools();
   }
 
@@ -31,14 +31,14 @@ export class Agent {
       {
         type: 'function',
         function: {
-          name: 'save_history',
-          description: 'Saves the current conversation history to a file. Call this after each conversation exchange to persist the chat history.',
+          name: 'save_session_context',
+          description: 'Saves the current session context to a file. Call this after completing tasks to persist the session state.',
           parameters: {
             type: 'object',
             properties: {
               reason: {
                 type: 'string',
-                description: 'Optional reason for saving the history'
+                description: 'Optional reason for saving the session context'
               }
             }
           }
@@ -86,47 +86,62 @@ export class Agent {
   }
 
   async chat(userMessage: string): Promise<string> {
-    this.conversationHistory.push({
+    this.sessionContext.push({
       role: 'user',
       content: userMessage
     });
 
-    const messages: Message[] = [
-      { role: 'system', content: this.systemPrompt },
-      ...this.conversationHistory
-    ];
-
     try {
-      const response = await this.ollama.chat({
-        model: this.model,
-        messages: messages,
-        stream: false,
-        tools: this.tools
-      });
+      let finalResponse = '';
+      let continueLoop = true;
+      let iterationCount = 0;
+      const maxIterations = 10; // Prevent infinite loops
 
-      const assistantMessage = response.message.content;
-      const toolCalls = response.message.tool_calls;
+      while (continueLoop && iterationCount < maxIterations) {
+        iterationCount++;
 
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: assistantMessage,
-        tool_calls: toolCalls
-      });
+        const messages: Message[] = [
+          { role: 'system', content: this.systemPrompt },
+          ...this.sessionContext
+        ];
 
-      // Handle tool calls if present
-      if (toolCalls && toolCalls.length > 0) {
-        for (const toolCall of toolCalls) {
-          const args = toolCall.function.arguments;
-          const result = this.executeTool(toolCall.function.name, args);
+        const response = await this.ollama.chat({
+          model: this.model,
+          messages: messages,
+          stream: false,
+          tools: this.tools
+        });
 
-          this.conversationHistory.push({
-            role: 'tool',
-            content: result
-          });
+        const assistantMessage = response.message.content;
+        const toolCalls = response.message.tool_calls;
+
+        this.sessionContext.push({
+          role: 'assistant',
+          content: assistantMessage,
+          tool_calls: toolCalls
+        });
+
+        finalResponse = assistantMessage;
+
+        // Handle tool calls if present
+        if (toolCalls && toolCalls.length > 0) {
+          for (const toolCall of toolCalls) {
+            const args = toolCall.function.arguments;
+            const result = this.executeTool(toolCall.function.name, args);
+
+            this.sessionContext.push({
+              role: 'tool',
+              content: result
+            });
+          }
+          // Continue loop to let agent process tool results
+        } else {
+          // No tool calls, we're done
+          continueLoop = false;
         }
       }
 
-      return assistantMessage;
+      return finalResponse;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to get response from Ollama: ${errorMessage}`);
@@ -134,73 +149,92 @@ export class Agent {
   }
 
   async streamChat(userMessage: string, onToken: (token: string) => void): Promise<string> {
-    this.conversationHistory.push({
+    this.sessionContext.push({
       role: 'user',
       content: userMessage
     });
 
-    const messages: Message[] = [
-      { role: 'system', content: this.systemPrompt },
-      ...this.conversationHistory
-    ];
-
     try {
-      const response = await this.ollama.chat({
-        model: this.model,
-        messages: messages,
-        stream: true,
-        tools: this.tools
-      });
+      let finalResponse = '';
+      let continueLoop = true;
+      let iterationCount = 0;
+      const maxIterations = 10; // Prevent infinite loops
 
-      let fullResponse = '';
-      let toolCalls: ToolCall[] | undefined;
+      while (continueLoop && iterationCount < maxIterations) {
+        iterationCount++;
 
-      for await (const part of response) {
-        const token = part.message.content;
-        fullResponse += token;
-        onToken(token);
+        const messages: Message[] = [
+          { role: 'system', content: this.systemPrompt },
+          ...this.sessionContext
+        ];
 
-        // Capture tool calls from the final part
-        if (part.message.tool_calls) {
-          toolCalls = part.message.tool_calls;
+        const response = await this.ollama.chat({
+          model: this.model,
+          messages: messages,
+          stream: true,
+          tools: this.tools
+        });
+
+        let fullResponse = '';
+        let toolCalls: ToolCall[] | undefined;
+
+        for await (const part of response) {
+          const token = part.message.content;
+          fullResponse += token;
+          onToken(token);
+
+          // Capture tool calls from the final part
+          if (part.message.tool_calls) {
+            toolCalls = part.message.tool_calls;
+          }
+        }
+
+        this.sessionContext.push({
+          role: 'assistant',
+          content: fullResponse,
+          tool_calls: toolCalls
+        });
+
+        finalResponse = fullResponse;
+
+        // Handle tool calls if present
+        if (toolCalls && toolCalls.length > 0) {
+          onToken('\n');
+          for (const toolCall of toolCalls) {
+            const args = toolCall.function.arguments;
+            const toolName = toolCall.function.name;
+
+            onToken(`[Executing tool: ${toolName}]\n`);
+            const result = this.executeTool(toolName, args);
+
+            this.sessionContext.push({
+              role: 'tool',
+              content: result
+            });
+
+            onToken(`[Tool result: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}]\n`);
+          }
+          onToken('\n');
+          // Continue loop to let agent process tool results
+        } else {
+          // No tool calls, we're done
+          continueLoop = false;
         }
       }
 
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: fullResponse,
-        tool_calls: toolCalls
-      });
-
-      // Handle tool calls if present
-      if (toolCalls && toolCalls.length > 0) {
-        for (const toolCall of toolCalls) {
-          const args = toolCall.function.arguments;
-          const result = this.executeTool(toolCall.function.name, args);
-
-          this.conversationHistory.push({
-            role: 'tool',
-            content: result
-          });
-
-          // Notify user about tool execution
-          onToken(`\n[Tool: ${toolCall.function.name} executed]\n`);
-        }
-      }
-
-      return fullResponse;
+      return finalResponse;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to get response from Ollama: ${errorMessage}`);
     }
   }
 
-  clearHistory(): void {
-    this.conversationHistory = [];
+  clearContext(): void {
+    this.sessionContext = [];
   }
 
-  getHistory(): Message[] {
-    return [...this.conversationHistory];
+  getContext(): Message[] {
+    return [...this.sessionContext];
   }
 
   setSystemPrompt(prompt: string): void {
@@ -211,11 +245,15 @@ export class Agent {
     return [...this.tools];
   }
 
+  saveContext(reason?: string): string {
+    return this.executeTool('save_session_context', { reason });
+  }
+
   private executeTool(toolName: string, args: any): string {
     try {
       switch (toolName) {
-        case 'save_history': {
-          let content = `=== Conversation History ===\n`;
+        case 'save_session_context': {
+          let content = `=== Session Context ===\n`;
           content += `System Prompt: ${this.systemPrompt}\n`;
           content += `Saved at: ${new Date().toISOString()}\n`;
           if (args.reason) {
@@ -223,18 +261,16 @@ export class Agent {
           }
           content += '\n';
 
-          if (this.conversationHistory.length === 0) {
-            content += 'No conversation history.\n';
+          if (this.sessionContext.length === 0) {
+            content += 'No session context.\n';
           } else {
-            this.conversationHistory.forEach((msg, index) => {
-              if (msg.role !== 'tool') {
-                content += `[${index + 1}] ${msg.role.toUpperCase()}:\n${msg.content}\n\n`;
-              }
+            this.sessionContext.forEach((msg, index) => {
+              content += `[${index + 1}] ${msg.role.toUpperCase()}:\n${msg.content}\n\n`;
             });
           }
 
-          fs.writeFileSync(this.historyFilePath, content, 'utf-8');
-          return `Successfully saved conversation history to ${this.historyFilePath}`;
+          fs.writeFileSync(this.sessionContextFilePath, content, 'utf-8');
+          return `Successfully saved session context to ${this.sessionContextFilePath}`;
         }
 
         case 'read_file': {

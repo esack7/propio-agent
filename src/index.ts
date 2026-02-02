@@ -5,7 +5,14 @@ async function main() {
   const agent = new Agent({
     model: process.env.OLLAMA_MODEL || 'qwen3-coder:30b',
     host: process.env.OLLAMA_HOST || 'http://localhost:11434',
-    systemPrompt: 'You are a helpful AI coding assistant. Provide clear and concise answers. After responding to user messages, you should call the save_history tool to persist the conversation history.'
+    systemPrompt: `You are a helpful AI coding assistant with access to tools. Provide clear and concise answers.
+
+You have access to the following tools:
+- save_session_context: Save the session context to a file (call this after completing each user request)
+- read_file: Read content from files on the filesystem
+- write_file: Write content to files on the filesystem
+
+When you use a tool, you will see the result and can use that information to continue helping the user. After using tools and completing the user's request, provide a final response summarizing what you did.`
   });
 
   const rl = readline.createInterface({
@@ -14,7 +21,7 @@ async function main() {
   });
 
   console.log('AI Agent started. Type your message and press Enter.');
-  console.log('Commands: /clear - clear history, /history - show history, /exit - quit\n');
+  console.log('Commands: /clear - clear context, /context - show context, /exit - quit\n');
 
   const prompt = () => {
     rl.question('You: ', async (input) => {
@@ -26,25 +33,27 @@ async function main() {
       }
 
       if (trimmedInput === '/exit') {
+        console.log('Saving session context...');
+        agent.saveContext('Exiting application');
         console.log('Goodbye!');
         rl.close();
         process.exit(0);
       }
 
       if (trimmedInput === '/clear') {
-        agent.clearHistory();
-        console.log('Conversation history cleared.\n');
+        agent.clearContext();
+        console.log('Session context cleared.\n');
         prompt();
         return;
       }
 
-      if (trimmedInput === '/history') {
-        const history = agent.getHistory();
-        if (history.length === 0) {
-          console.log('No conversation history.\n');
+      if (trimmedInput === '/context') {
+        const context = agent.getContext();
+        if (context.length === 0) {
+          console.log('No session context.\n');
         } else {
-          console.log('Conversation History:');
-          history.forEach((msg, index) => {
+          console.log('Session Context:');
+          context.forEach((msg, index) => {
             console.log(`${index + 1}. ${msg.role.toUpperCase()}: ${msg.content}`);
           });
           console.log('');
