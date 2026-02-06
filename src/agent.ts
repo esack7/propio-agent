@@ -11,6 +11,7 @@ import {
 } from './providers/types';
 import { ProviderConfig } from './providers/config';
 import { OllamaProvider } from './providers/ollama';
+import { BedrockProvider } from './providers/bedrock';
 
 export class Agent {
   private provider: LLMProvider;
@@ -68,7 +69,11 @@ export class Agent {
         host: ollamaConfig.ollama.host
       });
     } else if (config.provider === 'bedrock') {
-      throw new Error('Bedrock provider not yet implemented');
+      const bedrockConfig = config as any;
+      return new BedrockProvider({
+        model: bedrockConfig.bedrock.model,
+        region: bedrockConfig.bedrock.region
+      });
     }
     throw new Error(`Unknown provider: ${(config as any).provider}`);
   }

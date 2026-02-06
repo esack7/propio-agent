@@ -39,20 +39,20 @@
 
 ## 4. Phase 4: Add Bedrock Provider
 
-- [ ] 4.1 Add `@aws-sdk/client-bedrock-runtime` dependency to package.json
-- [ ] 4.2 Create `src/providers/bedrock.ts` with BedrockProvider class implementing LLMProvider interface
-- [ ] 4.3 Implement BedrockProvider constructor with region and credentials configuration
-- [ ] 4.4 Implement message type translation: ChatMessage <-> Bedrock Message (ConverseCommand format)
-- [ ] 4.5 Implement system message extraction for Bedrock's system parameter
-- [ ] 4.6 Implement tool type translation: ChatTool <-> Bedrock ToolSpecification
-- [ ] 4.7 Implement tool call translation: ChatToolCall <-> Bedrock toolUse blocks
-- [ ] 4.8 Implement tool result handling for Bedrock toolResult blocks
-- [ ] 4.9 Implement BedrockProvider.chat() using ConverseCommand
-- [ ] 4.10 Implement BedrockProvider.streamChat() using ConverseStreamCommand with event stream handling
-- [ ] 4.11 Implement stop reason mapping from Bedrock to provider-agnostic format
-- [ ] 4.12 Implement AWS SDK error handling and translation to ProviderError types
-- [ ] 4.13 Add unit tests for BedrockProvider type translations
-- [ ] 4.14 Add integration tests for BedrockProvider.chat() and streamChat() (requires AWS credentials)
+- [x] 4.1 Add `@aws-sdk/client-bedrock-runtime` dependency to package.json
+- [x] 4.2 Create `src/providers/bedrock.ts` with BedrockProvider class implementing LLMProvider interface
+- [x] 4.3 Implement BedrockProvider constructor with region and credentials configuration
+- [x] 4.4 Implement message type translation: ChatMessage <-> Bedrock Message (ConverseCommand format)
+- [x] 4.5 Implement system message extraction for Bedrock's system parameter
+- [x] 4.6 Implement tool type translation: ChatTool <-> Bedrock ToolSpecification
+- [x] 4.7 Implement tool call translation: ChatToolCall <-> Bedrock toolUse blocks
+- [x] 4.8 Implement tool result handling for Bedrock toolResult blocks
+- [x] 4.9 Implement BedrockProvider.chat() using ConverseCommand
+- [x] 4.10 Implement BedrockProvider.streamChat() using ConverseStreamCommand with event stream handling
+- [x] 4.11 Implement stop reason mapping from Bedrock to provider-agnostic format
+- [x] 4.12 Implement AWS SDK error handling and translation to ProviderError types
+- [x] 4.13 Add unit tests for BedrockProvider type translations
+- [x] 4.14 Add integration tests for BedrockProvider.chat() and streamChat() (requires AWS credentials)
 
 ## 5. Phase 5: Integration Testing & Documentation
 

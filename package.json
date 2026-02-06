@@ -11,6 +11,7 @@
     "test:watch": "jest --watch"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.984.0",
     "ollama": "^0.6.3"
   },
   "devDependencies": {
