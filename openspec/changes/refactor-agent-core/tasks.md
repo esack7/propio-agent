@@ -1,0 +1,68 @@
+## 1. Phase 1: Create Provider Abstraction
+
+- [ ] 1.1 Create `src/providers/` directory structure
+- [ ] 1.2 Define provider-agnostic types in `src/providers/types.ts` (ChatMessage, ChatTool, ChatToolCall, ChatRequest, ChatResponse, ChatChunk)
+- [ ] 1.3 Define error types in `src/providers/types.ts` (ProviderError, ProviderAuthenticationError, ProviderRateLimitError, ProviderModelNotFoundError)
+- [ ] 1.4 Define LLMProvider interface in `src/providers/interface.ts` with chat(), streamChat(), and name property
+- [ ] 1.5 Define ProviderConfig type for configuration
+- [ ] 1.6 Add unit tests for type definitions
+
+## 2. Phase 2: Extract Ollama Provider
+
+- [ ] 2.1 Create `src/providers/ollama.ts` with OllamaProvider class implementing LLMProvider interface
+- [ ] 2.2 Implement OllamaProvider constructor with host configuration
+- [ ] 2.3 Implement message type translation: ChatMessage <-> Ollama Message
+- [ ] 2.4 Implement tool type translation: ChatTool <-> Ollama Tool
+- [ ] 2.5 Implement tool call translation: ChatToolCall <-> Ollama ToolCall
+- [ ] 2.6 Implement OllamaProvider.chat() method (non-streaming)
+- [ ] 2.7 Implement OllamaProvider.streamChat() method (streaming with AsyncIterable)
+- [ ] 2.8 Implement error handling and translation to ProviderError types
+- [ ] 2.9 Add unit tests for OllamaProvider type translations
+- [ ] 2.10 Add integration tests for OllamaProvider.chat() and streamChat()
+
+## 3. Phase 3: Refactor Agent to Use Provider Interface
+
+- [ ] 3.1 Update Agent constructor to accept ProviderConfig parameter
+- [ ] 3.2 Update Agent constructor to maintain backward compatibility (map legacy options to ProviderConfig)
+- [ ] 3.3 Add provider factory function to create provider instances from config
+- [ ] 3.4 Replace private `ollama: Ollama` field with `provider: LLMProvider` field
+- [ ] 3.5 Remove direct Ollama imports from agent.ts
+- [ ] 3.6 Update sessionContext type from `Message[]` to `ChatMessage[]`
+- [ ] 3.7 Update tools initialization to use ChatTool type instead of Ollama Tool type
+- [ ] 3.8 Refactor Agent.chat() to build ChatRequest and call provider.chat()
+- [ ] 3.9 Refactor Agent.streamChat() to build ChatRequest and iterate over provider.streamChat()
+- [ ] 3.10 Update tool execution loop to handle ChatToolCall type
+- [ ] 3.11 Add switchProvider() method to Agent class
+- [ ] 3.12 Add error handling for provider errors in Agent
+- [ ] 3.13 Update existing unit tests to work with provider abstraction
+- [ ] 3.14 Add integration tests for backward compatibility
+
+## 4. Phase 4: Add Bedrock Provider
+
+- [ ] 4.1 Add `@aws-sdk/client-bedrock-runtime` dependency to package.json
+- [ ] 4.2 Create `src/providers/bedrock.ts` with BedrockProvider class implementing LLMProvider interface
+- [ ] 4.3 Implement BedrockProvider constructor with region and credentials configuration
+- [ ] 4.4 Implement message type translation: ChatMessage <-> Bedrock Message (ConverseCommand format)
+- [ ] 4.5 Implement system message extraction for Bedrock's system parameter
+- [ ] 4.6 Implement tool type translation: ChatTool <-> Bedrock ToolSpecification
+- [ ] 4.7 Implement tool call translation: ChatToolCall <-> Bedrock toolUse blocks
+- [ ] 4.8 Implement tool result handling for Bedrock toolResult blocks
+- [ ] 4.9 Implement BedrockProvider.chat() using ConverseCommand
+- [ ] 4.10 Implement BedrockProvider.streamChat() using ConverseStreamCommand with event stream handling
+- [ ] 4.11 Implement stop reason mapping from Bedrock to provider-agnostic format
+- [ ] 4.12 Implement AWS SDK error handling and translation to ProviderError types
+- [ ] 4.13 Add unit tests for BedrockProvider type translations
+- [ ] 4.14 Add integration tests for BedrockProvider.chat() and streamChat() (requires AWS credentials)
+
+## 5. Phase 5: Integration Testing & Documentation
+
+- [ ] 5.1 Test provider switching with Agent.switchProvider() between Ollama and Bedrock
+- [ ] 5.2 Test session context preservation when switching providers
+- [ ] 5.3 Test tool execution with OllamaProvider
+- [ ] 5.4 Test tool execution with BedrockProvider
+- [ ] 5.5 Test error handling across both providers
+- [ ] 5.6 Test streaming with both providers
+- [ ] 5.7 Update README with provider configuration examples
+- [ ] 5.8 Add inline documentation for provider interface and implementations
+- [ ] 5.9 Add example scripts demonstrating provider usage and switching
+- [ ] 5.10 Verify all existing agent functionality works with default Ollama provider
