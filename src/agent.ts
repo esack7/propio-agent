@@ -1,32 +1,89 @@
-import { Ollama, Message, Tool, ToolCall } from 'ollama';
 import * as fs from 'fs';
 import * as path from 'path';
+import { LLMProvider } from './providers/interface';
+import {
+  ChatMessage,
+  ChatTool,
+  ChatToolCall,
+  ProviderError,
+  ProviderAuthenticationError,
+  ProviderModelNotFoundError
+} from './providers/types';
+import { ProviderConfig } from './providers/config';
+import { OllamaProvider } from './providers/ollama';
 
 export class Agent {
-  private ollama: Ollama;
+  private provider: LLMProvider;
   private model: string;
-  private sessionContext: Message[];
+  private sessionContext: ChatMessage[];
   private systemPrompt: string;
   private sessionContextFilePath: string;
-  private tools: Tool[];
+  private tools: ChatTool[];
 
   constructor(options: {
     model?: string;
     host?: string;
     systemPrompt?: string;
     sessionContextFilePath?: string;
+    providerConfig?: ProviderConfig;
   } = {}) {
-    this.model = options.model || 'qwen3-coder:30b';
-    this.ollama = new Ollama({
-      host: options.host || process.env.OLLAMA_HOST || 'http://localhost:11434'
-    });
     this.systemPrompt = options.systemPrompt || 'You are a helpful AI assistant.';
-    this.sessionContext = [];
     this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
+
+    // Initialize provider based on configuration
+    if (options.providerConfig) {
+      this.provider = this.createProvider(options.providerConfig);
+      this.model = this.getModelFromConfig(options.providerConfig) || 'qwen3-coder:30b';
+    } else {
+      // Backward compatibility: use legacy options to create Ollama provider
+      this.model = options.model || 'qwen3-coder:30b';
+      const host = options.host || process.env.OLLAMA_HOST || 'http://localhost:11434';
+      this.provider = new OllamaProvider({ model: this.model, host });
+    }
+
+    this.sessionContext = [];
     this.tools = this.initializeTools();
   }
 
-  private initializeTools(): Tool[] {
+  /**
+   * Extract model from config based on provider type
+   */
+  private getModelFromConfig(config: ProviderConfig): string | undefined {
+    if (config.provider === 'ollama') {
+      return (config as any).ollama?.model;
+    } else if (config.provider === 'bedrock') {
+      return (config as any).bedrock?.model;
+    }
+    return undefined;
+  }
+
+  /**
+   * Create provider from config
+   */
+  private createProvider(config: ProviderConfig): LLMProvider {
+    if (config.provider === 'ollama') {
+      const ollamaConfig = config as any;
+      return new OllamaProvider({
+        model: ollamaConfig.ollama.model,
+        host: ollamaConfig.ollama.host
+      });
+    } else if (config.provider === 'bedrock') {
+      throw new Error('Bedrock provider not yet implemented');
+    }
+    throw new Error(`Unknown provider: ${(config as any).provider}`);
+  }
+
+  /**
+   * Switch to a different provider
+   */
+  private switchProvider(config: ProviderConfig): void {
+    const newProvider = this.createProvider(config);
+    this.provider = newProvider;
+    // Update model if specified in config
+    this.model = this.getModelFromConfig(config) || this.model;
+  }
+
+  private initializeTools(): ChatTool[] {
     return [
       {
         type: 'function',
@@ -100,25 +157,24 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const messages: Message[] = [
+        const messages: ChatMessage[] = [
           { role: 'system', content: this.systemPrompt },
           ...this.sessionContext
         ];
 
-        const response = await this.ollama.chat({
+        const response = await this.provider.chat({
           model: this.model,
           messages: messages,
-          stream: false,
           tools: this.tools
         });
 
         const assistantMessage = response.message.content;
-        const toolCalls = response.message.tool_calls;
+        const toolCalls = response.message.toolCalls;
 
         this.sessionContext.push({
           role: 'assistant',
           content: assistantMessage,
-          tool_calls: toolCalls
+          toolCalls: toolCalls
         });
 
         finalResponse = assistantMessage;
@@ -143,8 +199,7 @@ export class Agent {
 
       return finalResponse;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(`Failed to get response from Ollama: ${errorMessage}`);
+      throw this.handleProviderError(error);
     }
   }
 
@@ -163,36 +218,35 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const messages: Message[] = [
+        const messages: ChatMessage[] = [
           { role: 'system', content: this.systemPrompt },
           ...this.sessionContext
         ];
 
-        const response = await this.ollama.chat({
+        let fullResponse = '';
+        let toolCalls: ChatToolCall[] | undefined;
+
+        for await (const chunk of this.provider.streamChat({
           model: this.model,
           messages: messages,
-          stream: true,
           tools: this.tools
-        });
-
-        let fullResponse = '';
-        let toolCalls: ToolCall[] | undefined;
-
-        for await (const part of response) {
-          const token = part.message.content;
+        })) {
+          const token = chunk.delta;
           fullResponse += token;
-          onToken(token);
+          if (token) {
+            onToken(token);
+          }
 
-          // Capture tool calls from the final part
-          if (part.message.tool_calls) {
-            toolCalls = part.message.tool_calls;
+          // Capture tool calls from chunks
+          if (chunk.toolCalls) {
+            toolCalls = chunk.toolCalls;
           }
         }
 
         this.sessionContext.push({
           role: 'assistant',
           content: fullResponse,
-          tool_calls: toolCalls
+          toolCalls: toolCalls
         });
 
         finalResponse = fullResponse;
@@ -224,8 +278,7 @@ export class Agent {
 
       return finalResponse;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(`Failed to get response from Ollama: ${errorMessage}`);
+      throw this.handleProviderError(error);
     }
   }
 
@@ -233,7 +286,7 @@ export class Agent {
     this.sessionContext = [];
   }
 
-  getContext(): Message[] {
+  getContext(): ChatMessage[] {
     return [...this.sessionContext];
   }
 
@@ -241,7 +294,7 @@ export class Agent {
     this.systemPrompt = prompt;
   }
 
-  getTools(): Tool[] {
+  getTools(): ChatTool[] {
     return [...this.tools];
   }
 
@@ -292,5 +345,29 @@ export class Agent {
     } catch (error) {
       return `Error executing tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
+  }
+
+  /**
+   * Handle and translate provider errors to meaningful messages
+   */
+  private handleProviderError(error: any): Error {
+    const providerName = this.provider.name;
+
+    if (error instanceof ProviderAuthenticationError) {
+      return new Error(`Provider ${providerName} authentication failed: ${error.message}`);
+    }
+
+    if (error instanceof ProviderModelNotFoundError) {
+      return new Error(
+        `Model ${error.modelName} not found in provider ${providerName}: ${error.message}`
+      );
+    }
+
+    if (error instanceof ProviderError) {
+      return new Error(`Provider ${providerName} error: ${error.message}`);
+    }
+
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return new Error(`Failed to get response from ${providerName}: ${errorMessage}`);
   }
 }
