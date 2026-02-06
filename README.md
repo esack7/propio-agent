@@ -1,6 +1,6 @@
-# Ollama Agent
+# Multi-Provider AI Agent
 
-A TypeScript AI agent that interacts with a local Ollama model (qwen3-coder:30b) running in a Docker container.
+A TypeScript AI agent that supports multiple LLM providers (Ollama and Amazon Bedrock) with a unified interface and runtime provider switching capability.
 
 ## Prerequisites
 
@@ -91,6 +91,77 @@ You'll see notifications like `[Executing tool: save_session_context]` and `[Too
 
 ## Configuration
 
+The agent supports multiple LLM providers through a unified interface:
+
+### Ollama Provider (Default)
+
+```javascript
+import { Agent } from './src/agent';
+
+const agent = new Agent({
+  providerConfig: {
+    provider: 'ollama',
+    ollama: {
+      model: 'qwen3-coder:30b',
+      host: 'http://localhost:11434'  // Optional, defaults to localhost:11434
+    }
+  }
+});
+```
+
+### Amazon Bedrock Provider
+
+```javascript
+import { Agent } from './src/agent';
+
+const agent = new Agent({
+  providerConfig: {
+    provider: 'bedrock',
+    bedrock: {
+      model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+      region: 'us-east-1'  // Optional, defaults to us-east-1
+    }
+  }
+});
+```
+
+### Backward Compatibility
+
+The agent maintains backward compatibility with legacy configuration:
+
+```javascript
+const agent = new Agent({
+  model: 'qwen3-coder:30b',
+  host: 'http://localhost:11434',
+  systemPrompt: 'You are a helpful assistant'
+});
+// This automatically uses Ollama provider with the specified settings
+```
+
+### Runtime Provider Switching
+
+Switch between providers without losing session context:
+
+```javascript
+const agent = new Agent();
+
+// Chat with Ollama
+const response1 = await agent.chat('Hello!');
+
+// Switch to Bedrock
+(agent as any).switchProvider({
+  provider: 'bedrock',
+  bedrock: {
+    model: 'anthropic.claude-3-sonnet-20240229-v1:0'
+  }
+});
+
+// Continue chatting with Bedrock, session context is preserved
+const response2 = await agent.chat('Continue the conversation...');
+```
+
+### Environment Variables
+
 Copy `.env.example` to `.env` and modify as needed:
 
 ```bash
@@ -106,16 +177,49 @@ cp .env.example .env
 
 ```
 ├── .devcontainer/
-│   └── devcontainer.json  # VS Code dev container config
+│   └── devcontainer.json                # VS Code dev container config
 ├── src/
-│   ├── agent.ts           # Agent class with chat functionality
-│   └── index.ts           # CLI entry point
-├── .env.example           # Sample environment variables
+│   ├── agent.ts                          # Agent class with provider abstraction
+│   ├── index.ts                          # CLI entry point
+│   ├── providers/
+│   │   ├── interface.ts                  # LLMProvider interface definition
+│   │   ├── types.ts                      # Provider-agnostic types and errors
+│   │   ├── config.ts                     # Provider configuration types
+│   │   ├── ollama.ts                     # Ollama provider implementation
+│   │   ├── bedrock.ts                    # Bedrock provider implementation
+│   │   └── __tests__/                    # Provider tests
+│   └── __tests__/                        # Agent tests
+├── .env.example                         # Sample environment variables
 ├── Dockerfile
 ├── docker-compose.yml
+├── jest.config.js                       # Jest testing configuration
 ├── package.json
 └── tsconfig.json
 ```
+
+## Provider Architecture
+
+The agent uses a provider abstraction layer that allows swapping between different LLM backends without changing application code.
+
+### Core Components
+
+- **LLMProvider Interface** (`providers/interface.ts`): Defines the standard interface that all providers must implement
+  - `chat()`: Non-streaming completions
+  - `streamChat()`: Streaming completions
+  - `name`: Provider identifier
+
+- **Provider-Agnostic Types** (`providers/types.ts`):
+  - `ChatMessage`, `ChatTool`, `ChatToolCall`: Unified message and tool representations
+  - `ChatRequest`, `ChatResponse`, `ChatChunk`: Unified request/response formats
+  - Error types: `ProviderError`, `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderModelNotFoundError`
+
+- **Provider Implementations**:
+  - `OllamaProvider`: Uses the Ollama local model server
+  - `BedrockProvider`: Uses Amazon Bedrock with the AWS SDK
+
+### Type Translation
+
+Each provider translates between its native types and the provider-agnostic types, allowing the Agent to work seamlessly with any provider.
 
 ## Linux Users
 
