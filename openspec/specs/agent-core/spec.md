@@ -2,31 +2,35 @@
 
 ### Requirement: Provider configuration
 
-The system SHALL allow the Agent class to be configured with an LLM provider at instantiation time.
+The system SHALL allow the Agent class to be configured with an LLM provider at instantiation time using ProviderConfig.
 
 #### Scenario: Agent accepts provider configuration
-- **WHEN** Agent is instantiated with a provider configuration object
-- **THEN** it SHALL initialize the appropriate LLMProvider implementation based on the configuration
+- **WHEN** Agent is instantiated with a providerConfig parameter
+- **THEN** it SHALL use the factory to create the appropriate LLMProvider implementation
 
-#### Scenario: Default to Ollama provider
-- **WHEN** Agent is instantiated without a provider configuration
-- **THEN** it SHALL default to OllamaProvider with model 'qwen3-coder:30b' and localhost host for backward compatibility
+#### Scenario: Agent requires provider configuration
+- **WHEN** Agent constructor is called
+- **THEN** it SHALL require a providerConfig parameter (no defaults or legacy options)
 
 #### Scenario: Configure Ollama provider
 - **WHEN** Agent is instantiated with provider: 'ollama' configuration
-- **THEN** it SHALL create an OllamaProvider with specified host and model settings
+- **THEN** it SHALL use factory to create an OllamaProvider with specified host and model settings
 
 #### Scenario: Configure Bedrock provider
 - **WHEN** Agent is instantiated with provider: 'bedrock' configuration
-- **THEN** it SHALL create a BedrockProvider with specified region and model settings
-
-#### Scenario: Provider-agnostic model setting
-- **WHEN** Agent constructor receives a model parameter
-- **THEN** it SHALL pass the model to the selected provider's configuration
+- **THEN** it SHALL use factory to create a BedrockProvider with specified region and model settings
 
 ### Requirement: Provider abstraction usage
 
-The system SHALL refactor the Agent class to use the LLMProvider interface instead of direct Ollama client usage.
+The system SHALL refactor the Agent class to use the provider factory instead of creating providers directly.
+
+#### Scenario: Agent uses factory for provider creation
+- **WHEN** Agent constructor initializes a provider
+- **THEN** it SHALL call createProvider(config) from the factory module
+
+#### Scenario: Agent does not import concrete providers
+- **WHEN** Agent class is refactored
+- **THEN** it SHALL NOT import OllamaProvider or BedrockProvider classes directly
 
 #### Scenario: Chat uses provider interface
 - **WHEN** Agent.chat() is called with a user message
@@ -35,10 +39,6 @@ The system SHALL refactor the Agent class to use the LLMProvider interface inste
 #### Scenario: Stream chat uses provider interface
 - **WHEN** Agent.streamChat() is called with a user message
 - **THEN** it SHALL build a ChatRequest and iterate over provider.streamChat() instead of ollama.chat()
-
-#### Scenario: Remove direct Ollama imports
-- **WHEN** Agent class is refactored
-- **THEN** it SHALL NOT import from 'ollama' package directly
 
 #### Scenario: Use provider-agnostic types
 - **WHEN** Agent manages session context
@@ -111,34 +111,6 @@ The system SHALL allow switching the LLM provider at runtime without losing sess
 #### Scenario: Provider switch allows model change
 - **WHEN** Agent.switchProvider() is called with same provider but different model
 - **THEN** it SHALL update the model setting for subsequent requests
-
-### Requirement: Backward compatibility
-
-The system SHALL maintain backward compatibility with existing Agent API and behavior.
-
-#### Scenario: Constructor signature compatibility
-- **WHEN** Agent is instantiated with legacy options (model, host, systemPrompt, sessionContextFilePath)
-- **THEN** it SHALL map them to appropriate provider configuration and maintain existing behavior
-
-#### Scenario: Chat method signature unchanged
-- **WHEN** Agent.chat() is called
-- **THEN** it SHALL accept userMessage string and return Promise<string> as before
-
-#### Scenario: Stream chat method signature unchanged
-- **WHEN** Agent.streamChat() is called
-- **THEN** it SHALL accept userMessage and onToken callback and return Promise<string> as before
-
-#### Scenario: Context management methods unchanged
-- **WHEN** Agent.clearContext(), getContext(), or setSystemPrompt() is called
-- **THEN** they SHALL function identically to current implementation
-
-#### Scenario: Tool management methods unchanged
-- **WHEN** Agent.getTools() or saveContext() is called
-- **THEN** they SHALL function identically to current implementation
-
-#### Scenario: Existing tool implementations unchanged
-- **WHEN** save_session_context, read_file, or write_file tools are executed
-- **THEN** they SHALL execute with identical behavior to current implementation
 
 ### Requirement: System prompt handling
 
