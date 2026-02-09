@@ -2,6 +2,15 @@ import { Agent } from '../agent';
 import { LLMProvider } from '../providers/interface';
 import { ChatRequest, ChatResponse, ChatChunk, ChatMessage } from '../providers/types';
 
+// Default provider config for testing
+const defaultTestProviderConfig = {
+  provider: 'ollama' as const,
+  ollama: {
+    model: 'qwen3-coder:30b',
+    host: 'http://localhost:11434'
+  }
+};
+
 /**
  * Mock LLM Provider for testing
  */
@@ -30,9 +39,8 @@ class MockProvider implements LLMProvider {
 
 describe('Agent with Provider Abstraction', () => {
   describe('Provider Configuration', () => {
-    it('should initialize with default Ollama provider', () => {
-      const agent = new Agent();
-      expect(agent).toBeDefined();
+    it('should throw error when no provider config is provided', () => {
+      expect(() => new Agent()).toThrow('Provider configuration is required');
     });
 
     it('should accept provider configuration', () => {
@@ -49,6 +57,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should support systemPrompt and sessionContextFilePath options', () => {
       const agent = new Agent({
+        providerConfig: defaultTestProviderConfig,
         systemPrompt: 'Custom prompt',
         sessionContextFilePath: '/tmp/session.txt'
       });
@@ -59,7 +68,7 @@ describe('Agent with Provider Abstraction', () => {
   describe('Provider Usage in Chat', () => {
     it('should build ChatRequest with system message', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       // We'll need to expose setProvider for testing
       (agent as any).provider = mockProvider;
 
@@ -72,7 +81,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should build ChatRequest with user message', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Hello');
@@ -86,7 +95,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should include tools in ChatRequest', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test');
@@ -117,7 +126,7 @@ describe('Agent with Provider Abstraction', () => {
   describe('Session Context with Provider-Agnostic Types', () => {
     it('should store messages as ChatMessage type', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('User message');
@@ -146,7 +155,7 @@ describe('Agent with Provider Abstraction', () => {
         stopReason: 'tool_use'
       });
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       // Mock tool execution
@@ -174,7 +183,7 @@ describe('Agent with Provider Abstraction', () => {
         stopReason: 'tool_use'
       });
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
       (agent as any).executeTool = () => 'Tool result';
 
@@ -188,7 +197,7 @@ describe('Agent with Provider Abstraction', () => {
   describe('Streaming with Provider', () => {
     it('should use streamChat from provider', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       let tokensCalled = 0;
@@ -201,7 +210,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should yield tokens from provider chunks', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const tokens: string[] = [];
@@ -214,7 +223,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should accumulate stream response', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.streamChat('Test', () => {});
@@ -225,12 +234,12 @@ describe('Agent with Provider Abstraction', () => {
 
   describe('Provider Switching', () => {
     it('should provide switchProvider method', () => {
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       expect(typeof (agent as any).switchProvider).toBe('function');
     });
 
     it('should switch to new provider config', async () => {
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       const originalProvider = (agent as any).provider;
 
       (agent as any).switchProvider({
@@ -244,7 +253,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should preserve session context when switching provider', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('First message');
@@ -264,7 +273,7 @@ describe('Agent with Provider Abstraction', () => {
   describe('Backward Compatibility', () => {
     it('should keep chat() signature unchanged', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.chat('Test');
@@ -273,7 +282,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should keep streamChat() signature unchanged', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.streamChat('Test', () => {});
@@ -281,21 +290,21 @@ describe('Agent with Provider Abstraction', () => {
     });
 
     it('should keep context management methods unchanged', async () => {
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       expect(typeof agent.clearContext).toBe('function');
       expect(typeof agent.getContext).toBe('function');
       expect(typeof agent.setSystemPrompt).toBe('function');
     });
 
     it('should keep tool management methods unchanged', () => {
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       expect(typeof agent.getTools).toBe('function');
       expect(typeof agent.saveContext).toBe('function');
     });
 
     it('should execute built-in tools identically to current', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const toolResult = agent.saveContext('test reason');
@@ -308,7 +317,7 @@ describe('Agent with Provider Abstraction', () => {
     it('should include system prompt in requests', async () => {
       const mockProvider = new MockProvider();
       const customPrompt = 'Custom system prompt';
-      const agent = new Agent({ systemPrompt: customPrompt });
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig, systemPrompt: customPrompt });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test');
@@ -320,7 +329,7 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should update system prompt with setSystemPrompt', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const newPrompt = 'New system prompt';
@@ -366,7 +375,7 @@ describe('Agent with Provider Abstraction', () => {
         };
       };
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.chat('Save context');
@@ -394,7 +403,7 @@ describe('Agent with Provider Abstraction', () => {
         stopReason: 'tool_use'
       });
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       // Mock file system
@@ -426,7 +435,7 @@ describe('Agent with Provider Abstraction', () => {
         };
       };
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test');
@@ -443,7 +452,7 @@ describe('Agent with Provider Abstraction', () => {
         throw new Error('Provider error');
       };
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       await expect(agent.chat('Test')).rejects.toThrow();
@@ -456,7 +465,7 @@ describe('Agent with Provider Abstraction', () => {
         throw err;
       };
 
-      const agent = new Agent();
+      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
       (agent as any).provider = mockProvider;
 
       try {

@@ -30,14 +30,9 @@ export class Agent {
    *
    * @param options - Configuration options for the agent
    * @param options.providerConfig - Provider configuration specifying which LLM provider to use
-   *                                  and provider-specific settings. If not provided, defaults to
-   *                                  Ollama provider with environment variable settings.
+   *                                  and provider-specific settings. Required - will throw an error if not provided.
    * @param options.systemPrompt - System prompt to use in all LLM requests. Defaults to a generic helpful assistant prompt.
    * @param options.sessionContextFilePath - Path to persist session context. Defaults to './session_context.txt'.
-   *
-   * @example
-   * // Use default Ollama provider
-   * const agent = new Agent();
    *
    * @example
    * // Use explicit Ollama configuration
@@ -73,20 +68,13 @@ export class Agent {
     this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
 
     // Initialize provider from configuration using factory
-    if (options.providerConfig) {
-      this.provider = createProvider(options.providerConfig);
-      const extractedModel = extractModelFromConfig(options.providerConfig);
-      this.model = (extractedModel && extractedModel.trim()) || 'qwen3-coder:30b';
-    } else {
-      // Default: create Ollama provider with environment settings
-      const model = 'qwen3-coder:30b';
-      const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
-      this.provider = createProvider({
-        provider: 'ollama',
-        ollama: { model, host }
-      });
-      this.model = model;
+    if (!options.providerConfig) {
+      throw new Error('Provider configuration is required. Please provide a providerConfig option with provider settings.');
     }
+
+    this.provider = createProvider(options.providerConfig);
+    const extractedModel = extractModelFromConfig(options.providerConfig);
+    this.model = (extractedModel && extractedModel.trim()) || 'qwen3-coder:30b';
 
     this.sessionContext = [];
     this.tools = this.initializeTools();
