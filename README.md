@@ -24,6 +24,13 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama and Amazon Be
    cp .env.example .env
    ```
 
+4. Create the configuration directory and providers file:
+   ```bash
+   mkdir .propio
+   ```
+
+   Create `.propio/providers.json` with your provider configuration (see Configuration section below for details).
+
 ## Running the Agent
 
 ### Using Docker Compose (recommended)
@@ -90,6 +97,66 @@ When you send a message, the agent can:
 You'll see notifications like `[Executing tool: save_session_context]` and `[Tool result: ...]` showing the agent's actions in real-time.
 
 ## Configuration
+
+The agent is configured using a `.propio/providers.json` file in the project root. The `.propio` directory is gitignored to keep your provider configurations private.
+
+### Provider Configuration File
+
+Create `.propio/providers.json` with the following structure:
+
+```json
+{
+  "default": "local-ollama",
+  "providers": [
+    {
+      "name": "local-ollama",
+      "type": "ollama",
+      "host": "http://localhost:11434",
+      "models": [
+        {
+          "name": "Qwen3 Coder: 30b",
+          "key": "qwen3-coder:30b"
+        },
+        {
+          "name": "GPT OSS: 20b",
+          "key": "gpt-oss:20b"
+        }
+      ],
+      "defaultModel": "qwen3-coder:30b"
+    },
+    {
+      "name": "bedrock",
+      "type": "bedrock",
+      "region": "us-east-1",
+      "models": [
+        {
+          "name": "Claude Sonnet 4.5",
+          "key": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+        },
+        {
+          "name": "Claude Haiku 4.5",
+          "key": "anthropic.claude-haiku-4-5-20251001-v1:0"
+        }
+      ],
+      "defaultModel": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+    }
+  ]
+}
+```
+
+**Configuration Fields:**
+- `default`: The name of the default provider to use
+- `providers`: Array of provider configurations
+  - `name`: Unique identifier for this provider
+  - `type`: Provider type (`ollama` or `bedrock`)
+  - `host`: (Ollama only) Ollama server URL
+  - `region`: (Bedrock only) AWS region
+  - `models`: Array of available models
+    - `name`: Human-readable model name
+    - `key`: Model identifier used by the provider
+  - `defaultModel`: The default model key to use for this provider
+
+### Provider Interface
 
 The agent supports multiple LLM providers through a unified interface:
 

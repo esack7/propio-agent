@@ -3,8 +3,8 @@ import * as path from 'path';
 import { Agent } from './agent';
 
 async function main() {
-  // Load configuration from providers.json at project root
-  const configPath = path.join(__dirname, '..', 'providers.json');
+  // Load configuration from .propio/providers.json
+  const configPath = path.join(__dirname, '..', '.propio', 'providers.json');
 
   const agent = new Agent({
     providersConfig: configPath,
