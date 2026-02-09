@@ -33,18 +33,7 @@ class MockIntegrationProvider implements LLMProvider {
 }
 
 describe('Agent Integration Tests', () => {
-  describe('Backward compatibility', () => {
-    it('should work with legacy constructor options', async () => {
-      const agent = new Agent({
-        model: 'test-model',
-        host: 'http://localhost:11434',
-        systemPrompt: 'Legacy prompt'
-      });
-
-      expect(agent).toBeDefined();
-      expect(agent.getContext()).toEqual([]);
-    });
-
+  describe('Public API', () => {
     it('should maintain existing chat interface', async () => {
       const agent = new Agent();
       // Verify methods exist and have correct signatures

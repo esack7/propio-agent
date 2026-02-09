@@ -10,8 +10,7 @@ import {
   ProviderModelNotFoundError
 } from './providers/types';
 import { ProviderConfig } from './providers/config';
-import { OllamaProvider } from './providers/ollama';
-import { BedrockProvider } from './providers/bedrock';
+import { createProvider, extractModelFromConfig } from './providers/factory';
 
 export class Agent {
   private provider: LLMProvider;
@@ -21,9 +20,51 @@ export class Agent {
   private sessionContextFilePath: string;
   private tools: ChatTool[];
 
+  /**
+   * Initialize an Agent with provider configuration and optional system settings.
+   *
+   * The Agent orchestrates interactions with an LLM provider. It maintains session context,
+   * manages tools, and handles both regular and streaming chat interactions. Provider instances
+   * are created using the factory pattern, allowing new providers to be supported without
+   * modifying the Agent class.
+   *
+   * @param options - Configuration options for the agent
+   * @param options.providerConfig - Provider configuration specifying which LLM provider to use
+   *                                  and provider-specific settings. If not provided, defaults to
+   *                                  Ollama provider with environment variable settings.
+   * @param options.systemPrompt - System prompt to use in all LLM requests. Defaults to a generic helpful assistant prompt.
+   * @param options.sessionContextFilePath - Path to persist session context. Defaults to './session_context.txt'.
+   *
+   * @example
+   * // Use default Ollama provider
+   * const agent = new Agent();
+   *
+   * @example
+   * // Use explicit Ollama configuration
+   * const agent = new Agent({
+   *   providerConfig: {
+   *     provider: 'ollama',
+   *     ollama: {
+   *       model: 'qwen3-coder:30b',
+   *       host: 'http://localhost:11434'
+   *     }
+   *   },
+   *   systemPrompt: 'You are a helpful coding assistant.'
+   * });
+   *
+   * @example
+   * // Use Bedrock provider
+   * const agent = new Agent({
+   *   providerConfig: {
+   *     provider: 'bedrock',
+   *     bedrock: {
+   *       model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+   *       region: 'us-west-2'
+   *     }
+   *   }
+   * });
+   */
   constructor(options: {
-    model?: string;
-    host?: string;
     systemPrompt?: string;
     sessionContextFilePath?: string;
     providerConfig?: ProviderConfig;
@@ -31,15 +72,20 @@ export class Agent {
     this.systemPrompt = options.systemPrompt || 'You are a helpful AI assistant.';
     this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
 
-    // Initialize provider based on configuration
+    // Initialize provider from configuration using factory
     if (options.providerConfig) {
-      this.provider = this.createProvider(options.providerConfig);
-      this.model = this.getModelFromConfig(options.providerConfig) || 'qwen3-coder:30b';
+      this.provider = createProvider(options.providerConfig);
+      const extractedModel = extractModelFromConfig(options.providerConfig);
+      this.model = (extractedModel && extractedModel.trim()) || 'qwen3-coder:30b';
     } else {
-      // Backward compatibility: use legacy options to create Ollama provider
-      this.model = options.model || 'qwen3-coder:30b';
-      const host = options.host || process.env.OLLAMA_HOST || 'http://localhost:11434';
-      this.provider = new OllamaProvider({ model: this.model, host });
+      // Default: create Ollama provider with environment settings
+      const model = 'qwen3-coder:30b';
+      const host = process.env.OLLAMA_HOST || 'http://localhost:11434';
+      this.provider = createProvider({
+        provider: 'ollama',
+        ollama: { model, host }
+      });
+      this.model = model;
     }
 
     this.sessionContext = [];
@@ -47,45 +93,13 @@ export class Agent {
   }
 
   /**
-   * Extract model from config based on provider type
-   */
-  private getModelFromConfig(config: ProviderConfig): string | undefined {
-    if (config.provider === 'ollama') {
-      return (config as any).ollama?.model;
-    } else if (config.provider === 'bedrock') {
-      return (config as any).bedrock?.model;
-    }
-    return undefined;
-  }
-
-  /**
-   * Create provider from config
-   */
-  private createProvider(config: ProviderConfig): LLMProvider {
-    if (config.provider === 'ollama') {
-      const ollamaConfig = config as any;
-      return new OllamaProvider({
-        model: ollamaConfig.ollama.model,
-        host: ollamaConfig.ollama.host
-      });
-    } else if (config.provider === 'bedrock') {
-      const bedrockConfig = config as any;
-      return new BedrockProvider({
-        model: bedrockConfig.bedrock.model,
-        region: bedrockConfig.bedrock.region
-      });
-    }
-    throw new Error(`Unknown provider: ${(config as any).provider}`);
-  }
-
-  /**
    * Switch to a different provider
    */
   private switchProvider(config: ProviderConfig): void {
-    const newProvider = this.createProvider(config);
+    const newProvider = createProvider(config);
     this.provider = newProvider;
     // Update model if specified in config
-    this.model = this.getModelFromConfig(config) || this.model;
+    this.model = extractModelFromConfig(config) || this.model;
   }
 
   private initializeTools(): ChatTool[] {

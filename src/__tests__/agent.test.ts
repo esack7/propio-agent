@@ -47,18 +47,8 @@ describe('Agent with Provider Abstraction', () => {
       expect(agent).toBeDefined();
     });
 
-    it('should maintain backward compatibility with legacy options', () => {
+    it('should support systemPrompt and sessionContextFilePath options', () => {
       const agent = new Agent({
-        model: 'legacy-model',
-        host: 'http://custom:11434'
-      });
-      expect(agent).toBeDefined();
-    });
-
-    it('should support all legacy constructor options', () => {
-      const agent = new Agent({
-        model: 'test-model',
-        host: 'http://localhost:11434',
         systemPrompt: 'Custom prompt',
         sessionContextFilePath: '/tmp/session.txt'
       });
@@ -109,7 +99,12 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should pass correct model to provider', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ model: 'specific-model' });
+      const agent = new Agent({
+        providerConfig: {
+          provider: 'ollama',
+          ollama: { model: 'specific-model' }
+        }
+      });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test');
@@ -471,6 +466,68 @@ describe('Agent with Provider Abstraction', () => {
           expect(error.message).toContain('mock');
         }
       }
+    });
+  });
+
+  describe('Provider Factory Integration', () => {
+    it('should use factory to create provider from config', () => {
+      const agent = new Agent({
+        providerConfig: {
+          provider: 'ollama',
+          ollama: {
+            model: 'qwen3-coder:30b'
+          }
+        }
+      });
+      expect(agent).toBeDefined();
+      expect((agent as any).provider).toBeDefined();
+    });
+
+    it('should throw error when factory receives unknown provider', () => {
+      expect(() => {
+        new Agent({
+          providerConfig: {
+            provider: 'unknown',
+            unknown: {}
+          } as any
+        });
+      }).toThrow();
+    });
+
+    it('should use extractModelFromConfig to set model', () => {
+      const config = {
+        providerConfig: {
+          provider: 'bedrock' as const,
+          bedrock: {
+            model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+            region: 'us-east-1'
+          }
+        }
+      };
+
+      const agent = new Agent(config);
+      expect((agent as any).model).toBe('anthropic.claude-3-sonnet-20240229-v1:0');
+    });
+
+    it('should default to standard model when config has no model', () => {
+      const config = {
+        providerConfig: {
+          provider: 'ollama' as const,
+          ollama: {
+            model: ''  // Empty model - should trigger fallback
+          }
+        }
+      };
+
+      const agent = new Agent(config);
+      expect((agent as any).model).toBe('qwen3-coder:30b');
+    });
+
+    it('should not import concrete provider classes in Agent', () => {
+      // This test verifies the agent.ts file doesn't directly import providers
+      const agentSource = require('fs').readFileSync(require('path').join(__dirname, '../agent.ts'), 'utf-8');
+      expect(agentSource).not.toContain('from \'./providers/ollama\'');
+      expect(agentSource).not.toContain('from \'./providers/bedrock\'');
     });
   });
 });
