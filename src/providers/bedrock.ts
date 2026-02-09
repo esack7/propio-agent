@@ -49,6 +49,7 @@ export class BedrockProvider implements LLMProvider {
           }
         : undefined;
 
+
       // System message needs to be converted to SystemContentBlock format
       const systemContent = systemMessage
         ? [{ text: systemMessage.content }]
@@ -135,18 +136,23 @@ export class BedrockProvider implements LLMProvider {
             yield { delta: (delta as any).text };
           }
 
-          // Handle tool use delta
-          if ((delta as any).toolUsePartialInput) {
-            currentToolInput += (delta as any).toolUsePartialInput;
+          // Handle tool use delta - accumulate tool input
+          if ((delta as any).toolUse) {
+            const partialInput = (delta as any).toolUse.input;
+            if (partialInput) {
+              currentToolInput += partialInput;
+            }
           }
         }
 
         if (event.contentBlockStart) {
-          const block = event.contentBlockStart.contentBlock;
-          if ((block as any).toolUse) {
+          // In Bedrock streaming, tool use info is in event.contentBlockStart.start.toolUse
+          const toolUse = event.contentBlockStart.start?.toolUse;
+          if (toolUse) {
             currentToolCall = {
+              id: toolUse.toolUseId, // Capture toolUseId for later reference
               function: {
-                name: (block as any).toolUse.name,
+                name: toolUse.name,
                 arguments: {}
               }
             };
@@ -194,8 +200,8 @@ export class BedrockProvider implements LLMProvider {
   private chatMessageToBedrockMessage(msg: ChatMessage): any {
     const contentBlocks: any[] = [];
 
-    // Add text content
-    if (msg.content) {
+    // Add text content (but not for tool role messages - they use toolResult instead)
+    if (msg.content && msg.role !== 'tool') {
       contentBlocks.push({
         text: msg.content
       } as any);
@@ -206,7 +212,9 @@ export class BedrockProvider implements LLMProvider {
       for (const toolCall of msg.toolCalls) {
         contentBlocks.push({
           toolUse: {
-            toolUseId: `${toolCall.function.name}-${Date.now()}`,
+            // Use the existing toolCallId if available (from Bedrock response),
+            // otherwise generate a temporary one
+            toolUseId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
             name: toolCall.function.name,
             input: toolCall.function.arguments
           }
@@ -249,8 +257,8 @@ export class BedrockProvider implements LLMProvider {
     if (msg.role === 'tool') {
       contentBlocks.push({
         toolResult: {
-          toolUseId: 'tool-result',
-          content: msg.content,
+          toolUseId: msg.toolCallId || 'tool-result', // Use the original toolUseId if available
+          content: [{ text: msg.content }],
           status: 'success'
         }
       } as any);
@@ -271,12 +279,18 @@ export class BedrockProvider implements LLMProvider {
 
     if (msg.content && Array.isArray(msg.content)) {
       for (const block of msg.content) {
+        // Skip undefined or null blocks
+        if (!block) {
+          continue;
+        }
+
         if (block.text) {
           content += block.text;
         }
 
         if (block.toolUse) {
           toolCalls.push({
+            id: block.toolUse.toolUseId, // Store toolUseId for later reference
             function: {
               name: block.toolUse.name,
               arguments: block.toolUse.input || {}
@@ -302,15 +316,51 @@ export class BedrockProvider implements LLMProvider {
    * Translate ChatTool to Bedrock ToolSpecification
    */
   private chatToolToBedrockTool(chatTool: ChatTool): any {
+    // Bedrock expects the JSON schema directly in the inputSchema.json field
+    // Strip out descriptions from properties as Bedrock may not support them
+    const schema = chatTool.function.parameters || { type: 'object', properties: {} };
+
+    // Clean the schema by removing descriptions from properties
+    const cleanedSchema = this.cleanSchema(schema);
+
     return {
       toolSpec: {
         name: chatTool.function.name,
         description: chatTool.function.description,
         inputSchema: {
-          json: chatTool.function.parameters
+          json: cleanedSchema
         }
       }
     };
+  }
+
+  /**
+   * Clean JSON schema by removing unsupported fields like descriptions from properties
+   */
+  private cleanSchema(schema: any): any {
+    if (!schema || typeof schema !== 'object') {
+      return schema;
+    }
+
+    const cleaned = { ...schema };
+
+    // If this schema has properties, clean each property
+    if (cleaned.properties && typeof cleaned.properties === 'object') {
+      cleaned.properties = { ...cleaned.properties };
+      for (const [key, value] of Object.entries(cleaned.properties)) {
+        if (value && typeof value === 'object') {
+          const cleanedProp: any = {};
+          // Only copy type and enum fields, skip description
+          if ((value as any).type) cleanedProp.type = (value as any).type;
+          if ((value as any).enum) cleanedProp.enum = (value as any).enum;
+          if ((value as any).items) cleanedProp.items = this.cleanSchema((value as any).items);
+          if ((value as any).properties) cleanedProp.properties = this.cleanSchema((value as any).properties);
+          cleaned.properties[key] = cleanedProp;
+        }
+      }
+    }
+
+    return cleaned;
   }
 
   /**

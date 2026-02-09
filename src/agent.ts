@@ -228,7 +228,8 @@ export class Agent {
 
             this.sessionContext.push({
               role: 'tool',
-              content: result
+              content: result,
+              toolCallId: toolCall.id // Pass through the tool call ID for providers that need it
             });
           }
           // Continue loop to let agent process tool results
@@ -304,7 +305,8 @@ export class Agent {
 
             this.sessionContext.push({
               role: 'tool',
-              content: result
+              content: result,
+              toolCallId: toolCall.id // Pass through the tool call ID for providers that need it
             });
 
             onToken(`[Tool result: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}]\n`);

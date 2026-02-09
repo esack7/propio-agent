@@ -131,14 +131,18 @@ Create `.propio/providers.json` with the following structure:
       "models": [
         {
           "name": "Claude Sonnet 4.5",
-          "key": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+          "key": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
         },
         {
           "name": "Claude Haiku 4.5",
-          "key": "anthropic.claude-haiku-4-5-20251001-v1:0"
+          "key": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+        },
+        {
+          "name": "Claude Opus 4.6",
+          "key": "global.anthropic.claude-opus-4-6-v1"
         }
       ],
-      "defaultModel": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+      "defaultModel": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
     }
   ]
 }
@@ -155,6 +159,21 @@ Create `.propio/providers.json` with the following structure:
     - `name`: Human-readable model name
     - `key`: Model identifier used by the provider
   - `defaultModel`: The default model key to use for this provider
+
+#### Important: Bedrock Model IDs
+
+For AWS Bedrock, you must use **inference profile IDs** instead of direct model IDs:
+
+- ✅ **Correct**: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- ❌ **Incorrect**: `anthropic.claude-sonnet-4-5-20250929-v1:0`
+
+Newer Claude 4.x models require inference profiles to work with on-demand throughput. Using direct model IDs will result in an error: "on-demand throughput isn't supported."
+
+The `global.anthropic.*` prefix provides cross-region inference profiles that support on-demand access. To list available inference profiles for your AWS account:
+
+```bash
+aws bedrock list-inference-profiles --region us-east-1
+```
 
 ### Provider Interface
 
@@ -185,12 +204,14 @@ const agent = new Agent({
   providerConfig: {
     provider: 'bedrock',
     bedrock: {
-      model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+      model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
       region: 'us-east-1'  // Optional, defaults to us-east-1
     }
   }
 });
 ```
+
+**Note:** Use inference profile IDs (with `global.anthropic.*` or `us.anthropic.*` prefix) for Claude 4.x models. Direct model IDs will not work with on-demand throughput.
 
 ### Backward Compatibility
 
@@ -219,7 +240,7 @@ const response1 = await agent.chat('Hello!');
 (agent as any).switchProvider({
   provider: 'bedrock',
   bedrock: {
-    model: 'anthropic.claude-3-sonnet-20240229-v1:0'
+    model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
   }
 });
 

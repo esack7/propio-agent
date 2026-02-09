@@ -5,6 +5,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolCalls?: ChatToolCall[];
+  toolCallId?: string; // For tool role messages: which tool call this is a result for
   images?: (Uint8Array | string)[];
 }
 
@@ -12,6 +13,7 @@ export interface ChatMessage {
  * Tool call representation
  */
 export interface ChatToolCall {
+  id?: string; // Provider-specific tool call ID (e.g., Bedrock toolUseId)
   function: {
     name: string;
     arguments: Record<string, any>;
