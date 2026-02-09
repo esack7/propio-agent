@@ -1,5 +1,5 @@
 import { LLMProvider } from './interface';
-import { ProviderConfig } from './config';
+import { ProviderConfig, OllamaProviderConfig, BedrockProviderConfig } from './config';
 import { OllamaProvider } from './ollama';
 import { BedrockProvider } from './bedrock';
 
@@ -7,84 +7,73 @@ import { BedrockProvider } from './bedrock';
  * Factory function to create LLM provider instances from configuration.
  *
  * This factory encapsulates provider instantiation logic, allowing new providers to be added
- * without modifying the Agent class. The factory uses a switch statement on provider type
+ * without modifying the Agent class. The factory uses a switch statement on type field
  * to determine which provider class to instantiate.
  *
- * @param config - Provider configuration containing provider type and provider-specific settings
+ * @param config - Provider configuration containing type field and provider-specific settings
+ * @param modelKey - Optional model key override. If provided, uses this instead of config.defaultModel
  * @returns An LLMProvider interface instance configured according to the provided config
  * @throws Error if the provider type is unknown or unsupported
  *
  * @example
  * // Create an Ollama provider
  * const ollamaProvider = createProvider({
- *   provider: 'ollama',
- *   ollama: {
- *     model: 'qwen3-coder:30b',
- *     host: 'http://localhost:11434'
- *   }
+ *   name: 'local-ollama',
+ *   type: 'ollama',
+ *   models: [{ name: 'Llama', key: 'llama3.2' }],
+ *   defaultModel: 'llama3.2',
+ *   host: 'http://localhost:11434'
  * });
  *
  * @example
- * // Create a Bedrock provider
+ * // Create a Bedrock provider with specific model
  * const bedrockProvider = createProvider({
- *   provider: 'bedrock',
- *   bedrock: {
- *     model: 'anthropic.claude-3-sonnet-20240229-v1:0',
- *     region: 'us-east-1'
- *   }
- * });
+ *   name: 'bedrock',
+ *   type: 'bedrock',
+ *   models: [{ name: 'Claude 3.5', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0' }],
+ *   defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+ *   region: 'us-west-2'
+ * }, 'anthropic.claude-3-5-sonnet-20241022-v2:0');
  */
-export function createProvider(config: ProviderConfig): LLMProvider {
+export function createProvider(config: ProviderConfig, modelKey?: string): LLMProvider {
+  const model = modelKey || config.defaultModel;
+
   // Switch statement pattern for mapping provider type to implementation.
   // Each case instantiates the appropriate provider class with extracted config.
-  switch (config.provider) {
+  switch (config.type) {
     case 'ollama':
       return new OllamaProvider({
-        model: (config as any).ollama.model,
-        host: (config as any).ollama.host
+        model: model,
+        host: (config as OllamaProviderConfig).host
       });
     case 'bedrock':
       return new BedrockProvider({
-        model: (config as any).bedrock.model,
-        region: (config as any).bedrock.region
+        model: model,
+        region: (config as BedrockProviderConfig).region
       });
     default:
-      throw new Error(`Unknown provider type: "${(config as any).provider}". Valid providers: ollama, bedrock`);
+      throw new Error(`Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock`);
   }
 }
 
 /**
- * Extract the model name from a provider configuration.
+ * Extract the default model name from a provider configuration.
  *
- * This utility function provides a centralized way to extract the model name from any
- * provider configuration type. The model name is provider-specific but typically identifies
- * which LLM model to use (e.g., 'qwen3-coder:30b' for Ollama, 'anthropic.claude-3-...' for Bedrock).
+ * This utility function provides a centralized way to extract the default model name from any
+ * provider configuration type. All provider configs now have a top-level defaultModel field.
  *
- * @param config - The provider configuration object containing provider type and settings
- * @returns The model name string if present in the configuration, undefined if not found or for unknown providers
+ * @param config - The provider configuration object
+ * @returns The default model key string
  *
  * @example
  * const model = extractModelFromConfig({
- *   provider: 'ollama',
- *   ollama: { model: 'qwen3-coder:30b' }
+ *   name: 'ollama',
+ *   type: 'ollama',
+ *   models: [{ name: 'Llama', key: 'llama3.2' }],
+ *   defaultModel: 'llama3.2'
  * });
- * console.log(model); // 'qwen3-coder:30b'
- *
- * @example
- * // Returns undefined for missing model
- * const model = extractModelFromConfig({
- *   provider: 'ollama',
- *   ollama: {}
- * });
- * console.log(model); // undefined
+ * console.log(model); // 'llama3.2'
  */
-export function extractModelFromConfig(config: ProviderConfig): string | undefined {
-  switch (config.provider) {
-    case 'ollama':
-      return (config as any).ollama?.model;
-    case 'bedrock':
-      return (config as any).bedrock?.model;
-    default:
-      return undefined;
-  }
+export function extractModelFromConfig(config: ProviderConfig): string {
+  return config.defaultModel;
 }

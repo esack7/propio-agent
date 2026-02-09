@@ -9,8 +9,9 @@ import {
   ProviderAuthenticationError,
   ProviderModelNotFoundError
 } from './providers/types';
-import { ProviderConfig } from './providers/config';
-import { createProvider, extractModelFromConfig } from './providers/factory';
+import { ProvidersConfig, ProviderConfig } from './providers/config';
+import { createProvider } from './providers/factory';
+import { loadProvidersConfig, resolveProvider, resolveModelKey } from './providers/configLoader';
 
 export class Agent {
   private provider: LLMProvider;
@@ -19,9 +20,10 @@ export class Agent {
   private systemPrompt: string;
   private sessionContextFilePath: string;
   private tools: ChatTool[];
+  private providersConfig: ProvidersConfig;
 
   /**
-   * Initialize an Agent with provider configuration and optional system settings.
+   * Initialize an Agent with multi-provider configuration.
    *
    * The Agent orchestrates interactions with an LLM provider. It maintains session context,
    * manages tools, and handles both regular and streaming chat interactions. Provider instances
@@ -29,65 +31,97 @@ export class Agent {
    * modifying the Agent class.
    *
    * @param options - Configuration options for the agent
-   * @param options.providerConfig - Provider configuration specifying which LLM provider to use
-   *                                  and provider-specific settings. Required - will throw an error if not provided.
+   * @param options.providersConfig - Multi-provider configuration (ProvidersConfig object or file path string).
+   *                                  Required - will throw an error if not provided.
+   * @param options.providerName - Optional provider name to use. If not provided, uses config.default
+   * @param options.modelKey - Optional model key to use. If not provided, uses provider.defaultModel
    * @param options.systemPrompt - System prompt to use in all LLM requests. Defaults to a generic helpful assistant prompt.
    * @param options.sessionContextFilePath - Path to persist session context. Defaults to './session_context.txt'.
    *
    * @example
-   * // Use explicit Ollama configuration
+   * // Use default provider from config file
    * const agent = new Agent({
-   *   providerConfig: {
-   *     provider: 'ollama',
-   *     ollama: {
-   *       model: 'qwen3-coder:30b',
-   *       host: 'http://localhost:11434'
-   *     }
-   *   },
-   *   systemPrompt: 'You are a helpful coding assistant.'
+   *   providersConfig: './providers.json'
    * });
    *
    * @example
-   * // Use Bedrock provider
+   * // Use specific provider and model with inline config
    * const agent = new Agent({
-   *   providerConfig: {
-   *     provider: 'bedrock',
-   *     bedrock: {
-   *       model: 'anthropic.claude-3-sonnet-20240229-v1:0',
-   *       region: 'us-west-2'
-   *     }
-   *   }
+   *   providersConfig: {
+   *     default: 'ollama',
+   *     providers: [
+   *       {
+   *         name: 'ollama',
+   *         type: 'ollama',
+   *         models: [{ name: 'Llama', key: 'llama3.2' }],
+   *         defaultModel: 'llama3.2'
+   *       }
+   *     ]
+   *   },
+   *   providerName: 'ollama',
+   *   modelKey: 'llama3.2',
+   *   systemPrompt: 'You are a helpful coding assistant.'
    * });
    */
   constructor(options: {
+    providersConfig: ProvidersConfig | string;
+    providerName?: string;
+    modelKey?: string;
     systemPrompt?: string;
     sessionContextFilePath?: string;
-    providerConfig?: ProviderConfig;
-  } = {}) {
+  } = {} as any) {
+    // Validate required providersConfig
+    if (!options.providersConfig) {
+      throw new Error('Provider configuration is required. Please provide a providersConfig option with provider settings.');
+    }
+
     this.systemPrompt = options.systemPrompt || 'You are a helpful AI assistant.';
     this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
 
-    // Initialize provider from configuration using factory
-    if (!options.providerConfig) {
-      throw new Error('Provider configuration is required. Please provide a providerConfig option with provider settings.');
+    // Load configuration from file if string path provided, otherwise use directly
+    let config: ProvidersConfig;
+    if (typeof options.providersConfig === 'string') {
+      config = loadProvidersConfig(options.providersConfig);
+    } else {
+      config = options.providersConfig;
     }
 
-    this.provider = createProvider(options.providerConfig);
-    const extractedModel = extractModelFromConfig(options.providerConfig);
-    this.model = (extractedModel && extractedModel.trim()) || 'qwen3-coder:30b';
+    this.providersConfig = config;
+
+    // Resolve provider from config
+    const resolvedProvider = resolveProvider(config, options.providerName);
+
+    // Resolve model key from provider
+    const resolvedModelKey = resolveModelKey(resolvedProvider, options.modelKey);
+
+    // Create provider instance using factory
+    this.provider = createProvider(resolvedProvider, resolvedModelKey);
+    this.model = resolvedModelKey;
 
     this.sessionContext = [];
     this.tools = this.initializeTools();
   }
 
   /**
-   * Switch to a different provider
+   * Switch to a different provider at runtime
+   *
+   * @param providerName - Name of provider to switch to (from providersConfig)
+   * @param modelKey - Optional model key to use in the new provider. Uses provider.defaultModel if not specified.
+   * @throws Error if provider name or model key is not found in configuration
    */
-  private switchProvider(config: ProviderConfig): void {
-    const newProvider = createProvider(config);
+  private switchProvider(providerName: string, modelKey?: string): void {
+    // Resolve and validate provider from stored config
+    const resolvedProvider = resolveProvider(this.providersConfig, providerName);
+
+    // Resolve and validate model key
+    const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
+
+    // Create new provider instance
+    const newProvider = createProvider(resolvedProvider, resolvedModelKey);
+
+    // Update provider and model
     this.provider = newProvider;
-    // Update model if specified in config
-    this.model = extractModelFromConfig(config) || this.model;
+    this.model = resolvedModelKey;
   }
 
   private initializeTools(): ChatTool[] {

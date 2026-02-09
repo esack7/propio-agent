@@ -1,8 +1,4 @@
-## Purpose
-
-Factory pattern for creating LLM provider instances from configuration, enabling new providers to be added without modifying consumer code.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Factory function for provider creation
 
@@ -55,31 +51,3 @@ The system SHALL provide a utility function to extract the model name from Provi
 #### Scenario: Return value regardless of provider type
 - **WHEN** extractModelFromConfig is called with any valid ProviderConfig
 - **THEN** it SHALL return the defaultModel field since all providers now have this field at the top level
-
-### Requirement: Error handling
-
-The system SHALL provide clear, actionable error messages for factory failures.
-
-#### Scenario: Unknown provider error includes suggestions
-- **WHEN** factory encounters unknown provider type
-- **THEN** error message SHALL include list of valid provider types
-
-#### Scenario: Error format is descriptive
-- **WHEN** factory throws an error
-- **THEN** error message SHALL follow format: "Unknown provider type: \"{type}\". Valid providers: ollama, bedrock"
-
-### Requirement: Type safety
-
-The system SHALL maintain TypeScript type safety throughout the factory implementation.
-
-#### Scenario: Factory parameter is typed
-- **WHEN** createProvider function is declared
-- **THEN** it SHALL accept config parameter typed as ProviderConfig
-
-#### Scenario: Factory return type is interface
-- **WHEN** createProvider function is declared
-- **THEN** it SHALL return type LLMProvider (interface, not concrete class)
-
-#### Scenario: Provider-specific config narrowing
-- **WHEN** factory extracts provider-specific config in switch cases
-- **THEN** it SHALL maintain type safety through discriminated union narrowing

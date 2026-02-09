@@ -1,16 +1,24 @@
 import { Agent } from '../agent';
 import { LLMProvider } from '../providers/interface';
 import { ChatRequest, ChatResponse, ChatChunk } from '../providers/types';
+import { ProvidersConfig } from '../providers/config';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// Default provider config for testing
-const defaultTestProviderConfig = {
-  provider: 'ollama' as const,
-  ollama: {
-    model: 'qwen3-coder:30b',
-    host: 'http://localhost:11434'
-  }
+// Test providers config using new format
+const defaultTestProvidersConfig: ProvidersConfig = {
+  default: 'local-ollama',
+  providers: [
+    {
+      name: 'local-ollama',
+      type: 'ollama',
+      models: [
+        { name: 'Test Model', key: 'test-model' }
+      ],
+      defaultModel: 'test-model',
+      host: 'http://localhost:11434'
+    }
+  ]
 };
 
 /**
@@ -44,7 +52,7 @@ class MockIntegrationProvider implements LLMProvider {
 describe('Agent Integration Tests', () => {
   describe('Public API', () => {
     it('should maintain existing chat interface', async () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       // Verify methods exist and have correct signatures
       expect(typeof agent.chat).toBe('function');
       expect(typeof agent.streamChat).toBe('function');
@@ -59,29 +67,37 @@ describe('Agent Integration Tests', () => {
       expect(() => new Agent()).toThrow('Provider configuration is required');
     });
 
-    it('should support explicit Ollama configuration', () => {
-      const agent = new Agent({
-        providerConfig: {
-          provider: 'ollama',
-          ollama: {
-            model: 'custom-model',
+    it('should support Ollama configuration', () => {
+      const config: ProvidersConfig = {
+        default: 'ollama',
+        providers: [
+          {
+            name: 'ollama',
+            type: 'ollama',
+            models: [{ name: 'Model', key: 'custom-model' }],
+            defaultModel: 'custom-model',
             host: 'http://custom:11434'
           }
-        }
-      });
+        ]
+      };
+      const agent = new Agent({ providersConfig: config });
       expect(agent).toBeDefined();
     });
 
     it('should support Bedrock configuration', () => {
-      const agent = new Agent({
-        providerConfig: {
-          provider: 'bedrock',
-          bedrock: {
-            model: 'anthropic.claude-3-sonnet-20240229-v1:0',
+      const config: ProvidersConfig = {
+        default: 'bedrock',
+        providers: [
+          {
+            name: 'bedrock',
+            type: 'bedrock',
+            models: [{ name: 'Claude', key: 'anthropic.claude-3-sonnet-20240229-v1:0' }],
+            defaultModel: 'anthropic.claude-3-sonnet-20240229-v1:0',
             region: 'us-west-2'
           }
-        }
-      });
+        ]
+      };
+      const agent = new Agent({ providersConfig: config });
       expect(agent).toBeDefined();
     });
   });
@@ -89,7 +105,7 @@ describe('Agent Integration Tests', () => {
   describe('Session context management', () => {
     it('should maintain session context across multiple chat calls', async () => {
       const mockProvider = new MockIntegrationProvider('test');
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('First message');
@@ -103,7 +119,7 @@ describe('Agent Integration Tests', () => {
 
     it('should clear context correctly', async () => {
       const mockProvider = new MockIntegrationProvider('test');
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test message');
@@ -128,7 +144,7 @@ describe('Agent Integration Tests', () => {
         };
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig, systemPrompt: 'Original prompt' });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig, systemPrompt: 'Original prompt' });
       (agent as any).provider = mockProvider;
 
       const newPrompt = 'Updated prompt';
@@ -157,13 +173,11 @@ describe('Agent Integration Tests', () => {
     });
 
     it('should execute file write tool correctly', async () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      const testFile = path.join(tempDir, 'test.txt');
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
 
       const result = agent.saveContext('integration test');
 
       expect(result).toContain('Successfully saved');
-      expect(fs.existsSync(agent.saveContext.toString().includes('session_context') ? process.cwd() : tempDir)).toBe(true);
     });
 
     it('should handle tool execution errors gracefully', async () => {
@@ -184,7 +198,7 @@ describe('Agent Integration Tests', () => {
         stopReason: 'tool_use'
       });
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       // Should not throw, but add error message to context
@@ -244,7 +258,7 @@ describe('Agent Integration Tests', () => {
         }
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.chat('Execute tools');
@@ -256,7 +270,7 @@ describe('Agent Integration Tests', () => {
   describe('Streaming functionality', () => {
     it('should stream tokens correctly', async () => {
       const mockProvider = new MockIntegrationProvider('test');
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       const tokens: string[] = [];
@@ -276,7 +290,7 @@ describe('Agent Integration Tests', () => {
         yield { delta: '!' };
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.streamChat('Test', () => {});
@@ -310,7 +324,7 @@ describe('Agent Integration Tests', () => {
         }
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       const tokens: string[] = [];
@@ -329,18 +343,31 @@ describe('Agent Integration Tests', () => {
   describe('Provider switching', () => {
     it('should switch provider while preserving context', async () => {
       const provider1 = new MockIntegrationProvider('provider1');
-      const provider2 = new MockIntegrationProvider('provider2');
+      const config: ProvidersConfig = {
+        default: 'ollama',
+        providers: [
+          {
+            name: 'ollama',
+            type: 'ollama',
+            models: [{ name: 'Model1', key: 'model1' }],
+            defaultModel: 'model1'
+          },
+          {
+            name: 'ollama-alt',
+            type: 'ollama',
+            models: [{ name: 'Model2', key: 'model2' }],
+            defaultModel: 'model2'
+          }
+        ]
+      };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: config });
       (agent as any).provider = provider1;
 
       await agent.chat('First message with provider 1');
       const contextSize = agent.getContext().length;
 
-      (agent as any).switchProvider({
-        provider: 'ollama',
-        ollama: { model: 'new-model' }
-      });
+      (agent as any).switchProvider('ollama-alt');
 
       // Context should be preserved
       const newContextSize = agent.getContext().length;
@@ -348,7 +375,19 @@ describe('Agent Integration Tests', () => {
     });
 
     it('should work correctly after switching providers', async () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const config: ProvidersConfig = {
+        default: 'ollama',
+        providers: [
+          {
+            name: 'ollama',
+            type: 'ollama',
+            models: [{ name: 'Model', key: 'model' }],
+            defaultModel: 'model'
+          }
+        ]
+      };
+
+      const agent = new Agent({ providersConfig: config });
       const mockProvider = new MockIntegrationProvider('switched');
       (agent as any).provider = mockProvider;
 
@@ -364,7 +403,7 @@ describe('Agent Integration Tests', () => {
         throw new Error('Provider error');
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       await expect(agent.chat('Test')).rejects.toThrow();
@@ -376,7 +415,7 @@ describe('Agent Integration Tests', () => {
         throw new Error('Connection failed');
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       try {
@@ -400,7 +439,7 @@ describe('Agent Integration Tests', () => {
         stopReason: 'end_turn'
       });
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Message 1');
@@ -430,7 +469,7 @@ describe('Agent Integration Tests', () => {
       };
 
       const customPrompt = 'Custom system prompt';
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig, systemPrompt: customPrompt });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig, systemPrompt: customPrompt });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test 1');
@@ -444,7 +483,7 @@ describe('Agent Integration Tests', () => {
 
   describe('Tools availability', () => {
     it('should provide all tools', () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       const tools = agent.getTools();
 
       const toolNames = tools.map(t => t.function.name);
@@ -467,7 +506,7 @@ describe('Agent Integration Tests', () => {
         };
       };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('Test with tools');

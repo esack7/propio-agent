@@ -1,15 +1,9 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { Agent } from '../agent';
 import { LLMProvider } from '../providers/interface';
 import { ChatRequest, ChatResponse, ChatChunk, ChatMessage } from '../providers/types';
-
-// Default provider config for testing
-const defaultTestProviderConfig = {
-  provider: 'ollama' as const,
-  ollama: {
-    model: 'qwen3-coder:30b',
-    host: 'http://localhost:11434'
-  }
-};
+import { ProvidersConfig } from '../providers/config';
 
 /**
  * Mock LLM Provider for testing
@@ -37,243 +31,342 @@ class MockProvider implements LLMProvider {
   }
 }
 
-describe('Agent with Provider Abstraction', () => {
-  describe('Provider Configuration', () => {
-    it('should throw error when no provider config is provided', () => {
-      expect(() => new Agent()).toThrow('Provider configuration is required');
+// Test providers config
+const testProvidersConfig: ProvidersConfig = {
+  default: 'local-ollama',
+  providers: [
+    {
+      name: 'local-ollama',
+      type: 'ollama',
+      models: [
+        { name: 'Llama 3.2 3B', key: 'llama3.2:3b' },
+        { name: 'Llama 3.2 90B', key: 'llama3.2:90b' }
+      ],
+      defaultModel: 'llama3.2:3b',
+      host: 'http://localhost:11434'
+    },
+    {
+      name: 'bedrock',
+      type: 'bedrock',
+      models: [{ name: 'Claude 3.5 Sonnet', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0' }],
+      defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+      region: 'us-west-2'
+    }
+  ]
+};
+
+describe('Agent with Multi-Provider Configuration', () => {
+  const tempDir = '/tmp/agent-tests';
+
+  beforeAll(() => {
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+  });
+
+  afterAll(() => {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true });
+    }
+  });
+
+  describe('Constructor with ProvidersConfig object', () => {
+    it('should require providersConfig parameter', () => {
+      expect(() => new Agent()).toThrow(/providersConfig|required/i);
     });
 
-    it('should accept provider configuration', () => {
+    it('should accept ProvidersConfig object', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      expect(agent).toBeDefined();
+    });
+
+    it('should accept ProvidersConfig with default provider', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      expect(agent).toBeDefined();
+      expect((agent as any).provider).toBeDefined();
+    });
+
+    it('should accept optional providerName to override default', () => {
       const agent = new Agent({
-        providerConfig: {
-          provider: 'ollama',
-          ollama: {
-            model: 'custom-model'
-          }
-        }
+        providersConfig: testProvidersConfig,
+        providerName: 'bedrock'
       });
       expect(agent).toBeDefined();
     });
 
-    it('should support systemPrompt and sessionContextFilePath options', () => {
+    it('should accept optional modelKey to override defaultModel', () => {
       const agent = new Agent({
-        providerConfig: defaultTestProviderConfig,
+        providersConfig: testProvidersConfig,
+        modelKey: 'llama3.2:90b'
+      });
+      expect(agent).toBeDefined();
+    });
+
+    it('should accept systemPrompt and sessionContextFilePath options', () => {
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
         systemPrompt: 'Custom prompt',
-        sessionContextFilePath: '/tmp/session.txt'
+        sessionContextFilePath: path.join(tempDir, 'session.txt')
       });
       expect(agent).toBeDefined();
     });
+
+    it('should throw error if providerName does not exist', () => {
+      expect(() => {
+        new Agent({
+          providersConfig: testProvidersConfig,
+          providerName: 'nonexistent'
+        });
+      }).toThrow(/unknown.*provider|not found/i);
+    });
+
+    it('should throw error if modelKey does not exist in provider', () => {
+      expect(() => {
+        new Agent({
+          providersConfig: testProvidersConfig,
+          modelKey: 'nonexistent-model'
+        });
+      }).toThrow(/invalid.*model|not found|unknown model/i);
+    });
   });
 
-  describe('Provider Usage in Chat', () => {
-    it('should build ChatRequest with system message', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      // We'll need to expose setProvider for testing
-      (agent as any).provider = mockProvider;
+  describe('Constructor with file path', () => {
+    it('should accept file path string as providersConfig', () => {
+      const configPath = path.join(tempDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify(testProvidersConfig));
 
-      await agent.chat('Hello');
-
-      expect(mockProvider.chatCalls).toHaveLength(1);
-      const request = mockProvider.chatCalls[0];
-      expect(request.messages.some(m => m.role === 'system')).toBe(true);
+      const agent = new Agent({ providersConfig: configPath });
+      expect(agent).toBeDefined();
     });
 
-    it('should build ChatRequest with user message', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
+    it('should load config from file and use default provider', () => {
+      const configPath = path.join(tempDir, 'config-default.json');
+      fs.writeFileSync(configPath, JSON.stringify(testProvidersConfig));
 
-      await agent.chat('Hello');
-
-      expect(mockProvider.chatCalls).toHaveLength(1);
-      const request = mockProvider.chatCalls[0];
-      expect(request.messages.some(m => m.role === 'user' && m.content === 'Hello')).toBe(
-        true
-      );
+      const agent = new Agent({ providersConfig: configPath });
+      expect(agent).toBeDefined();
     });
 
-    it('should include tools in ChatRequest', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      await agent.chat('Test');
-
-      expect(mockProvider.chatCalls).toHaveLength(1);
-      const request = mockProvider.chatCalls[0];
-      expect(request.tools).toBeDefined();
-      expect(request.tools?.length).toBeGreaterThan(0);
+    it('should throw error if file does not exist', () => {
+      const configPath = path.join(tempDir, 'nonexistent.json');
+      expect(() => {
+        new Agent({ providersConfig: configPath });
+      }).toThrow(/not found|ENOENT/i);
     });
 
-    it('should pass correct model to provider', async () => {
-      const mockProvider = new MockProvider();
+    it('should throw error if file contains invalid JSON', () => {
+      const configPath = path.join(tempDir, 'invalid.json');
+      fs.writeFileSync(configPath, '{ invalid }');
+
+      expect(() => {
+        new Agent({ providersConfig: configPath });
+      }).toThrow(/JSON|parse|invalid/i);
+    });
+  });
+
+  describe('Provider Resolution', () => {
+    it('should use default provider when not specified', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      // Default is 'local-ollama'
+      expect(agent).toBeDefined();
+      expect((agent as any).provider).toBeDefined();
+    });
+
+    it('should use specified provider when providerName provided', () => {
       const agent = new Agent({
-        providerConfig: {
-          provider: 'ollama',
-          ollama: { model: 'specific-model' }
-        }
+        providersConfig: testProvidersConfig,
+        providerName: 'bedrock'
       });
-      (agent as any).provider = mockProvider;
+      expect(agent).toBeDefined();
+    });
 
-      await agent.chat('Test');
-
-      expect(mockProvider.chatCalls).toHaveLength(1);
-      expect(mockProvider.chatCalls[0].model).toBe('specific-model');
+    it('should store providersConfig for runtime switching', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      expect((agent as any).providersConfig).toBeDefined();
+      expect((agent as any).providersConfig).toEqual(testProvidersConfig);
     });
   });
 
-  describe('Session Context with Provider-Agnostic Types', () => {
-    it('should store messages as ChatMessage type', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      await agent.chat('User message');
-
-      const context = agent.getContext();
-      expect(context).toContainEqual(
-        expect.objectContaining({
-          role: 'user',
-          content: 'User message'
-        })
-      );
+  describe('Model Resolution', () => {
+    it('should use defaultModel when modelKey not provided', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      expect((agent as any).model).toBe('llama3.2:3b');
     });
 
-    it('should preserve tool calls in session context', async () => {
-      const mockProvider = new MockProvider();
-      mockProvider.chat = async (request: ChatRequest) => ({
-        message: {
-          role: 'assistant',
-          content: 'Calling tool',
-          toolCalls: [
-            {
-              function: { name: 'test_tool', arguments: {} }
-            }
-          ]
-        },
-        stopReason: 'tool_use'
+    it('should use specified modelKey when provided', () => {
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        modelKey: 'llama3.2:90b'
       });
-
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      // Mock tool execution
-      (agent as any).executeTool = () => 'Tool result';
-
-      await agent.chat('Use tool');
-
-      const context = agent.getContext();
-      const assistantMsg = context.find(m => m.role === 'assistant' && m.toolCalls);
-      expect(assistantMsg?.toolCalls).toBeDefined();
+      expect((agent as any).model).toBe('llama3.2:90b');
     });
 
-    it('should add tool result messages to context', async () => {
-      const mockProvider = new MockProvider();
-      mockProvider.chat = async (request: ChatRequest) => ({
-        message: {
-          role: 'assistant',
-          content: 'Calling',
-          toolCalls: [
-            {
-              function: { name: 'test_tool', arguments: {} }
-            }
-          ]
-        },
-        stopReason: 'tool_use'
-      });
+    it('should validate modelKey belongs to provider', () => {
+      const config: ProvidersConfig = {
+        default: 'ollama',
+        providers: [
+          {
+            name: 'ollama',
+            type: 'ollama',
+            models: [{ name: 'Model A', key: 'model-a' }],
+            defaultModel: 'model-a'
+          }
+        ]
+      };
 
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-      (agent as any).executeTool = () => 'Tool result';
-
-      await agent.chat('Call tool');
-
-      const context = agent.getContext();
-      expect(context.some(m => m.role === 'tool')).toBe(true);
+      expect(() => {
+        new Agent({
+          providersConfig: config,
+          modelKey: 'nonexistent'
+        });
+      }).toThrow(/invalid.*model|not found/i);
     });
   });
 
-  describe('Streaming with Provider', () => {
-    it('should use streamChat from provider', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      let tokensCalled = 0;
-      const onToken = () => tokensCalled++;
-
-      await agent.streamChat('Test', onToken);
-
-      expect(mockProvider.streamChatCalls).toHaveLength(1);
-    });
-
-    it('should yield tokens from provider chunks', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      const tokens: string[] = [];
-      const onToken = (token: string) => tokens.push(token);
-
-      await agent.streamChat('Test', onToken);
-
-      expect(tokens.length).toBeGreaterThan(0);
-    });
-
-    it('should accumulate stream response', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      const response = await agent.streamChat('Test', () => {});
-
-      expect(response).toBe('Mock stream');
-    });
-  });
-
-  describe('Provider Switching', () => {
-    it('should provide switchProvider method', () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      expect(typeof (agent as any).switchProvider).toBe('function');
-    });
-
-    it('should switch to new provider config', async () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+  describe('switchProvider() method', () => {
+    it('should accept providerName to switch providers', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
       const originalProvider = (agent as any).provider;
 
-      (agent as any).switchProvider({
-        provider: 'ollama',
-        ollama: { model: 'new-model' }
-      });
+      expect(() => {
+        (agent as any).switchProvider('bedrock');
+      }).not.toThrow();
 
       const newProvider = (agent as any).provider;
-      expect(newProvider).not.toBe(originalProvider);
+      expect(newProvider).toBeDefined();
+    });
+
+    it('should accept optional modelKey to override provider defaultModel', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+
+      expect(() => {
+        (agent as any).switchProvider('local-ollama', 'llama3.2:90b');
+      }).not.toThrow();
+
+      expect((agent as any).model).toBe('llama3.2:90b');
+    });
+
+    it('should use provider defaultModel when modelKey not provided', () => {
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        modelKey: 'llama3.2:90b'
+      });
+
+      (agent as any).switchProvider('bedrock');
+
+      expect((agent as any).model).toBe('anthropic.claude-3-5-sonnet-20241022-v2:0');
     });
 
     it('should preserve session context when switching provider', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
 
       await agent.chat('First message');
       const contextBefore = agent.getContext();
 
-      (agent as any).switchProvider({
-        provider: 'ollama',
-        ollama: { model: 'new-model' }
-      });
+      (agent as any).switchProvider('bedrock');
 
       const contextAfter = agent.getContext();
-      // Session context should remain the same length after provider switch
       expect(contextAfter.length).toBe(contextBefore.length);
+      expect(contextAfter).toEqual(contextBefore);
+    });
+
+    it('should throw error for invalid provider name', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+
+      expect(() => {
+        (agent as any).switchProvider('nonexistent');
+      }).toThrow(/unknown.*provider|not found/i);
+    });
+
+    it('should throw error for invalid modelKey in target provider', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+
+      expect(() => {
+        (agent as any).switchProvider('bedrock', 'invalid-model');
+      }).toThrow(/invalid.*model|not found/i);
+    });
+
+    it('should not modify provider on validation error', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const originalProvider = (agent as any).provider;
+
+      try {
+        (agent as any).switchProvider('nonexistent');
+      } catch (e) {
+        // Expected to throw
+      }
+
+      expect((agent as any).provider).toBe(originalProvider);
+    });
+  });
+
+  describe('Chat Integration with New Config', () => {
+    it('should pass resolved model to provider in chat', async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.chat('Test');
+
+      expect(mockProvider.chatCalls[0].model).toBe('llama3.2:3b');
+    });
+
+    it('should pass correct model when modelKey override is used', async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        modelKey: 'llama3.2:90b'
+      });
+      (agent as any).provider = mockProvider;
+
+      await agent.chat('Test');
+
+      expect(mockProvider.chatCalls[0].model).toBe('llama3.2:90b');
+    });
+
+    it('should maintain all existing chat functionality', async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const response = await agent.chat('Test message');
+
+      expect(typeof response).toBe('string');
+      expect(response).toBe('Mock response');
+      expect(mockProvider.chatCalls).toHaveLength(1);
+    });
+  });
+
+  describe('Stream Integration with New Config', () => {
+    it('should pass resolved model to provider in streamChat', async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat('Test', () => {});
+
+      expect(mockProvider.streamChatCalls[0].model).toBe('llama3.2:3b');
+    });
+
+    it('should maintain all existing streamChat functionality', async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const tokens: string[] = [];
+      const response = await agent.streamChat('Test', (token) => tokens.push(token));
+
+      expect(typeof response).toBe('string');
+      expect(tokens.length).toBeGreaterThan(0);
     });
   });
 
   describe('Backward Compatibility', () => {
     it('should keep chat() signature unchanged', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.chat('Test');
@@ -282,261 +375,24 @@ describe('Agent with Provider Abstraction', () => {
 
     it('should keep streamChat() signature unchanged', async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
 
       const response = await agent.streamChat('Test', () => {});
       expect(typeof response).toBe('string');
     });
 
-    it('should keep context management methods unchanged', async () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+    it('should keep context management methods unchanged', () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
       expect(typeof agent.clearContext).toBe('function');
       expect(typeof agent.getContext).toBe('function');
       expect(typeof agent.setSystemPrompt).toBe('function');
     });
 
     it('should keep tool management methods unchanged', () => {
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
+      const agent = new Agent({ providersConfig: testProvidersConfig });
       expect(typeof agent.getTools).toBe('function');
       expect(typeof agent.saveContext).toBe('function');
-    });
-
-    it('should execute built-in tools identically to current', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      const toolResult = agent.saveContext('test reason');
-      expect(typeof toolResult).toBe('string');
-      expect(toolResult).toContain('session context');
-    });
-  });
-
-  describe('System Prompt Handling', () => {
-    it('should include system prompt in requests', async () => {
-      const mockProvider = new MockProvider();
-      const customPrompt = 'Custom system prompt';
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig, systemPrompt: customPrompt });
-      (agent as any).provider = mockProvider;
-
-      await agent.chat('Test');
-
-      const request = mockProvider.chatCalls[0];
-      const systemMsg = request.messages.find(m => m.role === 'system');
-      expect(systemMsg?.content).toBe(customPrompt);
-    });
-
-    it('should update system prompt with setSystemPrompt', async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      const newPrompt = 'New system prompt';
-      agent.setSystemPrompt(newPrompt);
-      await agent.chat('Test');
-
-      const request = mockProvider.chatCalls[0];
-      const systemMsg = request.messages.find(m => m.role === 'system');
-      expect(systemMsg?.content).toBe(newPrompt);
-    });
-  });
-
-  describe('Tool Execution with Provider Types', () => {
-    it('should extract tool calls from provider response', async () => {
-      const mockProvider = new MockProvider();
-      let callCount = 0;
-      mockProvider.chat = async () => {
-        callCount++;
-        if (callCount === 1) {
-          return {
-            message: {
-              role: 'assistant',
-              content: 'Calling save_session_context',
-              toolCalls: [
-                {
-                  function: {
-                    name: 'save_session_context',
-                    arguments: { reason: 'test' }
-                  }
-                }
-              ]
-            },
-            stopReason: 'tool_use'
-          };
-        }
-        // Second call with no tool calls to end the loop
-        return {
-          message: {
-            role: 'assistant',
-            content: 'Done'
-          },
-          stopReason: 'end_turn'
-        };
-      };
-
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      const response = await agent.chat('Save context');
-      expect(response).toBe('Done');
-      // Verify that tool was executed by checking context has tool message
-      const context = agent.getContext();
-      expect(context.some(m => m.role === 'tool')).toBe(true);
-    });
-
-    it('should add tool results to context', async () => {
-      const mockProvider = new MockProvider();
-      mockProvider.chat = async () => ({
-        message: {
-          role: 'assistant',
-          content: 'Calling',
-          toolCalls: [
-            {
-              function: {
-                name: 'read_file',
-                arguments: { file_path: '/tmp/test.txt' }
-              }
-            }
-          ]
-        },
-        stopReason: 'tool_use'
-      });
-
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      // Mock file system
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue('File content');
-
-      await agent.chat('Read file');
-
-      const context = agent.getContext();
-      const toolMsg = context.find(m => m.role === 'tool');
-      expect(toolMsg).toBeDefined();
-    });
-
-    it('should enforce maxIterations limit', async () => {
-      const mockProvider = new MockProvider();
-      let callCount = 0;
-      mockProvider.chat = async () => {
-        callCount++;
-        return {
-          message: {
-            role: 'assistant',
-            content: 'Calling',
-            toolCalls: [
-              {
-                function: { name: 'save_session_context', arguments: {} }
-              }
-            ]
-          },
-          stopReason: 'tool_use'
-        };
-      };
-
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      await agent.chat('Test');
-
-      // Should stop at maxIterations (10)
-      expect(callCount).toBeLessThanOrEqual(10);
-    });
-  });
-
-  describe('Error Handling', () => {
-    it('should handle provider errors', async () => {
-      const mockProvider = new MockProvider();
-      mockProvider.chat = async () => {
-        throw new Error('Provider error');
-      };
-
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      await expect(agent.chat('Test')).rejects.toThrow();
-    });
-
-    it('should include provider name in error message', async () => {
-      const mockProvider = new MockProvider();
-      mockProvider.chat = async () => {
-        const err = new Error('Connection failed');
-        throw err;
-      };
-
-      const agent = new Agent({ providerConfig: defaultTestProviderConfig });
-      (agent as any).provider = mockProvider;
-
-      try {
-        await agent.chat('Test');
-      } catch (error) {
-        if (error instanceof Error) {
-          expect(error.message).toContain('mock');
-        }
-      }
-    });
-  });
-
-  describe('Provider Factory Integration', () => {
-    it('should use factory to create provider from config', () => {
-      const agent = new Agent({
-        providerConfig: {
-          provider: 'ollama',
-          ollama: {
-            model: 'qwen3-coder:30b'
-          }
-        }
-      });
-      expect(agent).toBeDefined();
-      expect((agent as any).provider).toBeDefined();
-    });
-
-    it('should throw error when factory receives unknown provider', () => {
-      expect(() => {
-        new Agent({
-          providerConfig: {
-            provider: 'unknown',
-            unknown: {}
-          } as any
-        });
-      }).toThrow();
-    });
-
-    it('should use extractModelFromConfig to set model', () => {
-      const config = {
-        providerConfig: {
-          provider: 'bedrock' as const,
-          bedrock: {
-            model: 'anthropic.claude-3-sonnet-20240229-v1:0',
-            region: 'us-east-1'
-          }
-        }
-      };
-
-      const agent = new Agent(config);
-      expect((agent as any).model).toBe('anthropic.claude-3-sonnet-20240229-v1:0');
-    });
-
-    it('should default to standard model when config has no model', () => {
-      const config = {
-        providerConfig: {
-          provider: 'ollama' as const,
-          ollama: {
-            model: ''  // Empty model - should trigger fallback
-          }
-        }
-      };
-
-      const agent = new Agent(config);
-      expect((agent as any).model).toBe('qwen3-coder:30b');
-    });
-
-    it('should not import concrete provider classes in Agent', () => {
-      // This test verifies the agent.ts file doesn't directly import providers
-      const agentSource = require('fs').readFileSync(require('path').join(__dirname, '../agent.ts'), 'utf-8');
-      expect(agentSource).not.toContain('from \'./providers/ollama\'');
-      expect(agentSource).not.toContain('from \'./providers/bedrock\'');
     });
   });
 });

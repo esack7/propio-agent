@@ -1,75 +1,145 @@
-import { ProviderConfig } from '../config';
+import {
+  Model,
+  ProviderConfig,
+  OllamaProviderConfig,
+  BedrockProviderConfig,
+  ProvidersConfig
+} from '../config';
 
-describe('ProviderConfig', () => {
-  describe('Ollama configuration', () => {
-    it('should define ollama provider configuration', () => {
-      const config: ProviderConfig = {
-        provider: 'ollama',
-        ollama: {
-          model: 'qwen3-coder:30b',
-          host: 'http://localhost:11434'
-        }
+describe('Configuration Types (New Structure)', () => {
+  describe('Model interface', () => {
+    it('should have name and key fields', () => {
+      const model: Model = {
+        name: 'Llama 3.2 3B',
+        key: 'llama3.2:3b'
       };
-      expect(config.provider).toBe('ollama');
-      expect(config.ollama?.model).toBe('qwen3-coder:30b');
-      expect(config.ollama?.host).toBe('http://localhost:11434');
-    });
-
-    it('should allow ollama configuration without host (uses default)', () => {
-      const config: ProviderConfig = {
-        provider: 'ollama',
-        ollama: {
-          model: 'neural-chat'
-        }
-      };
-      expect(config.provider).toBe('ollama');
-      expect(config.ollama?.model).toBe('neural-chat');
-      expect(config.ollama?.host).toBeUndefined();
+      expect(model.name).toBe('Llama 3.2 3B');
+      expect(model.key).toBe('llama3.2:3b');
     });
   });
 
-  describe('Bedrock configuration', () => {
-    it('should define bedrock provider configuration', () => {
-      const config: ProviderConfig = {
-        provider: 'bedrock',
-        bedrock: {
-          model: 'anthropic.claude-3-sonnet-20240229-v1:0',
-          region: 'us-west-2'
-        }
+  describe('OllamaProviderConfig', () => {
+    it('should define ollama provider with flat structure', () => {
+      const config: OllamaProviderConfig = {
+        name: 'local-ollama',
+        type: 'ollama',
+        models: [
+          { name: 'Llama 3.2 3B', key: 'llama3.2:3b' },
+          { name: 'Llama 3.2 90B', key: 'llama3.2:90b' }
+        ],
+        defaultModel: 'llama3.2:3b',
+        host: 'http://localhost:11434'
       };
-      expect(config.provider).toBe('bedrock');
-      expect(config.bedrock?.model).toBe('anthropic.claude-3-sonnet-20240229-v1:0');
-      expect(config.bedrock?.region).toBe('us-west-2');
+      expect(config.name).toBe('local-ollama');
+      expect(config.type).toBe('ollama');
+      expect(config.host).toBe('http://localhost:11434');
+      expect(config.defaultModel).toBe('llama3.2:3b');
+      expect(config.models).toHaveLength(2);
+      expect(config.models[0].key).toBe('llama3.2:3b');
     });
 
-    it('should allow bedrock configuration without region (uses default)', () => {
-      const config: ProviderConfig = {
-        provider: 'bedrock',
-        bedrock: {
-          model: 'anthropic.claude-3-sonnet-20240229-v1:0'
-        }
+    it('should have optional host field', () => {
+      const config: OllamaProviderConfig = {
+        name: 'local-ollama',
+        type: 'ollama',
+        models: [{ name: 'Llama 3.2', key: 'llama3.2' }],
+        defaultModel: 'llama3.2'
       };
-      expect(config.provider).toBe('bedrock');
-      expect(config.bedrock?.model).toBe('anthropic.claude-3-sonnet-20240229-v1:0');
-      expect(config.bedrock?.region).toBeUndefined();
+      expect(config.host).toBeUndefined();
     });
   });
 
-  describe('Configuration validation', () => {
-    it('should support ollama provider type', () => {
-      const config: ProviderConfig = {
-        provider: 'ollama',
-        ollama: { model: 'test' }
+  describe('BedrockProviderConfig', () => {
+    it('should define bedrock provider with flat structure', () => {
+      const config: BedrockProviderConfig = {
+        name: 'bedrock-provider',
+        type: 'bedrock',
+        models: [
+          { name: 'Claude 3.5 Sonnet', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0' }
+        ],
+        defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        region: 'us-west-2'
       };
-      expect(config.provider).toBe('ollama');
+      expect(config.name).toBe('bedrock-provider');
+      expect(config.type).toBe('bedrock');
+      expect(config.region).toBe('us-west-2');
+      expect(config.defaultModel).toBe('anthropic.claude-3-5-sonnet-20241022-v2:0');
+      expect(config.models).toHaveLength(1);
     });
 
-    it('should support bedrock provider type', () => {
-      const config: ProviderConfig = {
-        provider: 'bedrock',
-        bedrock: { model: 'test' }
+    it('should have optional region field', () => {
+      const config: BedrockProviderConfig = {
+        name: 'bedrock-provider',
+        type: 'bedrock',
+        models: [{ name: 'Claude 3.5 Sonnet', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0' }],
+        defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0'
       };
-      expect(config.provider).toBe('bedrock');
+      expect(config.region).toBeUndefined();
+    });
+  });
+
+  describe('ProviderConfig union type', () => {
+    it('should accept OllamaProviderConfig', () => {
+      const config: ProviderConfig = {
+        name: 'ollama',
+        type: 'ollama',
+        models: [{ name: 'Model', key: 'model' }],
+        defaultModel: 'model'
+      };
+      expect(config.type).toBe('ollama');
+    });
+
+    it('should accept BedrockProviderConfig', () => {
+      const config: ProviderConfig = {
+        name: 'bedrock',
+        type: 'bedrock',
+        models: [{ name: 'Model', key: 'model' }],
+        defaultModel: 'model'
+      };
+      expect(config.type).toBe('bedrock');
+    });
+  });
+
+  describe('ProvidersConfig', () => {
+    it('should contain multiple providers and default', () => {
+      const config: ProvidersConfig = {
+        default: 'local-ollama',
+        providers: [
+          {
+            name: 'local-ollama',
+            type: 'ollama',
+            models: [{ name: 'Llama 3.2', key: 'llama3.2' }],
+            defaultModel: 'llama3.2',
+            host: 'http://localhost:11434'
+          },
+          {
+            name: 'bedrock',
+            type: 'bedrock',
+            models: [{ name: 'Claude 3.5', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0' }],
+            defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+            region: 'us-west-2'
+          }
+        ]
+      };
+      expect(config.default).toBe('local-ollama');
+      expect(config.providers).toHaveLength(2);
+      expect(config.providers[0].type).toBe('ollama');
+      expect(config.providers[1].type).toBe('bedrock');
+    });
+
+    it('should support single provider in config', () => {
+      const config: ProvidersConfig = {
+        default: 'ollama',
+        providers: [
+          {
+            name: 'ollama',
+            type: 'ollama',
+            models: [{ name: 'Model', key: 'model' }],
+            defaultModel: 'model'
+          }
+        ]
+      };
+      expect(config.providers).toHaveLength(1);
     });
   });
 });
