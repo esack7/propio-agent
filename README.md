@@ -1,6 +1,6 @@
-# Ollama Agent
+# Multi-Provider AI Agent
 
-A TypeScript AI agent that interacts with a local Ollama model (qwen3-coder:30b) running in a Docker container.
+A TypeScript AI agent that supports multiple LLM providers (Ollama and Amazon Bedrock) with a unified interface and runtime provider switching capability.
 
 ## Prerequisites
 
@@ -23,6 +23,13 @@ A TypeScript AI agent that interacts with a local Ollama model (qwen3-coder:30b)
    ```bash
    cp .env.example .env
    ```
+
+4. Create the configuration directory and providers file:
+   ```bash
+   mkdir .propio
+   ```
+
+   Create `.propio/providers.json` with your provider configuration (see Configuration section below for details).
 
 ## Running the Agent
 
@@ -91,6 +98,158 @@ You'll see notifications like `[Executing tool: save_session_context]` and `[Too
 
 ## Configuration
 
+The agent is configured using a `.propio/providers.json` file in the project root. The `.propio` directory is gitignored to keep your provider configurations private.
+
+### Provider Configuration File
+
+Create `.propio/providers.json` with the following structure:
+
+```json
+{
+  "default": "local-ollama",
+  "providers": [
+    {
+      "name": "local-ollama",
+      "type": "ollama",
+      "host": "http://localhost:11434",
+      "models": [
+        {
+          "name": "Qwen3 Coder: 30b",
+          "key": "qwen3-coder:30b"
+        },
+        {
+          "name": "GPT OSS: 20b",
+          "key": "gpt-oss:20b"
+        }
+      ],
+      "defaultModel": "qwen3-coder:30b"
+    },
+    {
+      "name": "bedrock",
+      "type": "bedrock",
+      "region": "us-east-1",
+      "models": [
+        {
+          "name": "Claude Sonnet 4.5",
+          "key": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        },
+        {
+          "name": "Claude Haiku 4.5",
+          "key": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+        },
+        {
+          "name": "Claude Opus 4.6",
+          "key": "global.anthropic.claude-opus-4-6-v1"
+        }
+      ],
+      "defaultModel": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    }
+  ]
+}
+```
+
+**Configuration Fields:**
+- `default`: The name of the default provider to use
+- `providers`: Array of provider configurations
+  - `name`: Unique identifier for this provider
+  - `type`: Provider type (`ollama` or `bedrock`)
+  - `host`: (Ollama only) Ollama server URL
+  - `region`: (Bedrock only) AWS region
+  - `models`: Array of available models
+    - `name`: Human-readable model name
+    - `key`: Model identifier used by the provider
+  - `defaultModel`: The default model key to use for this provider
+
+#### Important: Bedrock Model IDs
+
+For AWS Bedrock, you must use **inference profile IDs** instead of direct model IDs:
+
+- ✅ **Correct**: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- ❌ **Incorrect**: `anthropic.claude-sonnet-4-5-20250929-v1:0`
+
+Newer Claude 4.x models require inference profiles to work with on-demand throughput. Using direct model IDs will result in an error: "on-demand throughput isn't supported."
+
+The `global.anthropic.*` prefix provides cross-region inference profiles that support on-demand access. To list available inference profiles for your AWS account:
+
+```bash
+aws bedrock list-inference-profiles --region us-east-1
+```
+
+### Provider Interface
+
+The agent supports multiple LLM providers through a unified interface:
+
+### Ollama Provider (Default)
+
+```javascript
+import { Agent } from './src/agent';
+
+const agent = new Agent({
+  providerConfig: {
+    provider: 'ollama',
+    ollama: {
+      model: 'qwen3-coder:30b',
+      host: 'http://localhost:11434'  // Optional, defaults to localhost:11434
+    }
+  }
+});
+```
+
+### Amazon Bedrock Provider
+
+```javascript
+import { Agent } from './src/agent';
+
+const agent = new Agent({
+  providerConfig: {
+    provider: 'bedrock',
+    bedrock: {
+      model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      region: 'us-east-1'  // Optional, defaults to us-east-1
+    }
+  }
+});
+```
+
+**Note:** Use inference profile IDs (with `global.anthropic.*` or `us.anthropic.*` prefix) for Claude 4.x models. Direct model IDs will not work with on-demand throughput.
+
+### Backward Compatibility
+
+The agent maintains backward compatibility with legacy configuration:
+
+```javascript
+const agent = new Agent({
+  model: 'qwen3-coder:30b',
+  host: 'http://localhost:11434',
+  systemPrompt: 'You are a helpful assistant'
+});
+// This automatically uses Ollama provider with the specified settings
+```
+
+### Runtime Provider Switching
+
+Switch between providers without losing session context:
+
+```javascript
+const agent = new Agent();
+
+// Chat with Ollama
+const response1 = await agent.chat('Hello!');
+
+// Switch to Bedrock
+(agent as any).switchProvider({
+  provider: 'bedrock',
+  bedrock: {
+    model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
+  }
+});
+
+// Continue chatting with Bedrock, session context is preserved
+const response2 = await agent.chat('Continue the conversation...');
+```
+
+### Environment Variables
+
 Copy `.env.example` to `.env` and modify as needed:
 
 ```bash
@@ -106,16 +265,49 @@ cp .env.example .env
 
 ```
 ├── .devcontainer/
-│   └── devcontainer.json  # VS Code dev container config
+│   └── devcontainer.json                # VS Code dev container config
 ├── src/
-│   ├── agent.ts           # Agent class with chat functionality
-│   └── index.ts           # CLI entry point
-├── .env.example           # Sample environment variables
+│   ├── agent.ts                          # Agent class with provider abstraction
+│   ├── index.ts                          # CLI entry point
+│   ├── providers/
+│   │   ├── interface.ts                  # LLMProvider interface definition
+│   │   ├── types.ts                      # Provider-agnostic types and errors
+│   │   ├── config.ts                     # Provider configuration types
+│   │   ├── ollama.ts                     # Ollama provider implementation
+│   │   ├── bedrock.ts                    # Bedrock provider implementation
+│   │   └── __tests__/                    # Provider tests
+│   └── __tests__/                        # Agent tests
+├── .env.example                         # Sample environment variables
 ├── Dockerfile
 ├── docker-compose.yml
+├── jest.config.js                       # Jest testing configuration
 ├── package.json
 └── tsconfig.json
 ```
+
+## Provider Architecture
+
+The agent uses a provider abstraction layer that allows swapping between different LLM backends without changing application code.
+
+### Core Components
+
+- **LLMProvider Interface** (`providers/interface.ts`): Defines the standard interface that all providers must implement
+  - `chat()`: Non-streaming completions
+  - `streamChat()`: Streaming completions
+  - `name`: Provider identifier
+
+- **Provider-Agnostic Types** (`providers/types.ts`):
+  - `ChatMessage`, `ChatTool`, `ChatToolCall`: Unified message and tool representations
+  - `ChatRequest`, `ChatResponse`, `ChatChunk`: Unified request/response formats
+  - Error types: `ProviderError`, `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderModelNotFoundError`
+
+- **Provider Implementations**:
+  - `OllamaProvider`: Uses the Ollama local model server
+  - `BedrockProvider`: Uses Amazon Bedrock with the AWS SDK
+
+### Type Translation
+
+Each provider translates between its native types and the provider-agnostic types, allowing the Agent to work seamlessly with any provider.
 
 ## Linux Users
 

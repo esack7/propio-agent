@@ -1,32 +1,130 @@
-import { Ollama, Message, Tool, ToolCall } from 'ollama';
 import * as fs from 'fs';
 import * as path from 'path';
+import { LLMProvider } from './providers/interface';
+import {
+  ChatMessage,
+  ChatTool,
+  ChatToolCall,
+  ProviderError,
+  ProviderAuthenticationError,
+  ProviderModelNotFoundError
+} from './providers/types';
+import { ProvidersConfig, ProviderConfig } from './providers/config';
+import { createProvider } from './providers/factory';
+import { loadProvidersConfig, resolveProvider, resolveModelKey } from './providers/configLoader';
 
 export class Agent {
-  private ollama: Ollama;
+  private provider: LLMProvider;
   private model: string;
-  private sessionContext: Message[];
+  private sessionContext: ChatMessage[];
   private systemPrompt: string;
   private sessionContextFilePath: string;
-  private tools: Tool[];
+  private tools: ChatTool[];
+  private providersConfig: ProvidersConfig;
 
+  /**
+   * Initialize an Agent with multi-provider configuration.
+   *
+   * The Agent orchestrates interactions with an LLM provider. It maintains session context,
+   * manages tools, and handles both regular and streaming chat interactions. Provider instances
+   * are created using the factory pattern, allowing new providers to be supported without
+   * modifying the Agent class.
+   *
+   * @param options - Configuration options for the agent
+   * @param options.providersConfig - Multi-provider configuration (ProvidersConfig object or file path string).
+   *                                  Required - will throw an error if not provided.
+   * @param options.providerName - Optional provider name to use. If not provided, uses config.default
+   * @param options.modelKey - Optional model key to use. If not provided, uses provider.defaultModel
+   * @param options.systemPrompt - System prompt to use in all LLM requests. Defaults to a generic helpful assistant prompt.
+   * @param options.sessionContextFilePath - Path to persist session context. Defaults to './session_context.txt'.
+   *
+   * @example
+   * // Use default provider from config file
+   * const agent = new Agent({
+   *   providersConfig: './providers.json'
+   * });
+   *
+   * @example
+   * // Use specific provider and model with inline config
+   * const agent = new Agent({
+   *   providersConfig: {
+   *     default: 'ollama',
+   *     providers: [
+   *       {
+   *         name: 'ollama',
+   *         type: 'ollama',
+   *         models: [{ name: 'Llama', key: 'llama3.2' }],
+   *         defaultModel: 'llama3.2'
+   *       }
+   *     ]
+   *   },
+   *   providerName: 'ollama',
+   *   modelKey: 'llama3.2',
+   *   systemPrompt: 'You are a helpful coding assistant.'
+   * });
+   */
   constructor(options: {
-    model?: string;
-    host?: string;
+    providersConfig: ProvidersConfig | string;
+    providerName?: string;
+    modelKey?: string;
     systemPrompt?: string;
     sessionContextFilePath?: string;
-  } = {}) {
-    this.model = options.model || 'qwen3-coder:30b';
-    this.ollama = new Ollama({
-      host: options.host || process.env.OLLAMA_HOST || 'http://localhost:11434'
-    });
+  } = {} as any) {
+    // Validate required providersConfig
+    if (!options.providersConfig) {
+      throw new Error('Provider configuration is required. Please provide a providersConfig option with provider settings.');
+    }
+
     this.systemPrompt = options.systemPrompt || 'You are a helpful AI assistant.';
-    this.sessionContext = [];
     this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
+
+    // Load configuration from file if string path provided, otherwise use directly
+    let config: ProvidersConfig;
+    if (typeof options.providersConfig === 'string') {
+      config = loadProvidersConfig(options.providersConfig);
+    } else {
+      config = options.providersConfig;
+    }
+
+    this.providersConfig = config;
+
+    // Resolve provider from config
+    const resolvedProvider = resolveProvider(config, options.providerName);
+
+    // Resolve model key from provider
+    const resolvedModelKey = resolveModelKey(resolvedProvider, options.modelKey);
+
+    // Create provider instance using factory
+    this.provider = createProvider(resolvedProvider, resolvedModelKey);
+    this.model = resolvedModelKey;
+
+    this.sessionContext = [];
     this.tools = this.initializeTools();
   }
 
-  private initializeTools(): Tool[] {
+  /**
+   * Switch to a different provider at runtime
+   *
+   * @param providerName - Name of provider to switch to (from providersConfig)
+   * @param modelKey - Optional model key to use in the new provider. Uses provider.defaultModel if not specified.
+   * @throws Error if provider name or model key is not found in configuration
+   */
+  private switchProvider(providerName: string, modelKey?: string): void {
+    // Resolve and validate provider from stored config
+    const resolvedProvider = resolveProvider(this.providersConfig, providerName);
+
+    // Resolve and validate model key
+    const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
+
+    // Create new provider instance
+    const newProvider = createProvider(resolvedProvider, resolvedModelKey);
+
+    // Update provider and model
+    this.provider = newProvider;
+    this.model = resolvedModelKey;
+  }
+
+  private initializeTools(): ChatTool[] {
     return [
       {
         type: 'function',
@@ -100,25 +198,24 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const messages: Message[] = [
+        const messages: ChatMessage[] = [
           { role: 'system', content: this.systemPrompt },
           ...this.sessionContext
         ];
 
-        const response = await this.ollama.chat({
+        const response = await this.provider.chat({
           model: this.model,
           messages: messages,
-          stream: false,
           tools: this.tools
         });
 
         const assistantMessage = response.message.content;
-        const toolCalls = response.message.tool_calls;
+        const toolCalls = response.message.toolCalls;
 
         this.sessionContext.push({
           role: 'assistant',
           content: assistantMessage,
-          tool_calls: toolCalls
+          toolCalls: toolCalls
         });
 
         finalResponse = assistantMessage;
@@ -131,7 +228,8 @@ export class Agent {
 
             this.sessionContext.push({
               role: 'tool',
-              content: result
+              content: result,
+              toolCallId: toolCall.id // Pass through the tool call ID for providers that need it
             });
           }
           // Continue loop to let agent process tool results
@@ -143,8 +241,7 @@ export class Agent {
 
       return finalResponse;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(`Failed to get response from Ollama: ${errorMessage}`);
+      throw this.handleProviderError(error);
     }
   }
 
@@ -163,36 +260,35 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const messages: Message[] = [
+        const messages: ChatMessage[] = [
           { role: 'system', content: this.systemPrompt },
           ...this.sessionContext
         ];
 
-        const response = await this.ollama.chat({
+        let fullResponse = '';
+        let toolCalls: ChatToolCall[] | undefined;
+
+        for await (const chunk of this.provider.streamChat({
           model: this.model,
           messages: messages,
-          stream: true,
           tools: this.tools
-        });
-
-        let fullResponse = '';
-        let toolCalls: ToolCall[] | undefined;
-
-        for await (const part of response) {
-          const token = part.message.content;
+        })) {
+          const token = chunk.delta;
           fullResponse += token;
-          onToken(token);
+          if (token) {
+            onToken(token);
+          }
 
-          // Capture tool calls from the final part
-          if (part.message.tool_calls) {
-            toolCalls = part.message.tool_calls;
+          // Capture tool calls from chunks
+          if (chunk.toolCalls) {
+            toolCalls = chunk.toolCalls;
           }
         }
 
         this.sessionContext.push({
           role: 'assistant',
           content: fullResponse,
-          tool_calls: toolCalls
+          toolCalls: toolCalls
         });
 
         finalResponse = fullResponse;
@@ -209,7 +305,8 @@ export class Agent {
 
             this.sessionContext.push({
               role: 'tool',
-              content: result
+              content: result,
+              toolCallId: toolCall.id // Pass through the tool call ID for providers that need it
             });
 
             onToken(`[Tool result: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}]\n`);
@@ -224,8 +321,7 @@ export class Agent {
 
       return finalResponse;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(`Failed to get response from Ollama: ${errorMessage}`);
+      throw this.handleProviderError(error);
     }
   }
 
@@ -233,7 +329,7 @@ export class Agent {
     this.sessionContext = [];
   }
 
-  getContext(): Message[] {
+  getContext(): ChatMessage[] {
     return [...this.sessionContext];
   }
 
@@ -241,7 +337,7 @@ export class Agent {
     this.systemPrompt = prompt;
   }
 
-  getTools(): Tool[] {
+  getTools(): ChatTool[] {
     return [...this.tools];
   }
 
@@ -292,5 +388,29 @@ export class Agent {
     } catch (error) {
       return `Error executing tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
+  }
+
+  /**
+   * Handle and translate provider errors to meaningful messages
+   */
+  private handleProviderError(error: any): Error {
+    const providerName = this.provider.name;
+
+    if (error instanceof ProviderAuthenticationError) {
+      return new Error(`Provider ${providerName} authentication failed: ${error.message}`);
+    }
+
+    if (error instanceof ProviderModelNotFoundError) {
+      return new Error(
+        `Model ${error.modelName} not found in provider ${providerName}: ${error.message}`
+      );
+    }
+
+    if (error instanceof ProviderError) {
+      return new Error(`Provider ${providerName} error: ${error.message}`);
+    }
+
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return new Error(`Failed to get response from ${providerName}: ${errorMessage}`);
   }
 }

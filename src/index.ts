@@ -1,10 +1,13 @@
 import * as readline from 'readline';
+import * as path from 'path';
 import { Agent } from './agent';
 
 async function main() {
+  // Load configuration from .propio/providers.json
+  const configPath = path.join(__dirname, '..', '.propio', 'providers.json');
+
   const agent = new Agent({
-    model: process.env.OLLAMA_MODEL || 'qwen3-coder:30b',
-    host: process.env.OLLAMA_HOST || 'http://localhost:11434',
+    providersConfig: configPath,
     systemPrompt: `You are a helpful AI coding assistant with access to tools. Provide clear and concise answers.
 
 You have access to the following tools:
