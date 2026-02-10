@@ -20,7 +20,7 @@ export interface BaseProviderConfig {
  * Ollama provider configuration with flat structure
  */
 export interface OllamaProviderConfig extends BaseProviderConfig {
-  type: 'ollama';
+  type: "ollama";
   host?: string;
 }
 
@@ -28,7 +28,7 @@ export interface OllamaProviderConfig extends BaseProviderConfig {
  * Bedrock provider configuration with flat structure
  */
 export interface BedrockProviderConfig extends BaseProviderConfig {
-  type: 'bedrock';
+  type: "bedrock";
   region?: string;
 }
 
@@ -36,7 +36,7 @@ export interface BedrockProviderConfig extends BaseProviderConfig {
  * OpenRouter provider configuration with flat structure
  */
 export interface OpenRouterProviderConfig extends BaseProviderConfig {
-  type: 'openrouter';
+  type: "openrouter";
   apiKey?: string;
   httpReferer?: string;
   xTitle?: string;

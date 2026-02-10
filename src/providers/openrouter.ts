@@ -1,4 +1,4 @@
-import { LLMProvider } from './interface';
+import { LLMProvider } from "./interface";
 import {
   ChatMessage,
   ChatRequest,
@@ -9,18 +9,18 @@ import {
   ProviderError,
   ProviderAuthenticationError,
   ProviderRateLimitError,
-  ProviderModelNotFoundError
-} from './types';
+  ProviderModelNotFoundError,
+} from "./types";
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /** OpenAI-compatible message format for API request */
 interface OpenAIMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool';
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   tool_calls?: Array<{
     id: string;
-    type: 'function';
+    type: "function";
     function: { name: string; arguments: string };
   }>;
   tool_call_id?: string;
@@ -28,7 +28,7 @@ interface OpenAIMessage {
 
 /** OpenAI-compatible tool format */
 interface OpenAITool {
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     description: string;
@@ -40,7 +40,7 @@ interface OpenAITool {
  * OpenRouter implementation of LLMProvider using native fetch and OpenAI-compatible API.
  */
 export class OpenRouterProvider implements LLMProvider {
-  readonly name = 'openrouter';
+  readonly name = "openrouter";
   private readonly model: string;
   private readonly apiKey: string;
   private readonly httpReferer?: string;
@@ -52,10 +52,11 @@ export class OpenRouterProvider implements LLMProvider {
     httpReferer?: string;
     xTitle?: string;
   }) {
-    const apiKey =
-      options.apiKey ?? process.env.OPENROUTER_API_KEY ?? '';
-    if (!apiKey || apiKey.trim() === '') {
-      throw new ProviderAuthenticationError('OpenRouter API key is required. Set OPENROUTER_API_KEY or pass apiKey in options.');
+    const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
+    if (!apiKey || apiKey.trim() === "") {
+      throw new ProviderAuthenticationError(
+        "OpenRouter API key is required. Set OPENROUTER_API_KEY or pass apiKey in options.",
+      );
     }
     this.model = options.model;
     this.apiKey = apiKey;
@@ -64,21 +65,22 @@ export class OpenRouterProvider implements LLMProvider {
   }
 
   private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
-    const role = msg.role as OpenAIMessage['role'];
-    const out: OpenAIMessage = { role, content: msg.content ?? '' };
+    const role = msg.role as OpenAIMessage["role"];
+    const out: OpenAIMessage = { role, content: msg.content ?? "" };
     if (msg.toolCalls && msg.toolCalls.length > 0) {
-      out.tool_calls = msg.toolCalls.map(tc => ({
+      out.tool_calls = msg.toolCalls.map((tc) => ({
         id: tc.id ?? `call_${tc.function.name}_${Date.now()}`,
-        type: 'function' as const,
+        type: "function" as const,
         function: {
           name: tc.function.name,
-          arguments: typeof tc.function.arguments === 'string'
-            ? tc.function.arguments
-            : JSON.stringify(tc.function.arguments ?? {})
-        }
+          arguments:
+            typeof tc.function.arguments === "string"
+              ? tc.function.arguments
+              : JSON.stringify(tc.function.arguments ?? {}),
+        },
       }));
     }
-    if (msg.role === 'tool' && msg.toolCallId) {
+    if (msg.role === "tool" && msg.toolCallId) {
       out.tool_call_id = msg.toolCallId;
     }
     return out;
@@ -93,7 +95,7 @@ export class OpenRouterProvider implements LLMProvider {
       function?: { name?: string; arguments?: string };
     }>;
   }): ChatMessage {
-    const content = msg.content ?? '';
+    const content = msg.content ?? "";
     const toolCalls: ChatToolCall[] = [];
     if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
@@ -101,7 +103,10 @@ export class OpenRouterProvider implements LLMProvider {
         let args: Record<string, unknown> = {};
         if (fn?.arguments) {
           try {
-            args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments;
+            args =
+              typeof fn.arguments === "string"
+                ? JSON.parse(fn.arguments)
+                : fn.arguments;
           } catch {
             args = { raw: fn.arguments };
           }
@@ -109,13 +114,13 @@ export class OpenRouterProvider implements LLMProvider {
         toolCalls.push({
           id: tc.id,
           function: {
-            name: fn?.name ?? '',
-            arguments: args as Record<string, any>
-          }
+            name: fn?.name ?? "",
+            arguments: args as Record<string, any>,
+          },
         });
       }
     }
-    const chatMsg: ChatMessage = { role: 'assistant', content };
+    const chatMsg: ChatMessage = { role: "assistant", content };
     if (toolCalls.length > 0) {
       chatMsg.toolCalls = toolCalls;
     }
@@ -124,41 +129,49 @@ export class OpenRouterProvider implements LLMProvider {
 
   private chatToolToOpenAITool(tool: ChatTool): OpenAITool {
     return {
-      type: 'function',
+      type: "function",
       function: {
         name: tool.function.name,
         description: tool.function.description,
-        parameters: (tool.function.parameters ?? { type: 'object', properties: {} }) as object
-      }
+        parameters: (tool.function.parameters ?? {
+          type: "object",
+          properties: {},
+        }) as object,
+      },
     };
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
-      const messages = request.messages.map(m => this.chatMessageToOpenAIMessage(m));
+      const messages = request.messages.map((m) =>
+        this.chatMessageToOpenAIMessage(m),
+      );
       const body: Record<string, unknown> = {
         model: request.model || this.model,
         messages,
-        stream: false
+        stream: false,
       };
       if (request.tools && request.tools.length > 0) {
-        body.tools = request.tools.map(t => this.chatToolToOpenAITool(t));
+        body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
       }
       const headers: Record<string, string> = {
         Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
       };
-      if (this.httpReferer) headers['HTTP-Referer'] = this.httpReferer;
-      if (this.xTitle) headers['X-Title'] = this.xTitle;
+      if (this.httpReferer) headers["HTTP-Referer"] = this.httpReferer;
+      if (this.xTitle) headers["X-Title"] = this.xTitle;
 
       const response = await fetch(OPENROUTER_API_URL, {
-        method: 'POST',
+        method: "POST",
         headers,
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
-        throw this.translateError(new Error(`HTTP ${response.status}`), response);
+        throw this.translateError(
+          new Error(`HTTP ${response.status}`),
+          response,
+        );
       }
 
       const data = (await response.json()) as {
@@ -177,14 +190,18 @@ export class OpenRouterProvider implements LLMProvider {
       };
       const choice = data.choices?.[0];
       if (!choice?.message) {
-        throw this.translateError(new Error('No choices[0].message in response'));
+        throw this.translateError(
+          new Error("No choices[0].message in response"),
+        );
       }
       const message = this.openAIMessageToChatMessage(choice.message);
-      const finishReason = choice.finish_reason ?? 'stop';
-      const stopReason: ChatResponse['stopReason'] =
-        finishReason === 'tool_calls' ? 'tool_use'
-        : finishReason === 'length' ? 'max_tokens'
-        : 'end_turn';
+      const finishReason = choice.finish_reason ?? "stop";
+      const stopReason: ChatResponse["stopReason"] =
+        finishReason === "tool_calls"
+          ? "tool_use"
+          : finishReason === "length"
+            ? "max_tokens"
+            : "end_turn";
       return { message, stopReason };
     } catch (error) {
       if (error instanceof ProviderError) throw error;
@@ -194,38 +211,43 @@ export class OpenRouterProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
-      const messages = request.messages.map(m => this.chatMessageToOpenAIMessage(m));
+      const messages = request.messages.map((m) =>
+        this.chatMessageToOpenAIMessage(m),
+      );
       const body: Record<string, unknown> = {
         model: request.model || this.model,
         messages,
-        stream: true
+        stream: true,
       };
       if (request.tools && request.tools.length > 0) {
-        body.tools = request.tools.map(t => this.chatToolToOpenAITool(t));
+        body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
       }
       const headers: Record<string, string> = {
         Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
       };
-      if (this.httpReferer) headers['HTTP-Referer'] = this.httpReferer;
-      if (this.xTitle) headers['X-Title'] = this.xTitle;
+      if (this.httpReferer) headers["HTTP-Referer"] = this.httpReferer;
+      if (this.xTitle) headers["X-Title"] = this.xTitle;
 
       const response = await fetch(OPENROUTER_API_URL, {
-        method: 'POST',
+        method: "POST",
         headers,
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
-        throw this.translateError(new Error(`HTTP ${response.status}`), response);
+        throw this.translateError(
+          new Error(`HTTP ${response.status}`),
+          response,
+        );
       }
 
       const reader = response.body?.getReader();
       if (!reader) {
-        throw this.translateError(new Error('No response body'));
+        throw this.translateError(new Error("No response body"));
       }
       const decoder = new TextDecoder();
-      let buffer = '';
+      let buffer = "";
 
       const toolCallsByIndex = new Map<
         number,
@@ -236,17 +258,24 @@ export class OpenRouterProvider implements LLMProvider {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
+          if (!line.startsWith("data: ")) continue;
           const data = line.slice(6).trim();
-          if (data === '[DONE]') return;
+          if (data === "[DONE]") return;
 
           let chunk: {
             choices?: Array<{
-              delta?: { content?: string; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> };
+              delta?: {
+                content?: string;
+                tool_calls?: Array<{
+                  index?: number;
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
               finish_reason?: string;
             }>;
           };
@@ -259,7 +288,7 @@ export class OpenRouterProvider implements LLMProvider {
           if (!choice?.delta) continue;
 
           const delta = choice.delta;
-          if (delta.content != null && delta.content !== '') {
+          if (delta.content != null && delta.content !== "") {
             yield { delta: delta.content };
           }
 
@@ -268,16 +297,17 @@ export class OpenRouterProvider implements LLMProvider {
               const idx = tc.index ?? 0;
               let acc = toolCallsByIndex.get(idx);
               if (!acc) {
-                acc = { name: '', argsString: '' };
+                acc = { name: "", argsString: "" };
                 toolCallsByIndex.set(idx, acc);
               }
               if (tc.id) acc.id = tc.id;
               if (tc.function?.name) acc.name += tc.function.name;
-              if (tc.function?.arguments != null) acc.argsString += tc.function.arguments;
+              if (tc.function?.arguments != null)
+                acc.argsString += tc.function.arguments;
             }
           }
 
-          if (choice.finish_reason === 'tool_calls') {
+          if (choice.finish_reason === "tool_calls") {
             const toolCalls: ChatToolCall[] = [];
             const indices = [...toolCallsByIndex.keys()].sort((a, b) => a - b);
             for (const i of indices) {
@@ -292,11 +322,11 @@ export class OpenRouterProvider implements LLMProvider {
               }
               toolCalls.push({
                 id: acc.id,
-                function: { name: acc.name || '', arguments: args }
+                function: { name: acc.name || "", arguments: args },
               });
             }
             if (toolCalls.length > 0) {
-              yield { delta: '', toolCalls };
+              yield { delta: "", toolCalls };
             }
           }
         }
@@ -308,38 +338,58 @@ export class OpenRouterProvider implements LLMProvider {
   }
 
   private translateError(error: unknown, response?: Response): ProviderError {
-    const originalError = error instanceof Error ? error : new Error(String(error));
+    const originalError =
+      error instanceof Error ? error : new Error(String(error));
     if (response) {
       if (response.status === 401) {
-        return new ProviderAuthenticationError('Invalid OpenRouter API key', originalError);
+        return new ProviderAuthenticationError(
+          "Invalid OpenRouter API key",
+          originalError,
+        );
       }
       if (response.status === 429) {
-        const retryAfter = response.headers.get('retry-after');
-        const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : undefined;
+        const retryAfter = response.headers.get("retry-after");
+        const retryAfterSeconds = retryAfter
+          ? parseInt(retryAfter, 10)
+          : undefined;
         return new ProviderRateLimitError(
-          'OpenRouter rate limit exceeded',
+          "OpenRouter rate limit exceeded",
           Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
-          originalError
+          originalError,
         );
       }
       if (response.status === 404) {
         return new ProviderModelNotFoundError(
           this.model,
           `Model not found: ${this.model}`,
-          originalError
+          originalError,
         );
       }
       if (response.status === 402) {
-        return new ProviderError('Insufficient OpenRouter credits', originalError);
+        return new ProviderError(
+          "Insufficient OpenRouter credits",
+          originalError,
+        );
       }
       if (response.status >= 500 && response.status < 600) {
-        return new ProviderError('OpenRouter service error', originalError);
+        return new ProviderError("OpenRouter service error", originalError);
       }
     }
     const msg = originalError.message;
-    if (msg && (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed'))) {
-      return new ProviderError('Failed to connect to OpenRouter API', originalError);
+    if (
+      msg &&
+      (msg.includes("ECONNREFUSED") ||
+        msg.includes("ETIMEDOUT") ||
+        msg.includes("fetch failed"))
+    ) {
+      return new ProviderError(
+        "Failed to connect to OpenRouter API",
+        originalError,
+      );
     }
-    return new ProviderError(originalError.message || 'OpenRouter request failed', originalError);
+    return new ProviderError(
+      originalError.message || "OpenRouter request failed",
+      originalError,
+    );
   }
 }

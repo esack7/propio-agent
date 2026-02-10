@@ -3,6 +3,7 @@
 The current `Agent` class is tightly coupled to Ollama, with direct imports and instantiation of the Ollama client. The agent uses Ollama-specific types (`Message`, `Tool`, `ToolCall`) and makes direct calls to `ollama.chat()` for both streaming and non-streaming interactions.
 
 Current constraints:
+
 - TypeScript/Node.js codebase
 - Agent supports both streaming and non-streaming chat
 - Agent maintains session context (message history)
@@ -12,6 +13,7 @@ Current constraints:
 ## Goals / Non-Goals
 
 **Goals:**
+
 - Create a clean provider abstraction that decouples the agent from any specific LLM service
 - Support both Ollama and Amazon Bedrock as providers
 - Enable runtime provider switching without restarting the agent
@@ -19,6 +21,7 @@ Current constraints:
 - Use AWS SDK for JavaScript for Bedrock integration (not boto3 or Python-based tools)
 
 **Non-Goals:**
+
 - Supporting providers beyond Ollama and Bedrock in this phase
 - Changing the external API of the Agent class
 - Modifying the tool execution system's interface
@@ -31,15 +34,18 @@ Current constraints:
 **Decision**: Use a TypeScript interface with abstract methods for common LLM operations.
 
 **Rationale**: TypeScript interfaces provide compile-time type safety and clear contracts. The interface will define:
+
 - `chat()`: Non-streaming completion
 - `streamChat()`: Streaming completion
 - Provider-agnostic types for messages, tools, and responses
 
 **Alternatives considered**:
+
 - Abstract class: Rejected because we don't need shared implementation logic
 - Factory pattern only: Rejected because we need clear type contracts
 
 **Interface structure**:
+
 ```typescript
 interface LLMProvider {
   chat(request: ChatRequest): Promise<ChatResponse>;
@@ -55,6 +61,7 @@ interface LLMProvider {
 **Rationale**: This insulates the agent from provider-specific type systems. Each provider handles translation between our common types and their API types.
 
 **Alternatives considered**:
+
 - Use Ollama types as standard: Rejected because it creates implicit coupling
 - Use OpenAI types as standard: Rejected because neither provider is "standard"
 
@@ -66,7 +73,7 @@ interface LLMProvider {
 
 ```typescript
 type ProviderConfig = {
-  provider: 'ollama' | 'bedrock';
+  provider: "ollama" | "bedrock";
   ollama?: {
     host?: string;
     model: string;
@@ -79,6 +86,7 @@ type ProviderConfig = {
 ```
 
 **Alternatives considered**:
+
 - Environment variables only: Rejected because runtime switching would be difficult
 - Separate config files per provider: Rejected as overly complex for current needs
 
@@ -89,6 +97,7 @@ type ProviderConfig = {
 **Rationale**: Enables experimentation and comparison between providers without losing conversation state.
 
 **Alternatives considered**:
+
 - Multiple provider instances: Rejected because it complicates context management
 - Restart required: Rejected as it provides poor UX
 
@@ -99,12 +108,14 @@ type ProviderConfig = {
 **Rationale**: Official AWS SDK for JavaScript provides native TypeScript support, proper authentication, and follows AWS best practices.
 
 **Alternatives considered**:
+
 - aws-cli wrapper: Rejected due to added complexity of subprocess management and JSON parsing
 - Direct HTTP calls: Rejected due to complexity of AWS signature v4 signing
 
 ### 6. File Structure
 
 **Decision**:
+
 ```
 src/
 ├── providers/
@@ -118,6 +129,7 @@ src/
 **Rationale**: Clean separation of concerns, easy to add new providers.
 
 **Alternatives considered**:
+
 - Single file: Rejected as it would be too large
 - Separate directory per provider: Rejected as premature for 2 providers
 

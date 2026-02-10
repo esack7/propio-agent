@@ -10,21 +10,25 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedro
 ## Setup
 
 1. Pull the Ollama model:
+
    ```bash
    ollama pull qwen3-coder:30b
    ```
 
 2. Ensure Ollama is running:
+
    ```bash
    ollama serve
    ```
 
 3. Create your environment file:
+
    ```bash
    cp .env.example .env
    ```
 
 4. Create the configuration directory and providers file:
+
    ```bash
    mkdir .propio
    ```
@@ -68,6 +72,7 @@ npm run dev
 Once running, type your messages and press Enter. The agent maintains session context across messages.
 
 **Commands:**
+
 - `/clear` - Clear session context
 - `/context` - Show session context
 - `/exit` - Quit the agent
@@ -75,6 +80,7 @@ Once running, type your messages and press Enter. The agent maintains session co
 ## Tool Calling & Agentic Loop
 
 The agent supports tool calling with an agentic loop, allowing it to:
+
 1. Call tools to perform actions
 2. See the results of those tool calls
 3. Decide whether to call more tools or respond to the user
@@ -89,6 +95,7 @@ The agent supports tool calling with an agentic loop, allowing it to:
 ### How it Works
 
 When you send a message, the agent can:
+
 - Call one or more tools
 - Receive and process the tool results
 - Make additional tool calls based on the results
@@ -149,6 +156,7 @@ Create `.propio/providers.json` with the following structure:
 ```
 
 **Configuration Fields:**
+
 - `default`: The name of the default provider to use
 - `providers`: Array of provider configurations
   - `name`: Unique identifier for this provider
@@ -185,32 +193,32 @@ The agent supports multiple LLM providers through a unified interface:
 ### Ollama Provider (Default)
 
 ```javascript
-import { Agent } from './src/agent';
+import { Agent } from "./src/agent";
 
 const agent = new Agent({
   providerConfig: {
-    provider: 'ollama',
+    provider: "ollama",
     ollama: {
-      model: 'qwen3-coder:30b',
-      host: 'http://localhost:11434'  // Optional, defaults to localhost:11434
-    }
-  }
+      model: "qwen3-coder:30b",
+      host: "http://localhost:11434", // Optional, defaults to localhost:11434
+    },
+  },
 });
 ```
 
 ### Amazon Bedrock Provider
 
 ```javascript
-import { Agent } from './src/agent';
+import { Agent } from "./src/agent";
 
 const agent = new Agent({
   providerConfig: {
-    provider: 'bedrock',
+    provider: "bedrock",
     bedrock: {
-      model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
-      region: 'us-east-1'  // Optional, defaults to us-east-1
-    }
-  }
+      model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      region: "us-east-1", // Optional, defaults to us-east-1
+    },
+  },
 });
 ```
 
@@ -256,9 +264,9 @@ The agent maintains backward compatibility with legacy configuration:
 
 ```javascript
 const agent = new Agent({
-  model: 'qwen3-coder:30b',
-  host: 'http://localhost:11434',
-  systemPrompt: 'You are a helpful assistant'
+  model: "qwen3-coder:30b",
+  host: "http://localhost:11434",
+  systemPrompt: "You are a helpful assistant",
 });
 // This automatically uses Ollama provider with the specified settings
 ```
@@ -293,10 +301,10 @@ Copy `.env.example` to `.env` and modify as needed:
 cp .env.example .env
 ```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen3-coder:30b` | Model to use |
+| Variable       | Default                  | Description       |
+| -------------- | ------------------------ | ----------------- |
+| `OLLAMA_HOST`  | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_MODEL` | `qwen3-coder:30b`        | Model to use      |
 
 ## Project Structure
 

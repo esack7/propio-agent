@@ -48,6 +48,7 @@ When tests already exist and are failing:
    - Run tests to verify nothing broke
 
 **CRITICAL SCOPE BOUNDARY**: In this scenario, ONLY fix code to make tests pass.
+
 - **DO NOT fix linting errors** (no-console, no-unused-vars, etc.) unless they cause test failures
 - **DO NOT remove console.log statements** that are not breaking tests
 - **DO NOT fix unused variables** unless they prevent tests from passing
@@ -56,11 +57,13 @@ When tests already exist and are failing:
 ## Testing Infrastructure
 
 **Use Jest for all TypeScript/Node.js testing**:
+
 - Unit tests for classes and functions
 - Integration tests for agent interactions and tool execution
 - Mock external dependencies (Ollama API calls, file system operations)
 
 **Test file structure**:
+
 - Place tests in `src/__tests__/` or adjacent to source files as `*.test.ts`
 - Name pattern: `[filename].test.ts`
 - Use descriptive test suites with `describe()` blocks
@@ -69,6 +72,7 @@ When tests already exist and are failing:
 ## When to Set Up Testing (If Not Present)
 
 If Jest is not configured:
+
 1. Install dependencies: `npm install --save-dev jest @types/jest ts-jest`
 2. Create `jest.config.js` configuration
 3. Add test scripts to `package.json`

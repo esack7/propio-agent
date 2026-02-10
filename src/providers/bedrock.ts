@@ -1,9 +1,9 @@
 import {
   BedrockRuntimeClient,
   ConverseCommand,
-  ConverseStreamCommand
-} from '@aws-sdk/client-bedrock-runtime';
-import { LLMProvider } from './interface';
+  ConverseStreamCommand,
+} from "@aws-sdk/client-bedrock-runtime";
+import { LLMProvider } from "./interface";
 import {
   ChatMessage,
   ChatRequest,
@@ -14,19 +14,19 @@ import {
   ProviderError,
   ProviderAuthenticationError,
   ProviderRateLimitError,
-  ProviderModelNotFoundError
-} from './types';
+  ProviderModelNotFoundError,
+} from "./types";
 
 /**
  * Bedrock implementation of LLMProvider
  */
 export class BedrockProvider implements LLMProvider {
-  readonly name = 'bedrock';
+  readonly name = "bedrock";
   private client: BedrockRuntimeClient;
   private model: string;
 
   constructor(options: { model: string; region?: string }) {
-    const region = options.region || 'us-east-1';
+    const region = options.region || "us-east-1";
     this.client = new BedrockRuntimeClient({ region });
     this.model = options.model;
   }
@@ -34,21 +34,22 @@ export class BedrockProvider implements LLMProvider {
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
       // Extract system message if present
-      const systemMessage = request.messages.find(m => m.role === 'system');
-      const otherMessages = request.messages.filter(m => m.role !== 'system');
+      const systemMessage = request.messages.find((m) => m.role === "system");
+      const otherMessages = request.messages.filter((m) => m.role !== "system");
 
       // Convert messages to Bedrock format
-      const messages = otherMessages.map(msg =>
-        this.chatMessageToBedrockMessage(msg)
+      const messages = otherMessages.map((msg) =>
+        this.chatMessageToBedrockMessage(msg),
       );
 
       // Convert tools to Bedrock format if provided
       const toolConfig = request.tools
         ? {
-            tools: request.tools.map(tool => this.chatToolToBedrockTool(tool))
+            tools: request.tools.map((tool) =>
+              this.chatToolToBedrockTool(tool),
+            ),
           }
         : undefined;
-
 
       // System message needs to be converted to SystemContentBlock format
       const systemContent = systemMessage
@@ -59,14 +60,14 @@ export class BedrockProvider implements LLMProvider {
         modelId: request.model || this.model,
         messages: messages as any,
         system: systemContent as any,
-        toolConfig: toolConfig as any
+        toolConfig: toolConfig as any,
       });
 
       const response = await this.client.send(command);
 
       const message = response.output?.message;
       if (!message) {
-        throw new Error('No message in response');
+        throw new Error("No message in response");
       }
 
       const chatMessage = this.bedrockMessageToChatMessage(message);
@@ -74,7 +75,7 @@ export class BedrockProvider implements LLMProvider {
 
       return {
         message: chatMessage,
-        stopReason
+        stopReason,
       };
     } catch (error) {
       throw this.translateError(error);
@@ -84,18 +85,20 @@ export class BedrockProvider implements LLMProvider {
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
       // Extract system message if present
-      const systemMessage = request.messages.find(m => m.role === 'system');
-      const otherMessages = request.messages.filter(m => m.role !== 'system');
+      const systemMessage = request.messages.find((m) => m.role === "system");
+      const otherMessages = request.messages.filter((m) => m.role !== "system");
 
       // Convert messages to Bedrock format
-      const messages = otherMessages.map(msg =>
-        this.chatMessageToBedrockMessage(msg)
+      const messages = otherMessages.map((msg) =>
+        this.chatMessageToBedrockMessage(msg),
       );
 
       // Convert tools to Bedrock format if provided
       const toolConfig = request.tools
         ? {
-            tools: request.tools.map(tool => this.chatToolToBedrockTool(tool))
+            tools: request.tools.map((tool) =>
+              this.chatToolToBedrockTool(tool),
+            ),
           }
         : undefined;
 
@@ -108,24 +111,28 @@ export class BedrockProvider implements LLMProvider {
         modelId: request.model || this.model,
         messages: messages as any,
         system: systemContent as any,
-        toolConfig: toolConfig as any
+        toolConfig: toolConfig as any,
       });
 
       const response = await this.client.send(command);
       let stream = (response as any).stream || (response as any).output;
 
       // Handle case where response itself is an async iterable
-      if (!stream && typeof response === 'object' && Symbol.asyncIterator in response) {
+      if (
+        !stream &&
+        typeof response === "object" &&
+        Symbol.asyncIterator in response
+      ) {
         stream = response;
       }
 
       if (!stream) {
-        throw new Error('No stream output');
+        throw new Error("No stream output");
       }
 
       let toolCalls: ChatToolCall[] = [];
       let currentToolCall: Partial<ChatToolCall> | null = null;
-      let currentToolInput = '';
+      let currentToolInput = "";
 
       for await (const event of stream as any) {
         if (event.contentBlockDelta) {
@@ -153,10 +160,10 @@ export class BedrockProvider implements LLMProvider {
               id: toolUse.toolUseId, // Capture toolUseId for later reference
               function: {
                 name: toolUse.name,
-                arguments: {}
-              }
+                arguments: {},
+              },
             };
-            currentToolInput = '';
+            currentToolInput = "";
           }
         }
 
@@ -170,7 +177,7 @@ export class BedrockProvider implements LLMProvider {
             }
             toolCalls.push(currentToolCall as ChatToolCall);
             currentToolCall = null;
-            currentToolInput = '';
+            currentToolInput = "";
           }
         }
       }
@@ -178,8 +185,8 @@ export class BedrockProvider implements LLMProvider {
       // Yield final chunk with tool calls if any
       if (toolCalls.length > 0) {
         yield {
-          delta: '',
-          toolCalls
+          delta: "",
+          toolCalls,
         };
       }
     } catch (error) {
@@ -191,7 +198,7 @@ export class BedrockProvider implements LLMProvider {
    * Check if a message is a system message
    */
   private isSystemMessage(msg: ChatMessage): boolean {
-    return msg.role === 'system';
+    return msg.role === "system";
   }
 
   /**
@@ -201,9 +208,9 @@ export class BedrockProvider implements LLMProvider {
     const contentBlocks: any[] = [];
 
     // Add text content (but not for tool role messages - they use toolResult instead)
-    if (msg.content && msg.role !== 'tool') {
+    if (msg.content && msg.role !== "tool") {
       contentBlocks.push({
-        text: msg.content
+        text: msg.content,
       } as any);
     }
 
@@ -216,8 +223,8 @@ export class BedrockProvider implements LLMProvider {
             // otherwise generate a temporary one
             toolUseId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
             name: toolCall.function.name,
-            input: toolCall.function.arguments
-          }
+            input: toolCall.function.arguments,
+          },
         } as any);
       }
     }
@@ -225,48 +232,48 @@ export class BedrockProvider implements LLMProvider {
     // Add images if present
     if (msg.images && msg.images.length > 0) {
       for (const image of msg.images) {
-        if (typeof image === 'string') {
+        if (typeof image === "string") {
           // Base64 string
-          if (image.startsWith('data:')) {
-            const [header, data] = image.split(',');
-            const mediaType = header.match(/:(.*?);/)?.[1] || 'image/png';
+          if (image.startsWith("data:")) {
+            const [header, data] = image.split(",");
+            const mediaType = header.match(/:(.*?);/)?.[1] || "image/png";
             contentBlocks.push({
               image: {
-                format: (mediaType.split('/')[1] || 'png') as any,
+                format: (mediaType.split("/")[1] || "png") as any,
                 source: {
-                  bytes: Buffer.from(data, 'base64')
-                }
-              }
+                  bytes: Buffer.from(data, "base64"),
+                },
+              },
             } as any);
           }
         } else {
           // Uint8Array
           contentBlocks.push({
             image: {
-              format: 'png' as any,
+              format: "png" as any,
               source: {
-                bytes: image
-              }
-            }
+                bytes: image,
+              },
+            },
           } as any);
         }
       }
     }
 
     // Handle tool results
-    if (msg.role === 'tool') {
+    if (msg.role === "tool") {
       contentBlocks.push({
         toolResult: {
-          toolUseId: msg.toolCallId || 'tool-result', // Use the original toolUseId if available
+          toolUseId: msg.toolCallId || "tool-result", // Use the original toolUseId if available
           content: [{ text: msg.content }],
-          status: 'success'
-        }
+          status: "success",
+        },
       } as any);
     }
 
     return {
-      role: msg.role === 'tool' ? 'user' : (msg.role as any),
-      content: contentBlocks
+      role: msg.role === "tool" ? "user" : (msg.role as any),
+      content: contentBlocks,
     };
   }
 
@@ -274,7 +281,7 @@ export class BedrockProvider implements LLMProvider {
    * Translate Bedrock Message to ChatMessage
    */
   private bedrockMessageToChatMessage(msg: any): ChatMessage {
-    let content = '';
+    let content = "";
     const toolCalls: ChatToolCall[] = [];
 
     if (msg.content && Array.isArray(msg.content)) {
@@ -293,16 +300,16 @@ export class BedrockProvider implements LLMProvider {
             id: block.toolUse.toolUseId, // Store toolUseId for later reference
             function: {
               name: block.toolUse.name,
-              arguments: block.toolUse.input || {}
-            }
+              arguments: block.toolUse.input || {},
+            },
           });
         }
       }
     }
 
     const chatMsg: ChatMessage = {
-      role: 'assistant',
-      content
+      role: "assistant",
+      content,
     };
 
     if (toolCalls.length > 0) {
@@ -318,7 +325,10 @@ export class BedrockProvider implements LLMProvider {
   private chatToolToBedrockTool(chatTool: ChatTool): any {
     // Bedrock expects the JSON schema directly in the inputSchema.json field
     // Strip out descriptions from properties as Bedrock may not support them
-    const schema = chatTool.function.parameters || { type: 'object', properties: {} };
+    const schema = chatTool.function.parameters || {
+      type: "object",
+      properties: {},
+    };
 
     // Clean the schema by removing descriptions from properties
     const cleanedSchema = this.cleanSchema(schema);
@@ -328,9 +338,9 @@ export class BedrockProvider implements LLMProvider {
         name: chatTool.function.name,
         description: chatTool.function.description,
         inputSchema: {
-          json: cleanedSchema
-        }
-      }
+          json: cleanedSchema,
+        },
+      },
     };
   }
 
@@ -338,23 +348,27 @@ export class BedrockProvider implements LLMProvider {
    * Clean JSON schema by removing unsupported fields like descriptions from properties
    */
   private cleanSchema(schema: any): any {
-    if (!schema || typeof schema !== 'object') {
+    if (!schema || typeof schema !== "object") {
       return schema;
     }
 
     const cleaned = { ...schema };
 
     // If this schema has properties, clean each property
-    if (cleaned.properties && typeof cleaned.properties === 'object') {
+    if (cleaned.properties && typeof cleaned.properties === "object") {
       cleaned.properties = { ...cleaned.properties };
       for (const [key, value] of Object.entries(cleaned.properties)) {
-        if (value && typeof value === 'object') {
+        if (value && typeof value === "object") {
           const cleanedProp: any = {};
           // Only copy type and enum fields, skip description
           if ((value as any).type) cleanedProp.type = (value as any).type;
           if ((value as any).enum) cleanedProp.enum = (value as any).enum;
-          if ((value as any).items) cleanedProp.items = this.cleanSchema((value as any).items);
-          if ((value as any).properties) cleanedProp.properties = this.cleanSchema((value as any).properties);
+          if ((value as any).items)
+            cleanedProp.items = this.cleanSchema((value as any).items);
+          if ((value as any).properties)
+            cleanedProp.properties = this.cleanSchema(
+              (value as any).properties,
+            );
           cleaned.properties[key] = cleanedProp;
         }
       }
@@ -367,17 +381,17 @@ export class BedrockProvider implements LLMProvider {
    * Map Bedrock stop reason to provider-agnostic format
    */
   private mapStopReason(
-    bedrockStopReason: string | undefined
-  ): 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' {
+    bedrockStopReason: string | undefined,
+  ): "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" {
     switch (bedrockStopReason) {
-      case 'tool_use':
-        return 'tool_use';
-      case 'max_tokens':
-        return 'max_tokens';
-      case 'stop_sequence':
-        return 'stop_sequence';
+      case "tool_use":
+        return "tool_use";
+      case "max_tokens":
+        return "max_tokens";
+      case "stop_sequence":
+        return "stop_sequence";
       default:
-        return 'end_turn';
+        return "end_turn";
     }
   }
 
@@ -386,57 +400,60 @@ export class BedrockProvider implements LLMProvider {
    */
   private translateError(error: any): ProviderError {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorName = (error as any).name || '';
+    const errorName = (error as any).name || "";
 
     // Authentication/authorization errors
     if (
-      errorName.includes('ValidationException') ||
-      errorMessage.includes('Invalid') ||
-      errorMessage.includes('credentials')
+      errorName.includes("ValidationException") ||
+      errorMessage.includes("Invalid") ||
+      errorMessage.includes("credentials")
     ) {
       return new ProviderAuthenticationError(
         `Bedrock authentication failed: ${errorMessage}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
       );
     }
 
     // Model not found
     if (
-      errorName.includes('ResourceNotFoundException') ||
-      errorMessage.includes('model not found')
+      errorName.includes("ResourceNotFoundException") ||
+      errorMessage.includes("model not found")
     ) {
       return new ProviderModelNotFoundError(
         this.model,
         `Model ${this.model} not found in Bedrock: ${errorMessage}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
       );
     }
 
     // Rate limiting
     if (
-      errorName.includes('ThrottlingException') ||
-      errorMessage.includes('rate limit') ||
-      errorMessage.includes('throttl')
+      errorName.includes("ThrottlingException") ||
+      errorMessage.includes("rate limit") ||
+      errorMessage.includes("throttl")
     ) {
       return new ProviderRateLimitError(
         `Bedrock rate limited: ${errorMessage}`,
         undefined,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
       );
     }
 
     // Service errors
     if (
-      errorName.includes('ServiceUnavailableException') ||
-      errorName.includes('InternalServerException')
+      errorName.includes("ServiceUnavailableException") ||
+      errorName.includes("InternalServerException")
     ) {
       return new ProviderError(
         `Bedrock service error: ${errorMessage}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
       );
     }
 
     // Generic error
-    return new ProviderError(errorMessage, error instanceof Error ? error : undefined);
+    return new ProviderError(
+      errorMessage,
+      error instanceof Error ? error : undefined,
+    );
   }
 }
