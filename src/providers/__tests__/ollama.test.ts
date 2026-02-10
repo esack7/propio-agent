@@ -20,10 +20,16 @@ describe('OllamaProvider', () => {
     });
 
     it('should use localhost default when no host provided', () => {
-      new OllamaProvider({ model: 'test-model' });
-      expect(mockOllama).toHaveBeenCalledWith({
-        host: 'http://localhost:11434'
-      });
+      const originalEnv = process.env.OLLAMA_HOST;
+      try {
+        delete process.env.OLLAMA_HOST;
+        new OllamaProvider({ model: 'test-model' });
+        expect(mockOllama).toHaveBeenCalledWith({
+          host: 'http://localhost:11434'
+        });
+      } finally {
+        process.env.OLLAMA_HOST = originalEnv;
+      }
     });
 
     it('should use OLLAMA_HOST environment variable if set', () => {
