@@ -29,6 +29,7 @@ The current `ProviderConfig` is a discriminated union with nested provider-speci
 ## Impact
 
 **Files to Modify:**
+
 - `src/providers/config.ts` - Rewrite types to new interface structure
 - `src/providers/configLoader.ts` - **New file** for JSON loading and validation
 - `src/providers/factory.ts` - Update to handle new config shape
@@ -37,11 +38,13 @@ The current `ProviderConfig` is a discriminated union with nested provider-speci
 - `providers.json` - **New file** at project root
 
 **Test Files:**
+
 - `src/providers/__tests__/config.test.ts`
 - `src/providers/__tests__/factory.test.ts`
 - `src/__tests__/agent.test.ts`
 - `src/__tests__/integration.test.ts`
 
 **Breaking Changes:**
+
 - All existing code that instantiates `Agent` with inline `providerConfig` must migrate to new `providersConfig` format
 - Factory consumers that depend on discriminated union structure will need updates

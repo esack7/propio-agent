@@ -1,5 +1,5 @@
-import { Ollama, Message, Tool, ToolCall } from 'ollama';
-import { LLMProvider } from './interface';
+import { Ollama, Message, Tool, ToolCall } from "ollama";
+import { LLMProvider } from "./interface";
 import {
   ChatMessage,
   ChatRequest,
@@ -9,40 +9,45 @@ import {
   ChatToolCall,
   ProviderError,
   ProviderAuthenticationError,
-  ProviderModelNotFoundError
-} from './types';
+  ProviderModelNotFoundError,
+} from "./types";
 
 /**
  * Ollama implementation of LLMProvider
  */
 export class OllamaProvider implements LLMProvider {
-  readonly name = 'ollama';
+  readonly name = "ollama";
   private ollama: Ollama;
   private model: string;
 
   constructor(options: { model: string; host?: string }) {
-    const host = options.host || process.env.OLLAMA_HOST || 'http://localhost:11434';
+    const host =
+      options.host || process.env.OLLAMA_HOST || "http://localhost:11434";
     this.ollama = new Ollama({ host });
     this.model = options.model;
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
-      const messages = request.messages.map(msg => this.chatMessageToOllamaMessage(msg));
-      const tools = request.tools?.map(tool => this.chatToolToOllamaTool(tool));
+      const messages = request.messages.map((msg) =>
+        this.chatMessageToOllamaMessage(msg),
+      );
+      const tools = request.tools?.map((tool) =>
+        this.chatToolToOllamaTool(tool),
+      );
 
       const response = await this.ollama.chat({
         model: request.model || this.model,
         messages,
         stream: false,
-        ...(tools && { tools })
+        ...(tools && { tools }),
       });
 
       const stopReason = this.getStopReason(response.message);
 
       return {
         message: this.ollamaMessageToChatMessage(response.message),
-        stopReason
+        stopReason,
       };
     } catch (error) {
       throw this.translateError(error);
@@ -51,14 +56,18 @@ export class OllamaProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
-      const messages = request.messages.map(msg => this.chatMessageToOllamaMessage(msg));
-      const tools = request.tools?.map(tool => this.chatToolToOllamaTool(tool));
+      const messages = request.messages.map((msg) =>
+        this.chatMessageToOllamaMessage(msg),
+      );
+      const tools = request.tools?.map((tool) =>
+        this.chatToolToOllamaTool(tool),
+      );
 
       const response = await this.ollama.chat({
         model: request.model || this.model,
         messages,
         stream: true,
-        ...(tools && { tools })
+        ...(tools && { tools }),
       });
 
       let lastToolCalls: ChatToolCall[] | undefined;
@@ -71,8 +80,8 @@ export class OllamaProvider implements LLMProvider {
 
         // Capture tool calls from the final chunk
         if (chunk.message.tool_calls) {
-          lastToolCalls = chunk.message.tool_calls.map(toolCall =>
-            this.ollamaToolCallToChatToolCall(toolCall)
+          lastToolCalls = chunk.message.tool_calls.map((toolCall) =>
+            this.ollamaToolCallToChatToolCall(toolCall),
           );
         }
       }
@@ -80,8 +89,8 @@ export class OllamaProvider implements LLMProvider {
       // Yield final chunk with tool calls if present
       if (lastToolCalls && lastToolCalls.length > 0) {
         yield {
-          delta: '',
-          toolCalls: lastToolCalls
+          delta: "",
+          toolCalls: lastToolCalls,
         };
       }
     } catch (error) {
@@ -95,15 +104,15 @@ export class OllamaProvider implements LLMProvider {
   private chatMessageToOllamaMessage(msg: ChatMessage): Message {
     const ollamaMsg: Message = {
       role: msg.role,
-      content: msg.content
+      content: msg.content,
     };
 
     if (msg.toolCalls) {
-      ollamaMsg.tool_calls = msg.toolCalls.map(toolCall => ({
+      ollamaMsg.tool_calls = msg.toolCalls.map((toolCall) => ({
         function: {
           name: toolCall.function.name,
-          arguments: toolCall.function.arguments
-        }
+          arguments: toolCall.function.arguments,
+        },
       }));
     }
 
@@ -120,13 +129,13 @@ export class OllamaProvider implements LLMProvider {
    */
   private ollamaMessageToChatMessage(msg: Message): ChatMessage {
     const chatMsg: ChatMessage = {
-      role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
-      content: msg.content
+      role: msg.role as "user" | "assistant" | "system" | "tool",
+      content: msg.content,
     };
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
-      chatMsg.toolCalls = msg.tool_calls.map(toolCall =>
-        this.ollamaToolCallToChatToolCall(toolCall)
+      chatMsg.toolCalls = msg.tool_calls.map((toolCall) =>
+        this.ollamaToolCallToChatToolCall(toolCall),
       );
     }
 
@@ -145,8 +154,8 @@ export class OllamaProvider implements LLMProvider {
     return {
       function: {
         name: toolCall.function.name,
-        arguments: toolCall.function.arguments
-      }
+        arguments: toolCall.function.arguments,
+      },
     };
   }
 
@@ -159,8 +168,8 @@ export class OllamaProvider implements LLMProvider {
       function: {
         name: chatTool.function.name,
         description: chatTool.function.description,
-        parameters: chatTool.function.parameters
-      }
+        parameters: chatTool.function.parameters,
+      },
     };
   }
 
@@ -168,12 +177,12 @@ export class OllamaProvider implements LLMProvider {
    * Determine stop reason from Ollama response
    */
   private getStopReason(
-    message: Message
-  ): 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' {
+    message: Message,
+  ): "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" {
     if (message.tool_calls && message.tool_calls.length > 0) {
-      return 'tool_use';
+      return "tool_use";
     }
-    return 'end_turn';
+    return "end_turn";
   }
 
   /**
@@ -184,26 +193,32 @@ export class OllamaProvider implements LLMProvider {
 
     // Connection errors
     if (
-      errorMessage.includes('ECONNREFUSED') ||
-      errorMessage.includes('ECONNRESET') ||
-      errorMessage.includes('connect')
+      errorMessage.includes("ECONNREFUSED") ||
+      errorMessage.includes("ECONNRESET") ||
+      errorMessage.includes("connect")
     ) {
       return new ProviderAuthenticationError(
         `Failed to connect to Ollama: ${errorMessage}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
       );
     }
 
     // Model not found
-    if (errorMessage.includes('model not found') || errorMessage.includes('pull')) {
+    if (
+      errorMessage.includes("model not found") ||
+      errorMessage.includes("pull")
+    ) {
       return new ProviderModelNotFoundError(
         this.model,
         `Model ${this.model} not found: ${errorMessage}`,
-        error instanceof Error ? error : undefined
+        error instanceof Error ? error : undefined,
       );
     }
 
     // Generic error
-    return new ProviderError(errorMessage, error instanceof Error ? error : undefined);
+    return new ProviderError(
+      errorMessage,
+      error instanceof Error ? error : undefined,
+    );
   }
 }

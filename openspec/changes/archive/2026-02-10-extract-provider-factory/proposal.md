@@ -24,18 +24,22 @@ The Agent class currently imports concrete provider implementations (OllamaProvi
 ## Impact
 
 **Modified Files:**
+
 - `src/agent.ts` - Remove OllamaProvider/BedrockProvider imports, use factory instead
 - `src/providers/types.ts` or `src/providers/config.ts` - May need to export factory function
 
 **New Files:**
+
 - `src/providers/factory.ts` - Centralized provider creation logic
 - `src/providers/__tests__/factory.test.ts` - Factory unit tests
 
 **Dependencies:**
+
 - No new external dependencies
 - Internal dependency on existing provider implementations
 
 **Breaking Changes:**
+
 - **BREAKING**: Agent constructor no longer accepts legacy options (model, host)
 - **BREAKING**: Agent constructor now requires providerConfig parameter
 - Update src/index.ts to use new constructor API

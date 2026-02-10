@@ -20,7 +20,7 @@ export interface BaseProviderConfig {
  * Ollama provider configuration with flat structure
  */
 export interface OllamaProviderConfig extends BaseProviderConfig {
-  type: 'ollama';
+  type: "ollama";
   host?: string;
 }
 
@@ -28,14 +28,27 @@ export interface OllamaProviderConfig extends BaseProviderConfig {
  * Bedrock provider configuration with flat structure
  */
 export interface BedrockProviderConfig extends BaseProviderConfig {
-  type: 'bedrock';
+  type: "bedrock";
   region?: string;
+}
+
+/**
+ * OpenRouter provider configuration with flat structure
+ */
+export interface OpenRouterProviderConfig extends BaseProviderConfig {
+  type: "openrouter";
+  apiKey?: string;
+  httpReferer?: string;
+  xTitle?: string;
 }
 
 /**
  * Configuration for a single LLM provider (discriminated union)
  */
-export type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig;
+export type ProviderConfig =
+  | OllamaProviderConfig
+  | BedrockProviderConfig
+  | OpenRouterProviderConfig;
 
 /**
  * Multi-provider configuration

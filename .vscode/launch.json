@@ -9,9 +9,7 @@
       "runtimeExecutable": "ts-node",
       "console": "externalTerminal",
       "internalConsoleOptions": "openOnSessionStart",
-      "skipFiles": [
-        "<node_internals>/**"
-      ]
+      "skipFiles": ["<node_internals>/**"]
     }
   ]
 }

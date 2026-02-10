@@ -1,7 +1,13 @@
-import { LLMProvider } from './interface';
-import { ProviderConfig, OllamaProviderConfig, BedrockProviderConfig } from './config';
-import { OllamaProvider } from './ollama';
-import { BedrockProvider } from './bedrock';
+import { LLMProvider } from "./interface";
+import {
+  ProviderConfig,
+  OllamaProviderConfig,
+  BedrockProviderConfig,
+  OpenRouterProviderConfig,
+} from "./config";
+import { OllamaProvider } from "./ollama";
+import { BedrockProvider } from "./bedrock";
+import { OpenRouterProvider } from "./openrouter";
 
 /**
  * Factory function to create LLM provider instances from configuration.
@@ -35,24 +41,38 @@ import { BedrockProvider } from './bedrock';
  *   region: 'us-west-2'
  * }, 'anthropic.claude-3-5-sonnet-20241022-v2:0');
  */
-export function createProvider(config: ProviderConfig, modelKey?: string): LLMProvider {
+export function createProvider(
+  config: ProviderConfig,
+  modelKey?: string,
+): LLMProvider {
   const model = modelKey || config.defaultModel;
 
   // Switch statement pattern for mapping provider type to implementation.
   // Each case instantiates the appropriate provider class with extracted config.
   switch (config.type) {
-    case 'ollama':
+    case "ollama":
       return new OllamaProvider({
         model: model,
-        host: (config as OllamaProviderConfig).host
+        host: (config as OllamaProviderConfig).host,
       });
-    case 'bedrock':
+    case "bedrock":
       return new BedrockProvider({
         model: model,
-        region: (config as BedrockProviderConfig).region
+        region: (config as BedrockProviderConfig).region,
       });
+    case "openrouter": {
+      const openRouterConfig = config as OpenRouterProviderConfig;
+      return new OpenRouterProvider({
+        model,
+        apiKey: openRouterConfig.apiKey,
+        httpReferer: openRouterConfig.httpReferer,
+        xTitle: openRouterConfig.xTitle,
+      });
+    }
     default:
-      throw new Error(`Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock`);
+      throw new Error(
+        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter`,
+      );
   }
 }
 

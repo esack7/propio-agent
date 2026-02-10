@@ -1,17 +1,21 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { LLMProvider } from './providers/interface';
+import * as fs from "fs";
+import * as path from "path";
+import { LLMProvider } from "./providers/interface";
 import {
   ChatMessage,
   ChatTool,
   ChatToolCall,
   ProviderError,
   ProviderAuthenticationError,
-  ProviderModelNotFoundError
-} from './providers/types';
-import { ProvidersConfig, ProviderConfig } from './providers/config';
-import { createProvider } from './providers/factory';
-import { loadProvidersConfig, resolveProvider, resolveModelKey } from './providers/configLoader';
+  ProviderModelNotFoundError,
+} from "./providers/types";
+import { ProvidersConfig, ProviderConfig } from "./providers/config";
+import { createProvider } from "./providers/factory";
+import {
+  loadProvidersConfig,
+  resolveProvider,
+  resolveModelKey,
+} from "./providers/configLoader";
 
 export class Agent {
   private provider: LLMProvider;
@@ -63,24 +67,31 @@ export class Agent {
    *   systemPrompt: 'You are a helpful coding assistant.'
    * });
    */
-  constructor(options: {
-    providersConfig: ProvidersConfig | string;
-    providerName?: string;
-    modelKey?: string;
-    systemPrompt?: string;
-    sessionContextFilePath?: string;
-  } = {} as any) {
+  constructor(
+    options: {
+      providersConfig: ProvidersConfig | string;
+      providerName?: string;
+      modelKey?: string;
+      systemPrompt?: string;
+      sessionContextFilePath?: string;
+    } = {} as any,
+  ) {
     // Validate required providersConfig
     if (!options.providersConfig) {
-      throw new Error('Provider configuration is required. Please provide a providersConfig option with provider settings.');
+      throw new Error(
+        "Provider configuration is required. Please provide a providersConfig option with provider settings.",
+      );
     }
 
-    this.systemPrompt = options.systemPrompt || 'You are a helpful AI assistant.';
-    this.sessionContextFilePath = options.sessionContextFilePath || path.join(process.cwd(), 'session_context.txt');
+    this.systemPrompt =
+      options.systemPrompt || "You are a helpful AI assistant.";
+    this.sessionContextFilePath =
+      options.sessionContextFilePath ||
+      path.join(process.cwd(), "session_context.txt");
 
     // Load configuration from file if string path provided, otherwise use directly
     let config: ProvidersConfig;
-    if (typeof options.providersConfig === 'string') {
+    if (typeof options.providersConfig === "string") {
       config = loadProvidersConfig(options.providersConfig);
     } else {
       config = options.providersConfig;
@@ -92,7 +103,10 @@ export class Agent {
     const resolvedProvider = resolveProvider(config, options.providerName);
 
     // Resolve model key from provider
-    const resolvedModelKey = resolveModelKey(resolvedProvider, options.modelKey);
+    const resolvedModelKey = resolveModelKey(
+      resolvedProvider,
+      options.modelKey,
+    );
 
     // Create provider instance using factory
     this.provider = createProvider(resolvedProvider, resolvedModelKey);
@@ -111,7 +125,10 @@ export class Agent {
    */
   private switchProvider(providerName: string, modelKey?: string): void {
     // Resolve and validate provider from stored config
-    const resolvedProvider = resolveProvider(this.providersConfig, providerName);
+    const resolvedProvider = resolveProvider(
+      this.providersConfig,
+      providerName,
+    );
 
     // Resolve and validate model key
     const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
@@ -127,70 +144,71 @@ export class Agent {
   private initializeTools(): ChatTool[] {
     return [
       {
-        type: 'function',
+        type: "function",
         function: {
-          name: 'save_session_context',
-          description: 'Saves the current session context to a file. Call this after completing tasks to persist the session state.',
+          name: "save_session_context",
+          description:
+            "Saves the current session context to a file. Call this after completing tasks to persist the session state.",
           parameters: {
-            type: 'object',
+            type: "object",
             properties: {
               reason: {
-                type: 'string',
-                description: 'Optional reason for saving the session context'
-              }
-            }
-          }
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'read_file',
-          description: 'Reads the content of a file from the filesystem',
-          parameters: {
-            type: 'object',
-            properties: {
-              file_path: {
-                type: 'string',
-                description: 'The path to the file to read'
-              }
+                type: "string",
+                description: "Optional reason for saving the session context",
+              },
             },
-            required: ['file_path']
-          }
-        }
+          },
+        },
       },
       {
-        type: 'function',
+        type: "function",
         function: {
-          name: 'write_file',
-          description: 'Writes content to a file on the filesystem',
+          name: "read_file",
+          description: "Reads the content of a file from the filesystem",
           parameters: {
-            type: 'object',
+            type: "object",
             properties: {
               file_path: {
-                type: 'string',
-                description: 'The path to the file to write'
+                type: "string",
+                description: "The path to the file to read",
+              },
+            },
+            required: ["file_path"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "write_file",
+          description: "Writes content to a file on the filesystem",
+          parameters: {
+            type: "object",
+            properties: {
+              file_path: {
+                type: "string",
+                description: "The path to the file to write",
               },
               content: {
-                type: 'string',
-                description: 'The content to write to the file'
-              }
+                type: "string",
+                description: "The content to write to the file",
+              },
             },
-            required: ['file_path', 'content']
-          }
-        }
-      }
+            required: ["file_path", "content"],
+          },
+        },
+      },
     ];
   }
 
   async chat(userMessage: string): Promise<string> {
     this.sessionContext.push({
-      role: 'user',
-      content: userMessage
+      role: "user",
+      content: userMessage,
     });
 
     try {
-      let finalResponse = '';
+      let finalResponse = "";
       let continueLoop = true;
       let iterationCount = 0;
       const maxIterations = 10; // Prevent infinite loops
@@ -199,23 +217,23 @@ export class Agent {
         iterationCount++;
 
         const messages: ChatMessage[] = [
-          { role: 'system', content: this.systemPrompt },
-          ...this.sessionContext
+          { role: "system", content: this.systemPrompt },
+          ...this.sessionContext,
         ];
 
         const response = await this.provider.chat({
           model: this.model,
           messages: messages,
-          tools: this.tools
+          tools: this.tools,
         });
 
         const assistantMessage = response.message.content;
         const toolCalls = response.message.toolCalls;
 
         this.sessionContext.push({
-          role: 'assistant',
+          role: "assistant",
           content: assistantMessage,
-          toolCalls: toolCalls
+          toolCalls: toolCalls,
         });
 
         finalResponse = assistantMessage;
@@ -227,9 +245,9 @@ export class Agent {
             const result = this.executeTool(toolCall.function.name, args);
 
             this.sessionContext.push({
-              role: 'tool',
+              role: "tool",
               content: result,
-              toolCallId: toolCall.id // Pass through the tool call ID for providers that need it
+              toolCallId: toolCall.id, // Pass through the tool call ID for providers that need it
             });
           }
           // Continue loop to let agent process tool results
@@ -245,14 +263,17 @@ export class Agent {
     }
   }
 
-  async streamChat(userMessage: string, onToken: (token: string) => void): Promise<string> {
+  async streamChat(
+    userMessage: string,
+    onToken: (token: string) => void,
+  ): Promise<string> {
     this.sessionContext.push({
-      role: 'user',
-      content: userMessage
+      role: "user",
+      content: userMessage,
     });
 
     try {
-      let finalResponse = '';
+      let finalResponse = "";
       let continueLoop = true;
       let iterationCount = 0;
       const maxIterations = 10; // Prevent infinite loops
@@ -261,17 +282,17 @@ export class Agent {
         iterationCount++;
 
         const messages: ChatMessage[] = [
-          { role: 'system', content: this.systemPrompt },
-          ...this.sessionContext
+          { role: "system", content: this.systemPrompt },
+          ...this.sessionContext,
         ];
 
-        let fullResponse = '';
+        let fullResponse = "";
         let toolCalls: ChatToolCall[] | undefined;
 
         for await (const chunk of this.provider.streamChat({
           model: this.model,
           messages: messages,
-          tools: this.tools
+          tools: this.tools,
         })) {
           const token = chunk.delta;
           fullResponse += token;
@@ -286,16 +307,16 @@ export class Agent {
         }
 
         this.sessionContext.push({
-          role: 'assistant',
+          role: "assistant",
           content: fullResponse,
-          toolCalls: toolCalls
+          toolCalls: toolCalls,
         });
 
         finalResponse = fullResponse;
 
         // Handle tool calls if present
         if (toolCalls && toolCalls.length > 0) {
-          onToken('\n');
+          onToken("\n");
           for (const toolCall of toolCalls) {
             const args = toolCall.function.arguments;
             const toolName = toolCall.function.name;
@@ -304,14 +325,16 @@ export class Agent {
             const result = this.executeTool(toolName, args);
 
             this.sessionContext.push({
-              role: 'tool',
+              role: "tool",
               content: result,
-              toolCallId: toolCall.id // Pass through the tool call ID for providers that need it
+              toolCallId: toolCall.id, // Pass through the tool call ID for providers that need it
             });
 
-            onToken(`[Tool result: ${result.substring(0, 100)}${result.length > 100 ? '...' : ''}]\n`);
+            onToken(
+              `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
+            );
           }
-          onToken('\n');
+          onToken("\n");
           // Continue loop to let agent process tool results
         } else {
           // No tool calls, we're done
@@ -342,43 +365,43 @@ export class Agent {
   }
 
   saveContext(reason?: string): string {
-    return this.executeTool('save_session_context', { reason });
+    return this.executeTool("save_session_context", { reason });
   }
 
   private executeTool(toolName: string, args: any): string {
     try {
       switch (toolName) {
-        case 'save_session_context': {
+        case "save_session_context": {
           let content = `=== Session Context ===\n`;
           content += `System Prompt: ${this.systemPrompt}\n`;
           content += `Saved at: ${new Date().toISOString()}\n`;
           if (args.reason) {
             content += `Reason: ${args.reason}\n`;
           }
-          content += '\n';
+          content += "\n";
 
           if (this.sessionContext.length === 0) {
-            content += 'No session context.\n';
+            content += "No session context.\n";
           } else {
             this.sessionContext.forEach((msg, index) => {
               content += `[${index + 1}] ${msg.role.toUpperCase()}:\n${msg.content}\n\n`;
             });
           }
 
-          fs.writeFileSync(this.sessionContextFilePath, content, 'utf-8');
+          fs.writeFileSync(this.sessionContextFilePath, content, "utf-8");
           return `Successfully saved session context to ${this.sessionContextFilePath}`;
         }
 
-        case 'read_file': {
+        case "read_file": {
           const filePath = args.file_path;
-          const content = fs.readFileSync(filePath, 'utf-8');
+          const content = fs.readFileSync(filePath, "utf-8");
           return content;
         }
 
-        case 'write_file': {
+        case "write_file": {
           const filePath = args.file_path;
           const content = args.content;
-          fs.writeFileSync(filePath, content, 'utf-8');
+          fs.writeFileSync(filePath, content, "utf-8");
           return `Successfully wrote to ${filePath}`;
         }
 
@@ -386,7 +409,7 @@ export class Agent {
           return `Unknown tool: ${toolName}`;
       }
     } catch (error) {
-      return `Error executing tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      return `Error executing tool ${toolName}: ${error instanceof Error ? error.message : "Unknown error"}`;
     }
   }
 
@@ -397,12 +420,14 @@ export class Agent {
     const providerName = this.provider.name;
 
     if (error instanceof ProviderAuthenticationError) {
-      return new Error(`Provider ${providerName} authentication failed: ${error.message}`);
+      return new Error(
+        `Provider ${providerName} authentication failed: ${error.message}`,
+      );
     }
 
     if (error instanceof ProviderModelNotFoundError) {
       return new Error(
-        `Model ${error.modelName} not found in provider ${providerName}: ${error.message}`
+        `Model ${error.modelName} not found in provider ${providerName}: ${error.message}`,
       );
     }
 
@@ -410,7 +435,10 @@ export class Agent {
       return new Error(`Provider ${providerName} error: ${error.message}`);
     }
 
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return new Error(`Failed to get response from ${providerName}: ${errorMessage}`);
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    return new Error(
+      `Failed to get response from ${providerName}: ${errorMessage}`,
+    );
   }
 }

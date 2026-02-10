@@ -14,11 +14,13 @@ The agent is currently tightly coupled to Ollama as the LLM provider, making it 
 ## Capabilities
 
 ### New Capabilities
+
 - `llm-provider-abstraction`: Core provider interface and abstraction layer for LLM interactions
 - `ollama-provider`: Ollama-specific provider implementation
 - `bedrock-provider`: Amazon Bedrock provider implementation using aws-cli
 
 ### Modified Capabilities
+
 - `agent-core`: Agent will be refactored to use the provider abstraction instead of direct Ollama calls
 
 ## Impact

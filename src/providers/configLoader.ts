@@ -1,5 +1,5 @@
-import * as fs from 'fs';
-import { ProvidersConfig, ProviderConfig } from './config';
+import * as fs from "fs";
+import { ProvidersConfig, ProviderConfig } from "./config";
 
 /**
  * Load and validate a ProvidersConfig from a JSON file
@@ -12,9 +12,9 @@ export function loadProvidersConfig(filePath: string): ProvidersConfig {
   let fileContent: string;
 
   try {
-    fileContent = fs.readFileSync(filePath, 'utf-8');
+    fileContent = fs.readFileSync(filePath, "utf-8");
   } catch (error: any) {
-    if (error.code === 'ENOENT') {
+    if (error.code === "ENOENT") {
       throw new Error(`Configuration file not found: ${filePath}`);
     }
     throw new Error(`Failed to read configuration file: ${error.message}`);
@@ -32,17 +32,21 @@ export function loadProvidersConfig(filePath: string): ProvidersConfig {
     throw new Error('Configuration must include a "providers" array');
   }
   if (config.default === undefined) {
-    throw new Error('Configuration must include a "default" field specifying default provider');
+    throw new Error(
+      'Configuration must include a "default" field specifying default provider',
+    );
   }
 
   // Validate that default references an existing provider
   const defaultProviderExists = config.providers.some(
-    (p: any) => p.name === config.default
+    (p: any) => p.name === config.default,
   );
   if (!defaultProviderExists) {
-    const availableProviders = config.providers.map((p: any) => p.name).join(', ');
+    const availableProviders = config.providers
+      .map((p: any) => p.name)
+      .join(", ");
     throw new Error(
-      `Default provider "${config.default}" not found in providers list. Available: ${availableProviders}`
+      `Default provider "${config.default}" not found in providers list. Available: ${availableProviders}`,
     );
   }
 
@@ -60,21 +64,27 @@ export function loadProvidersConfig(filePath: string): ProvidersConfig {
  */
 function validateProviderConfig(provider: any, seenNames: Set<string>): void {
   // Check required fields
-  const requiredFields = ['name', 'type', 'models', 'defaultModel'];
-  const missingFields = requiredFields.filter(field => !provider[field]);
+  const requiredFields = ["name", "type", "models", "defaultModel"];
+  const missingFields = requiredFields.filter((field) => !provider[field]);
   if (missingFields.length > 0) {
-    throw new Error(`Provider is missing required fields: ${missingFields.join(', ')}`);
+    throw new Error(
+      `Provider is missing required fields: ${missingFields.join(", ")}`,
+    );
   }
 
   // Check unique provider names
   if (seenNames.has(provider.name)) {
-    throw new Error(`Duplicate provider name: "${provider.name}". Provider names must be unique.`);
+    throw new Error(
+      `Duplicate provider name: "${provider.name}". Provider names must be unique.`,
+    );
   }
   seenNames.add(provider.name);
 
   // Validate models array
   if (!Array.isArray(provider.models) || provider.models.length === 0) {
-    throw new Error(`Provider "${provider.name}" must have at least one model in the models array`);
+    throw new Error(
+      `Provider "${provider.name}" must have at least one model in the models array`,
+    );
   }
 
   // Validate each model has required fields
@@ -82,25 +92,27 @@ function validateProviderConfig(provider: any, seenNames: Set<string>): void {
   for (const model of provider.models) {
     if (!model.name || !model.key) {
       throw new Error(
-        `Provider "${provider.name}" has model missing required fields: each model must have "name" and "key"`
+        `Provider "${provider.name}" has model missing required fields: each model must have "name" and "key"`,
       );
     }
 
     // Check unique model keys within provider
     if (seenModelKeys.has(model.key)) {
       throw new Error(
-        `Provider "${provider.name}" has duplicate model key: "${model.key}". Model keys must be unique within a provider.`
+        `Provider "${provider.name}" has duplicate model key: "${model.key}". Model keys must be unique within a provider.`,
       );
     }
     seenModelKeys.add(model.key);
   }
 
   // Validate defaultModel references valid model key
-  const defaultModelExists = provider.models.some((m: any) => m.key === provider.defaultModel);
+  const defaultModelExists = provider.models.some(
+    (m: any) => m.key === provider.defaultModel,
+  );
   if (!defaultModelExists) {
-    const availableModels = provider.models.map((m: any) => m.key).join(', ');
+    const availableModels = provider.models.map((m: any) => m.key).join(", ");
     throw new Error(
-      `Provider "${provider.name}" defaultModel "${provider.defaultModel}" not found in models list. Available: ${availableModels}`
+      `Provider "${provider.name}" defaultModel "${provider.defaultModel}" not found in models list. Available: ${availableModels}`,
     );
   }
 }
@@ -115,15 +127,15 @@ function validateProviderConfig(provider: any, seenNames: Set<string>): void {
  */
 export function resolveProvider(
   config: ProvidersConfig,
-  providerName?: string
+  providerName?: string,
 ): ProviderConfig {
   const name = providerName || config.default;
 
-  const provider = config.providers.find(p => p.name === name);
+  const provider = config.providers.find((p) => p.name === name);
   if (!provider) {
-    const availableProviders = config.providers.map(p => p.name).join(', ');
+    const availableProviders = config.providers.map((p) => p.name).join(", ");
     throw new Error(
-      `Unknown provider: "${name}". Available providers: ${availableProviders}`
+      `Unknown provider: "${name}". Available providers: ${availableProviders}`,
     );
   }
 
@@ -140,15 +152,15 @@ export function resolveProvider(
  */
 export function resolveModelKey(
   provider: ProviderConfig,
-  modelKey?: string
+  modelKey?: string,
 ): string {
   const key = modelKey || provider.defaultModel;
 
-  const model = provider.models.find(m => m.key === key);
+  const model = provider.models.find((m) => m.key === key);
   if (!model) {
-    const availableModels = provider.models.map(m => m.key).join(', ');
+    const availableModels = provider.models.map((m) => m.key).join(", ");
     throw new Error(
-      `Invalid model key: "${key}" for provider "${provider.name}". Available models: ${availableModels}`
+      `Invalid model key: "${key}" for provider "${provider.name}". Available models: ${availableModels}`,
     );
   }
 

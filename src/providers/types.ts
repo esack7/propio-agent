@@ -2,7 +2,7 @@
  * Provider-agnostic message type
  */
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool';
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolCalls?: ChatToolCall[];
   toolCallId?: string; // For tool role messages: which tool call this is a result for
@@ -24,7 +24,7 @@ export interface ChatToolCall {
  * Tool definition
  */
 export interface ChatTool {
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     description: string;
@@ -51,7 +51,7 @@ export interface ChatRequest {
  */
 export interface ChatResponse {
   message: ChatMessage;
-  stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence';
+  stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
 }
 
 /**
@@ -70,7 +70,7 @@ export class ProviderError extends Error {
 
   constructor(message: string, originalError?: Error) {
     super(message);
-    this.name = 'ProviderError';
+    this.name = "ProviderError";
     this.originalError = originalError;
   }
 }
@@ -81,7 +81,7 @@ export class ProviderError extends Error {
 export class ProviderAuthenticationError extends ProviderError {
   constructor(message: string, originalError?: Error) {
     super(message, originalError);
-    this.name = 'ProviderAuthenticationError';
+    this.name = "ProviderAuthenticationError";
   }
 }
 
@@ -91,9 +91,13 @@ export class ProviderAuthenticationError extends ProviderError {
 export class ProviderRateLimitError extends ProviderError {
   public retryAfterSeconds?: number;
 
-  constructor(message: string, retryAfterSeconds?: number, originalError?: Error) {
+  constructor(
+    message: string,
+    retryAfterSeconds?: number,
+    originalError?: Error,
+  ) {
     super(message, originalError);
-    this.name = 'ProviderRateLimitError';
+    this.name = "ProviderRateLimitError";
     this.retryAfterSeconds = retryAfterSeconds;
   }
 }
@@ -106,7 +110,7 @@ export class ProviderModelNotFoundError extends ProviderError {
 
   constructor(modelName: string, message: string, originalError?: Error) {
     super(message, originalError);
-    this.name = 'ProviderModelNotFoundError';
+    this.name = "ProviderModelNotFoundError";
     this.modelName = modelName;
   }
 }

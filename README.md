@@ -1,6 +1,6 @@
 # Multi-Provider AI Agent
 
-A TypeScript AI agent that supports multiple LLM providers (Ollama and Amazon Bedrock) with a unified interface and runtime provider switching capability.
+A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, and OpenRouter) with a unified interface and runtime provider switching capability.
 
 ## Prerequisites
 
@@ -10,21 +10,25 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama and Amazon Be
 ## Setup
 
 1. Pull the Ollama model:
+
    ```bash
    ollama pull qwen3-coder:30b
    ```
 
 2. Ensure Ollama is running:
+
    ```bash
    ollama serve
    ```
 
 3. Create your environment file:
+
    ```bash
    cp .env.example .env
    ```
 
 4. Create the configuration directory and providers file:
+
    ```bash
    mkdir .propio
    ```
@@ -68,6 +72,7 @@ npm run dev
 Once running, type your messages and press Enter. The agent maintains session context across messages.
 
 **Commands:**
+
 - `/clear` - Clear session context
 - `/context` - Show session context
 - `/exit` - Quit the agent
@@ -75,6 +80,7 @@ Once running, type your messages and press Enter. The agent maintains session co
 ## Tool Calling & Agentic Loop
 
 The agent supports tool calling with an agentic loop, allowing it to:
+
 1. Call tools to perform actions
 2. See the results of those tool calls
 3. Decide whether to call more tools or respond to the user
@@ -89,6 +95,7 @@ The agent supports tool calling with an agentic loop, allowing it to:
 ### How it Works
 
 When you send a message, the agent can:
+
 - Call one or more tools
 - Receive and process the tool results
 - Make additional tool calls based on the results
@@ -149,12 +156,16 @@ Create `.propio/providers.json` with the following structure:
 ```
 
 **Configuration Fields:**
+
 - `default`: The name of the default provider to use
 - `providers`: Array of provider configurations
   - `name`: Unique identifier for this provider
-  - `type`: Provider type (`ollama` or `bedrock`)
+  - `type`: Provider type (`ollama`, `bedrock`, or `openrouter`)
   - `host`: (Ollama only) Ollama server URL
   - `region`: (Bedrock only) AWS region
+  - `apiKey`: (OpenRouter only) OpenRouter API key; can be omitted if `OPENROUTER_API_KEY` env var is set
+  - `httpReferer`: (OpenRouter only, optional) Site URL for OpenRouter leaderboard tracking
+  - `xTitle`: (OpenRouter only, optional) Site name for OpenRouter leaderboard tracking
   - `models`: Array of available models
     - `name`: Human-readable model name
     - `key`: Model identifier used by the provider
@@ -182,36 +193,70 @@ The agent supports multiple LLM providers through a unified interface:
 ### Ollama Provider (Default)
 
 ```javascript
-import { Agent } from './src/agent';
+import { Agent } from "./src/agent";
 
 const agent = new Agent({
   providerConfig: {
-    provider: 'ollama',
+    provider: "ollama",
     ollama: {
-      model: 'qwen3-coder:30b',
-      host: 'http://localhost:11434'  // Optional, defaults to localhost:11434
-    }
-  }
+      model: "qwen3-coder:30b",
+      host: "http://localhost:11434", // Optional, defaults to localhost:11434
+    },
+  },
 });
 ```
 
 ### Amazon Bedrock Provider
 
 ```javascript
-import { Agent } from './src/agent';
+import { Agent } from "./src/agent";
 
 const agent = new Agent({
   providerConfig: {
-    provider: 'bedrock',
+    provider: "bedrock",
     bedrock: {
-      model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
-      region: 'us-east-1'  // Optional, defaults to us-east-1
-    }
-  }
+      model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      region: "us-east-1", // Optional, defaults to us-east-1
+    },
+  },
 });
 ```
 
 **Note:** Use inference profile IDs (with `global.anthropic.*` or `us.anthropic.*` prefix) for Claude 4.x models. Direct model IDs will not work with on-demand throughput.
+
+### OpenRouter Provider
+
+[OpenRouter](https://openrouter.ai/) provides access to 300+ models (OpenAI, Anthropic, DeepSeek, etc.) through a single API. Use it for affordable models with tool-calling support.
+
+**Required:** `type`, `models`, `defaultModel`, and either `apiKey` or the `OPENROUTER_API_KEY` environment variable.
+
+**Optional:** `httpReferer` and `xTitle` for leaderboard/site tracking on OpenRouter.
+
+**Model format:** Use OpenRouter's `provider/model` format (e.g. `openai/gpt-4o`, `openai/gpt-3.5-turbo`, `deepseek/deepseek-chat`).
+
+Example `.propio/providers.json` with OpenRouter:
+
+```json
+{
+  "default": "openrouter",
+  "providers": [
+    {
+      "name": "openrouter",
+      "type": "openrouter",
+      "models": [
+        { "name": "GPT-3.5 Turbo", "key": "openai/gpt-3.5-turbo" },
+        { "name": "DeepSeek Chat", "key": "deepseek/deepseek-chat" }
+      ],
+      "defaultModel": "openai/gpt-3.5-turbo",
+      "apiKey": "sk-or-v1-...",
+      "httpReferer": "https://myapp.com",
+      "xTitle": "My App"
+    }
+  ]
+}
+```
+
+Store your API key in `.propio/providers.json` (the `.propio/` directory is in `.gitignore`) or set `OPENROUTER_API_KEY` in your environment. Affordable models with tool-calling support include `openai/gpt-3.5-turbo` and `deepseek/deepseek-chat`.
 
 ### Backward Compatibility
 
@@ -219,9 +264,9 @@ The agent maintains backward compatibility with legacy configuration:
 
 ```javascript
 const agent = new Agent({
-  model: 'qwen3-coder:30b',
-  host: 'http://localhost:11434',
-  systemPrompt: 'You are a helpful assistant'
+  model: "qwen3-coder:30b",
+  host: "http://localhost:11434",
+  systemPrompt: "You are a helpful assistant",
 });
 // This automatically uses Ollama provider with the specified settings
 ```
@@ -256,10 +301,10 @@ Copy `.env.example` to `.env` and modify as needed:
 cp .env.example .env
 ```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen3-coder:30b` | Model to use |
+| Variable       | Default                  | Description       |
+| -------------- | ------------------------ | ----------------- |
+| `OLLAMA_HOST`  | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_MODEL` | `qwen3-coder:30b`        | Model to use      |
 
 ## Project Structure
 
@@ -275,6 +320,7 @@ cp .env.example .env
 │   │   ├── config.ts                     # Provider configuration types
 │   │   ├── ollama.ts                     # Ollama provider implementation
 │   │   ├── bedrock.ts                    # Bedrock provider implementation
+│   │   ├── openrouter.ts                 # OpenRouter provider implementation
 │   │   └── __tests__/                    # Provider tests
 │   └── __tests__/                        # Agent tests
 ├── .env.example                         # Sample environment variables
@@ -304,6 +350,7 @@ The agent uses a provider abstraction layer that allows swapping between differe
 - **Provider Implementations**:
   - `OllamaProvider`: Uses the Ollama local model server
   - `BedrockProvider`: Uses Amazon Bedrock with the AWS SDK
+  - `OpenRouterProvider`: Uses OpenRouter's unified API (OpenAI-compatible)
 
 ### Type Translation
 
