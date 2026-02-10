@@ -1,7 +1,8 @@
 import { LLMProvider } from './interface';
-import { ProviderConfig, OllamaProviderConfig, BedrockProviderConfig } from './config';
+import { ProviderConfig, OllamaProviderConfig, BedrockProviderConfig, OpenRouterProviderConfig } from './config';
 import { OllamaProvider } from './ollama';
 import { BedrockProvider } from './bedrock';
+import { OpenRouterProvider } from './openrouter';
 
 /**
  * Factory function to create LLM provider instances from configuration.
@@ -51,8 +52,17 @@ export function createProvider(config: ProviderConfig, modelKey?: string): LLMPr
         model: model,
         region: (config as BedrockProviderConfig).region
       });
+    case 'openrouter': {
+      const openRouterConfig = config as OpenRouterProviderConfig;
+      return new OpenRouterProvider({
+        model,
+        apiKey: openRouterConfig.apiKey,
+        httpReferer: openRouterConfig.httpReferer,
+        xTitle: openRouterConfig.xTitle
+      });
+    }
     default:
-      throw new Error(`Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock`);
+      throw new Error(`Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter`);
   }
 }
 

@@ -1,8 +1,9 @@
 import { createProvider, extractModelFromConfig } from '../factory';
 import { LLMProvider } from '../interface';
-import { ProviderConfig, OllamaProviderConfig, BedrockProviderConfig } from '../config';
+import { ProviderConfig, OllamaProviderConfig, BedrockProviderConfig, OpenRouterProviderConfig } from '../config';
 import { OllamaProvider } from '../ollama';
 import { BedrockProvider } from '../bedrock';
+import { OpenRouterProvider } from '../openrouter';
 
 describe('Provider Factory', () => {
   describe('createProvider', () => {
@@ -34,6 +35,21 @@ describe('Provider Factory', () => {
 
       expect(provider).toBeInstanceOf(BedrockProvider);
       expect(provider.name).toBe('bedrock');
+    });
+
+    it('should create OpenRouterProvider from OpenRouter config', () => {
+      const config: OpenRouterProviderConfig = {
+        name: 'openrouter',
+        type: 'openrouter',
+        models: [{ name: 'GPT-3.5', key: 'openai/gpt-3.5-turbo' }],
+        defaultModel: 'openai/gpt-3.5-turbo',
+        apiKey: 'sk-test-key'
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(OpenRouterProvider);
+      expect(provider.name).toBe('openrouter');
     });
 
     it('should accept modelKey parameter and use it instead of defaultModel', () => {
@@ -88,7 +104,7 @@ describe('Provider Factory', () => {
         defaultModel: 'test'
       };
 
-      expect(() => createProvider(config)).toThrow(/ollama.*bedrock|bedrock.*ollama/);
+      expect(() => createProvider(config)).toThrow(/ollama.*bedrock|bedrock.*ollama|openrouter/);
     });
 
     it('should use flat host field for Ollama', () => {

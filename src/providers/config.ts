@@ -33,9 +33,22 @@ export interface BedrockProviderConfig extends BaseProviderConfig {
 }
 
 /**
+ * OpenRouter provider configuration with flat structure
+ */
+export interface OpenRouterProviderConfig extends BaseProviderConfig {
+  type: 'openrouter';
+  apiKey?: string;
+  httpReferer?: string;
+  xTitle?: string;
+}
+
+/**
  * Configuration for a single LLM provider (discriminated union)
  */
-export type ProviderConfig = OllamaProviderConfig | BedrockProviderConfig;
+export type ProviderConfig =
+  | OllamaProviderConfig
+  | BedrockProviderConfig
+  | OpenRouterProviderConfig;
 
 /**
  * Multi-provider configuration

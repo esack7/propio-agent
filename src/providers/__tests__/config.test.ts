@@ -3,6 +3,7 @@ import {
   ProviderConfig,
   OllamaProviderConfig,
   BedrockProviderConfig,
+  OpenRouterProviderConfig,
   ProvidersConfig
 } from '../config';
 
@@ -97,6 +98,35 @@ describe('Configuration Types (New Structure)', () => {
         defaultModel: 'model'
       };
       expect(config.type).toBe('bedrock');
+    });
+
+    it('should accept OpenRouterProviderConfig', () => {
+      const config: ProviderConfig = {
+        name: 'openrouter',
+        type: 'openrouter',
+        models: [{ name: 'GPT-3.5', key: 'openai/gpt-3.5-turbo' }],
+        defaultModel: 'openai/gpt-3.5-turbo',
+        apiKey: 'sk-key'
+      };
+      expect(config.type).toBe('openrouter');
+    });
+  });
+
+  describe('OpenRouterProviderConfig', () => {
+    it('should define openrouter provider with optional apiKey, httpReferer, xTitle', () => {
+      const config: OpenRouterProviderConfig = {
+        name: 'openrouter',
+        type: 'openrouter',
+        models: [{ name: 'GPT-3.5', key: 'openai/gpt-3.5-turbo' }],
+        defaultModel: 'openai/gpt-3.5-turbo',
+        apiKey: 'sk-key',
+        httpReferer: 'https://app.com',
+        xTitle: 'My App'
+      };
+      expect(config.type).toBe('openrouter');
+      expect(config.apiKey).toBe('sk-key');
+      expect(config.httpReferer).toBe('https://app.com');
+      expect(config.xTitle).toBe('My App');
     });
   });
 
