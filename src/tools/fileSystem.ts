@@ -29,8 +29,8 @@ export class ReadFileTool implements ExecutableTool {
     };
   }
 
-  execute(args: Record<string, any>): string {
-    const filePath = args.file_path;
+  async execute(args: Record<string, unknown>): Promise<string> {
+    const filePath = args.file_path as string;
     const content = fs.readFileSync(filePath, "utf-8");
     return content;
   }
@@ -67,9 +67,9 @@ export class WriteFileTool implements ExecutableTool {
     };
   }
 
-  execute(args: Record<string, any>): string {
-    const filePath = args.file_path;
-    const content = args.content;
+  async execute(args: Record<string, unknown>): Promise<string> {
+    const filePath = args.file_path as string;
+    const content = args.content as string;
     fs.writeFileSync(filePath, content, "utf-8");
     return `Successfully wrote to ${filePath}`;
   }

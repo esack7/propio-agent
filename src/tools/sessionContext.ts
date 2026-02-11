@@ -42,12 +42,13 @@ export class SaveSessionContextTool implements ExecutableTool {
     };
   }
 
-  execute(args: Record<string, any>): string {
+  async execute(args: Record<string, unknown>): Promise<string> {
     let content = `=== Session Context ===\n`;
     content += `System Prompt: ${this.context.systemPrompt}\n`;
     content += `Saved at: ${new Date().toISOString()}\n`;
-    if (args.reason) {
-      content += `Reason: ${args.reason}\n`;
+    const reason = args.reason as string | undefined;
+    if (reason) {
+      content += `Reason: ${reason}\n`;
     }
     content += "\n";
 

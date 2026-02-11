@@ -181,7 +181,7 @@ describe("Agent Integration Tests", () => {
     it("should execute file write tool correctly", async () => {
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
 
-      const result = agent.saveContext("integration test");
+      const result = await agent.saveContext("integration test");
 
       expect(result).toContain("Successfully saved");
     });

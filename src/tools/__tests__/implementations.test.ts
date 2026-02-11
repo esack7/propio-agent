@@ -15,12 +15,12 @@ describe("Tool Implementations", () => {
   });
 
   describe("ReadFileTool", () => {
-    it("should read file and return content", () => {
+    it("should read file and return content", async () => {
       const tool = new ReadFileTool();
       const mockContent = "file content here";
       mockFs.readFileSync.mockReturnValue(mockContent);
 
-      const result = tool.execute({ file_path: "/path/to/file.txt" });
+      const result = await tool.execute({ file_path: "/path/to/file.txt" });
 
       expect(result).toBe(mockContent);
       expect(mockFs.readFileSync).toHaveBeenCalledWith(
@@ -46,11 +46,11 @@ describe("Tool Implementations", () => {
   });
 
   describe("WriteFileTool", () => {
-    it("should write content to file", () => {
+    it("should write content to file", async () => {
       const tool = new WriteFileTool();
       mockFs.writeFileSync.mockImplementation(() => {});
 
-      const result = tool.execute({
+      const result = await tool.execute({
         file_path: "/path/to/file.txt",
         content: "new content",
       });
@@ -81,7 +81,7 @@ describe("Tool Implementations", () => {
   });
 
   describe("SaveSessionContextTool", () => {
-    it("should write context to file using ToolContext", () => {
+    it("should write context to file using ToolContext", async () => {
       const mockContext: ToolContext = {
         systemPrompt: "Test system prompt",
         sessionContext: [
@@ -94,7 +94,7 @@ describe("Tool Implementations", () => {
       const tool = new SaveSessionContextTool(mockContext);
       mockFs.writeFileSync.mockImplementation(() => {});
 
-      const result = tool.execute({ reason: "test save" });
+      const result = await tool.execute({ reason: "test save" });
 
       expect(result).toContain(
         "Successfully saved session context to /path/to/session.txt",
@@ -121,7 +121,7 @@ describe("Tool Implementations", () => {
       );
     });
 
-    it("should read live context values via property getters", () => {
+    it("should read live context values via property getters", async () => {
       // Create a mutable state object to simulate agent state
       let currentSystemPrompt = "Initial prompt";
       let currentSessionContext: ChatMessage[] = [
@@ -143,7 +143,7 @@ describe("Tool Implementations", () => {
       mockFs.writeFileSync.mockImplementation(() => {});
 
       // First execution
-      tool.execute({ reason: "first save" });
+      await tool.execute({ reason: "first save" });
       const firstCall = mockFs.writeFileSync.mock.calls[0][1] as string;
       expect(firstCall).toContain("Initial prompt");
       expect(firstCall).toContain("First message");
@@ -157,7 +157,7 @@ describe("Tool Implementations", () => {
       ];
 
       // Second execution - should reflect updated state
-      tool.execute({ reason: "second save" });
+      await tool.execute({ reason: "second save" });
       const secondCall = mockFs.writeFileSync.mock.calls[1][1] as string;
       expect(secondCall).toContain("Updated prompt");
       expect(secondCall).toContain("Second message");
@@ -209,7 +209,7 @@ describe("Tool Implementations", () => {
       expect(toolNames).toContain("save_session_context");
     });
 
-    it("should register tools that are executable", () => {
+    it("should register tools that are executable", async () => {
       const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
@@ -220,7 +220,7 @@ describe("Tool Implementations", () => {
       const registry = createDefaultToolRegistry(mockContext);
 
       // Execute read_file tool
-      const result = registry.execute("read_file", {
+      const result = await registry.execute("read_file", {
         file_path: "/test/file.txt",
       });
 

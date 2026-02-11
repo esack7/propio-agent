@@ -81,6 +81,37 @@ export class ToolRegistry {
   }
 
   /**
+   * Get names of all registered tools in registration order.
+   *
+   * Returns all tool names, both enabled and disabled.
+   *
+   * @returns Array of tool names
+   */
+  getToolNames(): string[] {
+    return Array.from(this.tools.keys());
+  }
+
+  /**
+   * Check if a tool is registered.
+   *
+   * @param name - The name of the tool to check
+   * @returns true if the tool is registered, false otherwise
+   */
+  hasTool(name: string): boolean {
+    return this.tools.has(name);
+  }
+
+  /**
+   * Check if a tool is registered and enabled.
+   *
+   * @param name - The name of the tool to check
+   * @returns true if the tool is registered and enabled, false otherwise
+   */
+  isToolEnabled(name: string): boolean {
+    return this.tools.has(name) && this.enabledTools.has(name);
+  }
+
+  /**
    * Execute a tool with comprehensive error handling.
    *
    * Handles three error cases:
@@ -90,9 +121,9 @@ export class ToolRegistry {
    *
    * @param name - The name of the tool to execute
    * @param args - The arguments to pass to the tool
-   * @returns The string result from the tool, or an error message if execution fails
+   * @returns Promise resolving to the string result from the tool, or an error message if execution fails
    */
-  execute(name: string, args: Record<string, any>): string {
+  async execute(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = this.tools.get(name);
 
     if (!tool) {
@@ -104,7 +135,7 @@ export class ToolRegistry {
     }
 
     try {
-      return tool.execute(args);
+      return await tool.execute(args);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return `Error executing ${name}: ${errorMessage}`;

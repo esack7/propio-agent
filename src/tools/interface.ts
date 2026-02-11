@@ -25,8 +25,8 @@ export interface ExecutableTool {
   /**
    * Executes the tool logic with the provided arguments.
    * @param args - Tool arguments as a key-value record
-   * @returns String result from tool execution
+   * @returns Promise resolving to string result from tool execution
    * @throws Error if execution fails
    */
-  execute(args: Record<string, any>): string;
+  execute(args: Record<string, unknown>): Promise<string>;
 }

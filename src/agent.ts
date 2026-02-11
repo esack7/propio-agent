@@ -200,7 +200,7 @@ export class Agent {
         if (toolCalls && toolCalls.length > 0) {
           for (const toolCall of toolCalls) {
             const args = toolCall.function.arguments;
-            const result = this.toolRegistry.execute(
+            const result = await this.toolRegistry.execute(
               toolCall.function.name,
               args,
             );
@@ -283,7 +283,7 @@ export class Agent {
             const toolName = toolCall.function.name;
 
             onToken(`[Executing tool: ${toolName}]\n`);
-            const result = this.toolRegistry.execute(toolName, args);
+            const result = await this.toolRegistry.execute(toolName, args);
 
             this.sessionContext.push({
               role: "tool",
@@ -325,8 +325,8 @@ export class Agent {
     return this.toolRegistry.getEnabledSchemas();
   }
 
-  saveContext(reason?: string): string {
-    return this.toolRegistry.execute("save_session_context", { reason });
+  async saveContext(reason?: string): Promise<string> {
+    return await this.toolRegistry.execute("save_session_context", { reason });
   }
 
   /**
