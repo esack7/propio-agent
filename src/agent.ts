@@ -1,4 +1,3 @@
-import * as fs from "fs";
 import * as path from "path";
 import { LLMProvider } from "./providers/interface";
 import {
@@ -16,6 +15,10 @@ import {
   resolveProvider,
   resolveModelKey,
 } from "./providers/configLoader";
+import { ToolRegistry } from "./tools/registry";
+import { createDefaultToolRegistry } from "./tools/factory";
+import { ExecutableTool } from "./tools/interface";
+import { ToolContext } from "./tools/types";
 
 export class Agent {
   private provider: LLMProvider;
@@ -23,7 +26,7 @@ export class Agent {
   private sessionContext: ChatMessage[];
   private systemPrompt: string;
   private sessionContextFilePath: string;
-  private tools: ChatTool[];
+  private toolRegistry: ToolRegistry;
   private providersConfig: ProvidersConfig;
 
   /**
@@ -113,7 +116,22 @@ export class Agent {
     this.model = resolvedModelKey;
 
     this.sessionContext = [];
-    this.tools = this.initializeTools();
+
+    // Create ToolContext using property getters for live state access
+    const self = this;
+    const toolContext: ToolContext = {
+      get systemPrompt() {
+        return self.systemPrompt;
+      },
+      get sessionContext() {
+        return self.sessionContext;
+      },
+      get sessionContextFilePath() {
+        return self.sessionContextFilePath;
+      },
+    };
+
+    this.toolRegistry = createDefaultToolRegistry(toolContext);
   }
 
   /**
@@ -141,66 +159,6 @@ export class Agent {
     this.model = resolvedModelKey;
   }
 
-  private initializeTools(): ChatTool[] {
-    return [
-      {
-        type: "function",
-        function: {
-          name: "save_session_context",
-          description:
-            "Saves the current session context to a file. Call this after completing tasks to persist the session state.",
-          parameters: {
-            type: "object",
-            properties: {
-              reason: {
-                type: "string",
-                description: "Optional reason for saving the session context",
-              },
-            },
-          },
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "read_file",
-          description: "Reads the content of a file from the filesystem",
-          parameters: {
-            type: "object",
-            properties: {
-              file_path: {
-                type: "string",
-                description: "The path to the file to read",
-              },
-            },
-            required: ["file_path"],
-          },
-        },
-      },
-      {
-        type: "function",
-        function: {
-          name: "write_file",
-          description: "Writes content to a file on the filesystem",
-          parameters: {
-            type: "object",
-            properties: {
-              file_path: {
-                type: "string",
-                description: "The path to the file to write",
-              },
-              content: {
-                type: "string",
-                description: "The content to write to the file",
-              },
-            },
-            required: ["file_path", "content"],
-          },
-        },
-      },
-    ];
-  }
-
   async chat(userMessage: string): Promise<string> {
     this.sessionContext.push({
       role: "user",
@@ -224,7 +182,7 @@ export class Agent {
         const response = await this.provider.chat({
           model: this.model,
           messages: messages,
-          tools: this.tools,
+          tools: this.toolRegistry.getEnabledSchemas(),
         });
 
         const assistantMessage = response.message.content;
@@ -242,7 +200,10 @@ export class Agent {
         if (toolCalls && toolCalls.length > 0) {
           for (const toolCall of toolCalls) {
             const args = toolCall.function.arguments;
-            const result = this.executeTool(toolCall.function.name, args);
+            const result = await this.toolRegistry.execute(
+              toolCall.function.name,
+              args,
+            );
 
             this.sessionContext.push({
               role: "tool",
@@ -292,7 +253,7 @@ export class Agent {
         for await (const chunk of this.provider.streamChat({
           model: this.model,
           messages: messages,
-          tools: this.tools,
+          tools: this.toolRegistry.getEnabledSchemas(),
         })) {
           const token = chunk.delta;
           fullResponse += token;
@@ -322,7 +283,7 @@ export class Agent {
             const toolName = toolCall.function.name;
 
             onToken(`[Executing tool: ${toolName}]\n`);
-            const result = this.executeTool(toolName, args);
+            const result = await this.toolRegistry.execute(toolName, args);
 
             this.sessionContext.push({
               role: "tool",
@@ -361,56 +322,50 @@ export class Agent {
   }
 
   getTools(): ChatTool[] {
-    return [...this.tools];
+    return this.toolRegistry.getEnabledSchemas();
   }
 
-  saveContext(reason?: string): string {
-    return this.executeTool("save_session_context", { reason });
+  async saveContext(reason?: string): Promise<string> {
+    return await this.toolRegistry.execute("save_session_context", { reason });
   }
 
-  private executeTool(toolName: string, args: any): string {
-    try {
-      switch (toolName) {
-        case "save_session_context": {
-          let content = `=== Session Context ===\n`;
-          content += `System Prompt: ${this.systemPrompt}\n`;
-          content += `Saved at: ${new Date().toISOString()}\n`;
-          if (args.reason) {
-            content += `Reason: ${args.reason}\n`;
-          }
-          content += "\n";
+  /**
+   * Add a custom tool to the agent at runtime.
+   * The tool is registered and enabled by default.
+   *
+   * @param tool - ExecutableTool implementation to add
+   */
+  addTool(tool: ExecutableTool): void {
+    this.toolRegistry.register(tool);
+  }
 
-          if (this.sessionContext.length === 0) {
-            content += "No session context.\n";
-          } else {
-            this.sessionContext.forEach((msg, index) => {
-              content += `[${index + 1}] ${msg.role.toUpperCase()}:\n${msg.content}\n\n`;
-            });
-          }
+  /**
+   * Remove a tool from the agent at runtime.
+   * Idempotent - removing a nonexistent tool has no effect.
+   *
+   * @param name - Name of the tool to remove
+   */
+  removeTool(name: string): void {
+    this.toolRegistry.unregister(name);
+  }
 
-          fs.writeFileSync(this.sessionContextFilePath, content, "utf-8");
-          return `Successfully saved session context to ${this.sessionContextFilePath}`;
-        }
+  /**
+   * Enable a tool, making it available for LLM requests.
+   *
+   * @param name - Name of the tool to enable
+   */
+  enableTool(name: string): void {
+    this.toolRegistry.enable(name);
+  }
 
-        case "read_file": {
-          const filePath = args.file_path;
-          const content = fs.readFileSync(filePath, "utf-8");
-          return content;
-        }
-
-        case "write_file": {
-          const filePath = args.file_path;
-          const content = args.content;
-          fs.writeFileSync(filePath, content, "utf-8");
-          return `Successfully wrote to ${filePath}`;
-        }
-
-        default:
-          return `Unknown tool: ${toolName}`;
-      }
-    } catch (error) {
-      return `Error executing tool ${toolName}: ${error instanceof Error ? error.message : "Unknown error"}`;
-    }
+  /**
+   * Disable a tool, excluding it from LLM requests.
+   * The tool remains registered and can be re-enabled later.
+   *
+   * @param name - Name of the tool to disable
+   */
+  disableTool(name: string): void {
+    this.toolRegistry.disable(name);
   }
 
   /**
