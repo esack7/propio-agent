@@ -10,13 +10,6 @@ export interface LLMProvider {
   readonly name: string;
 
   /**
-   * Non-streaming chat completion
-   * @param request - The chat request with messages, model, and optional tools
-   * @returns Promise resolving to ChatResponse with message and stop reason
-   */
-  chat(request: ChatRequest): Promise<ChatResponse>;
-
-  /**
    * Streaming chat completion
    * @param request - The chat request with messages, model, and optional tools
    * @returns AsyncIterable yielding ChatChunk objects for each token/chunk of the response

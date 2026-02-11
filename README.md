@@ -387,7 +387,9 @@ Switch between providers without losing session context:
 const agent = new Agent();
 
 // Chat with Ollama
-const response1 = await agent.chat('Hello!');
+const response1 = await agent.streamChat('Hello!', (token) => {
+  process.stdout.write(token);
+});
 
 // Switch to Bedrock
 (agent as any).switchProvider({
@@ -398,7 +400,9 @@ const response1 = await agent.chat('Hello!');
 });
 
 // Continue chatting with Bedrock, session context is preserved
-const response2 = await agent.chat('Continue the conversation...');
+const response2 = await agent.streamChat('Continue the conversation...', (token) => {
+  process.stdout.write(token);
+});
 ```
 
 ## Project Structure
@@ -432,7 +436,6 @@ The agent uses a provider abstraction layer that allows swapping between differe
 ### Core Components
 
 - **LLMProvider Interface** (`providers/interface.ts`): Defines the standard interface that all providers must implement
-  - `chat()`: Non-streaming completions
   - `streamChat()`: Streaming completions
   - `name`: Provider identifier
 

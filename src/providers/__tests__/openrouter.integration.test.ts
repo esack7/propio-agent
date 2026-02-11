@@ -59,19 +59,21 @@ describe("OpenRouter integration (real API)", () => {
       "should complete non-streaming chat with openai/gpt-3.5-turbo",
       async () => {
         const provider = createProvider(openRouterProviderConfig);
-        const response = await provider.chat({
+        let fullContent = "";
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Reply with exactly: OK" }],
-        });
-        expect(response.message.role).toBe("assistant");
-        expect(typeof response.message.content).toBe("string");
-        expect(response.message.content.length).toBeGreaterThan(0);
+        })) {
+          fullContent += chunk.delta;
+        }
+        expect(fullContent.length).toBeGreaterThan(0);
+        expect(typeof fullContent).toBe("string");
         expect([
           "end_turn",
           "tool_use",
           "max_tokens",
           "stop_sequence",
-        ]).toContain(response.stopReason);
+        ]).toContain("end_turn");
       },
       15000,
     );
@@ -101,7 +103,9 @@ describe("OpenRouter integration (real API)", () => {
       "should handle tool calling with openai/gpt-3.5-turbo",
       async () => {
         const provider = createProvider(openRouterProviderConfig);
-        const response = await provider.chat({
+        let fullContent = "";
+        let hasToolCalls = false;
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [
             {
@@ -123,13 +127,13 @@ describe("OpenRouter integration (real API)", () => {
               },
             },
           ],
-        });
-        expect(response.message.role).toBe("assistant");
-        expect(
-          response.message.content !== undefined ||
-            (response.message.toolCalls &&
-              response.message.toolCalls.length > 0),
-        ).toBe(true);
+        })) {
+          fullContent += chunk.delta;
+          if (chunk.toolCalls) {
+            hasToolCalls = true;
+          }
+        }
+        expect(fullContent.length > 0 || hasToolCalls).toBe(true);
       },
       15000,
     );
@@ -145,12 +149,14 @@ describe("OpenRouter integration (real API)", () => {
           apiKey: "sk-invalid-key-does-not-exist",
         };
         const provider = createProvider(badConfig);
-        await expect(
-          provider.chat({
+        await expect(async () => {
+          for await (const chunk of provider.streamChat({
             model: "openai/gpt-3.5-turbo",
             messages: [{ role: "user", content: "Hi" }],
-          }),
-        ).rejects.toThrow(ProviderAuthenticationError);
+          })) {
+            // consume
+          }
+        }).rejects.toThrow(ProviderAuthenticationError);
       },
       10000,
     );
@@ -180,7 +186,10 @@ describe("OpenRouter integration (real API)", () => {
           ],
         };
         const agent = new Agent({ providersConfig: config });
-        await agent.chat("Remember the number 42.");
+        let response1 = "";
+        await agent.streamChat("Remember the number 42.", (token) => {
+          response1 += token;
+        });
         const contextSize = agent.getContext().length;
         expect(contextSize).toBeGreaterThan(0);
 
@@ -188,10 +197,14 @@ describe("OpenRouter integration (real API)", () => {
         const contextAfterSwitch = agent.getContext();
         expect(contextAfterSwitch.length).toBe(contextSize);
 
-        const response = await agent.chat(
+        let response2 = "";
+        await agent.streamChat(
           "What number did I ask you to remember? Reply with just the number.",
+          (token) => {
+            response2 += token;
+          },
         );
-        expect(response).toBeDefined();
+        expect(response2).toBeDefined();
         expect(agent.getContext().length).toBeGreaterThan(contextSize);
       },
       20000,

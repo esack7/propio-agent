@@ -87,7 +87,6 @@ describe("Provider Factory", () => {
       const provider = createProvider(config);
 
       expect(provider).toBeDefined();
-      expect(typeof provider.chat).toBe("function");
       expect(typeof provider.streamChat).toBe("function");
       expect(provider.name).toBeDefined();
     });

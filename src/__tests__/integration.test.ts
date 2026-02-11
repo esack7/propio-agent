@@ -29,16 +29,6 @@ class MockIntegrationProvider implements LLMProvider {
     this.name = name;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
-    return {
-      message: {
-        role: "assistant",
-        content: `Response from ${this.name}: ${request.model}`,
-      },
-      stopReason: "end_turn",
-    };
-  }
-
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     const chunks = `Response from ${this.name}`.split(" ");
     for (const chunk of chunks) {
@@ -52,7 +42,6 @@ describe("Agent Integration Tests", () => {
     it("should maintain existing chat interface", async () => {
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       // Verify methods exist and have correct signatures
-      expect(typeof agent.chat).toBe("function");
       expect(typeof agent.streamChat).toBe("function");
       expect(typeof agent.getContext).toBe("function");
       expect(typeof agent.getTools).toBe("function");
@@ -111,11 +100,11 @@ describe("Agent Integration Tests", () => {
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("First message");
+      await agent.streamChat("First message", () => {});
       expect(agent.getContext().length).toBeGreaterThan(0);
 
       const contextAfterFirst = agent.getContext().length;
-      await agent.chat("Second message");
+      await agent.streamChat("Second message", () => {});
 
       expect(agent.getContext().length).toBeGreaterThan(contextAfterFirst);
     });
@@ -125,7 +114,7 @@ describe("Agent Integration Tests", () => {
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("Test message");
+      await agent.streamChat("Test message", () => {});
       expect(agent.getContext().length).toBeGreaterThan(0);
 
       agent.clearContext();
@@ -136,15 +125,12 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("test");
       let receivedSystemPrompt = "";
 
-      mockProvider.chat = async (request: ChatRequest) => {
+      mockProvider.streamChat = async function* (request: ChatRequest) {
         const systemMsg = request.messages.find((m) => m.role === "system");
         if (systemMsg) {
           receivedSystemPrompt = systemMsg.content;
         }
-        return {
-          message: { role: "assistant", content: "Response" },
-          stopReason: "end_turn",
-        };
+        yield { delta: "Response" };
       };
 
       const agent = new Agent({
@@ -156,7 +142,7 @@ describe("Agent Integration Tests", () => {
       const newPrompt = "Updated prompt";
       agent.setSystemPrompt(newPrompt);
 
-      await agent.chat("Test");
+      await agent.streamChat("Test", () => {});
       // Verify new prompt is used in provider call
       expect(receivedSystemPrompt).toBe(newPrompt);
     });
@@ -188,10 +174,9 @@ describe("Agent Integration Tests", () => {
 
     it("should handle tool execution errors gracefully", async () => {
       const mockProvider = new MockIntegrationProvider("test");
-      mockProvider.chat = async () => ({
-        message: {
-          role: "assistant",
-          content: "Calling tool",
+      mockProvider.streamChat = async function* () {
+        yield {
+          delta: "Calling tool",
           toolCalls: [
             {
               function: {
@@ -200,15 +185,14 @@ describe("Agent Integration Tests", () => {
               },
             },
           ],
-        },
-        stopReason: "tool_use",
-      });
+        };
+      };
 
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
       // Should not throw, but add error message to context
-      await expect(agent.chat("Test")).resolves.toBeDefined();
+      await expect(agent.streamChat("Test", () => {})).resolves.toBeDefined();
 
       const context = agent.getContext();
       const toolMessage = context.find((m) => m.role === "tool");
@@ -222,55 +206,41 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("test");
       let callCount = 0;
 
-      mockProvider.chat = async () => {
+      mockProvider.streamChat = async function* () {
         callCount++;
         if (callCount === 1) {
-          return {
-            message: {
-              role: "assistant",
-              content: "First tool call",
-              toolCalls: [
-                {
-                  function: {
-                    name: "save_session_context",
-                    arguments: { reason: "test1" },
-                  },
+          yield {
+            delta: "First tool call",
+            toolCalls: [
+              {
+                function: {
+                  name: "save_session_context",
+                  arguments: { reason: "test1" },
                 },
-              ],
-            },
-            stopReason: "tool_use",
+              },
+            ],
           };
         } else if (callCount === 2) {
-          return {
-            message: {
-              role: "assistant",
-              content: "Second tool call",
-              toolCalls: [
-                {
-                  function: {
-                    name: "save_session_context",
-                    arguments: { reason: "test2" },
-                  },
+          yield {
+            delta: "Second tool call",
+            toolCalls: [
+              {
+                function: {
+                  name: "save_session_context",
+                  arguments: { reason: "test2" },
                 },
-              ],
-            },
-            stopReason: "tool_use",
+              },
+            ],
           };
         } else {
-          return {
-            message: {
-              role: "assistant",
-              content: "Done",
-            },
-            stopReason: "end_turn",
-          };
+          yield { delta: "Done" };
         }
       };
 
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      const response = await agent.chat("Execute tools");
+      const response = await agent.streamChat("Execute tools", () => {});
       expect(response).toBe("Done");
       expect(callCount).toBe(3); // Initial + 2 tool executions + final response
     });
@@ -373,7 +343,7 @@ describe("Agent Integration Tests", () => {
       const agent = new Agent({ providersConfig: config });
       (agent as any).provider = provider1;
 
-      await agent.chat("First message with provider 1");
+      await agent.streamChat("First message with provider 1", () => {});
       const contextSize = agent.getContext().length;
 
       (agent as any).switchProvider("ollama-alt");
@@ -400,7 +370,7 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("switched");
       (agent as any).provider = mockProvider;
 
-      const response = await agent.chat("After switch");
+      const response = await agent.streamChat("After switch", () => {});
       expect(response).toContain("switched");
     });
   });
@@ -408,19 +378,19 @@ describe("Agent Integration Tests", () => {
   describe("Error handling", () => {
     it("should handle provider errors gracefully", async () => {
       const mockProvider = new MockIntegrationProvider("test");
-      mockProvider.chat = async () => {
+      mockProvider.streamChat = async function* () {
         throw new Error("Provider error");
       };
 
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await expect(agent.chat("Test")).rejects.toThrow();
+      await expect(agent.streamChat("Test", () => {})).rejects.toThrow();
     });
 
     it("should provide useful error messages", async () => {
       const mockProvider = new MockIntegrationProvider("test-provider");
-      mockProvider.chat = async () => {
+      mockProvider.streamChat = async function* () {
         throw new Error("Connection failed");
       };
 
@@ -428,7 +398,7 @@ describe("Agent Integration Tests", () => {
       (agent as any).provider = mockProvider;
 
       try {
-        await agent.chat("Test");
+        await agent.streamChat("Test", () => {});
       } catch (error) {
         if (error instanceof Error) {
           expect(error.message).toContain("test-provider");
@@ -440,21 +410,17 @@ describe("Agent Integration Tests", () => {
   describe("Context persistence", () => {
     it("should maintain context across calls", async () => {
       const mockProvider = new MockIntegrationProvider("test");
-      mockProvider.chat = async (request: ChatRequest) => ({
-        message: {
-          role: "assistant",
-          content: `Received ${request.messages.length} messages`,
-        },
-        stopReason: "end_turn",
-      });
+      mockProvider.streamChat = async function* (request: ChatRequest) {
+        yield { delta: `Received ${request.messages.length} messages` };
+      };
 
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("Message 1");
+      await agent.streamChat("Message 1", () => {});
       const contextAfter1 = agent.getContext().length;
 
-      await agent.chat("Message 2");
+      await agent.streamChat("Message 2", () => {});
       const contextAfter2 = agent.getContext().length;
 
       expect(contextAfter2).toBeGreaterThan(contextAfter1);
@@ -466,15 +432,12 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("test");
       const systemPromptUsed: string[] = [];
 
-      mockProvider.chat = async (request: ChatRequest) => {
+      mockProvider.streamChat = async function* (request: ChatRequest) {
         const systemMsg = request.messages.find((m) => m.role === "system");
         if (systemMsg) {
           systemPromptUsed.push(systemMsg.content);
         }
-        return {
-          message: { role: "assistant", content: "Response" },
-          stopReason: "end_turn",
-        };
+        yield { delta: "Response" };
       };
 
       const customPrompt = "Custom system prompt";
@@ -484,8 +447,8 @@ describe("Agent Integration Tests", () => {
       });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("Test 1");
-      await agent.chat("Test 2");
+      await agent.streamChat("Test 1", () => {});
+      await agent.streamChat("Test 2", () => {});
 
       expect(systemPromptUsed).toHaveLength(2);
       expect(systemPromptUsed[0]).toBe(customPrompt);
@@ -508,20 +471,17 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("test");
       const toolsReceived: any[] = [];
 
-      mockProvider.chat = async (request: ChatRequest) => {
+      mockProvider.streamChat = async function* (request: ChatRequest) {
         if (request.tools) {
           toolsReceived.push(...request.tools);
         }
-        return {
-          message: { role: "assistant", content: "Response" },
-          stopReason: "end_turn",
-        };
+        yield { delta: "Response" };
       };
 
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("Test with tools");
+      await agent.streamChat("Test with tools", () => {});
 
       expect(toolsReceived.length).toBeGreaterThan(0);
       expect(
