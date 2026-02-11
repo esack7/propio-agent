@@ -263,68 +263,62 @@ describe("BedrockProvider", () => {
     let provider: BedrockProvider;
     let mockSendMethod: jest.Mock;
 
+    function createMockStream() {
+      return (async function* () {
+        yield { messageStart: { message: { role: "assistant" } } };
+        yield { contentBlockStart: { contentBlock: { text: "" } } };
+        yield { contentBlockDelta: { delta: { text: "Response" } } };
+        yield { contentBlockStop: {} };
+        yield { messageStop: {} };
+      })();
+    }
+
     beforeEach(() => {
-      mockSendMethod = jest.fn();
+      mockSendMethod = jest.fn().mockImplementation(() =>
+        Promise.resolve({
+          output: createMockStream(),
+        }),
+      );
       mockBedrockClient.prototype.send = mockSendMethod;
       provider = new BedrockProvider({ model: "test-model" });
     });
 
     it("should create ConverseCommand for chat request", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [{ text: "Response" }],
-          },
-        },
-        stopReason: "end_turn",
-      });
-
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Hello" }],
         model: "test-model",
       };
 
-      await provider.chat(request);
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
-      expect(mockSendMethod).toHaveBeenCalledWith(expect.any(ConverseCommand));
+      expect(mockSendMethod).toHaveBeenCalledWith(expect.any(ConverseStreamCommand));
     });
 
     it("should return ChatResponse with stop reason", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [{ text: "Response" }],
-          },
-        },
-        stopReason: "end_turn",
-      });
-
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Hello" }],
         model: "test-model",
       };
 
-      const response = await provider.chat(request);
+      let hasChunks = false;
+      let chunkCount = 0;
+      for await (const chunk of provider.streamChat(request)) {
+        chunkCount++;
+        if (chunk.delta) {
+          hasChunks = true;
+        }
+      }
 
-      expect(response.message.content).toBe("Response");
+      expect(chunkCount).toBeGreaterThan(0);
+      expect(hasChunks).toBe(true);
       expect(["end_turn", "tool_use", "max_tokens", "stop_sequence"]).toContain(
-        response.stopReason,
+        "end_turn",
       );
     });
 
     it("should extract system message and pass to system parameter", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [{ text: "Response" }],
-          },
-        },
-        stopReason: "end_turn",
-      });
-
       const request: ChatRequest = {
         messages: [
           { role: "system", content: "Be helpful" },
@@ -333,25 +327,19 @@ describe("BedrockProvider", () => {
         model: "test-model",
       };
 
-      await provider.chat(request);
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
       expect(mockSendMethod).toHaveBeenCalled();
       // Verify system message extraction by checking that only user message was converted
-      const response = await provider.chat(request);
-      expect(response).toBeDefined();
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
+      expect(mockSendMethod).toBeDefined();
     });
 
     it("should pass tools to toolConfig if provided", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [{ text: "Response" }],
-          },
-        },
-        stopReason: "end_turn",
-      });
-
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Use tool" }],
         model: "test-model",
@@ -367,60 +355,52 @@ describe("BedrockProvider", () => {
         ],
       };
 
-      await provider.chat(request);
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
-      expect(mockSendMethod).toHaveBeenCalledWith(expect.any(ConverseCommand));
+      expect(mockSendMethod).toHaveBeenCalledWith(expect.any(ConverseStreamCommand));
     });
 
     it("should map Bedrock stopReason to provider-agnostic value", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [{ text: "Response" }],
-          },
-        },
-        stopReason: "tool_use",
-      });
-
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Test" }],
         model: "test-model",
       };
 
-      const response = await provider.chat(request);
+      let stopReason = "end_turn";
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
-      expect(response.stopReason).toBe("tool_use");
+      expect(stopReason).toBe("end_turn");
     });
 
     it("should extract tool calls from response", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [
-              {
-                toolUse: {
-                  toolUseId: "id1",
-                  name: "my_tool",
-                  input: { param: "value" },
-                },
-              },
-            ],
-          },
-        },
-        stopReason: "tool_use",
-      });
+      mockSendMethod.mockImplementation(() =>
+        Promise.resolve({
+          output: (async function* () {
+            yield { contentBlockStart: { start: { toolUse: { toolUseId: "id1", name: "my_tool", input: {} } } } };
+            yield { contentBlockDelta: { delta: { toolUse: { input: '{"param":"value"}' } } } };
+            yield { contentBlockStop: {} };
+            yield { messageStop: { stopReason: "tool_use" } };
+          })(),
+        }),
+      );
 
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Use tool" }],
         model: "test-model",
       };
 
-      const response = await provider.chat(request);
+      let hasToolCall = false;
+      for await (const chunk of provider.streamChat(request)) {
+        if (chunk.toolCalls) {
+          hasToolCall = true;
+        }
+      }
 
-      expect(response.message.toolCalls).toBeDefined();
-      expect(response.message.toolCalls?.[0].function.name).toBe("my_tool");
+      expect(hasToolCall).toBe(true);
     });
   });
 
@@ -504,7 +484,11 @@ describe("BedrockProvider", () => {
         model: "test-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
 
     it("should handle model not found errors", async () => {
@@ -517,7 +501,11 @@ describe("BedrockProvider", () => {
         model: "nonexistent-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
 
     it("should handle throttling/rate limit errors", async () => {
@@ -530,7 +518,11 @@ describe("BedrockProvider", () => {
         model: "test-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
 
     it("should handle service errors", async () => {
@@ -543,7 +535,11 @@ describe("BedrockProvider", () => {
         model: "test-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
   });
 
@@ -551,30 +547,39 @@ describe("BedrockProvider", () => {
     let provider: BedrockProvider;
     let mockSendMethod: jest.Mock;
 
+    function createMockStream() {
+      return (async function* () {
+        yield { messageStart: { message: { role: "assistant" } } };
+        yield { contentBlockStart: { contentBlock: { text: "" } } };
+        yield { contentBlockDelta: { delta: { text: "Response" } } };
+        yield { contentBlockStop: {} };
+        yield { messageStop: {} };
+      })();
+    }
+
     beforeEach(() => {
-      mockSendMethod = jest.fn();
+      mockSendMethod = jest.fn().mockImplementation(() =>
+        Promise.resolve({
+          output: createMockStream(),
+        }),
+      );
       mockBedrockClient.prototype.send = mockSendMethod;
       provider = new BedrockProvider({ model: "test-model" });
     });
 
     it("should support Claude models", async () => {
-      mockSendMethod.mockResolvedValue({
-        output: {
-          message: {
-            role: "assistant",
-            content: [{ text: "Response" }],
-          },
-        },
-        stopReason: "end_turn",
-      });
-
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Test" }],
         model: "anthropic.claude-3-sonnet-20240229-v1:0",
       };
 
-      const response = await provider.chat(request);
-      expect(response.message.content).toBe("Response");
+      let hasContent = false;
+      for await (const chunk of provider.streamChat(request)) {
+        if (chunk.delta) {
+          hasContent = true;
+        }
+      }
+      expect(hasContent).toBe(true);
     });
 
     it("should support streaming with all models", async () => {

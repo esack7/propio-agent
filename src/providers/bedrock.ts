@@ -31,57 +31,6 @@ export class BedrockProvider implements LLMProvider {
     this.model = options.model;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
-    try {
-      // Extract system message if present
-      const systemMessage = request.messages.find((m) => m.role === "system");
-      const otherMessages = request.messages.filter((m) => m.role !== "system");
-
-      // Convert messages to Bedrock format
-      const messages = otherMessages.map((msg) =>
-        this.chatMessageToBedrockMessage(msg),
-      );
-
-      // Convert tools to Bedrock format if provided
-      const toolConfig = request.tools
-        ? {
-            tools: request.tools.map((tool) =>
-              this.chatToolToBedrockTool(tool),
-            ),
-          }
-        : undefined;
-
-      // System message needs to be converted to SystemContentBlock format
-      const systemContent = systemMessage
-        ? [{ text: systemMessage.content }]
-        : undefined;
-
-      const command = new ConverseCommand({
-        modelId: request.model || this.model,
-        messages: messages as any,
-        system: systemContent as any,
-        toolConfig: toolConfig as any,
-      });
-
-      const response = await this.client.send(command);
-
-      const message = response.output?.message;
-      if (!message) {
-        throw new Error("No message in response");
-      }
-
-      const chatMessage = this.bedrockMessageToChatMessage(message);
-      const stopReason = this.mapStopReason(response.stopReason);
-
-      return {
-        message: chatMessage,
-        stopReason,
-      };
-    } catch (error) {
-      throw this.translateError(error);
-    }
-  }
-
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
       // Extract system message if present

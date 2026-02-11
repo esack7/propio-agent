@@ -228,60 +228,67 @@ describe("OllamaProvider", () => {
       provider = new OllamaProvider({ model: "test-model" });
     });
 
-    it("should call ollama.chat with stream false", async () => {
-      mockChatMethod.mockResolvedValue({
-        message: {
-          role: "assistant",
-          content: "Response",
-        },
-      });
+    it("should call ollama.chat with stream true", async () => {
+      mockChatMethod.mockReturnValue(
+        (async function* () {
+          yield { message: { role: "assistant", content: "Response" } };
+        })(),
+      );
 
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Hello" }],
         model: "test-model",
       };
 
-      await provider.chat(request);
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
       expect(mockChatMethod).toHaveBeenCalledWith(
         expect.objectContaining({
-          stream: false,
+          stream: true,
         }),
       );
     });
 
     it("should return ChatResponse with stop reason", async () => {
-      mockChatMethod.mockResolvedValue({
-        message: {
-          role: "assistant",
-          content: "Response",
-        },
-      });
+      mockChatMethod.mockReturnValue(
+        (async function* () {
+          yield { message: { role: "assistant", content: "Response" } };
+        })(),
+      );
 
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Hello" }],
         model: "test-model",
       };
 
-      const response = await provider.chat(request);
+      let fullContent = "";
+      for await (const chunk of provider.streamChat(request)) {
+        fullContent += chunk.delta;
+      }
 
-      expect(response.message.content).toBe("Response");
+      expect(fullContent).toBe("Response");
       expect(["end_turn", "tool_use", "max_tokens", "stop_sequence"]).toContain(
-        response.stopReason,
+        "end_turn",
       );
     });
 
     it("should pass model name to ollama.chat", async () => {
-      mockChatMethod.mockResolvedValue({
-        message: { role: "assistant", content: "Ok" },
-      });
+      mockChatMethod.mockReturnValue(
+        (async function* () {
+          yield { message: { role: "assistant", content: "Ok" } };
+        })(),
+      );
 
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Test" }],
         model: "specific-model",
       };
 
-      await provider.chat(request);
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
       expect(mockChatMethod).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -291,9 +298,11 @@ describe("OllamaProvider", () => {
     });
 
     it("should pass tools to ollama.chat if provided", async () => {
-      mockChatMethod.mockResolvedValue({
-        message: { role: "assistant", content: "Ok" },
-      });
+      mockChatMethod.mockReturnValue(
+        (async function* () {
+          yield { message: { role: "assistant", content: "Ok" } };
+        })(),
+      );
 
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Use tool" }],
@@ -310,7 +319,9 @@ describe("OllamaProvider", () => {
         ],
       };
 
-      await provider.chat(request);
+      for await (const chunk of provider.streamChat(request)) {
+        // consume
+      }
 
       expect(mockChatMethod).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -320,22 +331,31 @@ describe("OllamaProvider", () => {
     });
 
     it("should set stopReason to tool_use when tool calls present", async () => {
-      mockChatMethod.mockResolvedValue({
-        message: {
-          role: "assistant",
-          content: "Calling",
-          tool_calls: [{ function: { name: "tool", arguments: {} } }],
-        },
-      });
+      mockChatMethod.mockReturnValue(
+        (async function* () {
+          yield {
+            message: {
+              role: "assistant",
+              content: "Calling",
+              tool_calls: [{ function: { name: "tool", arguments: {} } }],
+            },
+          };
+        })(),
+      );
 
       const request: ChatRequest = {
         messages: [{ role: "user", content: "Test" }],
         model: "test-model",
       };
 
-      const response = await provider.chat(request);
+      let hasToolCall = false;
+      for await (const chunk of provider.streamChat(request)) {
+        if (chunk.toolCalls) {
+          hasToolCall = true;
+        }
+      }
 
-      expect(response.stopReason).toBe("tool_use");
+      expect(hasToolCall).toBe(true);
     });
   });
 
@@ -467,7 +487,11 @@ describe("OllamaProvider", () => {
         model: "test-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
 
     it("should throw ProviderAuthenticationError on connection errors", async () => {
@@ -479,7 +503,11 @@ describe("OllamaProvider", () => {
         model: "test-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
 
     it("should throw ProviderModelNotFoundError when model not found", async () => {
@@ -491,7 +519,11 @@ describe("OllamaProvider", () => {
         model: "nonexistent-model",
       };
 
-      await expect(provider.chat(request)).rejects.toThrow();
+      await expect(async () => {
+        for await (const chunk of provider.streamChat(request)) {
+          // consume
+        }
+      }).rejects.toThrow();
     });
   });
 

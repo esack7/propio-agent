@@ -15,24 +15,12 @@ import { ProvidersConfig } from "../providers/config";
  */
 class MockProvider implements LLMProvider {
   name = "mock";
-  chatCalls: ChatRequest[] = [];
   streamChatCalls: ChatRequest[] = [];
-
-  async chat(request: ChatRequest): Promise<ChatResponse> {
-    this.chatCalls.push(request);
-    return {
-      message: {
-        role: "assistant",
-        content: "Mock response",
-      },
-      stopReason: "end_turn",
-    };
-  }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     this.streamChatCalls.push(request);
     yield { delta: "Mock " };
-    yield { delta: "stream" };
+    yield { delta: "response" };
   }
 }
 
@@ -274,7 +262,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("First message");
+      await agent.streamChat("First message", () => {});
       const contextBefore = agent.getContext();
 
       (agent as any).switchProvider("bedrock");
@@ -315,14 +303,14 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("Chat Integration with New Config", () => {
-    it("should pass resolved model to provider in chat", async () => {
+    it("should pass resolved model to provider in streamChat", async () => {
       const mockProvider = new MockProvider();
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("Test");
+      await agent.streamChat("Test", () => {});
 
-      expect(mockProvider.chatCalls[0].model).toBe("llama3.2:3b");
+      expect(mockProvider.streamChatCalls[0].model).toBe("llama3.2:3b");
     });
 
     it("should pass correct model when modelKey override is used", async () => {
@@ -333,21 +321,21 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
       (agent as any).provider = mockProvider;
 
-      await agent.chat("Test");
+      await agent.streamChat("Test", () => {});
 
-      expect(mockProvider.chatCalls[0].model).toBe("llama3.2:90b");
+      expect(mockProvider.streamChatCalls[0].model).toBe("llama3.2:90b");
     });
 
-    it("should maintain all existing chat functionality", async () => {
+    it("should maintain all existing streamChat functionality", async () => {
       const mockProvider = new MockProvider();
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      const response = await agent.chat("Test message");
+      const response = await agent.streamChat("Test message", () => {});
 
       expect(typeof response).toBe("string");
       expect(response).toBe("Mock response");
-      expect(mockProvider.chatCalls).toHaveLength(1);
+      expect(mockProvider.streamChatCalls).toHaveLength(1);
     });
   });
 
@@ -378,15 +366,6 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("Backward Compatibility", () => {
-    it("should keep chat() signature unchanged", async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const response = await agent.chat("Test");
-      expect(typeof response).toBe("string");
-    });
-
     it("should keep streamChat() signature unchanged", async () => {
       const mockProvider = new MockProvider();
       const agent = new Agent({ providersConfig: testProvidersConfig });

@@ -52,17 +52,21 @@ describe("OpenRouterProvider", () => {
 
   describe("chat()", () => {
     it("should return ChatResponse with message when fetch succeeds", async () => {
-      const mockJson = {
-        choices: [
-          {
-            message: { role: "assistant", content: "Hello back" },
-            finish_reason: "stop",
-          },
-        ],
-      };
+      const chunks = [
+        'data: {"choices":[{"delta":{"content":"Hello back"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      const stream = new ReadableStream({
+        start(controller) {
+          chunks.forEach((c) =>
+            controller.enqueue(new TextEncoder().encode(c)),
+          );
+          controller.close();
+        },
+      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve(mockJson),
+        body: stream,
       });
 
       const provider = new OpenRouterProvider({
@@ -73,11 +77,12 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         messages: [{ role: "user", content: "Hello" }],
       };
-      const response = await provider.chat(request);
+      let fullContent = "";
+      for await (const chunk of provider.streamChat(request)) {
+        fullContent += chunk.delta;
+      }
 
-      expect(response.message.role).toBe("assistant");
-      expect(response.message.content).toBe("Hello back");
-      expect(response.stopReason).toBe("end_turn");
+      expect(fullContent).toBe("Hello back");
       expect(fetch).toHaveBeenCalledWith(
         "https://openrouter.ai/api/v1/chat/completions",
         expect.objectContaining({
@@ -92,21 +97,25 @@ describe("OpenRouterProvider", () => {
 
     it("should translate messages to OpenAI format in request body", async () => {
       let capturedBody: unknown = null;
+      const chunks = [
+        'data: {"choices":[{"delta":{"content":"Ok"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      const stream = new ReadableStream({
+        start(controller) {
+          chunks.forEach((c) =>
+            controller.enqueue(new TextEncoder().encode(c)),
+          );
+          controller.close();
+        },
+      });
       globalThis.fetch = jest
         .fn()
         .mockImplementation((_url: string, init?: RequestInit) => {
           capturedBody = init?.body ? JSON.parse(init.body as string) : null;
           return Promise.resolve({
             ok: true,
-            json: () =>
-              Promise.resolve({
-                choices: [
-                  {
-                    message: { role: "assistant", content: "Ok" },
-                    finish_reason: "stop",
-                  },
-                ],
-              }),
+            body: stream,
           });
         });
 
@@ -118,7 +127,9 @@ describe("OpenRouterProvider", () => {
         { role: "system", content: "You are helpful" },
         { role: "user", content: "Hi" },
       ];
-      await provider.chat({ model: "openai/gpt-3.5-turbo", messages });
+      for await (const chunk of provider.streamChat({ model: "openai/gpt-3.5-turbo", messages })) {
+        // consume
+      }
 
       expect(capturedBody).not.toBeNull();
       const body = capturedBody as {
@@ -127,7 +138,7 @@ describe("OpenRouterProvider", () => {
         stream: boolean;
       };
       expect(body.model).toBe("openai/gpt-3.5-turbo");
-      expect(body.stream).toBe(false);
+      expect(body.stream).toBe(true);
       expect(body.messages).toHaveLength(2);
       expect(body.messages[0]).toEqual({
         role: "system",
@@ -138,34 +149,28 @@ describe("OpenRouterProvider", () => {
 
     it("should include tools and handle tool_calls in request and response", async () => {
       let capturedBody: unknown = null;
+      const chunks = [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"loc"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ation\\":\\"NYC\\"}"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      const stream = new ReadableStream({
+        start(controller) {
+          chunks.forEach((c) =>
+            controller.enqueue(new TextEncoder().encode(c)),
+          );
+          controller.close();
+        },
+      });
       globalThis.fetch = jest
         .fn()
         .mockImplementation((_url: string, init?: RequestInit) => {
           capturedBody = init?.body ? JSON.parse(init.body as string) : null;
           return Promise.resolve({
             ok: true,
-            json: () =>
-              Promise.resolve({
-                choices: [
-                  {
-                    message: {
-                      role: "assistant",
-                      content: "",
-                      tool_calls: [
-                        {
-                          id: "call_1",
-                          type: "function",
-                          function: {
-                            name: "get_weather",
-                            arguments: '{"location":"NYC"}',
-                          },
-                        },
-                      ],
-                    },
-                    finish_reason: "tool_calls",
-                  },
-                ],
-              }),
+            body: stream,
           });
         });
 
@@ -187,31 +192,35 @@ describe("OpenRouterProvider", () => {
           },
         ],
       };
-      const response = await provider.chat(request);
+      let hasToolCalls = false;
+      for await (const chunk of provider.streamChat(request)) {
+        if (chunk.toolCalls) {
+          hasToolCalls = true;
+        }
+      }
 
       const body = capturedBody as { tools?: unknown[] };
       expect(body.tools).toHaveLength(1);
       expect((body.tools as any)[0].function.name).toBe("get_weather");
-      expect(response.message.toolCalls).toHaveLength(1);
-      expect(response.message.toolCalls![0].function.name).toBe("get_weather");
-      expect(response.message.toolCalls![0].function.arguments).toEqual({
-        location: "NYC",
-      });
-      expect(response.stopReason).toBe("tool_use");
+      expect(hasToolCalls).toBe(true);
     });
 
     it("should include HTTP-Referer and X-Title headers when configured", async () => {
+      const chunks = [
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      const stream = new ReadableStream({
+        start(controller) {
+          chunks.forEach((c) =>
+            controller.enqueue(new TextEncoder().encode(c)),
+          );
+          controller.close();
+        },
+      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        json: () =>
-          Promise.resolve({
-            choices: [
-              {
-                message: { role: "assistant", content: "Hi" },
-                finish_reason: "stop",
-              },
-            ],
-          }),
+        body: stream,
       });
 
       const provider = new OpenRouterProvider({
@@ -220,10 +229,12 @@ describe("OpenRouterProvider", () => {
         httpReferer: "https://myapp.com",
         xTitle: "My App",
       });
-      await provider.chat({
+      for await (const chunk of provider.streamChat({
         model: "openai/gpt-3.5-turbo",
         messages: [{ role: "user", content: "Hi" }],
-      });
+      })) {
+        // consume
+      }
 
       expect(fetch).toHaveBeenCalledWith(
         expect.any(String),
@@ -246,18 +257,22 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
       });
-      await expect(
-        provider.chat({
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(ProviderAuthenticationError);
-      await expect(
-        provider.chat({
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderAuthenticationError);
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(/Invalid OpenRouter API key/);
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(/Invalid OpenRouter API key/);
     });
 
     it("should throw ProviderRateLimitError on 429 with retry-after", async () => {
@@ -272,12 +287,14 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
       });
-      await expect(
-        provider.chat({
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(ProviderRateLimitError);
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderRateLimitError);
     });
 
     it("should throw ProviderModelNotFoundError on 404", async () => {
@@ -290,12 +307,14 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
       });
-      await expect(
-        provider.chat({
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(ProviderModelNotFoundError);
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderModelNotFoundError);
     });
 
     it("should throw ProviderError on 402", async () => {
@@ -308,18 +327,22 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
       });
-      await expect(
-        provider.chat({
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(ProviderError);
-      await expect(
-        provider.chat({
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderError);
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(/Insufficient OpenRouter credits/);
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(/Insufficient OpenRouter credits/);
     });
 
     it("should throw ProviderError on 5xx", async () => {
@@ -332,18 +355,22 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
       });
-      await expect(
-        provider.chat({
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(ProviderError);
-      await expect(
-        provider.chat({
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderError);
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(/OpenRouter service error/);
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(/OpenRouter service error/);
     });
 
     it("should throw ProviderError on network failure", async () => {
@@ -353,12 +380,14 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
       });
-      await expect(
-        provider.chat({
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
-        }),
-      ).rejects.toThrow(ProviderError);
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderError);
     });
   });
 

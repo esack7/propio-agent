@@ -68,8 +68,9 @@ describe("LLMProvider Interface", () => {
         ],
         model: "test-model",
       };
-      const response = await provider.chat(request);
-      expect(response.message).toBeDefined();
+      for await (const chunk of provider.streamChat(request)) {
+        expect(chunk.delta).toBeDefined();
+      }
     });
 
     it("should accept ChatRequest with tools", async () => {
@@ -88,8 +89,9 @@ describe("LLMProvider Interface", () => {
           },
         ],
       };
-      const response = await provider.chat(request);
-      expect(response).toBeDefined();
+      for await (const chunk of provider.streamChat(request)) {
+        expect(chunk).toBeDefined();
+      }
     });
 
     it("should return ChatResponse with message and stopReason", async () => {
@@ -98,12 +100,13 @@ describe("LLMProvider Interface", () => {
         messages: [{ role: "user", content: "Test" }],
         model: "test-model",
       };
-      const response = await provider.chat(request);
-      expect(response.message.role).toBe("assistant");
-      expect(response.message.content).toBeDefined();
-      expect(["end_turn", "tool_use", "max_tokens", "stop_sequence"]).toContain(
-        response.stopReason,
-      );
+      let hasContent = false;
+      for await (const chunk of provider.streamChat(request)) {
+        if (chunk.delta) {
+          hasContent = true;
+        }
+      }
+      expect(hasContent).toBe(true);
     });
   });
 

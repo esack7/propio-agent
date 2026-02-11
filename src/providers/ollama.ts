@@ -27,35 +27,6 @@ export class OllamaProvider implements LLMProvider {
     this.model = options.model;
   }
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
-    try {
-      // Expand batched tool results into separate messages for Ollama
-      const expandedMessages = this.expandToolResults(request.messages);
-      const messages = expandedMessages.map((msg) =>
-        this.chatMessageToOllamaMessage(msg),
-      );
-      const tools = request.tools?.map((tool) =>
-        this.chatToolToOllamaTool(tool),
-      );
-
-      const response = await this.ollama.chat({
-        model: request.model || this.model,
-        messages,
-        stream: false,
-        ...(tools && { tools }),
-      });
-
-      const stopReason = this.getStopReason(response.message);
-
-      return {
-        message: this.ollamaMessageToChatMessage(response.message),
-        stopReason,
-      };
-    } catch (error) {
-      throw this.translateError(error);
-    }
-  }
-
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
       // Expand batched tool results into separate messages for Ollama
