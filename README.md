@@ -4,8 +4,28 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedro
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/)
-- [Ollama](https://ollama.ai/) running locally with the `qwen3-coder:30b` model
+### For Native Mode (npm start)
+
+- Node.js 20+ with npm
+
+### For Sandbox Mode (bin/propio-sandbox)
+
+- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
+- Ollama (optional, for local LLM provider)
+
+### Optional: Ollama Setup
+
+To use Ollama as your LLM provider:
+
+1. Install [Ollama](https://ollama.ai/)
+2. Pull the desired model:
+   ```bash
+   ollama pull qwen3-coder:30b
+   ```
+3. Ensure Ollama is running:
+   ```bash
+   ollama serve
+   ```
 
 ## Setup
 
@@ -21,13 +41,7 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedro
    ollama serve
    ```
 
-3. Create your environment file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-4. Create the configuration directory and providers file:
+3. Create the configuration directory and providers file:
 
    ```bash
    mkdir .propio
@@ -37,7 +51,49 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedro
 
 ## Running the Agent
 
-### Using Docker Compose (recommended)
+### Native Mode (unrestricted filesystem access)
+
+```bash
+npm install
+npm start
+```
+
+### Sandbox Mode (recommended for untrusted codebases)
+
+The sandbox mode restricts filesystem access to the current working directory, protecting your system from accidental or malicious file access.
+
+**Prerequisites:** Docker and Docker Compose
+
+#### From the agent directory:
+
+```bash
+bin/propio-sandbox
+```
+
+#### From any directory (including external repositories):
+
+```bash
+# Create a symlink for global access (optional)
+ln -s /path/to/propio/bin/propio-sandbox ~/bin/propio-sandbox
+
+# Then use from any directory
+propio-sandbox
+```
+
+#### How it works:
+
+- The current working directory is mounted as `/workspace` inside the container (read-write)
+- Agent configuration (`.propio/`) is mounted as read-only from the agent installation directory
+- LLM provider tools (`read_file`, `write_file`) can only access files within `/workspace` and its subdirectories
+- Network access is preserved for LLM providers and local Ollama
+
+#### Rebuild after code changes:
+
+```bash
+docker compose build
+```
+
+### Using Docker Compose (development)
 
 ```bash
 docker compose run --rm agent
@@ -48,13 +104,6 @@ docker compose run --rm agent
 ```bash
 docker build -t ollama-agent .
 docker run -it --rm ollama-agent
-```
-
-### Local development (without Docker)
-
-```bash
-npm install
-npm run dev
 ```
 
 ### VS Code Dev Container
@@ -293,19 +342,6 @@ const response1 = await agent.chat('Hello!');
 const response2 = await agent.chat('Continue the conversation...');
 ```
 
-### Environment Variables
-
-Copy `.env.example` to `.env` and modify as needed:
-
-```bash
-cp .env.example .env
-```
-
-| Variable       | Default                  | Description       |
-| -------------- | ------------------------ | ----------------- |
-| `OLLAMA_HOST`  | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen3-coder:30b`        | Model to use      |
-
 ## Project Structure
 
 ```
@@ -323,7 +359,6 @@ cp .env.example .env
 │   │   ├── openrouter.ts                 # OpenRouter provider implementation
 │   │   └── __tests__/                    # Provider tests
 │   └── __tests__/                        # Agent tests
-├── .env.example                         # Sample environment variables
 ├── Dockerfile
 ├── docker-compose.yml
 ├── jest.config.js                       # Jest testing configuration
@@ -355,6 +390,89 @@ The agent uses a provider abstraction layer that allows swapping between differe
 ### Type Translation
 
 Each provider translates between its native types and the provider-agnostic types, allowing the Agent to work seamlessly with any provider.
+
+## Sandbox Mode Details
+
+### Environment Variable Handling
+
+The `bin/propio-sandbox` wrapper automatically passes the following environment variables from your host into the container when they are set:
+
+- `OLLAMA_HOST`: Ollama server URL (defaults to `http://host.docker.internal:11434` if not set)
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`: For AWS Bedrock provider
+- `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`: Additional AWS configuration
+- `OPENROUTER_API_KEY`: For OpenRouter provider
+
+No extra configuration is needed — just set the variables in your shell before running `bin/propio-sandbox`.
+
+**Note:** If you use `docker compose run --rm agent` directly, environment variables are not passed automatically. Use `-e VAR_NAME` flags to pass them manually.
+
+**Note:** Model selection is configured via `.propio/providers.json`, not environment variables.
+
+### Rebuild Requirement
+
+**Important:** After modifying agent source code, rebuild the Docker image before using sandbox mode:
+
+```bash
+docker compose build
+```
+
+The `npm start` (native mode) does not require rebuilds and is faster for development iteration.
+
+### Security Boundaries
+
+The sandbox container enforces filesystem isolation through Docker volume mounts:
+
+- **Read-write**: Current working directory mounted at `/workspace`
+- **Read-only**: Agent configuration at `/app/.propio` (provider configs and credentials)
+- **Blocked**: Access to home directory, system files, and other mounted paths
+
+This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensitive files outside the current project directory.
+
+## Troubleshooting
+
+### Docker Errors
+
+**Error: `docker: command not found`**
+
+Docker is not installed. Install Docker Desktop from https://docs.docker.com/get-docker/
+
+**Error: `Cannot connect to Docker daemon`**
+
+Docker daemon is not running. Start Docker Desktop or the Docker service.
+
+**Error: `no such file or directory: ./docker-compose.yml`**
+
+Make sure you're running the command from the agent project directory.
+
+**Error: `image not found`**
+
+Rebuild the Docker image:
+
+```bash
+docker compose build
+```
+
+### Provider Connection Issues
+
+**Ollama in sandbox mode doesn't connect**
+
+The sandbox uses `host.docker.internal` to reach services on the host. Ensure Ollama is listening on the network (not localhost-only).
+
+On Linux, `host.docker.internal` may not work. Use your host's IP address instead by setting `OLLAMA_HOST` in docker-compose.yml:
+
+```bash
+# Find your host IP
+hostname -I
+# Then set in docker-compose.yml environment section
+OLLAMA_HOST=http://192.168.1.100:11434
+```
+
+**AWS Bedrock authentication fails in sandbox**
+
+Ensure AWS credentials are available. Set credentials via docker-compose.yml environment section or pass them as command-line flags:
+
+1. AWS CLI: `aws configure` (then pass via environment)
+2. Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 
 ## Linux Users
 
