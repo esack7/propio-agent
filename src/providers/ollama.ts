@@ -29,7 +29,9 @@ export class OllamaProvider implements LLMProvider {
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
     try {
-      const messages = request.messages.map((msg) =>
+      // Expand batched tool results into separate messages for Ollama
+      const expandedMessages = this.expandToolResults(request.messages);
+      const messages = expandedMessages.map((msg) =>
         this.chatMessageToOllamaMessage(msg),
       );
       const tools = request.tools?.map((tool) =>
@@ -56,7 +58,9 @@ export class OllamaProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
-      const messages = request.messages.map((msg) =>
+      // Expand batched tool results into separate messages for Ollama
+      const expandedMessages = this.expandToolResults(request.messages);
+      const messages = expandedMessages.map((msg) =>
         this.chatMessageToOllamaMessage(msg),
       );
       const tools = request.tools?.map((tool) =>
@@ -99,6 +103,32 @@ export class OllamaProvider implements LLMProvider {
   }
 
   /**
+   * Expand batched tool results into separate messages for Ollama.
+   * Ollama expects each tool result as a separate message, not batched like Bedrock.
+   */
+  private expandToolResults(messages: ChatMessage[]): ChatMessage[] {
+    const expanded: ChatMessage[] = [];
+
+    for (const msg of messages) {
+      // If this is a batched tool result message, expand it
+      if (msg.role === "tool" && msg.toolResults && msg.toolResults.length > 0) {
+        for (const toolResult of msg.toolResults) {
+          expanded.push({
+            role: "tool",
+            content: toolResult.content,
+            toolCallId: toolResult.toolName, // Use toolName as toolCallId for Ollama
+          });
+        }
+      } else {
+        // Not a batched tool result, keep as is
+        expanded.push(msg);
+      }
+    }
+
+    return expanded;
+  }
+
+  /**
    * Translate ChatMessage to Ollama Message format
    */
   private chatMessageToOllamaMessage(msg: ChatMessage): Message {
@@ -114,6 +144,11 @@ export class OllamaProvider implements LLMProvider {
           arguments: toolCall.function.arguments,
         },
       }));
+    }
+
+    // For tool role messages, Ollama expects tool_name field
+    if (msg.role === "tool" && msg.toolCallId) {
+      ollamaMsg.tool_name = msg.toolCallId;
     }
 
     if (msg.images) {

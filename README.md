@@ -18,14 +18,22 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedro
 To use Ollama as your LLM provider:
 
 1. Install [Ollama](https://ollama.ai/)
-2. Pull the desired model:
+2. Pull a model with **tool calling support**:
    ```bash
+   # Recommended models with good tool calling support:
+   ollama pull llama3.1:8b        # Llama 3.1 (fast, good tool calling)
+   ollama pull mistral:7b-instruct-v0.3  # Mistral with tool support
+   ollama pull deepseek-coder-v2:16b     # DeepSeek Coder v2
+
+   # Or use your preferred model (tool calling quality varies by model)
    ollama pull qwen3-coder:30b
    ```
 3. Ensure Ollama is running:
    ```bash
    ollama serve
    ```
+
+**Important:** Not all Ollama models support tool calling equally well. If you see the model outputting XML-like syntax (`<function=...>`) instead of making actual tool calls, try switching to a different model known for better tool calling support (like `llama3.1:8b` or `mistral:7b-instruct-v0.3`).
 
 ## Setup
 
@@ -429,6 +437,35 @@ The sandbox container enforces filesystem isolation through Docker volume mounts
 This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensitive files outside the current project directory.
 
 ## Troubleshooting
+
+### Tool Calling Issues with Ollama
+
+**Symptom:** The agent outputs XML-like text instead of actually calling tools:
+```xml
+<function=search_text>
+<parameter=query>some query</parameter>
+```
+
+**Cause:** The model doesn't properly support Ollama's native tool calling format.
+
+**Solution:**
+1. Switch to a model with better tool calling support:
+   ```bash
+   ollama pull llama3.1:8b
+   # Update your .propio/providers.json to use llama3.1:8b
+   ```
+
+2. Models with confirmed good tool calling support:
+   - `llama3.1:8b`, `llama3.1:70b` - Excellent tool calling
+   - `mistral:7b-instruct-v0.3` - Good tool calling
+   - `deepseek-coder-v2:16b` - Good for coding tasks
+   - `qwen2.5:14b` - Decent tool calling
+
+3. Test tool calling works:
+   ```
+   You: List the files in the src directory
+   Assistant: [Executing tool: list_dir]  ← Should see this, not XML output
+   ```
 
 ### Docker Errors
 

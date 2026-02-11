@@ -260,15 +260,30 @@ export class BedrockProvider implements LLMProvider {
       }
     }
 
-    // Handle tool results
+    // Handle tool results (batched or single)
     if (msg.role === "tool") {
-      contentBlocks.push({
-        toolResult: {
-          toolUseId: msg.toolCallId || "tool-result", // Use the original toolUseId if available
-          content: [{ text: msg.content }],
-          status: "success",
-        },
-      } as any);
+      // Handle batched tool results (new format)
+      if (msg.toolResults && msg.toolResults.length > 0) {
+        for (const toolResult of msg.toolResults) {
+          contentBlocks.push({
+            toolResult: {
+              toolUseId: toolResult.toolCallId,
+              content: [{ text: toolResult.content }],
+              status: "success",
+            },
+          } as any);
+        }
+      }
+      // Handle single tool result (legacy format for backward compatibility)
+      else if (msg.toolCallId) {
+        contentBlocks.push({
+          toolResult: {
+            toolUseId: msg.toolCallId,
+            content: [{ text: msg.content }],
+            status: "success",
+          },
+        } as any);
+      }
     }
 
     return {
