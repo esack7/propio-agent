@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "3.987.0",
+    "fast-glob": "3.3.3",
     "ollama": "0.6.3"
   },
   "devDependencies": {

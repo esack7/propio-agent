@@ -1,11 +1,21 @@
 /**
+ * Tool result representation
+ */
+export interface ToolResult {
+  toolCallId: string; // Provider-specific tool call ID
+  toolName: string; // Name of the tool that was called
+  content: string;
+}
+
+/**
  * Provider-agnostic message type
  */
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolCalls?: ChatToolCall[];
-  toolCallId?: string; // For tool role messages: which tool call this is a result for
+  toolCallId?: string; // For tool role messages: which tool call this is a result for (deprecated, use toolResults)
+  toolResults?: ToolResult[]; // For batched tool results
   images?: (Uint8Array | string)[];
 }
 

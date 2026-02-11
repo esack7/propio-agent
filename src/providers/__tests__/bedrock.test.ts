@@ -110,10 +110,48 @@ describe("BedrockProvider", () => {
       );
     });
 
-    it("should handle tool result messages", () => {
+    it("should handle tool result messages (batched format)", () => {
+      const chatMsg: ChatMessage = {
+        role: "tool",
+        content: "",
+        toolResults: [
+          {
+            toolCallId: "tool-123",
+            toolName: "read_file",
+            content: "Tool result 1",
+          },
+          {
+            toolCallId: "tool-456",
+            toolName: "write_file",
+            content: "Tool result 2",
+          },
+        ],
+      };
+      const translated = (provider as any).chatMessageToBedrockMessage(chatMsg);
+      expect(translated.role).toBe("user");
+      // Tool results in Bedrock are sent as user messages with toolResult content
+      expect(translated.content).toHaveLength(2);
+      expect(translated.content[0]).toMatchObject({
+        toolResult: {
+          toolUseId: "tool-123",
+          content: [{ text: "Tool result 1" }],
+          status: "success",
+        },
+      });
+      expect(translated.content[1]).toMatchObject({
+        toolResult: {
+          toolUseId: "tool-456",
+          content: [{ text: "Tool result 2" }],
+          status: "success",
+        },
+      });
+    });
+
+    it("should handle tool result messages (legacy single format)", () => {
       const chatMsg: ChatMessage = {
         role: "tool",
         content: "Tool result",
+        toolCallId: "tool-789",
       };
       const translated = (provider as any).chatMessageToBedrockMessage(chatMsg);
       expect(translated.role).toBe("user");

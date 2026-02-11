@@ -212,7 +212,10 @@ describe("Agent Integration Tests", () => {
 
       const context = agent.getContext();
       const toolMessage = context.find((m) => m.role === "tool");
-      expect(toolMessage?.content).toContain("Error");
+      // With batched tool results, check toolResults array
+      expect(
+        toolMessage?.toolResults?.[0]?.content || toolMessage?.content,
+      ).toContain("Error");
     });
 
     it("should handle multiple tool calls in sequence", async () => {

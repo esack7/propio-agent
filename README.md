@@ -18,14 +18,22 @@ A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedro
 To use Ollama as your LLM provider:
 
 1. Install [Ollama](https://ollama.ai/)
-2. Pull the desired model:
+2. Pull a model with **tool calling support**:
    ```bash
+   # Recommended models with good tool calling support:
+   ollama pull llama3.1:8b        # Llama 3.1 (fast, good tool calling)
+   ollama pull mistral:7b-instruct-v0.3  # Mistral with tool support
+   ollama pull deepseek-coder-v2:16b     # DeepSeek Coder v2
+
+   # Or use your preferred model (tool calling quality varies by model)
    ollama pull qwen3-coder:30b
    ```
 3. Ensure Ollama is running:
    ```bash
    ollama serve
    ```
+
+**Important:** Not all Ollama models support tool calling equally well. If you see the model outputting XML-like syntax (`<function=...>`) instead of making actual tool calls, try switching to a different model known for better tool calling support (like `llama3.1:8b` or `mistral:7b-instruct-v0.3`).
 
 ## Setup
 
@@ -137,9 +145,60 @@ The agent supports tool calling with an agentic loop, allowing it to:
 
 ### Available Tools
 
-- **save_session_context**: Saves the current session context to `session_context.txt`. The agent is instructed to call this after completing requests.
-- **read_file**: Reads content from a file on the filesystem
-- **write_file**: Writes content to a file on the filesystem
+The agent comes with 10 built-in tools for file operations, search, and execution:
+
+#### Filesystem Tools
+- **read_file**: Reads content from a file
+- **write_file**: Writes content to a file
+- **list_dir**: Lists directory contents with file/directory types
+- **mkdir**: Creates directories (with recursive parent creation)
+- **move**: Moves or renames files and directories
+- **remove**: ⚠️ Deletes files or directories (recursive) - **Disabled by default**
+
+#### Search Tools
+- **search_text**: Searches for text patterns in files (supports regex)
+- **search_files**: Finds files by glob patterns (e.g., `**/*.ts`)
+
+#### Execution Tools
+- **run_bash**: ⚠️ Executes shell commands - **Disabled by default**
+
+#### Context Tools
+- **save_session_context**: Saves current session context to `session_context.txt`
+
+### Security: Destructive Tools
+
+The `remove` and `run_bash` tools are **disabled by default** due to their destructive potential:
+- **remove**: Can permanently delete files and directories
+- **run_bash**: Can execute arbitrary shell commands
+
+#### Enabling Destructive Tools
+
+⚠️ **Warning**: Only enable these tools in trusted environments. All tools include path validation to prevent directory traversal, but destructive operations cannot be undone.
+
+To enable these tools programmatically:
+
+```typescript
+import { Agent } from "./src/agent";
+import { createDefaultToolRegistry } from "./src/tools/factory";
+
+const agent = new Agent({
+  providerConfig: {
+    provider: "ollama",
+    ollama: { model: "llama3.1:8b" }
+  }
+});
+
+// Enable destructive tools
+agent.toolRegistry.enable("remove");      // Enable file/directory deletion
+agent.toolRegistry.enable("run_bash");    // Enable shell command execution
+```
+
+#### Security Features
+
+All filesystem tools include:
+- **Path validation**: Prevents access outside the current working directory
+- **Error handling**: User-friendly error messages for permission, file-not-found, etc.
+- **Async operations**: Non-blocking file I/O for better performance
 
 ### How it Works
 
@@ -429,6 +488,35 @@ The sandbox container enforces filesystem isolation through Docker volume mounts
 This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensitive files outside the current project directory.
 
 ## Troubleshooting
+
+### Tool Calling Issues with Ollama
+
+**Symptom:** The agent outputs XML-like text instead of actually calling tools:
+```xml
+<function=search_text>
+<parameter=query>some query</parameter>
+```
+
+**Cause:** The model doesn't properly support Ollama's native tool calling format.
+
+**Solution:**
+1. Switch to a model with better tool calling support:
+   ```bash
+   ollama pull llama3.1:8b
+   # Update your .propio/providers.json to use llama3.1:8b
+   ```
+
+2. Models with confirmed good tool calling support:
+   - `llama3.1:8b`, `llama3.1:70b` - Excellent tool calling
+   - `mistral:7b-instruct-v0.3` - Good tool calling
+   - `deepseek-coder-v2:16b` - Good for coding tasks
+   - `qwen2.5:14b` - Decent tool calling
+
+3. Test tool calling works:
+   ```
+   You: List the files in the src directory
+   Assistant: [Executing tool: list_dir]  ← Should see this, not XML output
+   ```
 
 ### Docker Errors
 

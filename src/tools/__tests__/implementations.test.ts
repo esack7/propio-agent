@@ -1,32 +1,84 @@
 import * as fs from "fs";
+import * as fsPromises from "fs/promises";
 import { ReadFileTool, WriteFileTool } from "../fileSystem";
 import { SaveSessionContextTool } from "../sessionContext";
 import { createDefaultToolRegistry } from "../factory";
 import { ToolContext } from "../types";
 import { ChatMessage } from "../../providers/types";
 
-// Mock fs module
+// Mock fs modules
 jest.mock("fs");
+jest.mock("fs/promises");
 const mockFs = fs as jest.Mocked<typeof fs>;
+const mockFsPromises = fsPromises as jest.Mocked<typeof fsPromises>;
 
 describe("Tool Implementations", () => {
+  const originalCwd = process.cwd;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    // Mock process.cwd() to return "/test" so test paths under /test are valid
+    process.cwd = jest.fn(() => "/test");
+  });
+
+  afterEach(() => {
+    process.cwd = originalCwd;
   });
 
   describe("ReadFileTool", () => {
     it("should read file and return content", async () => {
       const tool = new ReadFileTool();
       const mockContent = "file content here";
-      mockFs.readFileSync.mockReturnValue(mockContent);
+      mockFsPromises.readFile.mockResolvedValue(mockContent);
 
-      const result = await tool.execute({ file_path: "/path/to/file.txt" });
+      const result = await tool.execute({ file_path: "/test/path/to/file.txt" });
 
       expect(result).toBe(mockContent);
-      expect(mockFs.readFileSync).toHaveBeenCalledWith(
-        "/path/to/file.txt",
+      expect(mockFsPromises.readFile).toHaveBeenCalledWith(
+        "/test/path/to/file.txt",
         "utf-8",
       );
+    });
+
+    it("should reject paths outside allowed directory", async () => {
+      const tool = new ReadFileTool();
+
+      await expect(
+        tool.execute({ file_path: "/../etc/passwd" })
+      ).rejects.toThrow("Access denied");
+    });
+
+    it("should throw user-friendly error for non-existent file", async () => {
+      const tool = new ReadFileTool();
+      const error = new Error("ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      mockFsPromises.readFile.mockRejectedValue(error);
+
+      await expect(
+        tool.execute({ file_path: "/test/path/to/missing.txt" })
+      ).rejects.toThrow("File not found");
+    });
+
+    it("should throw user-friendly error for permission denied", async () => {
+      const tool = new ReadFileTool();
+      const error = new Error("EACCES") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      mockFsPromises.readFile.mockRejectedValue(error);
+
+      await expect(
+        tool.execute({ file_path: "/test/path/to/protected.txt" })
+      ).rejects.toThrow("Permission denied");
+    });
+
+    it("should throw user-friendly error when path is a directory", async () => {
+      const tool = new ReadFileTool();
+      const error = new Error("EISDIR") as NodeJS.ErrnoException;
+      error.code = "EISDIR";
+      mockFsPromises.readFile.mockRejectedValue(error);
+
+      await expect(
+        tool.execute({ file_path: "/test/path/to/dir" })
+      ).rejects.toThrow("Path is a directory, not a file");
     });
 
     it("should have correct schema", () => {
@@ -48,19 +100,58 @@ describe("Tool Implementations", () => {
   describe("WriteFileTool", () => {
     it("should write content to file", async () => {
       const tool = new WriteFileTool();
-      mockFs.writeFileSync.mockImplementation(() => {});
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
 
       const result = await tool.execute({
-        file_path: "/path/to/file.txt",
+        file_path: "/test/path/to/file.txt",
         content: "new content",
       });
 
-      expect(result).toContain("Successfully wrote to /path/to/file.txt");
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        "/path/to/file.txt",
+      expect(result).toContain("Successfully wrote to /test/path/to/file.txt");
+      expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
+        "/test/path/to/file.txt",
         "new content",
         "utf-8",
       );
+    });
+
+    it("should reject paths outside allowed directory", async () => {
+      const tool = new WriteFileTool();
+
+      await expect(
+        tool.execute({
+          file_path: "/../etc/passwd",
+          content: "malicious content",
+        })
+      ).rejects.toThrow("Access denied");
+    });
+
+    it("should throw user-friendly error when directory not found", async () => {
+      const tool = new WriteFileTool();
+      const error = new Error("ENOENT") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      mockFsPromises.writeFile.mockRejectedValue(error);
+
+      await expect(
+        tool.execute({
+          file_path: "/test/nonexistent/dir/file.txt",
+          content: "content",
+        })
+      ).rejects.toThrow("Directory not found for file");
+    });
+
+    it("should throw user-friendly error for permission denied", async () => {
+      const tool = new WriteFileTool();
+      const error = new Error("EACCES") as NodeJS.ErrnoException;
+      error.code = "EACCES";
+      mockFsPromises.writeFile.mockRejectedValue(error);
+
+      await expect(
+        tool.execute({
+          file_path: "/test/protected/file.txt",
+          content: "content",
+        })
+      ).rejects.toThrow("Permission denied");
     });
 
     it("should have correct schema", () => {
@@ -191,7 +282,30 @@ describe("Tool Implementations", () => {
   });
 
   describe("createDefaultToolRegistry", () => {
-    it("should create registry with 3 tools enabled", () => {
+    it("should register all 10 built-in tools", () => {
+      const mockContext: ToolContext = {
+        systemPrompt: "Test",
+        sessionContext: [],
+        sessionContextFilePath: "/test",
+      };
+
+      const registry = createDefaultToolRegistry(mockContext);
+      const allTools = registry.getToolNames();
+
+      expect(allTools).toHaveLength(10);
+      expect(allTools).toContain("read_file");
+      expect(allTools).toContain("write_file");
+      expect(allTools).toContain("save_session_context");
+      expect(allTools).toContain("list_dir");
+      expect(allTools).toContain("mkdir");
+      expect(allTools).toContain("remove");
+      expect(allTools).toContain("move");
+      expect(allTools).toContain("search_text");
+      expect(allTools).toContain("search_files");
+      expect(allTools).toContain("run_bash");
+    });
+
+    it("should enable 8 tools by default", () => {
       const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
@@ -201,12 +315,56 @@ describe("Tool Implementations", () => {
       const registry = createDefaultToolRegistry(mockContext);
       const schemas = registry.getEnabledSchemas();
 
-      expect(schemas).toHaveLength(3);
+      expect(schemas).toHaveLength(8);
 
-      const toolNames = schemas.map((schema) => schema.function.name);
-      expect(toolNames).toContain("read_file");
-      expect(toolNames).toContain("write_file");
-      expect(toolNames).toContain("save_session_context");
+      const enabledNames = schemas.map((schema) => schema.function.name);
+      expect(enabledNames).toContain("read_file");
+      expect(enabledNames).toContain("write_file");
+      expect(enabledNames).toContain("save_session_context");
+      expect(enabledNames).toContain("list_dir");
+      expect(enabledNames).toContain("mkdir");
+      expect(enabledNames).toContain("move");
+      expect(enabledNames).toContain("search_text");
+      expect(enabledNames).toContain("search_files");
+    });
+
+    it("should disable remove and run_bash by default", () => {
+      const mockContext: ToolContext = {
+        systemPrompt: "Test",
+        sessionContext: [],
+        sessionContextFilePath: "/test",
+      };
+
+      const registry = createDefaultToolRegistry(mockContext);
+
+      // Both tools should be registered
+      expect(registry.hasTool("remove")).toBe(true);
+      expect(registry.hasTool("run_bash")).toBe(true);
+
+      // But not enabled
+      expect(registry.isToolEnabled("remove")).toBe(false);
+      expect(registry.isToolEnabled("run_bash")).toBe(false);
+    });
+
+    it("should allow enabling disabled tools", () => {
+      const mockContext: ToolContext = {
+        systemPrompt: "Test",
+        sessionContext: [],
+        sessionContextFilePath: "/test",
+      };
+
+      const registry = createDefaultToolRegistry(mockContext);
+
+      // Enable remove
+      registry.enable("remove");
+      expect(registry.isToolEnabled("remove")).toBe(true);
+
+      // Enable run_bash
+      registry.enable("run_bash");
+      expect(registry.isToolEnabled("run_bash")).toBe(true);
+
+      // Should now have 10 enabled tools
+      expect(registry.getEnabledSchemas()).toHaveLength(10);
     });
 
     it("should register tools that are executable", async () => {
@@ -215,7 +373,7 @@ describe("Tool Implementations", () => {
         sessionContext: [],
         sessionContextFilePath: "/test",
       };
-      mockFs.readFileSync.mockReturnValue("test content");
+      mockFsPromises.readFile.mockResolvedValue("test content");
 
       const registry = createDefaultToolRegistry(mockContext);
 
@@ -227,6 +385,23 @@ describe("Tool Implementations", () => {
       // Should not return an error message
       expect(result).not.toContain("Error executing");
       expect(result).not.toContain("Tool not found");
+    });
+
+    it("should reject execution of disabled tools", async () => {
+      const mockContext: ToolContext = {
+        systemPrompt: "Test",
+        sessionContext: [],
+        sessionContextFilePath: "/test",
+      };
+
+      const registry = createDefaultToolRegistry(mockContext);
+
+      // Try to execute disabled remove tool
+      const result = await registry.execute("remove", {
+        path: "/test/file.txt",
+      });
+
+      expect(result).toBe("Tool not available: remove");
     });
   });
 });

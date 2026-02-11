@@ -198,6 +198,8 @@ export class Agent {
 
         // Handle tool calls if present
         if (toolCalls && toolCalls.length > 0) {
+          const toolResults = [];
+
           for (const toolCall of toolCalls) {
             const args = toolCall.function.arguments;
             const result = await this.toolRegistry.execute(
@@ -205,12 +207,19 @@ export class Agent {
               args,
             );
 
-            this.sessionContext.push({
-              role: "tool",
+            toolResults.push({
+              toolCallId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
+              toolName: toolCall.function.name,
               content: result,
-              toolCallId: toolCall.id, // Pass through the tool call ID for providers that need it
             });
           }
+
+          // Add single message with all tool results batched together
+          this.sessionContext.push({
+            role: "tool",
+            content: "", // Empty content, actual results are in toolResults array
+            toolResults: toolResults,
+          });
           // Continue loop to let agent process tool results
         } else {
           // No tool calls, we're done
@@ -278,6 +287,8 @@ export class Agent {
         // Handle tool calls if present
         if (toolCalls && toolCalls.length > 0) {
           onToken("\n");
+          const toolResults = [];
+
           for (const toolCall of toolCalls) {
             const args = toolCall.function.arguments;
             const toolName = toolCall.function.name;
@@ -285,16 +296,24 @@ export class Agent {
             onToken(`[Executing tool: ${toolName}]\n`);
             const result = await this.toolRegistry.execute(toolName, args);
 
-            this.sessionContext.push({
-              role: "tool",
+            toolResults.push({
+              toolCallId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
+              toolName: toolName,
               content: result,
-              toolCallId: toolCall.id, // Pass through the tool call ID for providers that need it
             });
 
             onToken(
               `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
             );
           }
+
+          // Add single message with all tool results batched together
+          this.sessionContext.push({
+            role: "tool",
+            content: "", // Empty content, actual results are in toolResults array
+            toolResults: toolResults,
+          });
+
           onToken("\n");
           // Continue loop to let agent process tool results
         } else {

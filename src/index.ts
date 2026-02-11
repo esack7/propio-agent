@@ -8,14 +8,11 @@ async function main() {
 
   const agent = new Agent({
     providersConfig: configPath,
-    systemPrompt: `You are a helpful AI coding assistant with access to tools. Provide clear and concise answers.
+    systemPrompt: `You are a helpful AI coding assistant with access to tools. Use the tools available to you to complete user requests effectively.
 
-You have access to the following tools:
-- save_session_context: Save the session context to a file (call this after completing each user request)
-- read_file: Read content from files on the filesystem
-- write_file: Write content to files on the filesystem
+When you need to perform actions like reading files, searching code, or executing commands, use the appropriate tool by making a function call. You will receive the tool results and can use that information to continue helping the user.
 
-When you use a tool, you will see the result and can use that information to continue helping the user. After using tools and completing the user's request, provide a final response summarizing what you did.`,
+Always provide clear, concise responses and summarize what you did after completing the user's request.`,
   });
 
   const rl = readline.createInterface({
@@ -27,6 +24,10 @@ When you use a tool, you will see the result and can use that information to con
   console.log(
     "Commands: /clear - clear context, /context - show context, /exit - quit\n",
   );
+
+  // Show loaded tools for debugging
+  const tools = agent.getTools();
+  console.log(`Loaded ${tools.length} tools: ${tools.map((t) => t.function.name).join(", ")}\n`);
 
   const prompt = () => {
     rl.question("You: ", async (input) => {
