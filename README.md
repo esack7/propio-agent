@@ -395,11 +395,16 @@ Each provider translates between its native types and the provider-agnostic type
 
 ### Environment Variable Handling
 
-The Dockerfile sets `OLLAMA_HOST` to `http://host.docker.internal:11434` by default. You can override this and pass other environment variables via docker-compose.yml or command line flags:
+The `bin/propio-sandbox` wrapper automatically passes the following environment variables from your host into the container when they are set:
 
-- `OLLAMA_HOST`: Ollama server URL
-- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: For AWS Bedrock provider
+- `OLLAMA_HOST`: Ollama server URL (defaults to `http://host.docker.internal:11434` if not set)
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`: For AWS Bedrock provider
+- `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`: Additional AWS configuration
 - `OPENROUTER_API_KEY`: For OpenRouter provider
+
+No extra configuration is needed — just set the variables in your shell before running `bin/propio-sandbox`.
+
+**Note:** If you use `docker compose run --rm agent` directly, environment variables are not passed automatically. Use `-e VAR_NAME` flags to pass them manually.
 
 **Note:** Model selection is configured via `.propio/providers.json`, not environment variables.
 
