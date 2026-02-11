@@ -1,0 +1,38 @@
+#!/bin/bash
+
+set -e
+
+# Resolve the directory where this script is located
+PROPIO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Check if Docker is installed
+if ! command -v docker &> /dev/null; then
+  echo "Error: Docker is not installed." >&2
+  echo "Please install Docker from https://docs.docker.com/get-docker/" >&2
+  exit 1
+fi
+
+# Check if Docker daemon is running
+if ! docker info &> /dev/null; then
+  echo "Error: Docker daemon is not running." >&2
+  echo "Please start Docker Desktop or the Docker service." >&2
+  exit 1
+fi
+
+# Check if Docker image exists
+if ! docker compose -f "$PROPIO_DIR/docker-compose.yml" config &> /dev/null; then
+  echo "Error: Cannot read docker-compose.yml." >&2
+  exit 1
+fi
+
+if ! docker compose -f "$PROPIO_DIR/docker-compose.yml" images -q &> /dev/null; then
+  echo "Error: Docker image has not been built yet." >&2
+  echo "Please run: docker compose build" >&2
+  exit 1
+fi
+
+# Run agent in Docker container with dynamic volume mounts
+docker compose -f "$PROPIO_DIR/docker-compose.yml" run --rm \
+  -v "$(pwd):/workspace" \
+  -v "$PROPIO_DIR/.propio:/app/.propio:ro" \
+  agent

@@ -3,7 +3,8 @@ services:
     build: .
     stdin_open: true
     tty: true
-    env_file:
-      - .env
+    volumes:
+      - ./.propio:/app/.propio:ro
+      - ./:/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
