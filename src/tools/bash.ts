@@ -7,7 +7,25 @@ const execFileAsync = promisify(execFile);
 
 /**
  * RunBashTool executes shell commands and returns structured output.
- * Disabled by default - must be explicitly enabled.
+ *
+ * SECURITY WARNING: This tool can execute arbitrary commands with full access
+ * to the system (subject to the agent's user permissions). It is disabled by
+ * default and must be explicitly enabled via registry.enable("run_bash").
+ *
+ * Security Considerations:
+ * - Uses /bin/sh -c which can be vulnerable to command injection if LLM outputs
+ *   are not carefully managed
+ * - Commands execute with the permissions of the agent process
+ * - In sandbox mode, commands are restricted to the mounted /workspace directory
+ * - Consider using in conjunction with Docker sandbox for isolation
+ *
+ * Best Practices:
+ * - Only enable in trusted environments or with proper sandboxing
+ * - Review LLM prompts to avoid inadvertent command execution
+ * - Use read-only mounts for sensitive directories when using Docker
+ * - Monitor command execution logs for unexpected behavior
+ *
+ * To enable: registry.enable("run_bash")
  */
 export class RunBashTool implements ExecutableTool {
   readonly name = "run_bash";

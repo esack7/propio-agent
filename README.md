@@ -145,9 +145,60 @@ The agent supports tool calling with an agentic loop, allowing it to:
 
 ### Available Tools
 
-- **save_session_context**: Saves the current session context to `session_context.txt`. The agent is instructed to call this after completing requests.
-- **read_file**: Reads content from a file on the filesystem
-- **write_file**: Writes content to a file on the filesystem
+The agent comes with 10 built-in tools for file operations, search, and execution:
+
+#### Filesystem Tools
+- **read_file**: Reads content from a file
+- **write_file**: Writes content to a file
+- **list_dir**: Lists directory contents with file/directory types
+- **mkdir**: Creates directories (with recursive parent creation)
+- **move**: Moves or renames files and directories
+- **remove**: ⚠️ Deletes files or directories (recursive) - **Disabled by default**
+
+#### Search Tools
+- **search_text**: Searches for text patterns in files (supports regex)
+- **search_files**: Finds files by glob patterns (e.g., `**/*.ts`)
+
+#### Execution Tools
+- **run_bash**: ⚠️ Executes shell commands - **Disabled by default**
+
+#### Context Tools
+- **save_session_context**: Saves current session context to `session_context.txt`
+
+### Security: Destructive Tools
+
+The `remove` and `run_bash` tools are **disabled by default** due to their destructive potential:
+- **remove**: Can permanently delete files and directories
+- **run_bash**: Can execute arbitrary shell commands
+
+#### Enabling Destructive Tools
+
+⚠️ **Warning**: Only enable these tools in trusted environments. All tools include path validation to prevent directory traversal, but destructive operations cannot be undone.
+
+To enable these tools programmatically:
+
+```typescript
+import { Agent } from "./src/agent";
+import { createDefaultToolRegistry } from "./src/tools/factory";
+
+const agent = new Agent({
+  providerConfig: {
+    provider: "ollama",
+    ollama: { model: "llama3.1:8b" }
+  }
+});
+
+// Enable destructive tools
+agent.toolRegistry.enable("remove");      // Enable file/directory deletion
+agent.toolRegistry.enable("run_bash");    // Enable shell command execution
+```
+
+#### Security Features
+
+All filesystem tools include:
+- **Path validation**: Prevents access outside the current working directory
+- **Error handling**: User-friendly error messages for permission, file-not-found, etc.
+- **Async operations**: Non-blocking file I/O for better performance
 
 ### How it Works
 
