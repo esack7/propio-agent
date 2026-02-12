@@ -388,4 +388,283 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(typeof agent.saveContext).toBe("function");
     });
   });
+
+  describe("streamChat with Tool Lifecycle Callbacks", () => {
+    /**
+     * Mock Provider that yields tool calls and then a final response
+     */
+    class MockProviderWithToolCalls implements LLMProvider {
+      name = "mock-tools";
+      streamChatCalls: ChatRequest[] = [];
+      callCount = 0;
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+        this.streamChatCalls.push(request);
+        this.callCount++;
+
+        if (this.callCount === 1) {
+          // First call: provide tool call
+          yield { delta: "I'll " };
+          yield { delta: "execute " };
+          yield { delta: "a " };
+          yield { delta: "tool" };
+          // Yield tool call with no function.arguments
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                id: "call-1",
+                function: {
+                  name: "list_directory",
+                  arguments: {},
+                },
+              },
+            ],
+          };
+        } else {
+          // Subsequent calls: return final response without tool calls
+          yield { delta: "Done" };
+        }
+      }
+    }
+
+    it("should invoke onToolStart callback when tool execution begins (if provided)", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolStart });
+
+      expect(onToolStart).toHaveBeenCalledWith("list_directory");
+      expect(onToolStart).toHaveBeenCalledTimes(1);
+    });
+
+    it("should invoke onToolEnd callback when tool execution completes (if provided)", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolEnd });
+
+      expect(onToolEnd).toHaveBeenCalled();
+      expect(onToolEnd).toHaveBeenCalledWith(
+        "list_directory",
+        expect.any(String),
+      );
+      expect(onToolEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it("should invoke both onToolStart and onToolEnd callbacks", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, {
+        onToolStart,
+        onToolEnd,
+      });
+
+      expect(onToolStart).toHaveBeenCalledWith("list_directory");
+      expect(onToolStart).toHaveBeenCalledTimes(1);
+      expect(onToolEnd).toHaveBeenCalledWith(
+        "list_directory",
+        expect.any(String),
+      );
+      expect(onToolEnd).toHaveBeenCalledTimes(1);
+    });
+
+    it("should suppress bracketed tool status messages when both callbacks are provided", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, {
+        onToolStart,
+        onToolEnd,
+      });
+
+      // Check that bracketed tool messages were not sent to onToken
+      const toolMessageCalls = onToken.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (token) =>
+            token.includes("[Executing tool:") ||
+            token.includes("[Tool result:"),
+        );
+      expect(toolMessageCalls).toHaveLength(0);
+    });
+
+    it("should use onToken for tool status when callbacks are not provided (backward compatible)", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken);
+
+      // Should have bracketed tool messages
+      const toolMessageCalls = onToken.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (token) =>
+            token.includes("[Executing tool:") ||
+            token.includes("[Tool result:"),
+        );
+      expect(toolMessageCalls.length).toBeGreaterThan(0);
+    });
+
+    it("should use onToken for tool results when only onToolStart is provided", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolStart });
+
+      // Should NOT have [Executing tool:] message (handled by callback)
+      const executingMessages = onToken.mock.calls
+        .map((call) => call[0])
+        .filter((token) => token.includes("[Executing tool:"));
+      expect(executingMessages).toHaveLength(0);
+
+      // Should HAVE [Tool result:] message (no callback for onToolEnd)
+      const resultMessages = onToken.mock.calls
+        .map((call) => call[0])
+        .filter((token) => token.includes("[Tool result:"));
+      expect(resultMessages.length).toBeGreaterThan(0);
+    });
+
+    it("should use onToken for tool execution start when only onToolEnd is provided", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolEnd });
+
+      // Should HAVE [Executing tool:] message (no callback for onToolStart)
+      const executingMessages = onToken.mock.calls
+        .map((call) => call[0])
+        .filter((token) => token.includes("[Executing tool:"));
+      expect(executingMessages.length).toBeGreaterThan(0);
+
+      // Should NOT have [Tool result:] message (handled by callback)
+      const resultMessages = onToken.mock.calls
+        .map((call) => call[0])
+        .filter((token) => token.includes("[Tool result:"));
+      expect(resultMessages).toHaveLength(0);
+    });
+
+    it("should invoke tool callbacks correctly for multiple tool executions", async () => {
+      /**
+       * Mock Provider that yields multiple tool calls and then a final response
+       */
+      class MockProviderWithMultipleTools implements LLMProvider {
+        name = "mock-multi-tools";
+        streamChatCalls: ChatRequest[] = [];
+        callCount = 0;
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          this.callCount++;
+
+          if (this.callCount === 1) {
+            // First call: provide multiple tool calls
+            yield { delta: "Testing" };
+            yield {
+              delta: "",
+              toolCalls: [
+                {
+                  id: "call-1",
+                  function: {
+                    name: "tool_one",
+                    arguments: {},
+                  },
+                },
+                {
+                  id: "call-2",
+                  function: {
+                    name: "tool_two",
+                    arguments: {},
+                  },
+                },
+              ],
+            };
+          } else {
+            // Subsequent calls: return final response
+            yield { delta: "Finished" };
+          }
+        }
+      }
+
+      const mockProvider = new MockProviderWithMultipleTools();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, {
+        onToolStart,
+        onToolEnd,
+      });
+
+      // Should be called for each tool
+      expect(onToolStart).toHaveBeenCalledTimes(2);
+      expect(onToolStart).toHaveBeenNthCalledWith(1, "tool_one");
+      expect(onToolStart).toHaveBeenNthCalledWith(2, "tool_two");
+
+      expect(onToolEnd).toHaveBeenCalledTimes(2);
+      expect(onToolEnd).toHaveBeenNthCalledWith(
+        1,
+        "tool_one",
+        expect.any(String),
+      );
+      expect(onToolEnd).toHaveBeenNthCalledWith(
+        2,
+        "tool_two",
+        expect.any(String),
+      );
+    });
+
+    it("should pass correct tool result string to onToolEnd callback", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolEnd });
+
+      expect(onToolEnd).toHaveBeenCalled();
+      const callArgs = onToolEnd.mock.calls[0];
+      const result = callArgs[1];
+
+      // Result should be a string
+      expect(typeof result).toBe("string");
+      // Result should not be empty
+      expect(result.length).toBeGreaterThan(0);
+    });
+  });
 });

@@ -162,6 +162,10 @@ export class Agent {
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
+    options?: {
+      onToolStart?: (toolName: string) => void;
+      onToolEnd?: (toolName: string, result: string) => void;
+    },
   ): Promise<string> {
     this.sessionContext.push({
       role: "user",
@@ -219,7 +223,13 @@ export class Agent {
             const args = toolCall.function.arguments;
             const toolName = toolCall.function.name;
 
-            onToken(`[Executing tool: ${toolName}]\n`);
+            // Invoke onToolStart callback if provided, otherwise use onToken
+            if (options?.onToolStart) {
+              options.onToolStart(toolName);
+            } else {
+              onToken(`[Executing tool: ${toolName}]\n`);
+            }
+
             const result = await this.toolRegistry.execute(toolName, args);
 
             toolResults.push({
@@ -229,9 +239,14 @@ export class Agent {
               content: result,
             });
 
-            onToken(
-              `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
-            );
+            // Invoke onToolEnd callback if provided, otherwise use onToken
+            if (options?.onToolEnd) {
+              options.onToolEnd(toolName, result);
+            } else {
+              onToken(
+                `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
+              );
+            }
           }
 
           // Add single message with all tool results batched together
