@@ -5,6 +5,16 @@ set -e
 # Resolve the directory where this script is located
 PROPIO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Check if ~/.propio directory exists
+if [ ! -d "$HOME/.propio" ]; then
+  echo "Error: ~/.propio/ directory not found" >&2
+  echo "Please create the directory and add your providers.json configuration:" >&2
+  echo "  mkdir -p ~/.propio" >&2
+  echo "  # Copy or create ~/.propio/providers.json with your provider settings" >&2
+  echo "See README for configuration examples." >&2
+  exit 1
+fi
+
 # Check if Docker is installed
 if ! command -v docker &> /dev/null; then
   echo "Error: Docker is not installed." >&2
@@ -43,5 +53,5 @@ done
 docker compose -f "$PROPIO_DIR/docker-compose.yml" run --rm \
   "${ENV_FLAGS[@]}" \
   -v "$(pwd):/workspace" \
-  -v "$PROPIO_DIR/.propio:/app/.propio:ro" \
+  -v "$HOME/.propio:/app/.propio:ro" \
   agent

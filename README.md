@@ -54,10 +54,26 @@ To use Ollama as your LLM provider:
 3. Create the configuration directory and providers file:
 
    ```bash
-   mkdir .propio
+   mkdir -p ~/.propio
    ```
 
-   Create `.propio/providers.json` with your provider configuration (see Configuration section below for details).
+   Create `~/.propio/providers.json` with your provider configuration (see Configuration section below for details).
+
+### Migrating from Previous Versions
+
+If you're upgrading from a version that used project-local `.propio/providers.json`:
+
+```bash
+# Copy your existing config to the home directory
+mkdir -p ~/.propio
+cp .propio/providers.json ~/.propio/providers.json
+
+# Verify the file is in place
+ls -la ~/.propio/providers.json
+
+# (Optional) Remove old project-local config
+rm -rf .propio
+```
 
 ## Running the Agent
 
@@ -93,7 +109,7 @@ propio-sandbox
 #### How it works:
 
 - The current working directory is mounted as `/workspace` inside the container (read-write)
-- Agent configuration (`.propio/`) is mounted as read-only from the agent installation directory
+- Agent configuration (`~/.propio/`) is mounted as read-only from your home directory
 - LLM provider tools (`read_file`, `write_file`) can only access files within `/workspace` and its subdirectories
 - Network access is preserved for LLM providers and local Ollama
 
@@ -112,8 +128,8 @@ docker compose run --rm agent
 ### Using Docker directly
 
 ```bash
-docker build -t ollama-agent .
-docker run -it --rm ollama-agent
+docker build -t propio-agent .
+docker run -it --rm propio-agent
 ```
 
 ### VS Code Dev Container
@@ -221,11 +237,16 @@ You'll see notifications like `[Executing tool: save_session_context]` and `[Too
 
 ## Configuration
 
-The agent is configured using a `.propio/providers.json` file in the project root. The `.propio` directory is gitignored to keep your provider configurations private.
+The agent is configured using a `~/.propio/providers.json` file in your home directory. This allows you to share the same provider configuration across all projects.
+
+**Cross-platform support:**
+
+- Unix/macOS: `~/.propio/providers.json` (e.g., `/Users/yourname/.propio/providers.json`)
+- Windows: `%USERPROFILE%\.propio\providers.json` (e.g., `C:\Users\yourname\.propio\providers.json`)
 
 ### Provider Configuration File
 
-Create `.propio/providers.json` with the following structure:
+Create `~/.propio/providers.json` with the following structure:
 
 ```json
 {
@@ -372,7 +393,7 @@ Example `.propio/providers.json` with OpenRouter:
 }
 ```
 
-Store your API key in `.propio/providers.json` (the `.propio/` directory is in `.gitignore`) or set `OPENROUTER_API_KEY` in your environment. Affordable models with tool-calling support include `openai/gpt-3.5-turbo` and `deepseek/deepseek-chat`.
+Store your API key in `~/.propio/providers.json` or set `OPENROUTER_API_KEY` in your environment. Affordable models with tool-calling support include `openai/gpt-3.5-turbo` and `deepseek/deepseek-chat`.
 
 ### Backward Compatibility
 
@@ -493,8 +514,8 @@ The `npm start` (native mode) does not require rebuilds and is faster for develo
 The sandbox container enforces filesystem isolation through Docker volume mounts:
 
 - **Read-write**: Current working directory mounted at `/workspace`
-- **Read-only**: Agent configuration at `/app/.propio` (provider configs and credentials)
-- **Blocked**: Access to home directory, system files, and other mounted paths
+- **Read-only**: Agent configuration from `~/.propio` mounted at `/app/.propio` (provider configs and credentials)
+- **Blocked**: Access to other home directory files, system files, and other mounted paths
 
 This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensitive files outside the current project directory.
 
@@ -517,7 +538,7 @@ This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensi
 
    ```bash
    ollama pull llama3.1:8b
-   # Update your .propio/providers.json to use llama3.1:8b
+   # Update your ~/.propio/providers.json to use llama3.1:8b
    ```
 
 2. Models with confirmed good tool calling support:
