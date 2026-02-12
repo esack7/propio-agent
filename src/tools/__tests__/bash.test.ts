@@ -1,9 +1,21 @@
-import { execFile } from "child_process";
-import { RunBashTool } from "../bash";
+// For ESM modules, use unstable_mockModule instead of jest.mock
+const mockExecFileAsync = jest.fn();
 
-// Mock child_process
-jest.mock("child_process");
-const mockExecFile = execFile as jest.MockedFunction<typeof execFile>;
+jest.unstable_mockModule("child_process", () => ({
+  execFile: jest.fn(),
+}));
+
+jest.unstable_mockModule("util", () => ({
+  promisify: jest.fn(() => mockExecFileAsync),
+}));
+
+// Now do the dynamic import after mocks are set up
+let RunBashTool: any;
+
+beforeAll(async () => {
+  const module = await import("../bash.js");
+  RunBashTool = module.RunBashTool;
+});
 
 describe("RunBashTool", () => {
   beforeEach(() => {
@@ -14,9 +26,9 @@ describe("RunBashTool", () => {
     const tool = new RunBashTool();
 
     // Mock successful execution
-    mockExecFile.mockImplementation((file, args, options, callback: any) => {
-      callback(null, { stdout: "hello world\n", stderr: "" });
-      return {} as any;
+    mockExecFileAsync.mockResolvedValue({
+      stdout: "hello world\n",
+      stderr: "",
     });
 
     const result = await tool.execute({ command: "echo hello world" });
@@ -31,14 +43,11 @@ describe("RunBashTool", () => {
     const tool = new RunBashTool();
 
     // Mock command with non-zero exit
-    mockExecFile.mockImplementation((file, args, options, callback: any) => {
-      const error: any = new Error("Command failed");
-      error.code = 1;
-      error.stdout = "partial output";
-      error.stderr = "error message";
-      callback(error, { stdout: "partial output", stderr: "error message" });
-      return {} as any;
-    });
+    const error: any = new Error("Command failed");
+    error.code = 1;
+    error.stdout = "partial output";
+    error.stderr = "error message";
+    mockExecFileAsync.mockRejectedValue(error);
 
     const result = await tool.execute({ command: "false" });
 
@@ -52,14 +61,11 @@ describe("RunBashTool", () => {
     const tool = new RunBashTool();
 
     // Mock timeout
-    mockExecFile.mockImplementation((file, args, options, callback: any) => {
-      const error: any = new Error("Command timed out");
-      error.killed = true;
-      error.stdout = "";
-      error.stderr = "";
-      callback(error, { stdout: "", stderr: "" });
-      return {} as any;
-    });
+    const error: any = new Error("Command timed out");
+    error.killed = true;
+    error.stdout = "";
+    error.stderr = "";
+    mockExecFileAsync.mockRejectedValue(error);
 
     const result = await tool.execute({
       command: "sleep 100",
@@ -74,24 +80,28 @@ describe("RunBashTool", () => {
   it("should use custom working directory", async () => {
     const tool = new RunBashTool();
 
-    mockExecFile.mockImplementation((file, args, options: any, callback: any) => {
-      expect(options.cwd).toBe("/custom/dir");
-      callback(null, { stdout: "output", stderr: "" });
-      return {} as any;
+    mockExecFileAsync.mockResolvedValue({
+      stdout: "output",
+      stderr: "",
     });
 
     await tool.execute({ command: "pwd", cwd: "/custom/dir" });
 
-    expect(mockExecFile).toHaveBeenCalled();
+    expect(mockExecFileAsync).toHaveBeenCalledWith(
+      "/bin/sh",
+      ["-c", "pwd"],
+      expect.objectContaining({
+        cwd: "/custom/dir",
+      }),
+    );
   });
 
   it("should merge environment variables", async () => {
     const tool = new RunBashTool();
 
-    mockExecFile.mockImplementation((file, args, options: any, callback: any) => {
-      expect(options.env.CUSTOM_VAR).toBe("custom_value");
-      callback(null, { stdout: "output", stderr: "" });
-      return {} as any;
+    mockExecFileAsync.mockResolvedValue({
+      stdout: "output",
+      stderr: "",
     });
 
     await tool.execute({
@@ -99,16 +109,24 @@ describe("RunBashTool", () => {
       env: { CUSTOM_VAR: "custom_value" },
     });
 
-    expect(mockExecFile).toHaveBeenCalled();
+    expect(mockExecFileAsync).toHaveBeenCalledWith(
+      "/bin/sh",
+      ["-c", "echo $CUSTOM_VAR"],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CUSTOM_VAR: "custom_value",
+        }),
+      }),
+    );
   });
 
   it("should truncate large output", async () => {
     const tool = new RunBashTool();
     const largeOutput = "x".repeat(60 * 1024); // 60KB (exceeds 50KB limit)
 
-    mockExecFile.mockImplementation((file, args, options, callback: any) => {
-      callback(null, { stdout: largeOutput, stderr: "" });
-      return {} as any;
+    mockExecFileAsync.mockResolvedValue({
+      stdout: largeOutput,
+      stderr: "",
     });
 
     const result = await tool.execute({ command: "generate_large_output" });

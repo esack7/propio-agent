@@ -1,9 +1,16 @@
-import { ToolRegistry } from "./registry";
-import { ToolContext } from "./types";
-import { ReadFileTool, WriteFileTool, ListDirTool, MkdirTool, RemoveTool, MoveTool } from "./fileSystem";
-import { SaveSessionContextTool } from "./sessionContext";
-import { SearchTextTool, SearchFilesTool } from "./search";
-import { RunBashTool } from "./bash";
+import { ToolRegistry } from "./registry.js";
+import { ToolContext } from "./types.js";
+import {
+  ReadFileTool,
+  WriteFileTool,
+  ListDirTool,
+  MkdirTool,
+  RemoveTool,
+  MoveTool,
+} from "./fileSystem.js";
+import { SaveSessionContextTool } from "./sessionContext.js";
+import { SearchTextTool, SearchFilesTool } from "./search.js";
+import { RunBashTool } from "./bash.js";
 
 /**
  * Creates a ToolRegistry pre-loaded with all built-in tools.

@@ -1,5 +1,5 @@
-import { LLMProvider } from "../interface";
-import { ChatRequest, ChatResponse, ChatChunk } from "../types";
+import { LLMProvider } from "../interface.js";
+import { ChatRequest, ChatResponse, ChatChunk } from "../types.js";
 
 /**
  * Mock implementation for testing interface requirements

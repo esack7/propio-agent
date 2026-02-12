@@ -1,19 +1,30 @@
-import { BedrockProvider } from "../bedrock";
-import { ChatMessage, ChatRequest, ChatTool, ChatToolCall } from "../types";
-import {
-  BedrockRuntimeClient,
-  ConverseCommand,
-  ConverseStreamCommand,
-} from "@aws-sdk/client-bedrock-runtime";
+// Mock constructors MUST be created at the top before jest.mock()
+const mockSend = jest.fn();
+const MockBedrockRuntimeClient = jest.fn().mockImplementation(() => ({
+  send: mockSend,
+}));
+const MockConverseCommand = jest.fn();
+const MockConverseStreamCommand = jest.fn();
 
-// Mock AWS SDK
-jest.mock("@aws-sdk/client-bedrock-runtime");
+// Mock AWS SDK - MUST be before any imports
+jest.mock("@aws-sdk/client-bedrock-runtime", () => ({
+  BedrockRuntimeClient: MockBedrockRuntimeClient,
+  ConverseCommand: MockConverseCommand,
+  ConverseStreamCommand: MockConverseStreamCommand,
+}));
 
-const mockBedrockClient = BedrockRuntimeClient as jest.MockedClass<
-  typeof BedrockRuntimeClient
->;
+// Import types only (not the provider - that comes later via dynamic import)
+import { ChatMessage, ChatRequest, ChatTool, ChatToolCall } from "../types.js";
+
+// Variables for dynamic imports
+let BedrockProvider: any;
 
 describe("BedrockProvider", () => {
+  beforeAll(async () => {
+    const mod = await import("../bedrock.js");
+    BedrockProvider = mod.BedrockProvider;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -21,7 +32,7 @@ describe("BedrockProvider", () => {
   describe("Initialization", () => {
     it("should initialize with custom region", () => {
       new BedrockProvider({ model: "test-model", region: "us-west-2" });
-      expect(mockBedrockClient).toHaveBeenCalledWith(
+      expect(MockBedrockRuntimeClient).toHaveBeenCalledWith(
         expect.objectContaining({
           region: "us-west-2",
         }),
@@ -30,7 +41,7 @@ describe("BedrockProvider", () => {
 
     it("should use default region when not provided", () => {
       new BedrockProvider({ model: "test-model" });
-      expect(mockBedrockClient).toHaveBeenCalledWith(
+      expect(MockBedrockRuntimeClient).toHaveBeenCalledWith(
         expect.objectContaining({
           region: "us-east-1",
         }),
@@ -39,7 +50,7 @@ describe("BedrockProvider", () => {
 
     it("should use AWS credentials from provider chain", () => {
       new BedrockProvider({ model: "test-model" });
-      expect(mockBedrockClient).toHaveBeenCalled();
+      expect(MockBedrockRuntimeClient).toHaveBeenCalled();
       // The mock will be called with region, credentials are handled by AWS SDK
     });
   });
@@ -279,7 +290,7 @@ describe("BedrockProvider", () => {
           output: createMockStream(),
         }),
       );
-      mockBedrockClient.prototype.send = mockSendMethod;
+      mockSend.mockImplementation(mockSendMethod);
       provider = new BedrockProvider({ model: "test-model" });
     });
 
@@ -293,7 +304,9 @@ describe("BedrockProvider", () => {
         // consume
       }
 
-      expect(mockSendMethod).toHaveBeenCalledWith(expect.any(ConverseStreamCommand));
+      expect(mockSendMethod).toHaveBeenCalledWith(
+        expect.any(MockConverseStreamCommand),
+      );
     });
 
     it("should return ChatResponse with stop reason", async () => {
@@ -359,7 +372,9 @@ describe("BedrockProvider", () => {
         // consume
       }
 
-      expect(mockSendMethod).toHaveBeenCalledWith(expect.any(ConverseStreamCommand));
+      expect(mockSendMethod).toHaveBeenCalledWith(
+        expect.any(MockConverseStreamCommand),
+      );
     });
 
     it("should map Bedrock stopReason to provider-agnostic value", async () => {
@@ -380,8 +395,18 @@ describe("BedrockProvider", () => {
       mockSendMethod.mockImplementation(() =>
         Promise.resolve({
           output: (async function* () {
-            yield { contentBlockStart: { start: { toolUse: { toolUseId: "id1", name: "my_tool", input: {} } } } };
-            yield { contentBlockDelta: { delta: { toolUse: { input: '{"param":"value"}' } } } };
+            yield {
+              contentBlockStart: {
+                start: {
+                  toolUse: { toolUseId: "id1", name: "my_tool", input: {} },
+                },
+              },
+            };
+            yield {
+              contentBlockDelta: {
+                delta: { toolUse: { input: '{"param":"value"}' } },
+              },
+            };
             yield { contentBlockStop: {} };
             yield { messageStop: { stopReason: "tool_use" } };
           })(),
@@ -410,7 +435,7 @@ describe("BedrockProvider", () => {
 
     beforeEach(() => {
       mockSendMethod = jest.fn();
-      mockBedrockClient.prototype.send = mockSendMethod;
+      mockSend.mockImplementation(mockSendMethod);
       provider = new BedrockProvider({ model: "test-model" });
     });
 
@@ -435,7 +460,7 @@ describe("BedrockProvider", () => {
       }
 
       expect(mockSendMethod).toHaveBeenCalledWith(
-        expect.any(ConverseStreamCommand),
+        expect.any(MockConverseStreamCommand),
       );
     });
 
@@ -470,7 +495,7 @@ describe("BedrockProvider", () => {
 
     beforeEach(() => {
       mockSendMethod = jest.fn();
-      mockBedrockClient.prototype.send = mockSendMethod;
+      mockSend.mockImplementation(mockSendMethod);
       provider = new BedrockProvider({ model: "test-model" });
     });
 
@@ -563,7 +588,7 @@ describe("BedrockProvider", () => {
           output: createMockStream(),
         }),
       );
-      mockBedrockClient.prototype.send = mockSendMethod;
+      mockSend.mockImplementation(mockSendMethod);
       provider = new BedrockProvider({ model: "test-model" });
     });
 
@@ -605,16 +630,14 @@ describe("BedrockProvider", () => {
     it("should use default credential provider chain", () => {
       new BedrockProvider({ model: "test-model" });
       // AWS SDK automatically uses credential chain - verified by BedrockRuntimeClient being called
-      expect(mockBedrockClient).toHaveBeenCalled();
+      expect(MockBedrockRuntimeClient).toHaveBeenCalled();
     });
 
     it("should properly dispose BedrockRuntimeClient", () => {
-      const disposeSpy = jest.fn();
-      mockBedrockClient.prototype.destroy = disposeSpy;
-
       new BedrockProvider({ model: "test-model" });
-      // In real usage, destroy would be called on cleanup
-      // This test verifies the method exists
+      // AWS SDK client instance has destroy method available
+      // This test verifies that MockBedrockRuntimeClient was instantiated
+      expect(MockBedrockRuntimeClient).toHaveBeenCalled();
     });
   });
 });

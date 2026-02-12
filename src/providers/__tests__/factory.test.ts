@@ -1,14 +1,14 @@
-import { createProvider, extractModelFromConfig } from "../factory";
-import { LLMProvider } from "../interface";
+import { createProvider, extractModelFromConfig } from "../factory.js";
+import { LLMProvider } from "../interface.js";
 import {
   ProviderConfig,
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
-} from "../config";
-import { OllamaProvider } from "../ollama";
-import { BedrockProvider } from "../bedrock";
-import { OpenRouterProvider } from "../openrouter";
+} from "../config.js";
+import { OllamaProvider } from "../ollama.js";
+import { BedrockProvider } from "../bedrock.js";
+import { OpenRouterProvider } from "../openrouter.js";
 
 describe("Provider Factory", () => {
   describe("createProvider", () => {

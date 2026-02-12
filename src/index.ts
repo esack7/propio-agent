@@ -1,6 +1,11 @@
 import * as readline from "readline";
 import * as path from "path";
-import { Agent } from "./agent";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+import { Agent } from "./agent.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 async function main() {
   // Load configuration from .propio/providers.json
@@ -27,7 +32,9 @@ Always provide clear, concise responses and summarize what you did after complet
 
   // Show loaded tools for debugging
   const tools = agent.getTools();
-  console.log(`Loaded ${tools.length} tools: ${tools.map((t) => t.function.name).join(", ")}\n`);
+  console.log(
+    `Loaded ${tools.length} tools: ${tools.map((t) => t.function.name).join(", ")}\n`,
+  );
 
   const prompt = () => {
     rl.question("You: ", async (input) => {

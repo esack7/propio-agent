@@ -19,6 +19,7 @@ To use Ollama as your LLM provider:
 
 1. Install [Ollama](https://ollama.ai/)
 2. Pull a model with **tool calling support**:
+
    ```bash
    # Recommended models with good tool calling support:
    ollama pull llama3.1:8b        # Llama 3.1 (fast, good tool calling)
@@ -28,6 +29,7 @@ To use Ollama as your LLM provider:
    # Or use your preferred model (tool calling quality varies by model)
    ollama pull qwen3-coder:30b
    ```
+
 3. Ensure Ollama is running:
    ```bash
    ollama serve
@@ -148,6 +150,7 @@ The agent supports tool calling with an agentic loop, allowing it to:
 The agent comes with 10 built-in tools for file operations, search, and execution:
 
 #### Filesystem Tools
+
 - **read_file**: Reads content from a file
 - **write_file**: Writes content to a file
 - **list_dir**: Lists directory contents with file/directory types
@@ -156,18 +159,22 @@ The agent comes with 10 built-in tools for file operations, search, and executio
 - **remove**: ⚠️ Deletes files or directories (recursive) - **Disabled by default**
 
 #### Search Tools
+
 - **search_text**: Searches for text patterns in files (supports regex)
 - **search_files**: Finds files by glob patterns (e.g., `**/*.ts`)
 
 #### Execution Tools
+
 - **run_bash**: ⚠️ Executes shell commands - **Disabled by default**
 
 #### Context Tools
+
 - **save_session_context**: Saves current session context to `session_context.txt`
 
 ### Security: Destructive Tools
 
 The `remove` and `run_bash` tools are **disabled by default** due to their destructive potential:
+
 - **remove**: Can permanently delete files and directories
 - **run_bash**: Can execute arbitrary shell commands
 
@@ -184,18 +191,19 @@ import { createDefaultToolRegistry } from "./src/tools/factory";
 const agent = new Agent({
   providerConfig: {
     provider: "ollama",
-    ollama: { model: "llama3.1:8b" }
-  }
+    ollama: { model: "llama3.1:8b" },
+  },
 });
 
 // Enable destructive tools
-agent.toolRegistry.enable("remove");      // Enable file/directory deletion
-agent.toolRegistry.enable("run_bash");    // Enable shell command execution
+agent.toolRegistry.enable("remove"); // Enable file/directory deletion
+agent.toolRegistry.enable("run_bash"); // Enable shell command execution
 ```
 
 #### Security Features
 
 All filesystem tools include:
+
 - **Path validation**: Prevents access outside the current working directory
 - **Error handling**: User-friendly error messages for permission, file-not-found, etc.
 - **Async operations**: Non-blocking file I/O for better performance
@@ -495,6 +503,7 @@ This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensi
 ### Tool Calling Issues with Ollama
 
 **Symptom:** The agent outputs XML-like text instead of actually calling tools:
+
 ```xml
 <function=search_text>
 <parameter=query>some query</parameter>
@@ -503,7 +512,9 @@ This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensi
 **Cause:** The model doesn't properly support Ollama's native tool calling format.
 
 **Solution:**
+
 1. Switch to a model with better tool calling support:
+
    ```bash
    ollama pull llama3.1:8b
    # Update your .propio/providers.json to use llama3.1:8b

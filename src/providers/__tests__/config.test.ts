@@ -5,7 +5,7 @@ import {
   BedrockProviderConfig,
   OpenRouterProviderConfig,
   ProvidersConfig,
-} from "../config";
+} from "../config.js";
 
 describe("Configuration Types (New Structure)", () => {
   describe("Model interface", () => {

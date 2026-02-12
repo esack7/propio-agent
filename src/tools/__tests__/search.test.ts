@@ -1,14 +1,34 @@
-import * as fsPromises from "fs/promises";
-import fg from "fast-glob";
-import { SearchTextTool, SearchFilesTool } from "../search";
+// For ESM modules, use unstable_mockModule instead of jest.mock
+jest.unstable_mockModule("fs/promises", () => ({
+  stat: jest.fn(),
+  readFile: jest.fn(),
+}));
 
-// Mock dependencies
-jest.mock("fs/promises");
-jest.mock("fast-glob");
-const mockFsPromises = fsPromises as jest.Mocked<typeof fsPromises>;
-const mockFg = fg as jest.MockedFunction<typeof fg>;
+jest.unstable_mockModule("fast-glob", () => ({
+  default: jest.fn(),
+}));
+
+// Dynamic imports for modules under test and mocked modules
+let SearchTextTool: any;
+let SearchFilesTool: any;
+let mockFsPromises: jest.Mocked<any>;
+let mockFg: jest.MockedFunction<any>;
 
 describe("Search Tools", () => {
+  beforeAll(async () => {
+    // Import mocked modules
+    const fsPromises = await import("fs/promises");
+    mockFsPromises = fsPromises as jest.Mocked<typeof fsPromises>;
+
+    const fastGlob = await import("fast-glob");
+    mockFg = fastGlob.default as jest.MockedFunction<typeof fastGlob.default>;
+
+    // Import modules under test
+    const searchModule = await import("../search.js");
+    SearchTextTool = searchModule.SearchTextTool;
+    SearchFilesTool = searchModule.SearchFilesTool;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -21,7 +41,7 @@ describe("Search Tools", () => {
       mockFsPromises.stat.mockResolvedValue({
         isDirectory: () => false,
       } as any);
-      mockFsPromises.readFile.mockResolvedValue(mockFileContent);
+      mockFsPromises.readFile.mockResolvedValue(mockFileContent as any);
 
       const result = await tool.execute({
         query: "query",
@@ -39,7 +59,7 @@ describe("Search Tools", () => {
       mockFsPromises.stat.mockResolvedValue({
         isDirectory: () => false,
       } as any);
-      mockFsPromises.readFile.mockResolvedValue(mockFileContent);
+      mockFsPromises.readFile.mockResolvedValue(mockFileContent as any);
 
       const result = await tool.execute({
         query: "test\\d+",
@@ -58,7 +78,7 @@ describe("Search Tools", () => {
         isDirectory: () => true,
       } as any);
       mockFg.mockResolvedValue(["/test/dir/file1.txt", "/test/dir/file2.txt"]);
-      mockFsPromises.readFile.mockResolvedValue(mockFileContent);
+      mockFsPromises.readFile.mockResolvedValue(mockFileContent as any);
 
       const result = await tool.execute({
         query: "matching",
@@ -78,7 +98,7 @@ describe("Search Tools", () => {
       mockFsPromises.stat.mockResolvedValue({
         isDirectory: () => false,
       } as any);
-      mockFsPromises.readFile.mockResolvedValue(mockFileContent);
+      mockFsPromises.readFile.mockResolvedValue(mockFileContent as any);
 
       const result = await tool.execute({
         query: "nonexistent",

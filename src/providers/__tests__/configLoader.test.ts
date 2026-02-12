@@ -4,8 +4,8 @@ import {
   loadProvidersConfig,
   resolveProvider,
   resolveModelKey,
-} from "../configLoader";
-import { ProvidersConfig, ProviderConfig } from "../config";
+} from "../configLoader.js";
+import { ProvidersConfig, ProviderConfig } from "../config.js";
 
 describe("Configuration Loader", () => {
   const tempDir = "/tmp/config-loader-tests";

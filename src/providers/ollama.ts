@@ -1,5 +1,5 @@
 import { Ollama, Message, Tool, ToolCall } from "ollama";
-import { LLMProvider } from "./interface";
+import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -10,7 +10,7 @@ import {
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
-} from "./types";
+} from "./types.js";
 
 /**
  * Ollama implementation of LLMProvider
@@ -82,7 +82,11 @@ export class OllamaProvider implements LLMProvider {
 
     for (const msg of messages) {
       // If this is a batched tool result message, expand it
-      if (msg.role === "tool" && msg.toolResults && msg.toolResults.length > 0) {
+      if (
+        msg.role === "tool" &&
+        msg.toolResults &&
+        msg.toolResults.length > 0
+      ) {
         for (const toolResult of msg.toolResults) {
           expanded.push({
             role: "tool",

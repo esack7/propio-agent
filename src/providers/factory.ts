@@ -1,13 +1,13 @@
-import { LLMProvider } from "./interface";
+import { LLMProvider } from "./interface.js";
 import {
   ProviderConfig,
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
-} from "./config";
-import { OllamaProvider } from "./ollama";
-import { BedrockProvider } from "./bedrock";
-import { OpenRouterProvider } from "./openrouter";
+} from "./config.js";
+import { OllamaProvider } from "./ollama.js";
+import { BedrockProvider } from "./bedrock.js";
+import { OpenRouterProvider } from "./openrouter.js";
 
 /**
  * Factory function to create LLM provider instances from configuration.

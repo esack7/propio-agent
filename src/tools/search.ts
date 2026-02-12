@@ -1,8 +1,8 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
 import fg from "fast-glob";
-import { ExecutableTool } from "./interface";
-import { ChatTool } from "../providers/types";
+import { ExecutableTool } from "./interface.js";
+import { ChatTool } from "../providers/types.js";
 
 /**
  * SearchTextTool searches for text within file contents.
@@ -17,7 +17,8 @@ export class SearchTextTool implements ExecutableTool {
       type: "function",
       function: {
         name: "search_text",
-        description: "Searches for a text query within file contents. Supports literal and regex search modes. Returns matching lines with file path and line number.",
+        description:
+          "Searches for a text query within file contents. Supports literal and regex search modes. Returns matching lines with file path and line number.",
         parameters: {
           type: "object",
           properties: {
@@ -32,7 +33,8 @@ export class SearchTextTool implements ExecutableTool {
             },
             regex: {
               type: "boolean",
-              description: "If true, treat query as a regular expression. Default: false",
+              description:
+                "If true, treat query as a regular expression. Default: false",
               default: false,
             },
           },
@@ -53,7 +55,9 @@ export class SearchTextTool implements ExecutableTool {
       try {
         pattern = new RegExp(query);
       } catch (error) {
-        throw new Error(`Invalid regex pattern: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(
+          `Invalid regex pattern: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 
@@ -142,13 +146,15 @@ export class SearchFilesTool implements ExecutableTool {
       type: "function",
       function: {
         name: "search_files",
-        description: "Finds files matching a glob pattern. Returns a list of matching file paths.",
+        description:
+          "Finds files matching a glob pattern. Returns a list of matching file paths.",
         parameters: {
           type: "object",
           properties: {
             pattern: {
               type: "string",
-              description: "Glob pattern to match files (e.g., 'src/**/*.ts', '**/*.md')",
+              description:
+                "Glob pattern to match files (e.g., 'src/**/*.ts', '**/*.md')",
             },
           },
           required: ["pattern"],

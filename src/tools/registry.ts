@@ -1,5 +1,5 @@
-import { ExecutableTool } from "./interface";
-import { ChatTool } from "../providers/types";
+import { ExecutableTool } from "./interface.js";
+import { ChatTool } from "../providers/types.js";
 
 /**
  * ToolRegistry manages tool registration, lifecycle, and execution.
@@ -137,7 +137,8 @@ export class ToolRegistry {
     try {
       return await tool.execute(args);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       return `Error executing ${name}: ${errorMessage}`;
     }
   }

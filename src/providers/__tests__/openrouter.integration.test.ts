@@ -4,12 +4,12 @@
  */
 import * as path from "path";
 import * as fs from "fs";
-import { createProvider } from "../factory";
-import { OpenRouterProvider } from "../openrouter";
-import { OpenRouterProviderConfig } from "../config";
-import { ProviderAuthenticationError } from "../types";
-import { Agent } from "../../agent";
-import { ProvidersConfig } from "../config";
+import { createProvider } from "../factory.js";
+import { OpenRouterProvider } from "../openrouter.js";
+import { OpenRouterProviderConfig } from "../config.js";
+import { ProviderAuthenticationError } from "../types.js";
+import { Agent } from "../../agent.js";
+import { ProvidersConfig } from "../config.js";
 
 function getOpenRouterApiKey(): string | undefined {
   if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;

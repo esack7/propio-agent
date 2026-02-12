@@ -3,7 +3,7 @@ import {
   ConverseCommand,
   ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
-import { LLMProvider } from "./interface";
+import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -15,7 +15,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
-} from "./types";
+} from "./types.js";
 
 /**
  * Bedrock implementation of LLMProvider

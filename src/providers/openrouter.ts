@@ -1,4 +1,4 @@
-import { LLMProvider } from "./interface";
+import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -10,7 +10,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
-} from "./types";
+} from "./types.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 

@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import { ProvidersConfig, ProviderConfig } from "./config";
+import { ProvidersConfig, ProviderConfig } from "./config.js";
 
 /**
  * Load and validate a ProvidersConfig from a JSON file

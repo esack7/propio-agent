@@ -17,17 +17,21 @@ This follows the same architectural pattern as the existing `src/providers/` mod
 ## Capabilities
 
 ### New Capabilities
+
 - `tools-module`: A pluggable tools system with registry-based management, enabling runtime tool composition and independent tool implementation
 
 ### Modified Capabilities
+
 <!-- No existing capabilities are being modified - this is a pure refactoring -->
 
 ## Impact
 
 **Files Modified:**
+
 - `src/agent.ts` — Remove ~80 lines of hardcoded tool logic, add registry delegation (net reduction)
 
 **Files Created:**
+
 - `src/tools/interface.ts` — ExecutableTool interface
 - `src/tools/types.ts` — ToolContext interface
 - `src/tools/registry.ts` — ToolRegistry class
@@ -38,12 +42,14 @@ This follows the same architectural pattern as the existing `src/providers/` mod
 - `src/tools/__tests__/implementations.test.ts` — Tool implementation tests
 
 **API Impact:**
+
 - Agent constructor signature unchanged (backward compatible)
 - New public methods: `addTool()`, `removeTool()`, `enableTool()`, `disableTool()`
 - All existing tool behavior preserved (read_file, write_file, save_session_context)
 - Test surface remains the same (tests mock at provider level)
 
 **Unlocks:**
+
 - Runtime tool composition (add/remove tools after agent creation)
 - Tool marketplace potential (third-party tool packages)
 - Easier testing (mock individual tools vs entire agent)
