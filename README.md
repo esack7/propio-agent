@@ -112,8 +112,8 @@ docker compose run --rm agent
 ### Using Docker directly
 
 ```bash
-docker build -t ollama-agent .
-docker run -it --rm ollama-agent
+docker build -t propio-agent .
+docker run -it --rm propio-agent
 ```
 
 ### VS Code Dev Container

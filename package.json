@@ -1,7 +1,7 @@
 {
-  "name": "ollama-agent",
+  "name": "propio-agent",
   "version": "1.0.0",
-  "description": "AI agent that interacts with local Ollama model",
+  "description": "Multi-provider AI agent framework supporting Ollama, Bedrock, and OpenRouter",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
