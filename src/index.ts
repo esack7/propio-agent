@@ -3,6 +3,16 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { Agent } from "./agent.js";
+import {
+  formatUserMessage,
+  formatAssistantMessage,
+  formatCommand,
+  formatError,
+  formatInfo,
+  formatSubtle,
+  formatSuccess,
+} from "./ui/formatting.js";
+import { OperationSpinner } from "./ui/spinner.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,19 +35,25 @@ Always provide clear, concise responses and summarize what you did after complet
     output: process.stdout,
   });
 
-  console.log("AI Agent started. Type your message and press Enter.");
   console.log(
-    "Commands: /clear - clear context, /context - show context, /exit - quit\n",
+    formatInfo("AI Agent started. Type your message and press Enter."),
+  );
+  console.log(
+    formatCommand(
+      "Commands: /clear - clear context, /context - show context, /exit - quit\n",
+    ),
   );
 
   // Show loaded tools for debugging
   const tools = agent.getTools();
   console.log(
-    `Loaded ${tools.length} tools: ${tools.map((t) => t.function.name).join(", ")}\n`,
+    formatInfo(
+      `Loaded ${tools.length} tools: ${tools.map((t) => t.function.name).join(", ")}\n`,
+    ),
   );
 
   const prompt = () => {
-    rl.question("You: ", async (input) => {
+    rl.question(formatUserMessage("You: "), async (input) => {
       const trimmedInput = input.trim();
 
       if (!trimmedInput) {
@@ -46,16 +62,16 @@ Always provide clear, concise responses and summarize what you did after complet
       }
 
       if (trimmedInput === "/exit") {
-        console.log("Saving session context...");
+        console.log(formatInfo("Saving session context..."));
         agent.saveContext("Exiting application");
-        console.log("Goodbye!");
+        console.log(formatSuccess("Goodbye!"));
         rl.close();
         process.exit(0);
       }
 
       if (trimmedInput === "/clear") {
         agent.clearContext();
-        console.log("Session context cleared.\n");
+        console.log(formatSuccess("Session context cleared.\n"));
         prompt();
         return;
       }
@@ -63,12 +79,14 @@ Always provide clear, concise responses and summarize what you did after complet
       if (trimmedInput === "/context") {
         const context = agent.getContext();
         if (context.length === 0) {
-          console.log("No session context.\n");
+          console.log(formatInfo("No session context.\n"));
         } else {
-          console.log("Session Context:");
+          console.log(formatInfo("Session Context:"));
           context.forEach((msg, index) => {
             console.log(
-              `${index + 1}. ${msg.role.toUpperCase()}: ${msg.content}`,
+              formatSubtle(
+                `${index + 1}. ${msg.role.toUpperCase()}: ${msg.content}`,
+              ),
             );
           });
           console.log("");
@@ -78,14 +96,41 @@ Always provide clear, concise responses and summarize what you did after complet
       }
 
       try {
-        process.stdout.write("Assistant: ");
-        await agent.streamChat(trimmedInput, (token) => {
-          process.stdout.write(token);
-        });
+        process.stdout.write(formatAssistantMessage("Assistant: "));
+
+        let currentSpinner: OperationSpinner | null = null;
+
+        await agent.streamChat(
+          trimmedInput,
+          (token) => {
+            process.stdout.write(formatAssistantMessage(token));
+          },
+          {
+            onToolStart: (toolName: string) => {
+              // Stop spinner before starting a new one (in case of multiple tools)
+              if (currentSpinner) {
+                currentSpinner.stop();
+              }
+              currentSpinner = new OperationSpinner(`Executing ${toolName}...`);
+              currentSpinner.start();
+            },
+            onToolEnd: (toolName: string, result: string) => {
+              if (currentSpinner) {
+                const preview = result.substring(0, 50);
+                currentSpinner.succeed(
+                  `${toolName} completed: ${preview}${result.length > 50 ? "..." : ""}`,
+                );
+                currentSpinner = null;
+              }
+            },
+          },
+        );
         console.log("\n");
       } catch (error) {
         console.error(
-          `\nError: ${error instanceof Error ? error.message : "Unknown error"}\n`,
+          formatError(
+            `\nError: ${error instanceof Error ? error.message : "Unknown error"}\n`,
+          ),
         );
       }
 
