@@ -44,6 +44,16 @@ The system SHALL allow the Agent class to be configured with an LLM provider at 
 - **WHEN** Agent is instantiated with ProvidersConfig
 - **THEN** it SHALL store the configuration for use by switchProvider() method
 
+#### Scenario: Agent accepts optional agentsMdContent for system prompt composition
+
+- **WHEN** Agent is instantiated with an agentsMdContent parameter containing a non-empty string
+- **THEN** it SHALL prepend the agentsMdContent to the system prompt (whether provided or default), separated by two newlines
+
+#### Scenario: Agent without agentsMdContent uses system prompt unchanged
+
+- **WHEN** Agent is instantiated without an agentsMdContent parameter (or with an empty string)
+- **THEN** it SHALL use the systemPrompt parameter (or default) without modification, preserving existing behavior
+
 ### Requirement: Runtime provider switching
 
 The system SHALL allow switching the LLM provider at runtime without losing session context.

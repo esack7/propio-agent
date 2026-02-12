@@ -77,6 +77,7 @@ export class Agent {
       modelKey?: string;
       systemPrompt?: string;
       sessionContextFilePath?: string;
+      agentsMdContent?: string;
     } = {} as any,
   ) {
     // Validate required providersConfig
@@ -86,8 +87,15 @@ export class Agent {
       );
     }
 
-    this.systemPrompt =
+    const basePrompt =
       options.systemPrompt || "You are a helpful AI assistant.";
+
+    // Prepend agentsMdContent if provided and non-empty
+    if (options.agentsMdContent) {
+      this.systemPrompt = `${options.agentsMdContent}\n\n${basePrompt}`;
+    } else {
+      this.systemPrompt = basePrompt;
+    }
     this.sessionContextFilePath =
       options.sessionContextFilePath ||
       path.join(process.cwd(), "session_context.txt");
