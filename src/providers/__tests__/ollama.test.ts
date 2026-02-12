@@ -37,7 +37,11 @@ describe("OllamaProvider", () => {
           host: "http://localhost:11434",
         });
       } finally {
-        process.env.OLLAMA_HOST = originalEnv;
+        if (originalEnv !== undefined) {
+          process.env.OLLAMA_HOST = originalEnv;
+        } else {
+          delete process.env.OLLAMA_HOST;
+        }
       }
     });
 
@@ -50,19 +54,29 @@ describe("OllamaProvider", () => {
           host: "http://env-host:11434",
         });
       } finally {
-        process.env.OLLAMA_HOST = originalEnv;
+        if (originalEnv !== undefined) {
+          process.env.OLLAMA_HOST = originalEnv;
+        } else {
+          delete process.env.OLLAMA_HOST;
+        }
       }
     });
 
-    it("should prioritize explicit host over environment variable", () => {
+    it("should prioritize environment variable over explicit host", () => {
       const originalEnv = process.env.OLLAMA_HOST;
       try {
         process.env.OLLAMA_HOST = "http://env-host:11434";
         const host = "http://explicit-host:11434";
         new OllamaProvider({ model: "test-model", host });
-        expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
+          host: "http://env-host:11434",
+        });
       } finally {
-        process.env.OLLAMA_HOST = originalEnv;
+        if (originalEnv !== undefined) {
+          process.env.OLLAMA_HOST = originalEnv;
+        } else {
+          delete process.env.OLLAMA_HOST;
+        }
       }
     });
   });

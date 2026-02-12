@@ -1,8 +1,6 @@
 import * as readline from "readline";
-import * as path from "path";
-import { fileURLToPath } from "url";
-import { dirname } from "path";
 import { Agent } from "./agent.js";
+import { getConfigPath } from "./providers/configLoader.js";
 import {
   formatUserMessage,
   formatAssistantMessage,
@@ -14,12 +12,9 @@ import {
 } from "./ui/formatting.js";
 import { OperationSpinner } from "./ui/spinner.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 async function main() {
-  // Load configuration from .propio/providers.json
-  const configPath = path.join(__dirname, "..", ".propio", "providers.json");
+  // Load configuration from ~/.propio/providers.json
+  const configPath = getConfigPath();
 
   const agent = new Agent({
     providersConfig: configPath,

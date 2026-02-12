@@ -22,7 +22,7 @@ export class OllamaProvider implements LLMProvider {
 
   constructor(options: { model: string; host?: string }) {
     const host =
-      options.host || process.env.OLLAMA_HOST || "http://localhost:11434";
+      process.env.OLLAMA_HOST || options.host || "http://localhost:11434";
     this.ollama = new Ollama({ host });
     this.model = options.model;
   }

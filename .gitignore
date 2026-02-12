@@ -3,5 +3,4 @@ dist
 .env
 *.log
 session_context.txt
-.propio
 .DS_Store
