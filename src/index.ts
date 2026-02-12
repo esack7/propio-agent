@@ -2,6 +2,11 @@ import * as readline from "readline";
 import { Agent } from "./agent.js";
 import { getConfigPath } from "./providers/configLoader.js";
 import {
+  discoverAgentsMdFiles,
+  loadAgentsMdContent,
+  composeSystemPrompt,
+} from "./agentsMd.js";
+import {
   formatUserMessage,
   formatAssistantMessage,
   formatCommand,
@@ -17,13 +22,25 @@ async function main() {
   // Load configuration from ~/.propio/providers.json
   const configPath = getConfigPath();
 
-  const agent = new Agent({
-    providersConfig: configPath,
-    systemPrompt: `You are a helpful AI coding assistant with access to tools. Use the tools available to you to complete user requests effectively.
+  // Discover and load AGENTS.md files
+  const agentsMdFiles = discoverAgentsMdFiles();
+  const agentsMdContent = loadAgentsMdContent(agentsMdFiles);
+
+  const defaultSystemPrompt = `You are a helpful AI coding assistant with access to tools. Use the tools available to you to complete user requests effectively.
 
 When you need to perform actions like reading files, searching code, or executing commands, use the appropriate tool by making a function call. You will receive the tool results and can use that information to continue helping the user.
 
-Always provide clear, concise responses and summarize what you did after completing the user's request.`,
+Always provide clear, concise responses and summarize what you did after completing the user's request.`;
+
+  const systemPrompt = composeSystemPrompt(
+    agentsMdContent,
+    defaultSystemPrompt,
+  );
+
+  const agent = new Agent({
+    providersConfig: configPath,
+    systemPrompt: systemPrompt,
+    agentsMdContent: agentsMdContent,
   });
 
   const rl = readline.createInterface({

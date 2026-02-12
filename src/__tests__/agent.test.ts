@@ -715,4 +715,92 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(result.length).toBeGreaterThan(0);
     });
   });
+
+  describe("Constructor with agentsMdContent option", () => {
+    it("should accept agentsMdContent parameter", () => {
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        agentsMdContent: "Project instructions",
+      });
+      expect(agent).toBeDefined();
+    });
+
+    it("should prepend agentsMdContent to system prompt when provided", () => {
+      const agentsMdContent = "Project-specific instructions";
+      const customPrompt = "Custom system prompt";
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        systemPrompt: customPrompt,
+        agentsMdContent: agentsMdContent,
+      });
+
+      const systemPrompt = (agent as any).systemPrompt;
+      expect(systemPrompt).toContain(agentsMdContent);
+      expect(systemPrompt).toContain(customPrompt);
+      expect(systemPrompt).toBe(`${agentsMdContent}\n\n${customPrompt}`);
+    });
+
+    it("should prepend agentsMdContent to default prompt when systemPrompt not provided", () => {
+      const agentsMdContent = "Project-specific instructions";
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        agentsMdContent: agentsMdContent,
+      });
+
+      const systemPrompt = (agent as any).systemPrompt;
+      expect(systemPrompt).toContain(agentsMdContent);
+      expect(systemPrompt).toContain("You are a helpful AI assistant.");
+      expect(systemPrompt.startsWith(agentsMdContent)).toBe(true);
+    });
+
+    it("should use system prompt unchanged when agentsMdContent is empty", () => {
+      const customPrompt = "Custom system prompt";
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        systemPrompt: customPrompt,
+        agentsMdContent: "",
+      });
+
+      const systemPrompt = (agent as any).systemPrompt;
+      expect(systemPrompt).toBe(customPrompt);
+    });
+
+    it("should use system prompt unchanged when agentsMdContent is not provided", () => {
+      const customPrompt = "Custom system prompt";
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        systemPrompt: customPrompt,
+      });
+
+      const systemPrompt = (agent as any).systemPrompt;
+      expect(systemPrompt).toBe(customPrompt);
+    });
+
+    it("should use default prompt unchanged when agentsMdContent is not provided and systemPrompt is not provided", () => {
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+      });
+
+      const systemPrompt = (agent as any).systemPrompt;
+      expect(systemPrompt).toBe("You are a helpful AI assistant.");
+    });
+
+    it("should include agentsMdContent in messages sent to provider", async () => {
+      const mockProvider = new MockProvider();
+      const agentsMdContent = "Project instructions";
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        agentsMdContent: agentsMdContent,
+      });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Test message", () => {});
+
+      expect(mockProvider.streamChatCalls).toHaveLength(1);
+      const messages = mockProvider.streamChatCalls[0].messages;
+      const systemMessage = messages.find((m) => m.role === "system");
+      expect(systemMessage).toBeDefined();
+      expect(systemMessage?.content).toContain(agentsMdContent);
+    });
+  });
 });
