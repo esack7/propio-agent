@@ -389,6 +389,54 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
+  describe("Tool Introspection Methods", () => {
+    it("should return all registered tool names via getToolNames()", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const toolNames = agent.getToolNames();
+
+      expect(Array.isArray(toolNames)).toBe(true);
+      expect(toolNames.length).toBeGreaterThan(0);
+      // Should contain known built-in tools
+      expect(toolNames).toContain("read_file");
+      expect(toolNames).toContain("write_file");
+    });
+
+    it("should return true for enabled tools via isToolEnabled()", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      // read_file is enabled by default
+      expect(agent.isToolEnabled("read_file")).toBe(true);
+      expect(agent.isToolEnabled("write_file")).toBe(true);
+    });
+
+    it("should return false for disabled tools via isToolEnabled()", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      // run_bash and remove are disabled by default
+      expect(agent.isToolEnabled("run_bash")).toBe(false);
+      expect(agent.isToolEnabled("remove")).toBe(false);
+    });
+
+    it("should return false for nonexistent tools via isToolEnabled()", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      expect(agent.isToolEnabled("nonexistent_tool")).toBe(false);
+    });
+
+    it("should reflect tool state changes via isToolEnabled()", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+
+      // Enable a disabled tool
+      agent.enableTool("run_bash");
+      expect(agent.isToolEnabled("run_bash")).toBe(true);
+
+      // Disable an enabled tool
+      agent.disableTool("read_file");
+      expect(agent.isToolEnabled("read_file")).toBe(false);
+
+      // Re-enable
+      agent.enableTool("read_file");
+      expect(agent.isToolEnabled("read_file")).toBe(true);
+    });
+  });
+
   describe("streamChat with Tool Lifecycle Callbacks", () => {
     /**
      * Mock Provider that yields tool calls and then a final response
