@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as fsPromises from "fs/promises";
-import { ExecutableTool } from "./interface";
-import { ChatTool } from "../providers/types";
+import { ExecutableTool } from "./interface.js";
+import { ChatTool } from "../providers/types.js";
 
 /**
  * Validates that a file path is within the allowed base directory.
@@ -17,7 +17,7 @@ function validatePath(filePath: string, baseDir: string = process.cwd()): void {
 
   if (!resolvedPath.startsWith(resolvedBase)) {
     throw new Error(
-      `Access denied: Path '${filePath}' is outside the allowed directory`
+      `Access denied: Path '${filePath}' is outside the allowed directory`,
     );
   }
 }
@@ -73,9 +73,7 @@ export class ReadFileTool implements ExecutableTool {
       }
 
       // Re-throw other errors with original message
-      throw new Error(
-        `Failed to read file: ${err.message || String(error)}`
-      );
+      throw new Error(`Failed to read file: ${err.message || String(error)}`);
     }
   }
 }
@@ -136,9 +134,7 @@ export class WriteFileTool implements ExecutableTool {
       }
 
       // Re-throw other errors with original message
-      throw new Error(
-        `Failed to write file: ${err.message || String(error)}`
-      );
+      throw new Error(`Failed to write file: ${err.message || String(error)}`);
     }
   }
 }
@@ -155,7 +151,8 @@ export class ListDirTool implements ExecutableTool {
       type: "function",
       function: {
         name: "list_dir",
-        description: "Lists the contents of a directory at a given path. Returns entries with type (file or directory) and name.",
+        description:
+          "Lists the contents of a directory at a given path. Returns entries with type (file or directory) and name.",
         parameters: {
           type: "object",
           properties: {
@@ -177,13 +174,15 @@ export class ListDirTool implements ExecutableTool {
       // Validate path to prevent directory traversal
       validatePath(dirPath);
 
-      const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
+      const entries = await fsPromises.readdir(dirPath, {
+        withFileTypes: true,
+      });
 
       if (entries.length === 0) {
         return "Directory is empty";
       }
 
-      const formatted = entries.map(entry => {
+      const formatted = entries.map((entry) => {
         const type = entry.isDirectory() ? "directory" : "file";
         return `${type}: ${entry.name}`;
       });
@@ -204,7 +203,7 @@ export class ListDirTool implements ExecutableTool {
 
       // Re-throw other errors with original message
       throw new Error(
-        `Failed to list directory: ${err.message || String(error)}`
+        `Failed to list directory: ${err.message || String(error)}`,
       );
     }
   }
@@ -222,7 +221,8 @@ export class MkdirTool implements ExecutableTool {
       type: "function",
       function: {
         name: "mkdir",
-        description: "Creates a directory at the specified path. Creates intermediate parent directories if they don't exist.",
+        description:
+          "Creates a directory at the specified path. Creates intermediate parent directories if they don't exist.",
         parameters: {
           type: "object",
           properties: {
@@ -258,7 +258,7 @@ export class MkdirTool implements ExecutableTool {
 
       // Re-throw other errors with original message
       throw new Error(
-        `Failed to create directory: ${err.message || String(error)}`
+        `Failed to create directory: ${err.message || String(error)}`,
       );
     }
   }
@@ -297,7 +297,8 @@ export class RemoveTool implements ExecutableTool {
       type: "function",
       function: {
         name: "remove",
-        description: "Deletes a file or directory at the specified path. WARNING: Supports recursive deletion for non-empty directories. This tool is disabled by default and must be explicitly enabled.",
+        description:
+          "Deletes a file or directory at the specified path. WARNING: Supports recursive deletion for non-empty directories. This tool is disabled by default and must be explicitly enabled.",
         parameters: {
           type: "object",
           properties: {
@@ -332,9 +333,7 @@ export class RemoveTool implements ExecutableTool {
       }
 
       // Re-throw other errors with original message
-      throw new Error(
-        `Failed to remove: ${err.message || String(error)}`
-      );
+      throw new Error(`Failed to remove: ${err.message || String(error)}`);
     }
   }
 }
@@ -351,7 +350,8 @@ export class MoveTool implements ExecutableTool {
       type: "function",
       function: {
         name: "move",
-        description: "Moves or renames a file or directory from a source path to a destination path",
+        description:
+          "Moves or renames a file or directory from a source path to a destination path",
         parameters: {
           type: "object",
           properties: {
@@ -395,14 +395,12 @@ export class MoveTool implements ExecutableTool {
       }
       if (err.code === "EXDEV") {
         throw new Error(
-          `Cannot move across filesystems: ${sourcePath} to ${destPath}`
+          `Cannot move across filesystems: ${sourcePath} to ${destPath}`,
         );
       }
 
       // Re-throw other errors with original message
-      throw new Error(
-        `Failed to move: ${err.message || String(error)}`
-      );
+      throw new Error(`Failed to move: ${err.message || String(error)}`);
     }
   }
 }

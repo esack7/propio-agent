@@ -1,6 +1,6 @@
-import { ToolRegistry } from "../registry";
-import { ExecutableTool } from "../interface";
-import { ChatTool } from "../../providers/types";
+import { ToolRegistry } from "../registry.js";
+import { ExecutableTool } from "../interface.js";
+import { ChatTool } from "../../providers/types.js";
 
 describe("ToolRegistry", () => {
   let registry: ToolRegistry;
@@ -233,7 +233,9 @@ describe("ToolRegistry", () => {
 
       registry.disable("tool1");
 
-      expect(await registry.execute("tool1", {})).toBe("Tool not available: tool1");
+      expect(await registry.execute("tool1", {})).toBe(
+        "Tool not available: tool1",
+      );
       expect(await registry.execute("tool2", {})).toBe("result2");
     });
   });

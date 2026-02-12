@@ -1,5 +1,5 @@
 import * as path from "path";
-import { LLMProvider } from "./providers/interface";
+import { LLMProvider } from "./providers/interface.js";
 import {
   ChatMessage,
   ChatTool,
@@ -7,18 +7,18 @@ import {
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
-} from "./providers/types";
-import { ProvidersConfig, ProviderConfig } from "./providers/config";
-import { createProvider } from "./providers/factory";
+} from "./providers/types.js";
+import { ProvidersConfig, ProviderConfig } from "./providers/config.js";
+import { createProvider } from "./providers/factory.js";
 import {
   loadProvidersConfig,
   resolveProvider,
   resolveModelKey,
-} from "./providers/configLoader";
-import { ToolRegistry } from "./tools/registry";
-import { createDefaultToolRegistry } from "./tools/factory";
-import { ExecutableTool } from "./tools/interface";
-import { ToolContext } from "./tools/types";
+} from "./providers/configLoader.js";
+import { ToolRegistry } from "./tools/registry.js";
+import { createDefaultToolRegistry } from "./tools/factory.js";
+import { ExecutableTool } from "./tools/interface.js";
+import { ToolContext } from "./tools/types.js";
 
 export class Agent {
   private provider: LLMProvider;
@@ -223,7 +223,8 @@ export class Agent {
             const result = await this.toolRegistry.execute(toolName, args);
 
             toolResults.push({
-              toolCallId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
+              toolCallId:
+                toolCall.id || `${toolCall.function.name}-${Date.now()}`,
               toolName: toolName,
               content: result,
             });

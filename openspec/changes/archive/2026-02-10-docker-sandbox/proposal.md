@@ -24,11 +24,13 @@ None. This adds a new execution mode without changing existing behavior.
 ## Impact
 
 **Build System**:
+
 - New Docker build configuration (Dockerfile, docker-compose.yml)
 - Requires Docker installed to use sandbox mode
 - Docker image must be rebuilt after agent source code changes
 
 **Runtime Environment**:
+
 - Two execution modes: native (`npm start`) and sandboxed (`bin/propio-sandbox`)
 - In sandbox mode, filesystem operations are physically constrained by Docker volume mounts
 - Config files (`.propio/`) mounted read-only from agent installation directory
@@ -36,10 +38,12 @@ None. This adds a new execution mode without changing existing behavior.
 - Can be run from any directory, not just agent's own directory
 
 **Dependencies**:
+
 - Docker and Docker Compose required for sandbox mode
 - Native mode unchanged (no new dependencies)
 
 **Development Workflow**:
+
 - `npm start` - unchanged, runs natively without sandbox
 - `bin/propio-sandbox` - new, runs in Docker container from any directory
 - CLI wrapper can be symlinked to PATH for global access (e.g., `ln -s ~/propio/bin/propio-sandbox ~/bin/`)

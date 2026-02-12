@@ -7,11 +7,13 @@ The `chat()` and `streamChat()` methods in `Agent` are already async, but `ToolR
 ## Goals / Non-Goals
 
 **Goals:**
+
 - Make the tool execution API async to support future tools that perform I/O (API calls, database queries, async file operations)
 - Add introspection methods to `ToolRegistry` so callers can query registry state without pulling full schemas
 - Tighten type safety by replacing `any` with `unknown` in tool argument types
 
 **Non-Goals:**
+
 - Converting existing built-in tools to use async `fs` operations (they can return resolved promises)
 - Adding structured return types (success/failure envelopes) — deferred per proposal
 - File system security hardening (path traversal, size limits) — separate concern
@@ -24,6 +26,7 @@ The `chat()` and `streamChat()` methods in `Agent` are already async, but `ToolR
 `ExecutableTool.execute()` changes to return `Promise<string>`. Tool implementations that are inherently synchronous simply declare `async execute()` and return a string directly — the runtime wraps it in a resolved promise.
 
 **Alternatives considered:**
+
 - `string | Promise<string>` union return — avoids forcing sync tools to be async, but pushes complexity to every caller (must always `await` or check), and `ToolRegistry` would need conditional awaiting logic. The uniform `Promise<string>` is simpler.
 - Keep sync and add a separate `AsyncExecutableTool` interface — creates a parallel hierarchy and forces the registry to handle both, adding complexity without benefit.
 
@@ -38,11 +41,13 @@ Currently `saveContext()` is synchronous, returning `string`. Since `ToolRegistr
 ### 3. Introspection via three focused methods
 
 Add to `ToolRegistry`:
+
 - `getToolNames(): string[]` — returns names of all registered tools (enabled and disabled), preserving registration order
 - `hasTool(name: string): boolean` — checks if a tool is registered (regardless of enabled state)
 - `isToolEnabled(name: string): boolean` — checks if a registered tool is currently enabled; returns `false` for unregistered tools
 
 **Alternatives considered:**
+
 - Single `getTools()` returning metadata objects — over-engineered for current needs, and the shape of tool metadata isn't settled yet.
 - Expose `tools` and `enabledTools` as readonly — leaks internal data structures (`Map`, `Set`) and makes future refactoring harder.
 

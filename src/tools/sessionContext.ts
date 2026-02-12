@@ -1,7 +1,7 @@
 import * as fs from "fs";
-import { ExecutableTool } from "./interface";
-import { ToolContext } from "./types";
-import { ChatTool } from "../providers/types";
+import { ExecutableTool } from "./interface.js";
+import { ToolContext } from "./types.js";
+import { ChatTool } from "../providers/types.js";
 
 /**
  * SaveSessionContextTool saves the current session context to a file.

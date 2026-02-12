@@ -1,4 +1,4 @@
-import { ChatTool } from "../providers/types";
+import { ChatTool } from "../providers/types.js";
 
 /**
  * ExecutableTool interface bundles tool schema and execution logic.

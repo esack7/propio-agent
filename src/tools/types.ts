@@ -1,4 +1,4 @@
-import { ChatMessage } from "../providers/types";
+import { ChatMessage } from "../providers/types.js";
 
 /**
  * ToolContext interface for dependency injection.

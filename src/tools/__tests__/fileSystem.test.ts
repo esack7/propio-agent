@@ -1,9 +1,30 @@
-import * as fsPromises from "fs/promises";
-import { ListDirTool, MkdirTool, RemoveTool, MoveTool } from "../fileSystem";
+// For ESM modules, use unstable_mockModule instead of jest.mock
+jest.unstable_mockModule("fs/promises", () => ({
+  readdir: jest.fn(),
+  mkdir: jest.fn(),
+  rm: jest.fn(),
+  rename: jest.fn(),
+  readFile: jest.fn(),
+  writeFile: jest.fn(),
+}));
 
-// Mock fs/promises module
-jest.mock("fs/promises");
-const mockFsPromises = fsPromises as jest.Mocked<typeof fsPromises>;
+// Dynamic imports for modules under test
+let ListDirTool: any;
+let MkdirTool: any;
+let RemoveTool: any;
+let MoveTool: any;
+let mockFsPromises: jest.Mocked<any>;
+
+beforeAll(async () => {
+  const fsPromises = await import("fs/promises");
+  mockFsPromises = fsPromises as jest.Mocked<typeof fsPromises>;
+
+  const fileSystemModule = await import("../fileSystem.js");
+  ListDirTool = fileSystemModule.ListDirTool;
+  MkdirTool = fileSystemModule.MkdirTool;
+  RemoveTool = fileSystemModule.RemoveTool;
+  MoveTool = fileSystemModule.MoveTool;
+});
 
 describe("New Filesystem Tools", () => {
   const originalCwd = process.cwd;
@@ -72,9 +93,9 @@ describe("New Filesystem Tools", () => {
       error.code = "EACCES";
       mockFsPromises.readdir.mockRejectedValue(error);
 
-      await expect(tool.execute({ path: "/test/protected/dir" })).rejects.toThrow(
-        "Permission denied",
-      );
+      await expect(
+        tool.execute({ path: "/test/protected/dir" }),
+      ).rejects.toThrow("Permission denied");
     });
 
     it("should have correct schema", () => {
@@ -109,9 +130,9 @@ describe("New Filesystem Tools", () => {
     it("should reject paths outside allowed directory", async () => {
       const tool = new MkdirTool();
 
-      await expect(
-        tool.execute({ path: "/../etc/malicious" }),
-      ).rejects.toThrow("Access denied");
+      await expect(tool.execute({ path: "/../etc/malicious" })).rejects.toThrow(
+        "Access denied",
+      );
     });
 
     it("should throw user-friendly error for permission denied", async () => {
@@ -120,9 +141,9 @@ describe("New Filesystem Tools", () => {
       error.code = "EACCES";
       mockFsPromises.mkdir.mockRejectedValue(error);
 
-      await expect(tool.execute({ path: "/test/protected/dir" })).rejects.toThrow(
-        "Permission denied",
-      );
+      await expect(
+        tool.execute({ path: "/test/protected/dir" }),
+      ).rejects.toThrow("Permission denied");
     });
 
     it("should have correct schema", () => {
@@ -169,9 +190,9 @@ describe("New Filesystem Tools", () => {
       error.code = "ENOENT";
       mockFsPromises.rm.mockRejectedValue(error);
 
-      await expect(tool.execute({ path: "/test/missing/file.txt" })).rejects.toThrow(
-        "Path not found",
-      );
+      await expect(
+        tool.execute({ path: "/test/missing/file.txt" }),
+      ).rejects.toThrow("Path not found");
     });
 
     it("should throw user-friendly error for permission denied", async () => {

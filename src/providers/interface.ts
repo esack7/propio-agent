@@ -1,4 +1,4 @@
-import { ChatRequest, ChatResponse, ChatChunk } from "./types";
+import { ChatRequest, ChatResponse, ChatChunk } from "./types.js";
 
 /**
  * LLMProvider interface defining the contract for all LLM provider implementations

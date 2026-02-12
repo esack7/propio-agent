@@ -3,6 +3,7 @@
 The current `src/agent.ts` implementation has ~400 lines of mixed concerns. Tool definitions are hardcoded in a 57-line `initializeTools()` method that builds `ChatTool` objects inline. Tool execution lives in a 43-line `executeTool()` switch statement. The agent's `private tools: ChatTool[]` field only stores schemas - execution logic is disconnected.
 
 This creates several problems:
+
 1. **No runtime composition**: Tools can't be added, removed, or toggled after agent creation
 2. **Tight coupling**: The `save_session_context` tool directly accesses agent internals (`this.systemPrompt`, `this.sessionContext`, `this.sessionContextFilePath`)
 3. **Violation of SRP**: Agent handles orchestration AND tool management
@@ -13,6 +14,7 @@ The codebase already has precedent for modular architecture: `src/providers/` us
 ## Goals / Non-Goals
 
 **Goals:**
+
 - Separate tool concerns from agent orchestration
 - Enable runtime tool composition (add/remove/enable/disable after creation)
 - Support dependency injection for stateful tools
@@ -21,6 +23,7 @@ The codebase already has precedent for modular architecture: `src/providers/` us
 - Follow existing providers module architectural pattern
 
 **Non-Goals:**
+
 - Async tool execution (current tools are synchronous, maintain this)
 - Tool versioning or migration system
 - Tool discovery/plugin system (future work)
@@ -34,33 +37,44 @@ The codebase already has precedent for modular architecture: `src/providers/` us
 **Decision**: Each tool implements `ExecutableTool` with `name`, `getSchema()`, and `execute()` methods.
 
 **Rationale**:
+
 - The current architecture splits schema definition (in `initializeTools()`) from execution logic (in `executeTool()`), requiring developers to update two distant locations when modifying a tool
 - Bundling creates a cohesive unit - tool authors implement one class containing both LLM schema and behavior
 - Enables tool implementations to be self-contained and independently testable
 
 **Alternatives considered**:
-- *Separate schema and executor*: Rejected because it perpetuates the current split-brain problem
-- *Function-based tools*: Rejected because classes provide better encapsulation for stateful tools like `SaveSessionContextTool`
+
+- _Separate schema and executor_: Rejected because it perpetuates the current split-brain problem
+- _Function-based tools_: Rejected because classes provide better encapsulation for stateful tools like `SaveSessionContextTool`
 
 ### 2. ToolContext interface for dependency injection
 
 **Decision**: Define `ToolContext` interface with `systemPrompt`, `sessionContext`, and `sessionContextFilePath`. Agent creates context object using JavaScript property getters, not a static snapshot.
 
 **Rationale**:
+
 - `SaveSessionContextTool` needs access to current agent state, but shouldn't couple to the Agent class directly
 - Property getters ensure tools always read fresh values (critical because `sessionContext` is reassigned in `clearContext()` and `systemPrompt` can change via `setSystemPrompt()`)
 - Interface-based injection makes tools testable (pass mock context in tests)
 
 **Alternatives considered**:
-- *Pass Agent instance*: Rejected because it creates tight coupling and makes tools dependent on entire Agent API
-- *Static snapshot*: Rejected because state changes (clearContext, setSystemPrompt) would not propagate to tools
+
+- _Pass Agent instance_: Rejected because it creates tight coupling and makes tools dependent on entire Agent API
+- _Static snapshot_: Rejected because state changes (clearContext, setSystemPrompt) would not propagate to tools
 
 **Implementation**:
+
 ```typescript
 const toolContext: ToolContext = {
-  get systemPrompt() { return this.systemPrompt; },
-  get sessionContext() { return this.sessionContext; },
-  get sessionContextFilePath() { return this.sessionContextFilePath; }
+  get systemPrompt() {
+    return this.systemPrompt;
+  },
+  get sessionContext() {
+    return this.sessionContext;
+  },
+  get sessionContextFilePath() {
+    return this.sessionContextFilePath;
+  },
 };
 ```
 
@@ -69,25 +83,29 @@ const toolContext: ToolContext = {
 **Decision**: `ToolRegistry` tracks enabled state. Tools remain stateless - they don't know if they're enabled or disabled.
 
 **Rationale**:
+
 - Enable/disable is an orchestration concern, not tool logic
 - Allows enable/disable without mutating tool instances
 - Registry can enforce rules (e.g., prevent disabling required tools) in future iterations
 - Simpler tool implementations - authors don't think about lifecycle
 
 **Alternatives considered**:
-- *Tools have enabled flag*: Rejected because it adds state to tools and mixes concerns
+
+- _Tools have enabled flag_: Rejected because it adds state to tools and mixes concerns
 
 ### 4. Registry wraps tool execution in error handling
 
 **Decision**: `ToolRegistry.execute()` wraps tool calls in try/catch, returning error messages as strings on failure.
 
 **Rationale**:
+
 - Current `executeTool()` behavior returns string error messages (e.g., "Error writing file: ...")
 - Maintains backward compatibility with provider expectations
 - Centralizes error formatting (tools throw, registry formats)
 - Allows tools to use standard TypeScript error handling
 
 **Current behavior preserved**:
+
 ```typescript
 execute(name: string, args: Record<string, any>): string {
   try {
@@ -104,11 +122,13 @@ execute(name: string, args: Record<string, any>): string {
 **Decision**: Use flat file structure in `src/tools/` with no barrel index, matching `src/providers/`.
 
 **Rationale**:
+
 - Consistency with existing codebase architecture
 - Explicit imports improve IDE navigation and reduce circular dependency risk
 - Separate files for interface, types, registry, implementations, and factory
 
 **Structure**:
+
 ```
 src/tools/
 ├── interface.ts          # ExecutableTool interface
@@ -125,11 +145,13 @@ src/tools/
 **Decision**: Export `createDefaultToolRegistry(context: ToolContext): ToolRegistry` rather than requiring manual tool registration.
 
 **Rationale**:
+
 - Ergonomic default case: `new Agent()` just works with standard tools
 - Encapsulates "which tools are built-in" knowledge
 - Extensibility: Advanced users can create empty registry and register custom tools
 
 **Usage**:
+
 ```typescript
 // Default case (in Agent constructor)
 this.toolRegistry = createDefaultToolRegistry(toolContext);

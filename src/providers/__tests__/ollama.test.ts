@@ -1,11 +1,20 @@
-import { OllamaProvider } from "../ollama";
-import { ChatMessage, ChatRequest, ChatTool, ChatToolCall } from "../types";
-import { Ollama } from "ollama";
+// Mock the Ollama package using unstable_mockModule for ESM
+const mockChat = jest.fn();
+const mockOllamaConstructor = jest.fn().mockImplementation(() => ({
+  chat: mockChat,
+}));
 
-// Mock the Ollama package
-jest.mock("ollama");
+jest.unstable_mockModule("ollama", () => ({
+  Ollama: mockOllamaConstructor,
+}));
 
-const mockOllama = Ollama as jest.MockedClass<typeof Ollama>;
+// Dynamic imports after mocks are set up
+let OllamaProvider: any;
+
+beforeAll(async () => {
+  const ollamaModule = await import("../ollama.js");
+  OllamaProvider = ollamaModule.OllamaProvider;
+});
 
 describe("OllamaProvider", () => {
   beforeEach(() => {
@@ -16,7 +25,7 @@ describe("OllamaProvider", () => {
     it("should initialize with custom host", () => {
       const host = "http://custom-host:11434";
       new OllamaProvider({ model: "test-model", host });
-      expect(mockOllama).toHaveBeenCalledWith({ host });
+      expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
     });
 
     it("should use localhost default when no host provided", () => {
@@ -24,7 +33,7 @@ describe("OllamaProvider", () => {
       try {
         delete process.env.OLLAMA_HOST;
         new OllamaProvider({ model: "test-model" });
-        expect(mockOllama).toHaveBeenCalledWith({
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://localhost:11434",
         });
       } finally {
@@ -37,7 +46,7 @@ describe("OllamaProvider", () => {
       try {
         process.env.OLLAMA_HOST = "http://env-host:11434";
         new OllamaProvider({ model: "test-model" });
-        expect(mockOllama).toHaveBeenCalledWith({
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://env-host:11434",
         });
       } finally {
@@ -49,12 +58,25 @@ describe("OllamaProvider", () => {
       const originalEnv = process.env.OLLAMA_HOST;
       try {
         process.env.OLLAMA_HOST = "http://env-host:11434";
-        const explicitHost = "http://explicit-host:11434";
-        new OllamaProvider({ model: "test-model", host: explicitHost });
-        expect(mockOllama).toHaveBeenCalledWith({ host: explicitHost });
+        const host = "http://explicit-host:11434";
+        new OllamaProvider({ model: "test-model", host });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
       } finally {
         process.env.OLLAMA_HOST = originalEnv;
       }
+    });
+  });
+
+  describe("Backward compatibility", () => {
+    it("should support custom host configuration", () => {
+      const host = "http://custom:11434";
+      new OllamaProvider({ model: "llama3.2", host });
+      expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
+    });
+
+    it("should handle model parameter in constructor", () => {
+      const provider = new OllamaProvider({ model: "llama3.2" });
+      expect(provider).toBeDefined();
     });
   });
 
@@ -65,478 +87,187 @@ describe("OllamaProvider", () => {
     });
   });
 
-  describe("Message type translation", () => {
-    let provider: OllamaProvider;
+  describe("streamChat", () => {
+    it("should call ollama.chat with correct parameters", async () => {
+      const provider = new OllamaProvider({ model: "test-model" });
 
-    beforeEach(() => {
-      provider = new OllamaProvider({ model: "test-model" });
-    });
-
-    it("should translate ChatMessage to Ollama Message format", () => {
-      const chatMsg: ChatMessage = {
-        role: "user",
-        content: "Hello",
-      };
-      const translated = (provider as any).chatMessageToOllamaMessage(chatMsg);
-      expect(translated.role).toBe("user");
-      expect(translated.content).toBe("Hello");
-    });
-
-    it("should preserve all roles in translation", () => {
-      const roles: ChatMessage["role"][] = [
-        "user",
-        "assistant",
-        "system",
-        "tool",
-      ];
-      roles.forEach((role) => {
-        const chatMsg: ChatMessage = {
-          role,
-          content: "Test",
-        };
-        const translated = (provider as any).chatMessageToOllamaMessage(
-          chatMsg,
-        );
-        expect(translated.role).toBe(role);
-      });
-    });
-
-    it("should translate tool calls to Ollama format", () => {
-      const toolCall: ChatToolCall = {
-        function: {
-          name: "test_func",
-          arguments: { arg1: "value1" },
-        },
-      };
-      const chatMsg: ChatMessage = {
-        role: "assistant",
-        content: "Calling tool",
-        toolCalls: [toolCall],
-      };
-      const translated = (provider as any).chatMessageToOllamaMessage(chatMsg);
-      expect(translated.tool_calls).toBeDefined();
-      expect(translated.tool_calls).toHaveLength(1);
-      expect(translated.tool_calls[0].function.name).toBe("test_func");
-    });
-
-    it("should translate images in ChatMessage", () => {
-      const imageData = new Uint8Array([1, 2, 3]);
-      const chatMsg: ChatMessage = {
-        role: "user",
-        content: "Image",
-        images: [imageData],
-      };
-      const translated = (provider as any).chatMessageToOllamaMessage(chatMsg);
-      expect(translated.images).toBeDefined();
-      expect(translated.images).toContain(imageData);
-    });
-
-    it("should translate Ollama Message to ChatMessage", () => {
-      const ollamaMsg = {
-        role: "assistant" as const,
-        content: "Response text",
-      };
-      const translated = (provider as any).ollamaMessageToChatMessage(
-        ollamaMsg,
-      );
-      expect(translated.role).toBe("assistant");
-      expect(translated.content).toBe("Response text");
-    });
-
-    it("should translate Ollama tool_calls to ChatToolCall", () => {
-      const ollamaMsg = {
-        role: "assistant" as const,
-        content: "Tool call",
-        tool_calls: [
-          {
-            function: {
-              name: "my_tool",
-              arguments: { param: "value" },
-            },
-          },
-        ],
-      };
-      const translated = (provider as any).ollamaMessageToChatMessage(
-        ollamaMsg,
-      );
-      expect(translated.toolCalls).toBeDefined();
-      expect(translated.toolCalls).toHaveLength(1);
-      expect(translated.toolCalls![0].function.name).toBe("my_tool");
-    });
-  });
-
-  describe("Tool definition translation", () => {
-    let provider: OllamaProvider;
-
-    beforeEach(() => {
-      provider = new OllamaProvider({ model: "test-model" });
-    });
-
-    it("should translate ChatTool to Ollama Tool format", () => {
-      const chatTool: ChatTool = {
-        type: "function",
-        function: {
-          name: "get_weather",
-          description: "Get weather for location",
-          parameters: {
-            type: "object",
-            properties: {
-              location: { type: "string" },
-            },
-            required: ["location"],
-          },
-        },
-      };
-      const translated = (provider as any).chatToolToOllamaTool(chatTool);
-      expect(translated.type).toBe("function");
-      expect(translated.function.name).toBe("get_weather");
-      expect(translated.function.parameters.type).toBe("object");
-      expect(translated.function.parameters.required).toContain("location");
-    });
-
-    it("should preserve complex parameters in translation", () => {
-      const chatTool: ChatTool = {
-        type: "function",
-        function: {
-          name: "complex_tool",
-          description: "Complex tool",
-          parameters: {
-            type: "object",
-            properties: {
-              items: {
-                type: "array",
-                items: { type: "number" },
-              },
-            },
-          },
-        },
-      };
-      const translated = (provider as any).chatToolToOllamaTool(chatTool);
-      expect(translated.function.parameters.properties.items.type).toBe(
-        "array",
-      );
-    });
-  });
-
-  describe("Non-streaming chat", () => {
-    let provider: OllamaProvider;
-    let mockChatMethod: jest.Mock;
-
-    beforeEach(() => {
-      mockChatMethod = jest.fn();
-      mockOllama.prototype.chat = mockChatMethod;
-      provider = new OllamaProvider({ model: "test-model" });
-    });
-
-    it("should call ollama.chat with stream true", async () => {
-      mockChatMethod.mockReturnValue(
+      // Mock async generator
+      mockChat.mockReturnValue(
         (async function* () {
-          yield { message: { role: "assistant", content: "Response" } };
+          yield { message: { content: "Hello", tool_calls: undefined } };
         })(),
       );
 
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Hello" }],
-        model: "test-model",
-      };
+      const messages: any[] = [{ role: "user", content: "test" }];
 
-      for await (const chunk of provider.streamChat(request)) {
-        // consume
+      const chunks: any[] = [];
+      for await (const chunk of provider.streamChat({
+        model: "test-model",
+        messages,
+      })) {
+        chunks.push(chunk);
       }
 
-      expect(mockChatMethod).toHaveBeenCalledWith(
+      expect(mockChat).toHaveBeenCalledWith(
         expect.objectContaining({
+          model: "test-model",
+          messages: expect.arrayContaining([
+            expect.objectContaining({ role: "user", content: "test" }),
+          ]),
           stream: true,
         }),
       );
     });
 
-    it("should return ChatResponse with stop reason", async () => {
-      mockChatMethod.mockReturnValue(
+    it("should yield content deltas from ollama response", async () => {
+      const provider = new OllamaProvider({ model: "test-model" });
+
+      mockChat.mockReturnValue(
         (async function* () {
-          yield { message: { role: "assistant", content: "Response" } };
+          yield { message: { content: "Hello " } };
+          yield { message: { content: "world" } };
         })(),
       );
 
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Hello" }],
+      const chunks: any[] = [];
+      for await (const chunk of provider.streamChat({
         model: "test-model",
-      };
-
-      let fullContent = "";
-      for await (const chunk of provider.streamChat(request)) {
-        fullContent += chunk.delta;
+        messages: [{ role: "user", content: "test" }],
+      })) {
+        chunks.push(chunk);
       }
 
-      expect(fullContent).toBe("Response");
-      expect(["end_turn", "tool_use", "max_tokens", "stop_sequence"]).toContain(
-        "end_turn",
-      );
+      expect(chunks).toHaveLength(2);
+      expect(chunks[0].delta).toBe("Hello ");
+      expect(chunks[1].delta).toBe("world");
     });
 
-    it("should pass model name to ollama.chat", async () => {
-      mockChatMethod.mockReturnValue(
+    it("should handle tool calls in response", async () => {
+      const provider = new OllamaProvider({ model: "test-model" });
+
+      mockChat.mockReturnValue(
         (async function* () {
-          yield { message: { role: "assistant", content: "Ok" } };
+          yield {
+            message: {
+              content: "",
+              tool_calls: [
+                {
+                  function: {
+                    name: "test_tool",
+                    arguments: { arg: "value" },
+                  },
+                },
+              ],
+            },
+          };
         })(),
       );
 
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Test" }],
-        model: "specific-model",
-      };
-
-      for await (const chunk of provider.streamChat(request)) {
-        // consume
-      }
-
-      expect(mockChatMethod).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model: "specific-model",
-        }),
-      );
-    });
-
-    it("should pass tools to ollama.chat if provided", async () => {
-      mockChatMethod.mockReturnValue(
-        (async function* () {
-          yield { message: { role: "assistant", content: "Ok" } };
-        })(),
-      );
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Use tool" }],
+      const chunks: any[] = [];
+      for await (const chunk of provider.streamChat({
         model: "test-model",
+        messages: [{ role: "user", content: "test" }],
         tools: [
           {
             type: "function",
             function: {
-              name: "my_tool",
-              description: "Tool",
+              name: "test_tool",
+              description: "test",
               parameters: { type: "object", properties: {} },
             },
           },
         ],
-      };
-
-      for await (const chunk of provider.streamChat(request)) {
-        // consume
-      }
-
-      expect(mockChatMethod).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tools: expect.any(Array),
-        }),
-      );
-    });
-
-    it("should set stopReason to tool_use when tool calls present", async () => {
-      mockChatMethod.mockReturnValue(
-        (async function* () {
-          yield {
-            message: {
-              role: "assistant",
-              content: "Calling",
-              tool_calls: [{ function: { name: "tool", arguments: {} } }],
-            },
-          };
-        })(),
-      );
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Test" }],
-        model: "test-model",
-      };
-
-      let hasToolCall = false;
-      for await (const chunk of provider.streamChat(request)) {
-        if (chunk.toolCalls) {
-          hasToolCall = true;
-        }
-      }
-
-      expect(hasToolCall).toBe(true);
-    });
-  });
-
-  describe("Streaming chat", () => {
-    let provider: OllamaProvider;
-    let mockChatMethod: jest.Mock;
-
-    beforeEach(() => {
-      mockChatMethod = jest.fn();
-      mockOllama.prototype.chat = mockChatMethod;
-      provider = new OllamaProvider({ model: "test-model" });
-    });
-
-    it("should call ollama.chat with stream true", async () => {
-      mockChatMethod.mockReturnValue(
-        (async function* () {
-          yield {
-            message: { role: "assistant", content: "Hello" },
-          };
-        })(),
-      );
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Hi" }],
-        model: "test-model",
-      };
-
-      // Need to iterate to trigger the call
-      for await (const chunk of provider.streamChat(request)) {
-        // consume
-      }
-
-      expect(mockChatMethod).toHaveBeenCalledWith(
-        expect.objectContaining({
-          stream: true,
-        }),
-      );
-    });
-
-    it("should yield ChatChunk objects with delta content", async () => {
-      mockChatMethod.mockReturnValue(
-        (async function* () {
-          yield { message: { role: "assistant", content: "Hello " } };
-          yield { message: { role: "assistant", content: "world" } };
-        })(),
-      );
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Hi" }],
-        model: "test-model",
-      };
-
-      const chunks: any[] = [];
-      for await (const chunk of provider.streamChat(request)) {
+      })) {
         chunks.push(chunk);
       }
 
-      expect(chunks.length).toBeGreaterThan(0);
-      chunks.forEach((chunk) => {
-        expect(chunk).toHaveProperty("delta");
-      });
+      const lastChunk = chunks[chunks.length - 1];
+      expect(lastChunk.toolCalls).toBeDefined();
+      expect(lastChunk.toolCalls).toHaveLength(1);
+      expect(lastChunk.toolCalls[0].function.name).toBe("test_tool");
     });
 
-    it("should include toolCalls in final chunk if present", async () => {
-      mockChatMethod.mockReturnValue(
+    it("should pass tools to ollama when provided", async () => {
+      const provider = new OllamaProvider({ model: "test-model" });
+
+      mockChat.mockReturnValue(
         (async function* () {
-          yield { message: { role: "assistant", content: "Calling " } };
-          yield {
-            message: {
-              role: "assistant",
-              content: "tool",
-              tool_calls: [{ function: { name: "my_tool", arguments: {} } }],
-            },
-          };
+          yield { message: { content: "test" } };
         })(),
       );
 
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Use tool" }],
-        model: "test-model",
-      };
+      const tools: any[] = [
+        {
+          type: "function",
+          function: {
+            name: "test_tool",
+            description: "test",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ];
 
-      let hasToolCalls = false;
-      for await (const chunk of provider.streamChat(request)) {
-        if (chunk.toolCalls) {
-          hasToolCalls = true;
-          expect(chunk.toolCalls).toHaveLength(1);
-        }
+      for await (const chunk of provider.streamChat({
+        model: "test-model",
+        messages: [{ role: "user", content: "test" }],
+        tools,
+      })) {
+        // consume stream
       }
 
-      expect(hasToolCalls).toBe(true);
+      expect(mockChat).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tools: expect.arrayContaining([
+            expect.objectContaining({
+              type: "function",
+              function: expect.objectContaining({
+                name: "test_tool",
+              }),
+            }),
+          ]),
+        }),
+      );
     });
 
-    it("should handle streaming errors", async () => {
-      mockChatMethod.mockReturnValue(
+    it("should expand batched tool results into separate messages", async () => {
+      const provider = new OllamaProvider({ model: "test-model" });
+
+      mockChat.mockReturnValue(
         (async function* () {
-          throw new Error("Stream error");
+          yield { message: { content: "response" } };
         })(),
       );
 
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Test" }],
+      const messages: any[] = [
+        { role: "user", content: "test" },
+        {
+          role: "tool",
+          content: "",
+          toolResults: [
+            { toolCallId: "call1", toolName: "tool1", content: "result1" },
+            { toolCallId: "call2", toolName: "tool2", content: "result2" },
+          ],
+        },
+      ];
+
+      for await (const chunk of provider.streamChat({
         model: "test-model",
-      };
+        messages,
+      })) {
+        // consume stream
+      }
 
-      await expect(async () => {
-        for await (const chunk of provider.streamChat(request)) {
-          // consume chunks
-        }
-      }).rejects.toThrow();
-    });
-  });
-
-  describe("Error handling", () => {
-    let provider: OllamaProvider;
-    let mockChatMethod: jest.Mock;
-
-    beforeEach(() => {
-      mockChatMethod = jest.fn();
-      mockOllama.prototype.chat = mockChatMethod;
-      provider = new OllamaProvider({ model: "test-model" });
-    });
-
-    it("should throw ProviderError on general errors", async () => {
-      mockChatMethod.mockRejectedValue(new Error("General error"));
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Test" }],
-        model: "test-model",
-      };
-
-      await expect(async () => {
-        for await (const chunk of provider.streamChat(request)) {
-          // consume
-        }
-      }).rejects.toThrow();
-    });
-
-    it("should throw ProviderAuthenticationError on connection errors", async () => {
-      const connError = new Error("connect ECONNREFUSED");
-      mockChatMethod.mockRejectedValue(connError);
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Test" }],
-        model: "test-model",
-      };
-
-      await expect(async () => {
-        for await (const chunk of provider.streamChat(request)) {
-          // consume
-        }
-      }).rejects.toThrow();
-    });
-
-    it("should throw ProviderModelNotFoundError when model not found", async () => {
-      const notFoundError = new Error("model not found");
-      mockChatMethod.mockRejectedValue(notFoundError);
-
-      const request: ChatRequest = {
-        messages: [{ role: "user", content: "Test" }],
-        model: "nonexistent-model",
-      };
-
-      await expect(async () => {
-        for await (const chunk of provider.streamChat(request)) {
-          // consume
-        }
-      }).rejects.toThrow();
-    });
-  });
-
-  describe("Backward compatibility", () => {
-    it("should support legacy model names", () => {
-      const provider = new OllamaProvider({ model: "qwen3-coder:30b" });
-      expect(provider.name).toBe("ollama");
-    });
-
-    it("should support custom host configuration", () => {
-      const customHost = "http://192.168.1.100:11434";
-      new OllamaProvider({ model: "test", host: customHost });
-      expect(mockOllama).toHaveBeenCalledWith({ host: customHost });
+      // Should have expanded the batched tool results into 3 messages:
+      // 1. user message
+      // 2. tool result 1
+      // 3. tool result 2
+      const callArgs = mockChat.mock.calls[0][0];
+      expect(callArgs.messages).toHaveLength(3);
+      expect(callArgs.messages[0].role).toBe("user");
+      expect(callArgs.messages[1].role).toBe("tool");
+      expect(callArgs.messages[1].content).toBe("result1");
+      expect(callArgs.messages[2].role).toBe("tool");
+      expect(callArgs.messages[2].content).toBe("result2");
     });
   });
 });

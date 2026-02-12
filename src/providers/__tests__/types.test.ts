@@ -9,7 +9,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
-} from "../types";
+} from "../types.js";
 
 describe("Provider Types", () => {
   describe("ChatMessage", () => {

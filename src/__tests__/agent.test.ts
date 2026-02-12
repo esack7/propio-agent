@@ -1,14 +1,14 @@
 import * as fs from "fs";
 import * as path from "path";
-import { Agent } from "../agent";
-import { LLMProvider } from "../providers/interface";
+import { Agent } from "../agent.js";
+import { LLMProvider } from "../providers/interface.js";
 import {
   ChatRequest,
   ChatResponse,
   ChatChunk,
   ChatMessage,
-} from "../providers/types";
-import { ProvidersConfig } from "../providers/config";
+} from "../providers/types.js";
+import { ProvidersConfig } from "../providers/config.js";
 
 /**
  * Mock LLM Provider for testing

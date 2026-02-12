@@ -1,11 +1,11 @@
-import { OpenRouterProvider } from "../openrouter";
+import { OpenRouterProvider } from "../openrouter.js";
 import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderError,
-} from "../types";
-import { ChatRequest, ChatMessage } from "../types";
+} from "../types.js";
+import { ChatRequest, ChatMessage } from "../types.js";
 
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
@@ -127,7 +127,10 @@ describe("OpenRouterProvider", () => {
         { role: "system", content: "You are helpful" },
         { role: "user", content: "Hi" },
       ];
-      for await (const chunk of provider.streamChat({ model: "openai/gpt-3.5-turbo", messages })) {
+      for await (const chunk of provider.streamChat({
+        model: "openai/gpt-3.5-turbo",
+        messages,
+      })) {
         // consume
       }
 

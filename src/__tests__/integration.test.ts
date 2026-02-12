@@ -1,7 +1,7 @@
-import { Agent } from "../agent";
-import { LLMProvider } from "../providers/interface";
-import { ChatRequest, ChatResponse, ChatChunk } from "../providers/types";
-import { ProvidersConfig } from "../providers/config";
+import { Agent } from "../agent.js";
+import { LLMProvider } from "../providers/interface.js";
+import { ChatRequest, ChatResponse, ChatChunk } from "../providers/types.js";
+import { ProvidersConfig } from "../providers/config.js";
 import * as fs from "fs";
 import * as path from "path";
 

@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { ExecutableTool } from "./interface";
-import { ChatTool } from "../providers/types";
+import { ExecutableTool } from "./interface.js";
+import { ChatTool } from "../providers/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -37,7 +37,8 @@ export class RunBashTool implements ExecutableTool {
       type: "function",
       function: {
         name: "run_bash",
-        description: "Executes a shell command and returns its output. WARNING: This tool can execute arbitrary commands. Disabled by default and must be explicitly enabled.",
+        description:
+          "Executes a shell command and returns its output. WARNING: This tool can execute arbitrary commands. Disabled by default and must be explicitly enabled.",
         parameters: {
           type: "object",
           properties: {
@@ -47,11 +48,13 @@ export class RunBashTool implements ExecutableTool {
             },
             cwd: {
               type: "string",
-              description: "Working directory for command execution. Defaults to process.cwd()",
+              description:
+                "Working directory for command execution. Defaults to process.cwd()",
             },
             env: {
               type: "object",
-              description: "Additional environment variables (merged with process.env)",
+              description:
+                "Additional environment variables (merged with process.env)",
               additionalProperties: { type: "string" },
             },
             timeout: {
@@ -69,29 +72,43 @@ export class RunBashTool implements ExecutableTool {
   async execute(args: Record<string, unknown>): Promise<string> {
     const command = args.command as string;
     const cwd = args.cwd !== undefined ? (args.cwd as string) : process.cwd();
-    const envOverrides = args.env !== undefined ? (args.env as Record<string, string>) : {};
-    const timeout = args.timeout !== undefined ? (args.timeout as number) : this.DEFAULT_TIMEOUT;
+    const envOverrides =
+      args.env !== undefined ? (args.env as Record<string, string>) : {};
+    const timeout =
+      args.timeout !== undefined
+        ? (args.timeout as number)
+        : this.DEFAULT_TIMEOUT;
 
     // Merge environment variables
     const env = { ...process.env, ...envOverrides };
 
     try {
-      const { stdout, stderr } = await execFileAsync("/bin/sh", ["-c", command], {
-        cwd,
-        env,
-        timeout,
-        maxBuffer: this.MAX_OUTPUT_SIZE * 2, // Allow some headroom before internal truncation
-      });
+      const { stdout, stderr } = await execFileAsync(
+        "/bin/sh",
+        ["-c", command],
+        {
+          cwd,
+          env,
+          timeout,
+          maxBuffer: this.MAX_OUTPUT_SIZE * 2, // Allow some headroom before internal truncation
+        },
+      );
 
       // Truncate outputs if needed
       const truncatedStdout = this.truncateOutput(stdout);
       const truncatedStderr = this.truncateOutput(stderr);
 
-      return JSON.stringify({
-        stdout: truncatedStdout.value,
-        stderr: truncatedStderr.value + (truncatedStderr.truncated ? "\n[stderr truncated]" : ""),
-        exit_code: 0,
-      }, null, 2);
+      return JSON.stringify(
+        {
+          stdout: truncatedStdout.value,
+          stderr:
+            truncatedStderr.value +
+            (truncatedStderr.truncated ? "\n[stderr truncated]" : ""),
+          exit_code: 0,
+        },
+        null,
+        2,
+      );
     } catch (error: unknown) {
       // Handle timeout and non-zero exit codes
       if (error && typeof error === "object") {
@@ -117,17 +134,26 @@ export class RunBashTool implements ExecutableTool {
 
         // Capture any output that was produced before error
         stdout = execError.stdout !== undefined ? execError.stdout : "";
-        stderr = stderr || (execError.stderr !== undefined ? execError.stderr : "");
+        stderr =
+          stderr || (execError.stderr !== undefined ? execError.stderr : "");
 
         // Truncate outputs
         const truncatedStdout = this.truncateOutput(stdout);
         const truncatedStderr = this.truncateOutput(stderr);
 
-        return JSON.stringify({
-          stdout: truncatedStdout.value + (truncatedStdout.truncated ? "\n[stdout truncated]" : ""),
-          stderr: truncatedStderr.value + (truncatedStderr.truncated ? "\n[stderr truncated]" : ""),
-          exit_code: exitCode,
-        }, null, 2);
+        return JSON.stringify(
+          {
+            stdout:
+              truncatedStdout.value +
+              (truncatedStdout.truncated ? "\n[stdout truncated]" : ""),
+            stderr:
+              truncatedStderr.value +
+              (truncatedStderr.truncated ? "\n[stderr truncated]" : ""),
+            exit_code: exitCode,
+          },
+          null,
+          2,
+        );
       }
 
       // Unexpected error type
@@ -135,7 +161,10 @@ export class RunBashTool implements ExecutableTool {
     }
   }
 
-  private truncateOutput(output: string): { value: string; truncated: boolean } {
+  private truncateOutput(output: string): {
+    value: string;
+    truncated: boolean;
+  } {
     if (output.length <= this.MAX_OUTPUT_SIZE) {
       return { value: output, truncated: false };
     }

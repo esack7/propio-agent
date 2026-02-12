@@ -28,11 +28,11 @@ We need to add filesystem navigation (list, mkdir, remove, move), content/file s
 
 New tools will be organized as:
 
-| File | Tools | Rationale |
-|---|---|---|
-| `src/tools/fileSystem.ts` | `read_file`, `write_file`, `list_dir`, `mkdir`, `remove`, `move` | These are all basic `fs` operations; grouping keeps imports tight |
-| `src/tools/search.ts` | `search_text`, `search_files` | Both are search operations; `search_text` reads files, `search_files` uses glob matching |
-| `src/tools/bash.ts` | `run_bash` | Isolated in its own file due to its distinct risk profile and `child_process` dependency |
+| File                      | Tools                                                            | Rationale                                                                                |
+| ------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `src/tools/fileSystem.ts` | `read_file`, `write_file`, `list_dir`, `mkdir`, `remove`, `move` | These are all basic `fs` operations; grouping keeps imports tight                        |
+| `src/tools/search.ts`     | `search_text`, `search_files`                                    | Both are search operations; `search_text` reads files, `search_files` uses glob matching |
+| `src/tools/bash.ts`       | `run_bash`                                                       | Isolated in its own file due to its distinct risk profile and `child_process` dependency |
 
 **Alternative considered**: One file per tool. Rejected — the existing codebase groups `ReadFileTool` and `WriteFileTool` in one file, and the new filesystem tools share the same `fs` import. Separate files would add unnecessary module count without improving clarity.
 
@@ -61,12 +61,14 @@ When a path is a directory, the tool will recursively find files in it (using `f
 `run_bash` will use `child_process.execFile("/bin/sh", ["-c", command])` rather than `child_process.exec()`. Using `execFile` avoids an extra shell layer and gives more predictable behavior.
 
 Parameters:
+
 - `command` (string, required) — the shell command to execute
 - `cwd` (string, optional) — working directory, defaults to `process.cwd()`
 - `env` (object, optional) — additional environment variables, merged with `process.env`
 - `timeout` (number, optional) — timeout in milliseconds, default 30000 (30s)
 
 Returns a JSON string:
+
 ```json
 {
   "stdout": "...",
