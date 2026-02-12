@@ -330,6 +330,25 @@ export class Agent {
   }
 
   /**
+   * Get names of all registered tools in registration order.
+   *
+   * @returns Array of tool names (both enabled and disabled)
+   */
+  getToolNames(): string[] {
+    return this.toolRegistry.getToolNames();
+  }
+
+  /**
+   * Check if a tool is registered and enabled.
+   *
+   * @param name - The name of the tool to check
+   * @returns true if the tool is registered and enabled, false otherwise
+   */
+  isToolEnabled(name: string): boolean {
+    return this.toolRegistry.isToolEnabled(name);
+  }
+
+  /**
    * Handle and translate provider errors to meaningful messages
    */
   private handleProviderError(error: any): Error {

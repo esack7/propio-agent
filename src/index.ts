@@ -11,6 +11,7 @@ import {
   formatSuccess,
 } from "./ui/formatting.js";
 import { OperationSpinner } from "./ui/spinner.js";
+import { showToolMenu } from "./ui/toolMenu.js";
 
 async function main() {
   // Load configuration from ~/.propio/providers.json
@@ -35,7 +36,7 @@ Always provide clear, concise responses and summarize what you did after complet
   );
   console.log(
     formatCommand(
-      "Commands: /clear - clear context, /context - show context, /exit - quit\n",
+      "Commands: /clear - clear context, /context - show context, /tools - manage tools, /exit - quit\n",
     ),
   );
 
@@ -87,6 +88,11 @@ Always provide clear, concise responses and summarize what you did after complet
           console.log("");
         }
         prompt();
+        return;
+      }
+
+      if (trimmedInput === "/tools") {
+        showToolMenu(rl, agent, prompt);
         return;
       }
 
