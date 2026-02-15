@@ -27,7 +27,6 @@ async function main() {
   );
   if (sandboxExitCode !== null) {
     process.exit(sandboxExitCode);
-    return;
   }
 
   // Load configuration from ~/.propio/providers.json

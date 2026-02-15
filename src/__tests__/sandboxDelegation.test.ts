@@ -123,4 +123,25 @@ describe("sandbox delegation", () => {
     );
     expect(logError).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
   });
+
+  it("returns non-zero when wrapper exits due to signal", async () => {
+    const logError = jest.fn();
+    const mockChild = new MockChildProcess();
+    const spawnProcess: SpawnProcess = jest.fn(() => {
+      setImmediate(() => {
+        mockChild.emit("close", null, "SIGTERM");
+      });
+      return asChildProcess(mockChild);
+    });
+
+    const result = await maybeRunSandboxDelegation(["--sandbox"], {
+      resolveWrapperPath: () => "/tmp/project/bin/propio-sandbox",
+      validateWrapper: () => {},
+      spawnProcess,
+      logError,
+    });
+
+    expect(result).toBe(1);
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining("SIGTERM"));
+  });
 });
