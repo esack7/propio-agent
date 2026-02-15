@@ -1,5 +1,8 @@
+import * as path from "path";
 import * as readline from "readline";
+import { fileURLToPath } from "url";
 import { Agent } from "./agent.js";
+import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
 import {
   discoverAgentsMdFiles,
@@ -19,6 +22,14 @@ import { OperationSpinner } from "./ui/spinner.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 
 async function main() {
+  const sandboxExitCode = await maybeRunSandboxDelegation(
+    process.argv.slice(2),
+  );
+  if (sandboxExitCode !== null) {
+    process.exit(sandboxExitCode);
+    return;
+  }
+
   // Load configuration from ~/.propio/providers.json
   const configPath = getConfigPath();
 
@@ -159,4 +170,13 @@ Always provide clear, concise responses and summarize what you did after complet
   prompt();
 }
 
-main().catch(console.error);
+const isDirectExecution =
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
