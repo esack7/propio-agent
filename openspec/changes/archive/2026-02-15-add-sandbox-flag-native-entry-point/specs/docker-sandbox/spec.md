@@ -8,6 +8,7 @@ The system SHALL provide both direct wrapper invocation and native-entrypoint de
 
 - **WHEN** user runs `node dist/index.js --sandbox`
 - **THEN** the process delegates to `bin/propio-sandbox` and starts sandbox mode using the caller's current working directory as workspace
+- **AND** delegation removes only `--sandbox`, forwarding all other CLI arguments unchanged
 
 #### Scenario: Invoke via npm start with sandbox flag
 

@@ -90,6 +90,18 @@ The sandbox mode restricts filesystem access to the current working directory, p
 
 **Prerequisites:** Docker and Docker Compose
 
+#### From the native entrypoint (delegates to wrapper):
+
+```bash
+node dist/index.js --sandbox
+```
+
+```bash
+npm start -- --sandbox
+```
+
+Both commands delegate to `bin/propio-sandbox`, which runs the Docker-based sandbox flow.
+
 #### From the agent directory:
 
 ```bash
