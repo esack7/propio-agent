@@ -202,6 +202,53 @@ describe("Agent Integration Tests", () => {
       ).toContain("Error");
     });
 
+    it("should keep assistant toolCall ids aligned with tool result ids", async () => {
+      const mockProvider = new MockIntegrationProvider("test");
+      let callCount = 0;
+
+      mockProvider.streamChat = async function* (request: ChatRequest) {
+        callCount++;
+
+        if (callCount === 1) {
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                function: {
+                  name: "save_session_context",
+                  arguments: {},
+                },
+              },
+            ],
+          };
+          return;
+        }
+
+        const assistantMessage = [...request.messages]
+          .reverse()
+          .find((m) => m.role === "assistant");
+        const toolMessage = [...request.messages]
+          .reverse()
+          .find((m) => m.role === "tool");
+
+        expect(assistantMessage?.toolCalls?.[0]?.id).toBeDefined();
+        expect(toolMessage?.toolResults?.[0]?.toolCallId).toBeDefined();
+        expect(toolMessage?.toolResults?.[0]?.toolCallId).toBe(
+          assistantMessage?.toolCalls?.[0]?.id,
+        );
+
+        yield { delta: "Done" };
+      };
+
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const response = await agent.streamChat("Run tool", () => {});
+
+      expect(response).toBe("Done");
+      expect(callCount).toBe(2);
+    });
+
     it("should handle multiple tool calls in sequence", async () => {
       const mockProvider = new MockIntegrationProvider("test");
       let callCount = 0;

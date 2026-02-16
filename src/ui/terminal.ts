@@ -8,6 +8,7 @@ import {
   formatUserMessage,
   formatWarning,
 } from "./formatting.js";
+import { error as colorError, success as colorSuccess } from "./colors.js";
 import { OperationSpinner } from "./spinner.js";
 
 export interface TerminalUiOptions {
@@ -107,23 +108,27 @@ export class TerminalUi {
       return;
     }
 
-    const formatted = this.applyStyle(text, formatSuccess);
     if (this.spinner) {
-      this.spinner.succeed(formatted);
+      // ora.succeed() already renders a success symbol, so only apply color here.
+      const spinnerFormatted = this.applyStyle(text, colorSuccess);
+      this.spinner.succeed(spinnerFormatted);
       this.spinner = null;
       return;
     }
 
+    const formatted = this.applyStyle(text, formatSuccess);
     this.writeStderrLine(formatted);
   }
 
   error(text: string): void {
-    const formatted = this.applyStyle(text, formatError);
     if (this.spinner) {
-      this.spinner.fail(formatted);
+      // ora.fail() already renders an error symbol, so only apply color here.
+      const spinnerFormatted = this.applyStyle(text, colorError);
+      this.spinner.fail(spinnerFormatted);
       this.spinner = null;
       return;
     }
+    const formatted = this.applyStyle(text, formatError);
     this.writeStderrLine(formatted);
   }
 

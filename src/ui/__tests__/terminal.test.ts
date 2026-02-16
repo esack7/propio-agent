@@ -78,4 +78,36 @@ describe("TerminalUi", () => {
 
     expect(stderr.chunks.join("")).toBe("partial\n");
   });
+
+  it("does not duplicate success symbol when finishing an active spinner", () => {
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+    });
+
+    const succeed = jest.fn();
+    (ui as any).spinner = { succeed };
+
+    ui.success("list_dir completed");
+
+    expect(succeed).toHaveBeenCalledTimes(1);
+    expect(succeed.mock.calls[0][0]).not.toContain("✔");
+  });
+
+  it("does not duplicate error symbol when failing an active spinner", () => {
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+    });
+
+    const fail = jest.fn();
+    (ui as any).spinner = { fail };
+
+    ui.error("list_dir failed");
+
+    expect(fail).toHaveBeenCalledTimes(1);
+    expect(fail.mock.calls[0][0]).not.toContain("✖");
+  });
 });

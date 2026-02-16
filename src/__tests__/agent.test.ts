@@ -9,6 +9,7 @@ import {
   ChatMessage,
 } from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
+import { ExecutableTool } from "../tools/interface.js";
 
 /**
  * Mock LLM Provider for testing
@@ -742,6 +743,73 @@ describe("Agent with Multi-Provider Configuration", () => {
           abortSignal: controller.signal,
         }),
       ).rejects.toThrow("Request cancelled");
+    });
+  });
+
+  describe("Tool result context limits", () => {
+    class LargeResultTool implements ExecutableTool {
+      readonly name = "large_result_tool";
+
+      getSchema() {
+        return {
+          type: "function" as const,
+          function: {
+            name: "large_result_tool",
+            description: "Returns a very large output",
+            parameters: {
+              type: "object",
+              properties: {},
+            },
+          },
+        };
+      }
+
+      async execute(): Promise<string> {
+        return "x".repeat(13000);
+      }
+    }
+
+    class MockProviderCapturingToolResult implements LLMProvider {
+      name = "mock-capture";
+      streamChatCalls: ChatRequest[] = [];
+      callCount = 0;
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+        this.streamChatCalls.push(request);
+        this.callCount++;
+
+        if (this.callCount === 1) {
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                id: "call-large",
+                function: { name: "large_result_tool", arguments: {} },
+              },
+            ],
+          };
+          return;
+        }
+
+        yield { delta: "final" };
+      }
+    }
+
+    it("should truncate oversized tool result payloads before adding them to context", async () => {
+      const provider = new MockProviderCapturingToolResult();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      agent.addTool(new LargeResultTool());
+      (agent as any).provider = provider;
+
+      await agent.streamChat("run it", () => {});
+
+      expect(provider.streamChatCalls.length).toBe(2);
+      const secondRequest = provider.streamChatCalls[1];
+      const toolMessage = secondRequest.messages.find((m) => m.role === "tool");
+      const toolContent = toolMessage?.toolResults?.[0]?.content ?? "";
+
+      expect(toolContent.length).toBeLessThan(13000);
+      expect(toolContent).toContain("[tool output truncated:");
     });
   });
 
