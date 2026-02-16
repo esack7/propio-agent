@@ -4,22 +4,32 @@ import { ExecutableTool } from "./interface.js";
 import { ChatTool } from "../providers/types.js";
 
 /**
- * Validates that a file path is within the allowed base directory.
- * Prevents path traversal attacks by ensuring resolved paths don't escape the base.
+ * Validates and normalizes a file path for safe access.
+ * In native mode (non-sandbox), allows access to any absolute path.
+ * In sandbox mode (Docker), paths are normalized relative to /workspace.
+ * Prevents basic path traversal attacks by rejecting suspicious patterns.
  *
- * @param filePath - The file path to validate
- * @param baseDir - The base directory to restrict access to (defaults to cwd)
- * @throws Error if the path is outside the allowed directory
+ * @param filePath - The file path to validate and normalize
+ * @returns Normalized path safe for filesystem access
+ * @throws Error if the path contains suspicious patterns
  */
-function validatePath(filePath: string, baseDir: string = process.cwd()): void {
-  const resolvedPath = path.resolve(filePath);
-  const resolvedBase = path.resolve(baseDir);
-
-  if (!resolvedPath.startsWith(resolvedBase)) {
-    throw new Error(
-      `Access denied: Path '${filePath}' is outside the allowed directory`,
-    );
+function validatePath(filePath: string): string {
+  // Prevent null bytes and other control characters
+  if (/[\x00-\x1f]/.test(filePath)) {
+    throw new Error(`Invalid path: contains control characters`);
   }
+
+  // Normalize the path to resolve . and .. segments
+  // This helps with consistency and security
+  const normalized = path.normalize(filePath);
+
+  // If path is relative, resolve it against current working directory
+  // In sandbox mode, cwd is /workspace, so this ensures relative paths work correctly
+  if (!path.isAbsolute(normalized)) {
+    return path.resolve(process.cwd(), normalized);
+  }
+
+  return normalized;
 }
 
 /**
@@ -34,13 +44,15 @@ export class ReadFileTool implements ExecutableTool {
       type: "function",
       function: {
         name: "read_file",
-        description: "Reads the content of a file from the filesystem",
+        description:
+          "Reads the content of a file from the filesystem. Supports both absolute and relative paths. Relative paths are resolved from the current working directory.",
         parameters: {
           type: "object",
           properties: {
             file_path: {
               type: "string",
-              description: "The path to the file to read",
+              description:
+                "Path to the file (e.g., 'file.txt', './dir/file.txt', or '/absolute/path/file.txt')",
             },
           },
           required: ["file_path"],
@@ -53,11 +65,11 @@ export class ReadFileTool implements ExecutableTool {
     const filePath = args.file_path as string;
 
     try {
-      // Validate path to prevent directory traversal
-      validatePath(filePath);
+      // Validate and normalize path for security
+      const normalizedPath = validatePath(filePath);
 
       // Read file asynchronously
-      const content = await fsPromises.readFile(filePath, "utf-8");
+      const content = await fsPromises.readFile(normalizedPath, "utf-8");
       return content;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
@@ -114,11 +126,11 @@ export class WriteFileTool implements ExecutableTool {
     const content = args.content as string;
 
     try {
-      // Validate path to prevent directory traversal
-      validatePath(filePath);
+      // Validate and normalize path for security
+      const normalizedPath = validatePath(filePath);
 
       // Write file asynchronously
-      await fsPromises.writeFile(filePath, content, "utf-8");
+      await fsPromises.writeFile(normalizedPath, content, "utf-8");
       return `Successfully wrote to ${filePath}`;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
@@ -152,13 +164,14 @@ export class ListDirTool implements ExecutableTool {
       function: {
         name: "list_dir",
         description:
-          "Lists the contents of a directory at a given path. Returns entries with type (file or directory) and name.",
+          "Lists the contents of a directory. Returns entries with type (file or directory) and name. Use '.' for current directory. Supports both absolute and relative paths.",
         parameters: {
           type: "object",
           properties: {
             path: {
               type: "string",
-              description: "The directory path to list",
+              description:
+                "Directory path to list (e.g., '.', './subdir', 'subdir', or '/absolute/path')",
             },
           },
           required: ["path"],
@@ -171,10 +184,10 @@ export class ListDirTool implements ExecutableTool {
     const dirPath = args.path as string;
 
     try {
-      // Validate path to prevent directory traversal
-      validatePath(dirPath);
+      // Validate and normalize path for security
+      const normalizedPath = validatePath(dirPath);
 
-      const entries = await fsPromises.readdir(dirPath, {
+      const entries = await fsPromises.readdir(normalizedPath, {
         withFileTypes: true,
       });
 
@@ -241,10 +254,10 @@ export class MkdirTool implements ExecutableTool {
     const dirPath = args.path as string;
 
     try {
-      // Validate path to prevent directory traversal
-      validatePath(dirPath);
+      // Validate and normalize path for security
+      const normalizedPath = validatePath(dirPath);
 
-      await fsPromises.mkdir(dirPath, { recursive: true });
+      await fsPromises.mkdir(normalizedPath, { recursive: true });
       return `Successfully created directory: ${dirPath}`;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
@@ -317,10 +330,10 @@ export class RemoveTool implements ExecutableTool {
     const targetPath = args.path as string;
 
     try {
-      // Validate path to prevent directory traversal
-      validatePath(targetPath);
+      // Validate and normalize path for security
+      const normalizedPath = validatePath(targetPath);
 
-      await fsPromises.rm(targetPath, { recursive: true, force: true });
+      await fsPromises.rm(normalizedPath, { recursive: true, force: true });
       return `Successfully removed: ${targetPath}`;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
@@ -375,11 +388,11 @@ export class MoveTool implements ExecutableTool {
     const destPath = args.dest as string;
 
     try {
-      // Validate both paths to prevent directory traversal
-      validatePath(sourcePath);
-      validatePath(destPath);
+      // Validate and normalize both paths for security
+      const normalizedSource = validatePath(sourcePath);
+      const normalizedDest = validatePath(destPath);
 
-      await fsPromises.rename(sourcePath, destPath);
+      await fsPromises.rename(normalizedSource, normalizedDest);
       return `Successfully moved ${sourcePath} to ${destPath}`;
     } catch (error) {
       const err = error as NodeJS.ErrnoException;

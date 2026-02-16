@@ -68,11 +68,11 @@ describe("New Filesystem Tools", () => {
       expect(result).toBe("Directory is empty");
     });
 
-    it("should reject paths outside allowed directory", async () => {
+    it("should reject paths with control characters", async () => {
       const tool = new ListDirTool();
 
-      await expect(tool.execute({ path: "/../etc" })).rejects.toThrow(
-        "Access denied",
+      await expect(tool.execute({ path: "/test/dir\x00" })).rejects.toThrow(
+        "Invalid path: contains control characters",
       );
     });
 
@@ -127,11 +127,11 @@ describe("New Filesystem Tools", () => {
       });
     });
 
-    it("should reject paths outside allowed directory", async () => {
+    it("should reject paths with control characters", async () => {
       const tool = new MkdirTool();
 
-      await expect(tool.execute({ path: "/../etc/malicious" })).rejects.toThrow(
-        "Access denied",
+      await expect(tool.execute({ path: "/test/dir\x00" })).rejects.toThrow(
+        "Invalid path: contains control characters",
       );
     });
 
@@ -176,12 +176,12 @@ describe("New Filesystem Tools", () => {
       });
     });
 
-    it("should reject paths outside allowed directory", async () => {
+    it("should reject paths with control characters", async () => {
       const tool = new RemoveTool();
 
-      await expect(tool.execute({ path: "/../etc/passwd" })).rejects.toThrow(
-        "Access denied",
-      );
+      await expect(
+        tool.execute({ path: "/test/file\x00.txt" }),
+      ).rejects.toThrow("Invalid path: contains control characters");
     });
 
     it("should throw user-friendly error for non-existent path", async () => {
@@ -242,26 +242,26 @@ describe("New Filesystem Tools", () => {
       );
     });
 
-    it("should reject source path outside allowed directory", async () => {
+    it("should reject source path with control characters", async () => {
       const tool = new MoveTool();
 
       await expect(
         tool.execute({
-          path: "/../etc/passwd",
+          path: "/test/source\x00.txt",
           dest: "/test/dest.txt",
         }),
-      ).rejects.toThrow("Access denied");
+      ).rejects.toThrow("Invalid path: contains control characters");
     });
 
-    it("should reject destination path outside allowed directory", async () => {
+    it("should reject destination path with control characters", async () => {
       const tool = new MoveTool();
 
       await expect(
         tool.execute({
           path: "/test/source.txt",
-          dest: "/../etc/malicious",
+          dest: "/test/dest\x00.txt",
         }),
-      ).rejects.toThrow("Access denied");
+      ).rejects.toThrow("Invalid path: contains control characters");
     });
 
     it("should throw user-friendly error for non-existent source", async () => {

@@ -538,5 +538,81 @@ describe("OpenRouterProvider", () => {
       }
       expect(deltas).toEqual(["Hi"]);
     });
+
+    it("should expand batched tool results into individual messages", async () => {
+      const chunks = ['data: {"choices":[{"delta":{"content":"Done"}}]}\n\n'];
+      const stream = new ReadableStream({
+        start(controller) {
+          chunks.forEach((c) =>
+            controller.enqueue(new TextEncoder().encode(c)),
+          );
+          controller.close();
+        },
+      });
+
+      const mockFetch = jest.fn().mockResolvedValue({ ok: true, body: stream });
+      globalThis.fetch = mockFetch;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      // Create a message with batched tool results
+      const messages: ChatMessage[] = [
+        { role: "user", content: "Test" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call1", function: { name: "tool1", arguments: {} } },
+            { id: "call2", function: { name: "tool2", arguments: {} } },
+          ],
+        },
+        {
+          role: "tool",
+          content: "",
+          toolResults: [
+            { toolCallId: "call1", toolName: "tool1", content: "result1" },
+            { toolCallId: "call2", toolName: "tool2", content: "result2" },
+          ],
+        },
+      ];
+
+      const deltas: string[] = [];
+      for await (const chunk of provider.streamChat({
+        model: "openai/gpt-3.5-turbo",
+        messages,
+      })) {
+        deltas.push(chunk.delta);
+      }
+
+      // Verify the request body was sent with expanded tool messages
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.stringContaining('"role":"tool"'),
+        }),
+      );
+
+      // Parse the request body to verify structure
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      const toolMessages = requestBody.messages.filter(
+        (m: any) => m.role === "tool",
+      );
+
+      // Should have 2 individual tool messages, not 1 batched message
+      expect(toolMessages).toHaveLength(2);
+      expect(toolMessages[0]).toMatchObject({
+        role: "tool",
+        content: "result1",
+        tool_call_id: "call1",
+      });
+      expect(toolMessages[1]).toMatchObject({
+        role: "tool",
+        content: "result2",
+        tool_call_id: "call2",
+      });
+    });
   });
 });

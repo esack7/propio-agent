@@ -64,6 +64,36 @@ export class OpenRouterProvider implements LLMProvider {
     this.xTitle = options.xTitle;
   }
 
+  /**
+   * Expands batched tool results into individual tool messages.
+   * OpenAI/OpenRouter expects one message per tool result with tool_call_id.
+   */
+  private expandToolResults(messages: ChatMessage[]): ChatMessage[] {
+    const expanded: ChatMessage[] = [];
+
+    for (const msg of messages) {
+      // If this is a batched tool result message, expand it
+      if (
+        msg.role === "tool" &&
+        msg.toolResults &&
+        msg.toolResults.length > 0
+      ) {
+        for (const toolResult of msg.toolResults) {
+          expanded.push({
+            role: "tool",
+            content: toolResult.content,
+            toolCallId: toolResult.toolCallId,
+          });
+        }
+      } else {
+        // Not a batched tool result, keep as is
+        expanded.push(msg);
+      }
+    }
+
+    return expanded;
+  }
+
   private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
     const role = msg.role as OpenAIMessage["role"];
     const out: OpenAIMessage = { role, content: msg.content ?? "" };
@@ -143,7 +173,9 @@ export class OpenRouterProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
-      const messages = request.messages.map((m) =>
+      // Expand batched tool results before converting to OpenAI format
+      const expandedMessages = this.expandToolResults(request.messages);
+      const messages = expandedMessages.map((m) =>
         this.chatMessageToOpenAIMessage(m),
       );
       const body: Record<string, unknown> = {

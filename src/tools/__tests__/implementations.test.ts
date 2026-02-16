@@ -88,12 +88,12 @@ describe("Tool Implementations", () => {
       );
     });
 
-    it("should reject paths outside allowed directory", async () => {
+    it("should reject paths with control characters", async () => {
       const tool = new ReadFileTool();
 
       await expect(
-        tool.execute({ file_path: "/../etc/passwd" }),
-      ).rejects.toThrow("Access denied");
+        tool.execute({ file_path: "/test/file\x00.txt" }),
+      ).rejects.toThrow("Invalid path: contains control characters");
     });
 
     it("should throw user-friendly error for non-existent file", async () => {
@@ -163,15 +163,15 @@ describe("Tool Implementations", () => {
       );
     });
 
-    it("should reject paths outside allowed directory", async () => {
+    it("should reject paths with control characters", async () => {
       const tool = new WriteFileTool();
 
       await expect(
         tool.execute({
-          file_path: "/../etc/passwd",
+          file_path: "/test/file\x00.txt",
           content: "malicious content",
         }),
-      ).rejects.toThrow("Access denied");
+      ).rejects.toThrow("Invalid path: contains control characters");
     });
 
     it("should throw user-friendly error when directory not found", async () => {
