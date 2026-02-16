@@ -16,8 +16,8 @@ COPY src ./src
 # Build TypeScript
 RUN npm run build
 
-# Set default environment variables
-ENV OLLAMA_HOST=http://host.docker.internal:11434
+# Set sandbox mode flag
+ENV IS_SANDBOX=true
 
 # Create workspace directory
 RUN mkdir -p /workspace

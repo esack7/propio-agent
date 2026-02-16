@@ -21,10 +21,37 @@ export class OllamaProvider implements LLMProvider {
   private model: string;
 
   constructor(options: { model: string; host?: string }) {
+    const isSandbox = process.env.IS_SANDBOX === "true";
+
+    // Priority: OLLAMA_HOST (no conversion) > options.host (with conversion) > default (mode-specific)
     const host =
-      process.env.OLLAMA_HOST || options.host || "http://localhost:11434";
+      process.env.OLLAMA_HOST || this.resolveHost(options.host, isSandbox);
+
     this.ollama = new Ollama({ host });
     this.model = options.model;
+  }
+
+  /**
+   * Resolve host with smart localhost→host.docker.internal conversion for sandbox mode
+   */
+  private resolveHost(
+    configuredHost: string | undefined,
+    isSandbox: boolean,
+  ): string {
+    // If no host configured, use mode-specific default
+    if (!configuredHost) {
+      return isSandbox
+        ? "http://host.docker.internal:11434"
+        : "http://localhost:11434";
+    }
+
+    // If host contains localhost and we're in sandbox, convert to host.docker.internal
+    if (isSandbox && configuredHost.includes("localhost")) {
+      return configuredHost.replace("localhost", "host.docker.internal");
+    }
+
+    // Otherwise use as-is
+    return configuredHost;
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {

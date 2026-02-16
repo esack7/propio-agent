@@ -7,8 +7,7 @@ services:
       - FORCE_COLOR=3
       - TERM=${TERM:-xterm-256color}
       - COLORTERM=${COLORTERM:-truecolor}
-    volumes:
-      - ./.propio:/app/.propio:ro
-      - ./:/workspace
+    # Volume mounts are provided by the wrapper script (propio-sandbox)
+    # to allow dynamic mounting of current working directory and user config
     extra_hosts:
       - "host.docker.internal:host-gateway"

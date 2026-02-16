@@ -1,12 +1,20 @@
+// Force chalk to use truecolor (level 3) for this test file
+// This ensures color functions are created with consistent ANSI codes
 import chalk from "chalk";
+chalk.level = 3;
 
 // Test for colors module
 describe("colors module", () => {
   let colorsModule: any;
 
   beforeEach(async () => {
-    // Clear chalk's internal color level to allow fresh detection
-    chalk.level = 3; // Reset to truecolor
+    // Ensure chalk level is maintained
+    chalk.level = 3;
+    // Clear module cache and re-import to pick up chalk level
+    jest.resetModules();
+    // Must re-import chalk after resetModules and set level again
+    const chalkModule = await import("chalk");
+    chalkModule.default.level = 3;
     colorsModule = await import("../colors.js");
   });
 

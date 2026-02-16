@@ -23,9 +23,19 @@ describe("OllamaProvider", () => {
 
   describe("Initialization", () => {
     it("should initialize with custom host", () => {
-      const host = "http://custom-host:11434";
-      new OllamaProvider({ model: "test-model", host });
-      expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        delete process.env.OLLAMA_HOST; // Clear to test constructor option priority
+        delete process.env.IS_SANDBOX; // Ensure regular mode
+        const host = "http://custom-host:11434";
+        new OllamaProvider({ model: "test-model", host });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+      }
     });
 
     it("should use localhost default when no host provided", () => {
@@ -83,14 +93,123 @@ describe("OllamaProvider", () => {
 
   describe("Backward compatibility", () => {
     it("should support custom host configuration", () => {
-      const host = "http://custom:11434";
-      new OllamaProvider({ model: "llama3.2", host });
-      expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        delete process.env.OLLAMA_HOST; // Clear to test constructor option priority
+        delete process.env.IS_SANDBOX; // Ensure regular mode
+        const host = "http://custom:11434";
+        new OllamaProvider({ model: "llama3.2", host });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+      }
     });
 
     it("should handle model parameter in constructor", () => {
       const provider = new OllamaProvider({ model: "llama3.2" });
       expect(provider).toBeDefined();
+    });
+  });
+
+  describe("Sandbox mode host resolution", () => {
+    it("should use host.docker.internal default in sandbox mode", () => {
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        process.env.IS_SANDBOX = "true";
+        delete process.env.OLLAMA_HOST;
+        new OllamaProvider({ model: "test-model" });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
+          host: "http://host.docker.internal:11434",
+        });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        else delete process.env.OLLAMA_HOST;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+        else delete process.env.IS_SANDBOX;
+      }
+    });
+
+    it("should convert localhost to host.docker.internal in sandbox", () => {
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        process.env.IS_SANDBOX = "true";
+        delete process.env.OLLAMA_HOST;
+        const host = "http://localhost:12345";
+        new OllamaProvider({ model: "test-model", host });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
+          host: "http://host.docker.internal:12345",
+        });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        else delete process.env.OLLAMA_HOST;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+        else delete process.env.IS_SANDBOX;
+      }
+    });
+
+    it("should preserve custom hosts in sandbox mode", () => {
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        process.env.IS_SANDBOX = "true";
+        delete process.env.OLLAMA_HOST;
+        const host = "http://custom-host:11434";
+        new OllamaProvider({ model: "test-model", host });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
+          host: "http://custom-host:11434",
+        });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        else delete process.env.OLLAMA_HOST;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+        else delete process.env.IS_SANDBOX;
+      }
+    });
+
+    it("should use localhost default in regular mode", () => {
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        delete process.env.IS_SANDBOX;
+        delete process.env.OLLAMA_HOST;
+        new OllamaProvider({ model: "test-model" });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
+          host: "http://localhost:11434",
+        });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        else delete process.env.OLLAMA_HOST;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+        else delete process.env.IS_SANDBOX;
+      }
+    });
+
+    it("should respect OLLAMA_HOST without conversion in sandbox", () => {
+      const originalEnv = process.env.OLLAMA_HOST;
+      const originalSandbox = process.env.IS_SANDBOX;
+      try {
+        process.env.OLLAMA_HOST = "http://localhost:9999";
+        process.env.IS_SANDBOX = "true";
+        new OllamaProvider({ model: "test-model" });
+        expect(mockOllamaConstructor).toHaveBeenCalledWith({
+          host: "http://localhost:9999",
+        });
+      } finally {
+        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
+        else delete process.env.OLLAMA_HOST;
+        if (originalSandbox !== undefined)
+          process.env.IS_SANDBOX = originalSandbox;
+        else delete process.env.IS_SANDBOX;
+      }
     });
   });
 
