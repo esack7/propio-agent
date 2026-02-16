@@ -20,6 +20,7 @@ import {
 } from "./ui/formatting.js";
 import { OperationSpinner } from "./ui/spinner.js";
 import { showToolMenu } from "./ui/toolMenu.js";
+import { printStartupBanner } from "./ui/banner.js";
 
 async function main() {
   const sandboxExitCode = await maybeRunSandboxDelegation(
@@ -28,6 +29,8 @@ async function main() {
   if (sandboxExitCode !== null) {
     process.exit(sandboxExitCode);
   }
+
+  printStartupBanner();
 
   // Load configuration from ~/.propio/providers.json
   const configPath = getConfigPath();
