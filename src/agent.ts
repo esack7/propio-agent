@@ -173,8 +173,13 @@ export class Agent {
     options?: {
       onToolStart?: (toolName: string) => void;
       onToolEnd?: (toolName: string, result: string) => void;
+      abortSignal?: AbortSignal;
     },
   ): Promise<string> {
+    if (options?.abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
     this.sessionContext.push({
       role: "user",
       content: userMessage,
@@ -201,7 +206,12 @@ export class Agent {
           model: this.model,
           messages: messages,
           tools: this.toolRegistry.getEnabledSchemas(),
+          signal: options?.abortSignal,
         })) {
+          if (options?.abortSignal?.aborted) {
+            throw new Error("Request cancelled");
+          }
+
           const token = chunk.delta;
           fullResponse += token;
           if (token) {
@@ -228,6 +238,10 @@ export class Agent {
           const toolResults = [];
 
           for (const toolCall of toolCalls) {
+            if (options?.abortSignal?.aborted) {
+              throw new Error("Request cancelled");
+            }
+
             const args = toolCall.function.arguments;
             const toolName = toolCall.function.name;
 

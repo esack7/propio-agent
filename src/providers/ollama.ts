@@ -56,6 +56,10 @@ export class OllamaProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     try {
+      if (request.signal?.aborted) {
+        throw new ProviderError("Request cancelled");
+      }
+
       // Expand batched tool results into separate messages for Ollama
       const expandedMessages = this.expandToolResults(request.messages);
       const messages = expandedMessages.map((msg) =>
@@ -75,6 +79,10 @@ export class OllamaProvider implements LLMProvider {
       let lastToolCalls: ChatToolCall[] | undefined;
 
       for await (const chunk of response) {
+        if (request.signal?.aborted) {
+          throw new ProviderError("Request cancelled");
+        }
+
         // Yield delta content
         if (chunk.message.content) {
           yield { delta: chunk.message.content };

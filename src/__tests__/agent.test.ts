@@ -714,6 +714,35 @@ describe("Agent with Multi-Provider Configuration", () => {
       // Result should not be empty
       expect(result.length).toBeGreaterThan(0);
     });
+
+    it("should pass abortSignal to provider streamChat requests", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const controller = new AbortController();
+      await agent.streamChat("Test", jest.fn(), {
+        abortSignal: controller.signal,
+      });
+
+      expect(mockProvider.streamChatCalls.length).toBeGreaterThan(0);
+      expect(mockProvider.streamChatCalls[0].signal).toBe(controller.signal);
+    });
+
+    it("should reject immediately when abortSignal is already aborted", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        agent.streamChat("Test", jest.fn(), {
+          abortSignal: controller.signal,
+        }),
+      ).rejects.toThrow("Request cancelled");
+    });
   });
 
   describe("Constructor with agentsMdContent option", () => {

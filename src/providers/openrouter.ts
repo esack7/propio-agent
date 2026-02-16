@@ -197,6 +197,7 @@ export class OpenRouterProvider implements LLMProvider {
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal: request.signal,
       });
 
       if (!response.ok) {
@@ -340,6 +341,10 @@ export class OpenRouterProvider implements LLMProvider {
       }
     }
     const msg = originalError.message;
+    if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
+      return new ProviderError("Request cancelled", originalError);
+    }
+
     if (
       msg &&
       (msg.includes("ECONNREFUSED") ||

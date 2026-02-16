@@ -32,7 +32,7 @@ export function resolveSandboxWrapperPath(entryModuleUrl: string): string {
 }
 
 function defaultLogError(message: string): void {
-  console.error(formatError(`${message}\n`));
+  process.stderr.write(formatError(`${message}\n`));
 }
 
 export function validateSandboxWrapper(wrapperPath: string): void {

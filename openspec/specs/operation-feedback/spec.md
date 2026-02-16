@@ -75,7 +75,7 @@ The system SHALL display spinners during tool execution in the agent's streamCha
 #### Scenario: Spinner stops before streaming output
 
 - **WHEN** tool execution completes and streaming output begins
-- **THEN** the spinner MUST be stopped before any stdout writes to prevent output conflicts
+- **THEN** the spinner MUST be stopped before any terminal writes to prevent output conflicts
 
 ### Requirement: Backward compatibility for spinner callbacks
 

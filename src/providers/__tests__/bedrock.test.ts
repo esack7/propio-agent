@@ -306,6 +306,7 @@ describe("BedrockProvider", () => {
 
       expect(mockSendMethod).toHaveBeenCalledWith(
         expect.any(MockConverseStreamCommand),
+        expect.objectContaining({ abortSignal: undefined }),
       );
     });
 
@@ -374,6 +375,7 @@ describe("BedrockProvider", () => {
 
       expect(mockSendMethod).toHaveBeenCalledWith(
         expect.any(MockConverseStreamCommand),
+        expect.objectContaining({ abortSignal: undefined }),
       );
     });
 
@@ -461,6 +463,7 @@ describe("BedrockProvider", () => {
 
       expect(mockSendMethod).toHaveBeenCalledWith(
         expect.any(MockConverseStreamCommand),
+        expect.objectContaining({ abortSignal: undefined }),
       );
     });
 

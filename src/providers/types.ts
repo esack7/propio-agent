@@ -54,6 +54,7 @@ export interface ChatRequest {
   model: string;
   tools?: ChatTool[];
   stream?: boolean;
+  signal?: AbortSignal;
 }
 
 /**

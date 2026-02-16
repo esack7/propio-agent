@@ -63,7 +63,9 @@ export class BedrockProvider implements LLMProvider {
         toolConfig: toolConfig as any,
       });
 
-      const response = await this.client.send(command);
+      const response = await this.client.send(command, {
+        abortSignal: request.signal,
+      });
       let stream = (response as any).stream || (response as any).output;
 
       // Handle case where response itself is an async iterable
