@@ -74,7 +74,7 @@ function stripTrailingAnsi(str: string): string {
  * using marked + marked-terminal with append-only delta rendering.
  *
  * Key features:
- * - Throttled rendering (~100ms) to batch token arrivals without starvation
+ * - Throttled rendering (~80ms) to batch token arrivals without starvation
  * - Full buffer re-parse on each render (markdown is context-sensitive)
  * - Append-only output: only writes new content, no cursor rewind needed
  * - Works reliably regardless of content length or terminal scrolling
@@ -193,9 +193,7 @@ export class MarkdownStreamer implements Streamer {
 
   /**
    * Handle divergence by rewinding to the last newline boundary in the
-   * common prefix and rewriting from there. This is safe because the
-   * rewind is limited to a few lines (typically just the current line),
-   * well within the visible terminal area.
+   * common prefix and rewriting from there.
    */
   private rewriteFromDivergence(newStripped: string): void {
     const commonLen = this.findCommonPrefixLength(
@@ -211,17 +209,6 @@ export class MarkdownStreamer implements Streamer {
     let linesUp = 0;
     for (let i = rewindTo + 1; i < this.committedOutput.length; i++) {
       if (this.committedOutput.charCodeAt(i) === 10) linesUp++;
-    }
-
-    // Safety limit: if rewind is too large, fall back to append-only
-    // (accepts minor artifact rather than risking scroll corruption)
-    if (linesUp > 10) {
-      const tail = newStripped.substring(commonLen);
-      if (tail.length > 0) {
-        this.stderr.write(tail);
-      }
-      this.committedOutput = newStripped;
-      return;
     }
 
     // Rewind cursor to the line boundary

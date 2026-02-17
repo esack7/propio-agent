@@ -79,16 +79,40 @@ describe("MarkdownStreamer", () => {
       expect(secondOutput).not.toContain("Line 1");
     });
 
-    it("should not emit any cursor control sequences", () => {
+    it("should not emit cursor control sequences during normal append-only flow", () => {
       streamer.push("Some content");
       streamer.flush();
 
       const output = writtenOutput.join("");
-      // Delta renderer does not use cursor save/restore or cursor movement
+      // Delta renderer does not use cursor save/restore or cursor movement in normal flow
       expect(output).not.toMatch(/\x1b7/); // No DECSC
       expect(output).not.toMatch(/\x1b8/); // No DECRC
       expect(output).not.toMatch(/\x1b\[\d+A/); // No cursor up
       expect(output).not.toMatch(/\x1b\[0J/); // No clear to end
+    });
+
+    it("should emit cursor control sequences when divergence occurs", async () => {
+      // Push incomplete markdown that will render literally (no formatting)
+      streamer.push("**bold");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      writtenOutput.length = 0;
+
+      // Complete the markdown - this will cause re-parsing where previous plain text
+      // now becomes bold formatted text, triggering divergence in ANSI output
+      streamer.push(" text**");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const output = writtenOutput.join("");
+
+      // In a divergence scenario, we should see cursor-up and clear-to-end sequences
+      // The implementation uses \x1b[${linesUp}A for cursor up and \x1b[0J for clear to end
+      const hasCursorUp = /\x1b\[\d*A/.test(output);
+      const hasClearToEnd = /\x1b\[0J/.test(output);
+
+      // At least one of these should be true when divergence is handled
+      // (cursor-up might be 0 if divergence is on the same line)
+      expect(hasCursorUp || hasClearToEnd).toBe(true);
     });
 
     it("should not write anything for empty buffer", () => {
