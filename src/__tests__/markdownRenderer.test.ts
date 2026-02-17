@@ -348,6 +348,27 @@ describe("MarkdownStreamer", () => {
       expect(output).toContain("bold");
       expect(output).toContain("italic");
     });
+
+    it("should fallback to raw buffer when markdown parsing throws", () => {
+      const markedInstance = (
+        streamer as unknown as {
+          marked: { parse: (markdown: string) => string | Promise<string> };
+        }
+      ).marked;
+      const originalParse = markedInstance.parse;
+      markedInstance.parse = () => {
+        throw new Error("parse failure");
+      };
+      try {
+        streamer.push("# Header\nContent");
+        streamer.flush();
+
+        const output = writtenOutput.join("");
+        expect(output).toContain("# Header\nContent");
+      } finally {
+        markedInstance.parse = originalParse;
+      }
+    });
   });
 
   describe("streaming with marked output", () => {

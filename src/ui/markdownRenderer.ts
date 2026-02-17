@@ -1,5 +1,5 @@
 import { Marked } from "marked";
-import { markedTerminal } from "marked-terminal";
+import { markedTerminal, type TerminalOptions } from "marked-terminal";
 import chalk from "chalk";
 
 /**
@@ -11,18 +11,12 @@ export interface Streamer {
   finish(): void;
 }
 
-// Create a single shared Marked instance with terminal renderer
-// to avoid state pollution issues with multiple instances
-let sharedMarked: Marked | null = null;
-
-function createMarkedInstance(
-  stderr: NodeJS.WriteStream,
-): Marked {
+function createMarkedInstance(stderr: NodeJS.WriteStream): Marked {
   // Return a fresh instance each time to avoid state pollution
   const marked = new Marked();
 
   // Configure terminal rendering options
-  const terminalOptions = {
+  const terminalOptions: TerminalOptions = {
     // Atom Dark color palette
     h1: (text: string) => chalk.bold(chalk.hex("#61AFEF")(text)),
     h2: (text: string) => chalk.bold(chalk.hex("#61AFEF")(text)),
@@ -33,8 +27,7 @@ function createMarkedInstance(
 
     // Code: yellow
     codespan: (text: string) => chalk.hex("#E5C07B")(text),
-    code: (_text: string, _lang?: string) =>
-      chalk.hex("#E5C07B")(_text),
+    code: (_text: string, _lang?: string) => chalk.hex("#E5C07B")(_text),
 
     // Body text: light gray
     paragraph: (text: string) => chalk.hex("#ABB2BF")(text),
@@ -43,8 +36,7 @@ function createMarkedInstance(
     listitem: (text: string) => chalk.hex("#ABB2BF")(text),
 
     // Blockquotes: subtle gray + italic
-    blockquote: (text: string) =>
-      chalk.italic(chalk.hex("#5C6370")(text)),
+    blockquote: (text: string) => chalk.italic(chalk.hex("#5C6370")(text)),
 
     // Links: blue
     link: (_href: string, _title: string, text: string) =>
@@ -55,17 +47,14 @@ function createMarkedInstance(
     em: (text: string) => chalk.italic(text),
 
     // Terminal width and reflow
-    width: Math.max(
-      (stderr.columns ?? 80) - 1,
-      40,
-    ),
+    width: Math.max((stderr.columns ?? 80) - 1, 40),
     reflowText: true,
   };
 
-    // Use the terminal renderer - markedTerminal() returns renderer config
-    const rendererConfig = markedTerminal(terminalOptions as any);
-    marked.use(rendererConfig);
-    marked.use({ breaks: true });
+  // Use the terminal renderer - markedTerminal() returns renderer config
+  const rendererConfig = markedTerminal(terminalOptions);
+  marked.use(rendererConfig);
+  marked.use({ breaks: true });
 
   return marked;
 }
@@ -160,7 +149,7 @@ export class MarkdownStreamer implements Streamer {
     }
 
     // Parse and render the markdown
-    const parsed = this.marked.parse(this.buffer) as string;
+    const parsed = this.parseBufferSafely(this.buffer);
     this.stderr.write(parsed);
 
     // Count the lines in the rendered output (for next rewind)
@@ -206,6 +195,18 @@ export class MarkdownStreamer implements Streamer {
    */
   private restoreCursor(): void {
     this.showCursor();
+  }
+
+  /**
+   * Parse markdown to terminal-formatted text with fallback for parser errors.
+   */
+  private parseBufferSafely(buffer: string): string {
+    try {
+      const parsed = this.marked.parse(buffer);
+      return typeof parsed === "string" ? parsed : buffer;
+    } catch {
+      return buffer;
+    }
   }
 }
 
