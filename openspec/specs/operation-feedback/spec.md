@@ -1,3 +1,7 @@
+## Purpose
+
+Provide visual feedback to users during long-running operations like tool execution through spinner-based progress indicators.
+
 ## ADDED Requirements
 
 ### Requirement: Spinner for async operations
@@ -75,7 +79,7 @@ The system SHALL display spinners during tool execution in the agent's streamCha
 #### Scenario: Spinner stops before streaming output
 
 - **WHEN** tool execution completes and streaming output begins
-- **THEN** the spinner MUST be stopped before any stdout writes to prevent output conflicts
+- **THEN** the spinner MUST be stopped before any terminal writes to prevent output conflicts
 
 ### Requirement: Backward compatibility for spinner callbacks
 
@@ -90,3 +94,23 @@ The system SHALL maintain backward compatibility for code that does not use spin
 
 - **WHEN** streamChat is called with onToolStart and onToolEnd callbacks
 - **THEN** the agent SHALL NOT emit bracketed tool status through onToken, only call the provided callbacks
+
+### Requirement: Markdown stream flush before tool spinner
+
+The system SHALL flush the active markdown stream before displaying tool execution spinners to prevent output conflicts between cursor-rewind rendering and spinner animation.
+
+#### Scenario: Flush on tool start
+
+- **WHEN** `onToolStart` is invoked during an active markdown streaming session
+- **THEN** the markdown stream SHALL be flushed (current content committed, buffer reset) before the spinner starts
+
+#### Scenario: Fresh markdown segment after tool completion
+
+- **WHEN** tool execution completes and assistant text streaming resumes
+- **THEN** new tokens SHALL push into a fresh markdown buffer
+- **AND** cursor rewind SHALL NOT affect output rendered before the tool call
+
+#### Scenario: No flush when markdown stream is inactive
+
+- **WHEN** `onToolStart` is invoked and no markdown stream is active (e.g., JSON mode)
+- **THEN** spinner behavior SHALL remain unchanged from existing behavior

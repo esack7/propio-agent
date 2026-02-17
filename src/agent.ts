@@ -21,6 +21,7 @@ import { ExecutableTool } from "./tools/interface.js";
 import { ToolContext } from "./tools/types.js";
 
 export class Agent {
+  private static readonly MAX_TOOL_RESULT_CHARS = 12000;
   private provider: LLMProvider;
   private model: string;
   private sessionContext: ChatMessage[];
@@ -167,14 +168,33 @@ export class Agent {
     this.model = resolvedModelKey;
   }
 
+  /**
+   * Keep tool outputs bounded before feeding them back to the model.
+   * Large payloads can starve the follow-up completion and yield empty responses.
+   */
+  private sanitizeToolResultForContext(result: string): string {
+    if (result.length <= Agent.MAX_TOOL_RESULT_CHARS) {
+      return result;
+    }
+
+    const truncated = result.substring(0, Agent.MAX_TOOL_RESULT_CHARS);
+    const omittedChars = result.length - Agent.MAX_TOOL_RESULT_CHARS;
+    return `${truncated}\n\n[tool output truncated: omitted ${omittedChars} chars]`;
+  }
+
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
     options?: {
       onToolStart?: (toolName: string) => void;
       onToolEnd?: (toolName: string, result: string) => void;
+      abortSignal?: AbortSignal;
     },
   ): Promise<string> {
+    if (options?.abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
     this.sessionContext.push({
       role: "user",
       content: userMessage,
@@ -201,7 +221,12 @@ export class Agent {
           model: this.model,
           messages: messages,
           tools: this.toolRegistry.getEnabledSchemas(),
+          signal: options?.abortSignal,
         })) {
+          if (options?.abortSignal?.aborted) {
+            throw new Error("Request cancelled");
+          }
+
           const token = chunk.delta;
           fullResponse += token;
           if (token) {
@@ -214,20 +239,29 @@ export class Agent {
           }
         }
 
+        const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
+          ...toolCall,
+          id: toolCall.id || `toolcall_${iterationCount}_${index}`,
+        }));
+
         this.sessionContext.push({
           role: "assistant",
           content: fullResponse,
-          toolCalls: toolCalls,
+          toolCalls: normalizedToolCalls,
         });
 
         finalResponse = fullResponse;
 
         // Handle tool calls if present
-        if (toolCalls && toolCalls.length > 0) {
+        if (normalizedToolCalls && normalizedToolCalls.length > 0) {
           onToken("\n");
           const toolResults = [];
 
-          for (const toolCall of toolCalls) {
+          for (const toolCall of normalizedToolCalls) {
+            if (options?.abortSignal?.aborted) {
+              throw new Error("Request cancelled");
+            }
+
             const args = toolCall.function.arguments;
             const toolName = toolCall.function.name;
 
@@ -239,12 +273,12 @@ export class Agent {
             }
 
             const result = await this.toolRegistry.execute(toolName, args);
+            const contextSafeResult = this.sanitizeToolResultForContext(result);
 
             toolResults.push({
-              toolCallId:
-                toolCall.id || `${toolCall.function.name}-${Date.now()}`,
+              toolCallId: toolCall.id!,
               toolName: toolName,
-              content: result,
+              content: contextSafeResult,
             });
 
             // Invoke onToolEnd callback if provided, otherwise use onToken

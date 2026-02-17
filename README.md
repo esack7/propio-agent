@@ -158,10 +158,28 @@ docker run -it --rm propio-agent
 
 Once running, type your messages and press Enter. The agent maintains session context across messages.
 
+### Runtime Flags
+
+- `--help`, `-h`: Show CLI help
+- `--json`: Read one prompt from stdin and print only JSON to stdout
+- `--plain`: Disable ANSI colors and spinner animation
+- `--no-interactive`: Disable prompts/spinners and read one prompt from stdin
+
+Examples:
+
+```bash
+# One-shot non-interactive run
+echo "Summarize this repository structure." | npm start -- --no-interactive
+
+# Machine-readable output
+echo "List top-level files." | npm start -- --json
+```
+
 **Commands:**
 
 - `/clear` - Clear session context
 - `/context` - Show session context
+- `/tools` - Enable/disable tools at runtime
 - `/exit` - Quit the agent
 
 ## Tool Calling & Agentic Loop

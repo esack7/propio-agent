@@ -1,11 +1,6 @@
 import * as readline from "readline";
 import { Agent } from "../agent.js";
-import {
-  formatCommand,
-  formatInfo,
-  formatError,
-  formatSuccess,
-} from "./formatting.js";
+import type { TerminalUi } from "./terminal.js";
 
 // Tools that require explicit confirmation before enabling
 const DANGEROUS_TOOLS = new Set(["run_bash", "remove"]);
@@ -25,23 +20,22 @@ export function showToolMenu(
   rl: readline.Interface,
   agent: Agent,
   onDone: () => void,
+  ui: Pick<TerminalUi, "command" | "error" | "info" | "prompt" | "success">,
 ): void {
   const displayMenu = () => {
     const toolNames = agent.getToolNames();
 
-    console.log(formatInfo("\nTools:"));
+    ui.info("\nTools:");
     toolNames.forEach((name, index) => {
       const status = agent.isToolEnabled(name) ? "[enabled]" : "[disabled]";
-      console.log(
-        formatCommand(`  ${index + 1}. ${name.padEnd(20)} ${status}`),
-      );
+      ui.command(`  ${index + 1}. ${name.padEnd(20)} ${status}`);
     });
-    console.log("");
+    ui.command("");
   };
 
   const promptUser = () => {
     rl.question(
-      formatCommand("Enter tool number to toggle, or 'q' to quit: "),
+      ui.prompt("Enter tool number to toggle, or 'q' to quit: "),
       (input) => {
         const trimmed = input.trim();
 
@@ -61,9 +55,7 @@ export function showToolMenu(
           toolNumber < 1 ||
           toolNumber > toolNames.length
         ) {
-          console.log(
-            formatError("Invalid input. Please enter a valid tool number.\n"),
-          );
+          ui.error("Invalid input. Please enter a valid tool number.\n");
           displayMenu();
           promptUser();
           return;
@@ -76,29 +68,25 @@ export function showToolMenu(
         if (isEnabled) {
           // Disable (no confirmation needed)
           agent.disableTool(toolName);
-          console.log(formatSuccess(`\nDisabled tool: ${toolName}\n`));
+          ui.success(`\nDisabled tool: ${toolName}\n`);
           displayMenu();
           promptUser();
         } else {
           // Enable - check if dangerous
           if (DANGEROUS_TOOLS.has(toolName)) {
             // Show warning and require confirmation
-            console.log(
-              formatError(
-                `\nWARNING: '${toolName}' is a potentially dangerous tool that can modify or delete files.`,
-              ),
+            ui.error(
+              `\nWARNING: '${toolName}' is a potentially dangerous tool that can modify or delete files.`,
             );
             rl.question(
-              formatCommand("Are you sure you want to enable it? (y/n): "),
+              ui.prompt("Are you sure you want to enable it? (y/n): "),
               (confirmation) => {
                 const confirmTrimmed = confirmation.trim().toLowerCase();
                 if (confirmTrimmed === "y") {
                   agent.enableTool(toolName);
-                  console.log(formatSuccess(`\nEnabled tool: ${toolName}\n`));
+                  ui.success(`\nEnabled tool: ${toolName}\n`);
                 } else {
-                  console.log(
-                    formatInfo(`\nTool '${toolName}' remains disabled.\n`),
-                  );
+                  ui.info(`\nTool '${toolName}' remains disabled.\n`);
                 }
                 displayMenu();
                 promptUser();
@@ -107,7 +95,7 @@ export function showToolMenu(
           } else {
             // Non-dangerous tool - enable immediately
             agent.enableTool(toolName);
-            console.log(formatSuccess(`\nEnabled tool: ${toolName}\n`));
+            ui.success(`\nEnabled tool: ${toolName}\n`);
             displayMenu();
             promptUser();
           }

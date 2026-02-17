@@ -1,5 +1,11 @@
 import chalk from "chalk";
 
+const detectedColorLevel = chalk.level;
+
+export function setColorEnabled(enabled: boolean): void {
+  chalk.level = enabled ? detectedColorLevel : 0;
+}
+
 // One Atom Dark color palette using chalk.hex()
 const colors = {
   userInput: chalk.hex("#56B6C2"), // Cyan
