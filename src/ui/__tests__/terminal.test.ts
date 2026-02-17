@@ -110,4 +110,47 @@ describe("TerminalUi", () => {
     expect(fail).toHaveBeenCalledTimes(1);
     expect(fail.mock.calls[0][0]).not.toContain("✖");
   });
+
+  it("wraps long lines at word boundaries instead of truncating", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    stderr.columns = 40;
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.command(
+      "Commands: /clear - clear context, /context - show context, /tools - manage tools, /exit - quit",
+    );
+
+    const output = stderr.chunks.join("");
+    expect(output).not.toContain("…");
+    expect(output).toContain("Commands: /clear - clear context,");
+    expect(output).toContain("/context - show context, /tools -");
+    expect(output).toContain("manage tools, /exit - quit");
+  });
+
+  it("does not split single long words when wrapping", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    stderr.columns = 15;
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.info("supercalifragilisticexpialidocious word");
+
+    const output = stderr.chunks.join("");
+    expect(output).toContain("supercalifragilisticexpialidocious");
+    expect(output).toContain("word");
+    expect(output).not.toContain("…");
+  });
 });

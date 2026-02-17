@@ -225,12 +225,50 @@ export class TerminalUi {
 
     const maxWidth = this.stderr.columns - 1;
     const lines = text.split("\n");
-    const fitted = lines.map((line) => {
-      if (line.length <= maxWidth) {
-        return line;
-      }
-      return `${line.slice(0, maxWidth - 1)}…`;
-    });
+    const fitted = lines.flatMap((line) =>
+      this.wrapLineAtWordBoundaries(line, maxWidth),
+    );
     return fitted.join("\n");
+  }
+
+  private wrapLineAtWordBoundaries(line: string, maxWidth: number): string[] {
+    if (line.length <= maxWidth) {
+      return [line];
+    }
+
+    const words = line.split(" ");
+    const wrappedLines: string[] = [];
+    let currentLine = "";
+
+    for (const word of words) {
+      if (currentLine.length === 0) {
+        if (word.length > maxWidth) {
+          wrappedLines.push(word);
+        } else {
+          currentLine = word;
+        }
+        continue;
+      }
+
+      const candidate = `${currentLine} ${word}`;
+      if (candidate.length <= maxWidth) {
+        currentLine = candidate;
+        continue;
+      }
+
+      wrappedLines.push(currentLine);
+      if (word.length > maxWidth) {
+        wrappedLines.push(word);
+        currentLine = "";
+      } else {
+        currentLine = word;
+      }
+    }
+
+    if (currentLine.length > 0) {
+      wrappedLines.push(currentLine);
+    }
+
+    return wrappedLines.length > 0 ? wrappedLines : [line];
   }
 }
