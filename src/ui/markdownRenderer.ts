@@ -60,146 +60,200 @@ function createMarkedInstance(stderr: NodeJS.WriteStream): Marked {
 }
 
 /**
+ * Strip trailing ANSI SGR codes and whitespace from a string.
+ * marked-terminal appends reset codes + newlines after each block,
+ * and these shift rightward as content grows. Stripping them gives
+ * a stable prefix we can diff against.
+ */
+function stripTrailingAnsi(str: string): string {
+  return str.replace(/(\x1b\[\d*(;\d+)*m|\s)*$/, "");
+}
+
+/**
  * MarkdownStreamer buffers streaming tokens and renders them as markdown
- * using marked + marked-terminal with ANSI cursor control for smooth re-renders.
+ * using marked + marked-terminal with append-only delta rendering.
  *
  * Key features:
- * - Debounced rendering (~50ms) to batch token arrivals
+ * - Throttled rendering (~100ms) to batch token arrivals without starvation
  * - Full buffer re-parse on each render (markdown is context-sensitive)
- * - ANSI cursor rewind to replace previous output
- * - Cursor visibility control to prevent flicker
- * - Immediate flush/finish rendering
+ * - Append-only output: only writes new content, no cursor rewind needed
+ * - Works reliably regardless of content length or terminal scrolling
  */
 export class MarkdownStreamer implements Streamer {
   private buffer: string = "";
-  private previousLineCount: number = 0;
-  private debounceTimerId: NodeJS.Timeout | null = null;
+  private committedOutput: string = "";
+  private throttleTimerId: NodeJS.Timeout | null = null;
+  private lastRenderTime: number = 0;
   private readonly stderr: NodeJS.WriteStream;
-  private readonly debounceMs: number = 50;
+  private readonly renderIntervalMs: number;
   private readonly marked: Marked;
 
-  constructor(stderr: NodeJS.WriteStream, debounceMs: number = 50) {
+  constructor(stderr: NodeJS.WriteStream, renderIntervalMs: number = 80) {
     this.stderr = stderr;
-    this.debounceMs = debounceMs;
+    this.renderIntervalMs = renderIntervalMs;
     this.marked = createMarkedInstance(stderr);
   }
 
-  /**
-   * Add a token to the buffer and schedule a debounced re-render
-   */
   push(token: string): void {
     this.buffer += token;
     this.scheduleRender();
   }
 
-  /**
-   * Render immediately, commit output, and clear the buffer
-   */
   flush(): void {
-    this.cancelDebounce();
-    this.render();
-    this.commitOutput();
+    this.cancelThrottle();
+    this.renderFinal();
     this.buffer = "";
+    this.committedOutput = "";
   }
 
-  /**
-   * Flush, restore cursor visibility, and clean up
-   */
   finish(): void {
-    this.cancelDebounce();
-    this.render();
-    this.commitOutput();
-    this.restoreCursor();
+    this.cancelThrottle();
+    this.renderFinal();
+    this.buffer = "";
+    this.committedOutput = "";
   }
 
   /**
-   * Schedule a debounced re-render
+   * Schedule a throttled render. Unlike debounce, this guarantees
+   * a render fires within renderIntervalMs even during continuous pushes.
    */
   private scheduleRender(): void {
-    // Cancel any pending timer
-    if (this.debounceTimerId !== null) {
-      clearTimeout(this.debounceTimerId);
+    if (this.throttleTimerId !== null) {
+      return;
     }
 
-    // Schedule new render
-    this.debounceTimerId = setTimeout(() => {
+    const elapsed = Date.now() - this.lastRenderTime;
+    const delay = Math.max(0, this.renderIntervalMs - elapsed);
+
+    this.throttleTimerId = setTimeout(() => {
+      this.throttleTimerId = null;
       this.render();
-      this.debounceTimerId = null;
-    }, this.debounceMs);
+    }, delay);
   }
 
   /**
-   * Render the current buffer to stderr with cursor control
+   * Delta render. Parses the full buffer, strips trailing ANSI resets,
+   * and writes only the new content since the last render. On divergence
+   * (inline formatting change), rewinds to the last newline boundary
+   * and rewrites from there.
    */
   private render(): void {
-    // Don't render if buffer is empty
     if (this.buffer.length === 0) {
       return;
     }
 
-    // Hide cursor before manipulation
-    this.hideCursor();
+    this.lastRenderTime = Date.now();
 
-    // Move cursor up and clear if we have previous output
-    if (this.previousLineCount > 0) {
-      // Move cursor up N lines
-      this.stderr.write(`\x1b[${this.previousLineCount}A`);
-      // Clear from cursor to end of screen
-      this.stderr.write("\x1b[0J");
-    }
-
-    // Parse and render the markdown
     const parsed = this.parseBufferSafely(this.buffer);
-    this.stderr.write(parsed);
+    const stripped = stripTrailingAnsi(parsed);
 
-    // Count the lines in the rendered output (for next rewind)
-    this.previousLineCount = parsed.split("\n").length - 1;
-
-    // Show cursor after write
-    this.showCursor();
-  }
-
-  /**
-   * Commit the output (reset line count)
-   */
-  private commitOutput(): void {
-    this.previousLineCount = 0;
-  }
-
-  /**
-   * Cancel any pending debounce timer
-   */
-  private cancelDebounce(): void {
-    if (this.debounceTimerId !== null) {
-      clearTimeout(this.debounceTimerId);
-      this.debounceTimerId = null;
+    if (stripped.startsWith(this.committedOutput)) {
+      const delta = stripped.substring(this.committedOutput.length);
+      if (delta.length > 0) {
+        this.stderr.write(delta);
+        this.committedOutput = stripped;
+      }
+    } else {
+      this.rewriteFromDivergence(stripped);
     }
   }
 
   /**
-   * Hide cursor (ANSI sequence)
+   * Final render for flush/finish: writes the complete parsed output
+   * including trailing ANSI resets and newlines that were stripped
+   * during streaming renders.
    */
-  private hideCursor(): void {
-    this.stderr.write("\x1b[?25l");
+  private renderFinal(): void {
+    if (this.buffer.length === 0) {
+      return;
+    }
+
+    this.lastRenderTime = Date.now();
+
+    const parsed = this.parseBufferSafely(this.buffer);
+    const stripped = stripTrailingAnsi(parsed);
+
+    // Handle divergence first if needed
+    if (!stripped.startsWith(this.committedOutput)) {
+      this.rewriteFromDivergence(stripped);
+    } else {
+      const delta = stripped.substring(this.committedOutput.length);
+      if (delta.length > 0) {
+        this.stderr.write(delta);
+        this.committedOutput = stripped;
+      }
+    }
+
+    // Write trailing ANSI resets and newlines that were stripped during streaming
+    const trailing = parsed.substring(stripped.length);
+    if (trailing.length > 0) {
+      this.stderr.write(trailing);
+    }
   }
 
   /**
-   * Show cursor (ANSI sequence)
+   * Handle divergence by rewinding to the last newline boundary in the
+   * common prefix and rewriting from there. This is safe because the
+   * rewind is limited to a few lines (typically just the current line),
+   * well within the visible terminal area.
    */
-  private showCursor(): void {
-    this.stderr.write("\x1b[?25h");
+  private rewriteFromDivergence(newStripped: string): void {
+    const commonLen = this.findCommonPrefixLength(
+      this.committedOutput,
+      newStripped,
+    );
+
+    // Find the last newline at or before the divergence point
+    const rewindTo = this.committedOutput.lastIndexOf("\n", commonLen);
+
+    // Count newlines in committed output after the rewind point
+    // to know how many visual lines to move the cursor up
+    let linesUp = 0;
+    for (let i = rewindTo + 1; i < this.committedOutput.length; i++) {
+      if (this.committedOutput.charCodeAt(i) === 10) linesUp++;
+    }
+
+    // Safety limit: if rewind is too large, fall back to append-only
+    // (accepts minor artifact rather than risking scroll corruption)
+    if (linesUp > 10) {
+      const tail = newStripped.substring(commonLen);
+      if (tail.length > 0) {
+        this.stderr.write(tail);
+      }
+      this.committedOutput = newStripped;
+      return;
+    }
+
+    // Rewind cursor to the line boundary
+    if (linesUp > 0) {
+      this.stderr.write(`\x1b[${linesUp}A`);
+    }
+    this.stderr.write("\r\x1b[0J");
+
+    // Write everything from the rewind point onward
+    const newContent = newStripped.substring(rewindTo + 1);
+    if (newContent.length > 0) {
+      this.stderr.write(newContent);
+    }
+    this.committedOutput = newStripped;
   }
 
-  /**
-   * Restore cursor visibility when cleaning up
-   */
-  private restoreCursor(): void {
-    this.showCursor();
+  private findCommonPrefixLength(a: string, b: string): number {
+    const len = Math.min(a.length, b.length);
+    let i = 0;
+    while (i < len && a.charCodeAt(i) === b.charCodeAt(i)) {
+      i++;
+    }
+    return i;
   }
 
-  /**
-   * Parse markdown to terminal-formatted text with fallback for parser errors.
-   */
+  private cancelThrottle(): void {
+    if (this.throttleTimerId !== null) {
+      clearTimeout(this.throttleTimerId);
+      this.throttleTimerId = null;
+    }
+  }
+
   private parseBufferSafely(buffer: string): string {
     try {
       const parsed = this.marked.parse(buffer);

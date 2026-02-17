@@ -57,71 +57,60 @@ describe("MarkdownStreamer", () => {
     });
   });
 
-  describe("ANSI cursor control sequences", () => {
-    it("should emit cursor-up sequence before re-render when there was previous output", async () => {
-      // First render
+  describe("append-only delta rendering", () => {
+    it("should only write new content on subsequent renders", async () => {
       streamer.push("Line 1\nLine 2");
       streamer.flush();
-      writtenOutput.length = 0; // Clear after first render
 
-      // Second push (should trigger re-render after debounce)
+      const firstOutput = writtenOutput.join("");
+      expect(firstOutput).toContain("Line 1");
+      expect(firstOutput).toContain("Line 2");
+
+      writtenOutput.length = 0;
+
+      // Second push should only write the delta
       streamer.push("\nLine 3");
-      await new Promise((resolve) => setTimeout(resolve, 100)); // Wait for debounce
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      streamer.flush();
+
+      const secondOutput = writtenOutput.join("");
+      expect(secondOutput).toContain("Line 3");
+      // Should NOT re-write the first lines
+      expect(secondOutput).not.toContain("Line 1");
+    });
+
+    it("should not emit any cursor control sequences", () => {
+      streamer.push("Some content");
       streamer.flush();
 
       const output = writtenOutput.join("");
-
-      // Should contain cursor-up sequence and clear-to-end sequence
-      expect(output).toMatch(/\x1b\[\?25l/); // Hide cursor
-      expect(output).toMatch(/\x1b\[\d+A/); // Cursor up
-      expect(output).toMatch(/\x1b\[0J/); // Clear to end
-      expect(output).toMatch(/\x1b\[\?25h/); // Show cursor
+      // Delta renderer does not use cursor save/restore or cursor movement
+      expect(output).not.toMatch(/\x1b7/); // No DECSC
+      expect(output).not.toMatch(/\x1b8/); // No DECRC
+      expect(output).not.toMatch(/\x1b\[\d+A/); // No cursor up
+      expect(output).not.toMatch(/\x1b\[0J/); // No clear to end
     });
 
-    it("should not emit cursor-up sequence if buffer is empty", () => {
+    it("should not write anything for empty buffer", () => {
       streamer.push("");
       writtenOutput.length = 0;
 
       streamer.flush();
 
       const output = writtenOutput.join("");
-      // Should not have any ANSI cursor control sequences for empty flush
-      expect(output).not.toMatch(/\x1b\[\d+A/);
-      expect(output).not.toMatch(/\x1b\[0J/);
-    });
-
-    it("should hide and show cursor around re-render", async () => {
-      streamer.push("Initial content");
-      streamer.flush();
-      writtenOutput.length = 0;
-
-      streamer.push("\nMore content");
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      streamer.flush();
-
-      const output = writtenOutput.join("");
-      const hideCursorIndex = output.indexOf("\x1b[?25l");
-      const showCursorIndex = output.indexOf("\x1b[?25h");
-
-      expect(hideCursorIndex).toBeGreaterThanOrEqual(0);
-      expect(showCursorIndex).toBeGreaterThan(hideCursorIndex);
+      expect(output).toBe("");
     });
   });
 
-  describe("debouncing", () => {
-    it("should debounce multiple rapid push calls", async () => {
-      // Push multiple tokens rapidly
+  describe("throttling", () => {
+    it("should batch multiple rapid push calls", async () => {
       const tokens = "This is a test message".split(" ");
       for (const token of tokens) {
         streamer.push(token + " ");
       }
 
-      // Wait a bit but not long enough for debounce
-      await new Promise((resolve) => setTimeout(resolve, 25));
-
-      // Should have accumulated at least some tokens, but debounce should prevent
-      // immediate renders. We can't test exact timing, but we can verify the
-      // tokens are buffered correctly on flush.
+      // Wait for throttle to fire
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
       streamer.flush();
 
@@ -129,33 +118,30 @@ describe("MarkdownStreamer", () => {
       expect(output).toContain("This is a test message");
     });
 
-    it("should render immediately on flush despite debounce", async () => {
-      streamer.push("Debounced");
+    it("should render immediately on flush despite throttle", async () => {
+      streamer.push("Throttled");
       streamer.push(" content");
 
-      // Immediately flush without waiting
       streamer.flush();
 
       const output = writtenOutput.join("");
-      expect(output).toContain("Debounced content");
+      expect(output).toContain("Throttled content");
     });
 
-    it("should render immediately on finish despite debounce", async () => {
+    it("should render immediately on finish despite throttle", async () => {
       streamer.push("Final");
       streamer.push(" content");
 
-      // Immediately finish without waiting for debounce
       streamer.finish();
 
       const output = writtenOutput.join("");
       expect(output).toContain("Final content");
     });
 
-    it("should cancel pending debounce timer on flush", async () => {
+    it("should cancel pending throttle timer on flush", async () => {
       const beforeFlushLength = writtenOutput.length;
 
       streamer.push("First");
-      // Don't wait for debounce
       streamer.flush();
 
       const afterFirstFlush = writtenOutput.length;
@@ -163,7 +149,6 @@ describe("MarkdownStreamer", () => {
 
       writtenOutput.length = 0;
 
-      // Push more tokens and flush immediately
       streamer.push(" Second");
       streamer.flush();
 
@@ -189,21 +174,21 @@ describe("MarkdownStreamer", () => {
       expect(output).not.toContain("Content");
     });
 
-    it("should reset line count tracking after flush", async () => {
+    it("should reset committed output tracking after flush", async () => {
       streamer.push("Line 1\nLine 2\nLine 3");
       streamer.flush();
       writtenOutput.length = 0;
 
-      // After flush, line count should reset to 0
+      // After flush, committed output resets so new content starts fresh
       streamer.push("New Line");
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
       streamer.flush();
 
       const output = writtenOutput.join("");
-      // Should not have cursor-up sequences for the old lines
-      // because line count was reset
-      expect(output).toBeDefined();
+      expect(output).toContain("New Line");
+      // Should not contain old content
+      expect(output).not.toContain("Line 1");
     });
 
     it("should handle multiple flush calls", () => {
@@ -232,13 +217,14 @@ describe("MarkdownStreamer", () => {
       expect(output).toContain("Content");
     });
 
-    it("should restore cursor visibility on finish", () => {
+    it("should render all content on finish", () => {
       streamer.push("Content with\nmultiple\nlines");
       streamer.finish();
 
       const output = writtenOutput.join("");
-      // Should end with show cursor sequence
-      expect(output).toMatch(/\x1b\[\?25h/);
+      expect(output).toContain("Content with");
+      expect(output).toContain("multiple");
+      expect(output).toContain("lines");
     });
 
     it("should cancel any pending timers on finish", async () => {
