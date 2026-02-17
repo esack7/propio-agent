@@ -10,6 +10,12 @@ import {
 } from "./formatting.js";
 import { error as colorError, success as colorSuccess } from "./colors.js";
 import { OperationSpinner } from "./spinner.js";
+import {
+  MarkdownStreamer,
+  PassthroughStreamer,
+  NullStreamer,
+  type Streamer,
+} from "./markdownRenderer.js";
 
 export interface TerminalUiOptions {
   interactive: boolean;
@@ -42,6 +48,23 @@ export class TerminalUi {
 
   isJsonMode(): boolean {
     return this.json;
+  }
+
+  createMarkdownStream(): Streamer {
+    // JSON mode: suppress all output
+    if (this.json) {
+      return new NullStreamer();
+    }
+
+    // Plain or non-TTY mode: passthrough without markdown parsing
+    if (this.plain || !this.stderr.isTTY) {
+      return new PassthroughStreamer((token) => {
+        this.writeAssistant(token);
+      });
+    }
+
+    // Interactive + TTY: use full markdown streaming with rendering
+    return new MarkdownStreamer(this.stderr);
   }
 
   prompt(text: string): string {

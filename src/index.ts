@@ -97,6 +97,8 @@ async function streamAssistantResponse(
   ui: TerminalUi,
   abortSignal: AbortSignal,
 ): Promise<string> {
+  const mdStream = ui.createMarkdownStream();
+
   if (!ui.isJsonMode()) {
     ui.writeAssistant("Assistant: ");
   }
@@ -105,12 +107,13 @@ async function streamAssistantResponse(
     userInput,
     (token) => {
       if (!ui.isJsonMode()) {
-        ui.writeAssistant(token);
+        mdStream.push(token);
       }
     },
     {
       abortSignal,
       onToolStart: (toolName) => {
+        mdStream.flush();
         ui.status(`Executing ${toolName}...`);
       },
       onToolEnd: (toolName, result) => {
@@ -123,6 +126,8 @@ async function streamAssistantResponse(
       },
     },
   );
+
+  mdStream.finish();
 
   if (!ui.isJsonMode()) {
     ui.newline();
