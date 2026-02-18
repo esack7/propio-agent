@@ -12,6 +12,20 @@ export class SearchTextTool implements ExecutableTool {
   readonly name = "search_text";
   private readonly MAX_OUTPUT_LENGTH = 50000; // Truncate output at 50KB
 
+  private normalizePaths(rawPaths: unknown): string[] {
+    if (Array.isArray(rawPaths)) {
+      return rawPaths.filter(
+        (value): value is string => typeof value === "string",
+      );
+    }
+
+    if (typeof rawPaths === "string") {
+      return [rawPaths];
+    }
+
+    return [];
+  }
+
   getSchema(): ChatTool {
     return {
       type: "function",
@@ -45,9 +59,17 @@ export class SearchTextTool implements ExecutableTool {
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {
-    const query = args.query as string;
-    const paths = args.paths as string[];
+    const query = args.query;
+    const paths = this.normalizePaths(args.paths);
     const useRegex = args.regex !== undefined ? (args.regex as boolean) : false;
+
+    if (typeof query !== "string" || query.length === 0) {
+      return "Invalid arguments for search_text: query must be a non-empty string.";
+    }
+
+    if (paths.length === 0) {
+      return "Invalid arguments for search_text: paths must be a string path or an array of string paths.";
+    }
 
     // Validate regex if regex mode is enabled
     let pattern: RegExp | null = null;

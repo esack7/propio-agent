@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 import { fileURLToPath } from "url";
@@ -14,6 +15,7 @@ import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
+import { AgentDiagnosticEvent } from "./diagnostics.js";
 
 type AppMode =
   | "idle"
@@ -29,8 +31,64 @@ Options:
   --json              Emit only JSON response payloads on stdout
   --plain             Disable ANSI color styling and spinner animation
   --no-interactive    Disable prompts/spinners and read one prompt from stdin
+  --debug-llm         Emit provider/stream/tool diagnostic events to stderr
+  --debug-llm-file    Append provider/stream/tool diagnostic events to a file
   -h, --help          Show this help text
 `;
+
+function isLlmDebugEnabled(parsedFlag: boolean): boolean {
+  if (parsedFlag) {
+    return true;
+  }
+  const envValue = process.env.PROPIO_DEBUG_LLM;
+  if (!envValue) {
+    return false;
+  }
+  const normalized = envValue.toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+function createDiagnosticLogger(options: {
+  stderr?: NodeJS.WriteStream;
+  stderrEnabled: boolean;
+  filePath?: string;
+}): {
+  onEvent: (event: AgentDiagnosticEvent) => void;
+  cleanup: () => void;
+} {
+  const stderr = options.stderr ?? process.stderr;
+  const sinks: NodeJS.WritableStream[] = [];
+
+  if (options.stderrEnabled) {
+    sinks.push(stderr);
+  }
+
+  let fileStream: fs.WriteStream | null = null;
+  if (options.filePath) {
+    const directory = path.dirname(options.filePath);
+    fs.mkdirSync(directory, { recursive: true });
+    fileStream = fs.createWriteStream(options.filePath, {
+      flags: "a",
+      encoding: "utf8",
+    });
+    sinks.push(fileStream);
+  }
+
+  return {
+    onEvent: (event) => {
+      const timestamp = new Date().toISOString();
+      const line = `[llm-debug ${timestamp}] ${JSON.stringify(event)}\n`;
+      for (const sink of sinks) {
+        sink.write(line);
+      }
+    },
+    cleanup: () => {
+      if (fileStream) {
+        fileStream.end();
+      }
+    },
+  };
+}
 
 function isCiEnvironment(): boolean {
   const ci = process.env.CI;
@@ -130,6 +188,11 @@ async function streamAssistantResponse(
   mdStream.finish();
 
   if (!ui.isJsonMode()) {
+    if (response.trim().length === 0) {
+      ui.warn(
+        "Assistant returned an empty response. Re-run with --debug-llm or --debug-llm-file <path> to inspect provider events.",
+      );
+    }
     ui.newline();
   }
 
@@ -334,6 +397,9 @@ async function main(): Promise<number> {
     !parsedArgs.flags.json;
   const plain = parsedArgs.flags.plain || !Boolean(process.stdout.isTTY) || ci;
   const jsonMode = parsedArgs.flags.json && !parsedArgs.flags.help;
+  const debugLlmToStderr = isLlmDebugEnabled(parsedArgs.flags.debugLlm);
+  const debugLlmFilePath = parsedArgs.flags.debugLlmFile;
+  const diagnosticsEnabled = debugLlmToStderr || Boolean(debugLlmFilePath);
   const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
 
   setColorEnabled(colorEnabled);
@@ -348,6 +414,14 @@ async function main(): Promise<number> {
     ui.command(HELP_TEXT.trimEnd());
     ui.cleanup();
     return 0;
+  }
+
+  if (parsedArgs.parseErrors.length > 0) {
+    for (const error of parsedArgs.parseErrors) {
+      ui.error(error);
+    }
+    ui.cleanup();
+    return 1;
   }
 
   let mode: AppMode = "idle";
@@ -380,6 +454,10 @@ async function main(): Promise<number> {
   };
 
   process.on("SIGINT", handleSigint);
+  const diagnosticLogger = createDiagnosticLogger({
+    stderrEnabled: debugLlmToStderr,
+    filePath: debugLlmFilePath,
+  });
 
   try {
     if (!ui.isJsonMode()) {
@@ -406,6 +484,8 @@ Always provide clear, concise responses and summarize what you did after complet
       providersConfig: configPath,
       systemPrompt,
       agentsMdContent,
+      diagnosticsEnabled,
+      onDiagnosticEvent: diagnosticLogger.onEvent,
     });
 
     if (interactive) {
@@ -434,6 +514,7 @@ Always provide clear, concise responses and summarize what you did after complet
     }
     return nonInteractiveCode;
   } finally {
+    diagnosticLogger.cleanup();
     process.off("SIGINT", handleSigint);
     ui.done();
     ui.cleanup();

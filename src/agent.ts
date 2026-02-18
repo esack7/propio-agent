@@ -19,9 +19,11 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import { ToolContext } from "./tools/types.js";
+import { AgentDiagnosticEvent } from "./diagnostics.js";
 
 export class Agent {
   private static readonly MAX_TOOL_RESULT_CHARS = 12000;
+  private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private provider: LLMProvider;
   private model: string;
   private sessionContext: ChatMessage[];
@@ -29,6 +31,8 @@ export class Agent {
   private sessionContextFilePath: string;
   private toolRegistry: ToolRegistry;
   private providersConfig: ProvidersConfig;
+  private diagnosticsEnabled: boolean;
+  private diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
 
   /**
    * Initialize an Agent with multi-provider configuration.
@@ -79,6 +83,8 @@ export class Agent {
       systemPrompt?: string;
       sessionContextFilePath?: string;
       agentsMdContent?: string;
+      diagnosticsEnabled?: boolean;
+      onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
     } = {} as any,
   ) {
     // Validate required providersConfig
@@ -110,6 +116,8 @@ export class Agent {
     }
 
     this.providersConfig = config;
+    this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
+    this.diagnosticsListener = options.onDiagnosticEvent;
 
     // Resolve provider from config
     const resolvedProvider = resolveProvider(config, options.providerName);
@@ -141,6 +149,13 @@ export class Agent {
     };
 
     this.toolRegistry = createDefaultToolRegistry(toolContext);
+  }
+
+  private emitDiagnostic(event: AgentDiagnosticEvent): void {
+    if (!this.diagnosticsEnabled || !this.diagnosticsListener) {
+      return;
+    }
+    this.diagnosticsListener(event);
   }
 
   /**
@@ -182,6 +197,85 @@ export class Agent {
     return `${truncated}\n\n[tool output truncated: omitted ${omittedChars} chars]`;
   }
 
+  private async requestFinalResponseWithoutTools(
+    onToken: (token: string) => void,
+    abortSignal: AbortSignal | undefined,
+    iteration: number,
+  ): Promise<string> {
+    const messages: ChatMessage[] = [
+      { role: "system", content: this.systemPrompt },
+      ...this.sessionContext,
+      {
+        role: "user",
+        content:
+          "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.",
+      },
+    ];
+
+    this.emitDiagnostic({
+      type: "request_started",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      contextMessages: messages.length,
+      enabledTools: 0,
+    });
+
+    let fullResponse = "";
+    let chunkCount = 0;
+    for await (const chunk of this.provider.streamChat({
+      model: this.model,
+      messages,
+      signal: abortSignal,
+    })) {
+      if (abortSignal?.aborted) {
+        throw new Error("Request cancelled");
+      }
+
+      const token = chunk.delta;
+      fullResponse += token;
+      chunkCount++;
+      this.emitDiagnostic({
+        type: "chunk_received",
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        chunkIndex: chunkCount,
+        chunkChars: token.length,
+        accumulatedChars: fullResponse.length,
+      });
+      if (token) {
+        onToken(token);
+      }
+    }
+
+    this.sessionContext.push({
+      role: "assistant",
+      content: fullResponse,
+    });
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      responseChars: fullResponse.length,
+      responseIsEmpty: fullResponse.trim().length === 0,
+      toolCalls: 0,
+    });
+
+    if (fullResponse.trim().length === 0) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        contextMessages: this.sessionContext.length,
+      });
+    }
+
+    return fullResponse;
+  }
+
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
@@ -200,11 +294,12 @@ export class Agent {
       content: userMessage,
     });
 
+    let iterationCount = 0;
     try {
       let finalResponse = "";
       let continueLoop = true;
-      let iterationCount = 0;
       const maxIterations = 10; // Prevent infinite loops
+      let emptyToolOnlyStreak = 0;
 
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
@@ -213,9 +308,18 @@ export class Agent {
           { role: "system", content: this.systemPrompt },
           ...this.sessionContext,
         ];
+        this.emitDiagnostic({
+          type: "request_started",
+          provider: this.provider.name,
+          model: this.model,
+          iteration: iterationCount,
+          contextMessages: messages.length,
+          enabledTools: this.toolRegistry.getEnabledSchemas().length,
+        });
 
         let fullResponse = "";
         let toolCalls: ChatToolCall[] | undefined;
+        let chunkCount = 0;
 
         for await (const chunk of this.provider.streamChat({
           model: this.model,
@@ -229,6 +333,16 @@ export class Agent {
 
           const token = chunk.delta;
           fullResponse += token;
+          chunkCount++;
+          this.emitDiagnostic({
+            type: "chunk_received",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            chunkIndex: chunkCount,
+            chunkChars: token.length,
+            accumulatedChars: fullResponse.length,
+          });
           if (token) {
             onToken(token);
           }
@@ -243,27 +357,107 @@ export class Agent {
           ...toolCall,
           id: toolCall.id || `toolcall_${iterationCount}_${index}`,
         }));
+        if (normalizedToolCalls && normalizedToolCalls.length > 0) {
+          this.emitDiagnostic({
+            type: "tool_calls_received",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            count: normalizedToolCalls.length,
+            tools: normalizedToolCalls.map(
+              (toolCall) => toolCall.function.name,
+            ),
+          });
+        }
 
         this.sessionContext.push({
           role: "assistant",
           content: fullResponse,
           toolCalls: normalizedToolCalls,
         });
+        this.emitDiagnostic({
+          type: "iteration_finished",
+          provider: this.provider.name,
+          model: this.model,
+          iteration: iterationCount,
+          responseChars: fullResponse.length,
+          responseIsEmpty: fullResponse.trim().length === 0,
+          toolCalls: normalizedToolCalls?.length ?? 0,
+        });
+
+        if (
+          fullResponse.trim().length === 0 &&
+          (!normalizedToolCalls || normalizedToolCalls.length === 0)
+        ) {
+          this.emitDiagnostic({
+            type: "empty_response",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            contextMessages: this.sessionContext.length,
+          });
+        }
 
         finalResponse = fullResponse;
 
+        const toolCallsToExecute = normalizedToolCalls ?? [];
+        const hasToolCalls = toolCallsToExecute.length > 0;
+        const isEmptyResponse = fullResponse.trim().length === 0;
+        emptyToolOnlyStreak =
+          hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
+
         // Handle tool calls if present
-        if (normalizedToolCalls && normalizedToolCalls.length > 0) {
+        if (hasToolCalls) {
+          if (emptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
+            this.emitDiagnostic({
+              type: "tool_loop_detected",
+              provider: this.provider.name,
+              model: this.model,
+              iteration: iterationCount,
+              emptyToolOnlyStreak,
+              threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+              action: "fallback_no_tools",
+            });
+
+            // Remove the latest assistant tool-call message before fallback finalization.
+            // It has unresolved tool calls that can keep the model in a loop.
+            this.sessionContext.pop();
+
+            finalResponse = await this.requestFinalResponseWithoutTools(
+              onToken,
+              options?.abortSignal,
+              iterationCount + 1,
+            );
+            continueLoop = false;
+            if (finalResponse.trim().length === 0) {
+              throw new Error(
+                "Stopped after repeated empty tool-calling turns with no final assistant response.",
+              );
+            }
+            continue;
+          }
+
           onToken("\n");
           const toolResults = [];
 
-          for (const toolCall of normalizedToolCalls) {
+          for (const toolCall of toolCallsToExecute) {
             if (options?.abortSignal?.aborted) {
               throw new Error("Request cancelled");
             }
 
             const args = toolCall.function.arguments;
             const toolName = toolCall.function.name;
+            const serializedArgs = JSON.stringify(args ?? {});
+            const toolCallId = toolCall.id!;
+            this.emitDiagnostic({
+              type: "tool_execution_started",
+              provider: this.provider.name,
+              model: this.model,
+              iteration: iterationCount,
+              toolName,
+              toolCallId,
+              argsChars: serializedArgs.length,
+            });
 
             // Invoke onToolStart callback if provided, otherwise use onToken
             if (options?.onToolStart) {
@@ -274,9 +468,19 @@ export class Agent {
 
             const result = await this.toolRegistry.execute(toolName, args);
             const contextSafeResult = this.sanitizeToolResultForContext(result);
+            this.emitDiagnostic({
+              type: "tool_execution_finished",
+              provider: this.provider.name,
+              model: this.model,
+              iteration: iterationCount,
+              toolName,
+              toolCallId,
+              resultChars: result.length,
+              truncatedForContext: contextSafeResult.length < result.length,
+            });
 
             toolResults.push({
-              toolCallId: toolCall.id!,
+              toolCallId,
               toolName: toolName,
               content: contextSafeResult,
             });
@@ -306,8 +510,30 @@ export class Agent {
         }
       }
 
+      if (continueLoop && iterationCount >= maxIterations) {
+        this.emitDiagnostic({
+          type: "max_iterations_reached",
+          provider: this.provider.name,
+          model: this.model,
+          maxIterations,
+        });
+        if (finalResponse.trim().length === 0) {
+          throw new Error(
+            "Stopped after reaching max iterations without a final assistant response.",
+          );
+        }
+      }
+
       return finalResponse;
     } catch (error) {
+      this.emitDiagnostic({
+        type: "provider_error",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error),
+      });
       throw this.handleProviderError(error);
     }
   }

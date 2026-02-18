@@ -28,6 +28,7 @@ describe("cli args parsing", () => {
       "--json",
       "--plain",
       "--no-interactive",
+      "--debug-llm",
       "-h",
       "--foo",
     ]);
@@ -36,14 +37,65 @@ describe("cli args parsing", () => {
     expect(parsed.flags.json).toBe(true);
     expect(parsed.flags.plain).toBe(true);
     expect(parsed.flags.noInteractive).toBe(true);
+    expect(parsed.flags.debugLlm).toBe(true);
     expect(parsed.flags.help).toBe(true);
     expect(parsed.forwardedArgs).toEqual([
       "--json",
       "--plain",
       "--no-interactive",
+      "--debug-llm",
       "-h",
       "--foo",
     ]);
+  });
+
+  it("parses debug log file flag with separate path argument", () => {
+    const parsed = parseCliArgs([
+      "--debug-llm-file",
+      "/tmp/llm-debug.log",
+      "--debug-llm",
+    ]);
+
+    expect(parsed.flags.debugLlm).toBe(true);
+    expect(parsed.flags.debugLlmFile).toBe("/tmp/llm-debug.log");
+    expect(parsed.forwardedArgs).toEqual([
+      "--debug-llm-file",
+      "/tmp/llm-debug.log",
+      "--debug-llm",
+    ]);
+  });
+
+  it("parses debug log file flag with equals syntax", () => {
+    const parsed = parseCliArgs([
+      "--debug-llm-file=/tmp/llm-debug.log",
+      "--json",
+    ]);
+
+    expect(parsed.flags.debugLlmFile).toBe("/tmp/llm-debug.log");
+    expect(parsed.flags.json).toBe(true);
+    expect(parsed.forwardedArgs).toEqual([
+      "--debug-llm-file=/tmp/llm-debug.log",
+      "--json",
+    ]);
+  });
+
+  it("records a parse error when --debug-llm-file has no following path", () => {
+    const parsed = parseCliArgs(["--debug-llm-file"]);
+
+    expect(parsed.flags.debugLlmFile).toBeUndefined();
+    expect(parsed.parseErrors).toContain(
+      "--debug-llm-file requires a file path argument",
+    );
+  });
+
+  it("records a parse error when --debug-llm-file is followed by another flag", () => {
+    const parsed = parseCliArgs(["--debug-llm-file", "--json"]);
+
+    expect(parsed.flags.debugLlmFile).toBeUndefined();
+    expect(parsed.flags.json).toBe(true);
+    expect(parsed.parseErrors).toContain(
+      "--debug-llm-file requires a file path argument",
+    );
   });
 
   it("retains compatibility helper output shape", () => {

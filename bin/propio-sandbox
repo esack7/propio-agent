@@ -55,4 +55,4 @@ docker compose -f "$PROPIO_DIR/docker-compose.yml" run --rm \
   "${ENV_FLAGS[@]}" \
   -v "$(pwd):/workspace" \
   -v "$HOME/.propio:/app/.propio:ro" \
-  agent
+  agent node /app/dist/index.js "$@"

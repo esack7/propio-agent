@@ -10,6 +10,7 @@ import {
 } from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
 import { ExecutableTool } from "../tools/interface.js";
+import { AgentDiagnosticEvent } from "../diagnostics.js";
 
 /**
  * Mock LLM Provider for testing
@@ -810,6 +811,193 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       expect(toolContent.length).toBeLessThan(13000);
       expect(toolContent).toContain("[tool output truncated:");
+    });
+  });
+
+  describe("LLM diagnostics", () => {
+    it("should emit diagnostics for request lifecycle including empty responses", async () => {
+      class EmptyResponseProvider implements LLMProvider {
+        name = "empty-provider";
+        async *streamChat(): AsyncIterable<ChatChunk> {
+          yield { delta: "" };
+        }
+      }
+
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      (agent as any).provider = new EmptyResponseProvider();
+
+      const response = await agent.streamChat("hello", () => {});
+      expect(response).toBe("");
+      expect(events.some((event) => event.type === "request_started")).toBe(
+        true,
+      );
+      expect(events.some((event) => event.type === "chunk_received")).toBe(
+        true,
+      );
+      expect(events.some((event) => event.type === "iteration_finished")).toBe(
+        true,
+      );
+      expect(events.some((event) => event.type === "empty_response")).toBe(
+        true,
+      );
+    });
+
+    it("should emit provider_error diagnostics on stream failures", async () => {
+      class FailingProvider implements LLMProvider {
+        name = "failing-provider";
+        async *streamChat(): AsyncIterable<ChatChunk> {
+          throw new Error("boom");
+        }
+      }
+
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      (agent as any).provider = new FailingProvider();
+
+      await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
+        /boom|failing-provider/i,
+      );
+      expect(
+        events.some(
+          (event) =>
+            event.type === "provider_error" &&
+            event.provider === "failing-provider",
+        ),
+      ).toBe(true);
+    });
+
+    it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
+      class LoopTool implements ExecutableTool {
+        readonly name = "loop_tool";
+
+        getSchema() {
+          return {
+            type: "function" as const,
+            function: {
+              name: "loop_tool",
+              description: "No-op loop tool for testing",
+              parameters: {
+                type: "object",
+                properties: {},
+              },
+            },
+          };
+        }
+
+        async execute(): Promise<string> {
+          return "loop-ok";
+        }
+      }
+
+      class LoopingProvider implements LLMProvider {
+        name = "looping-provider";
+        streamChatCalls: ChatRequest[] = [];
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          if (!request.tools || request.tools.length === 0) {
+            yield { delta: "Final answer without tools." };
+            return;
+          }
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                id: `call-${this.streamChatCalls.length}`,
+                function: { name: "loop_tool", arguments: {} },
+              },
+            ],
+          };
+        }
+      }
+
+      const events: AgentDiagnosticEvent[] = [];
+      const provider = new LoopingProvider();
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      agent.addTool(new LoopTool());
+      (agent as any).provider = provider;
+
+      const response = await agent.streamChat("hello", () => {});
+      expect(response).toBe("Final answer without tools.");
+      expect(events.some((event) => event.type === "tool_loop_detected")).toBe(
+        true,
+      );
+      expect(provider.streamChatCalls).toHaveLength(4);
+      const finalCall = provider.streamChatCalls[3];
+      expect(finalCall.tools).toBeUndefined();
+    });
+
+    it("should throw a clear error when loop fallback also returns empty", async () => {
+      class LoopTool implements ExecutableTool {
+        readonly name = "loop_tool";
+
+        getSchema() {
+          return {
+            type: "function" as const,
+            function: {
+              name: "loop_tool",
+              description: "No-op loop tool for testing",
+              parameters: {
+                type: "object",
+                properties: {},
+              },
+            },
+          };
+        }
+
+        async execute(): Promise<string> {
+          return "loop-ok";
+        }
+      }
+
+      class EmptyLoopingProvider implements LLMProvider {
+        name = "empty-looping-provider";
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          if (!request.tools || request.tools.length === 0) {
+            yield { delta: "" };
+            return;
+          }
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                id: "loop-call",
+                function: { name: "loop_tool", arguments: {} },
+              },
+            ],
+          };
+        }
+      }
+
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+      });
+      agent.addTool(new LoopTool());
+      (agent as any).provider = new EmptyLoopingProvider();
+
+      await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
+        "Stopped after repeated empty tool-calling turns with no final assistant response.",
+      );
     });
   });
 
