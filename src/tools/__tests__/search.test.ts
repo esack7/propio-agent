@@ -136,6 +136,33 @@ describe("Search Tools", () => {
 
       expect(tool.name).toBe(schema.function.name);
     });
+
+    it("should accept a single string path and normalize it", async () => {
+      const tool = new SearchTextTool();
+      mockFsPromises.stat.mockResolvedValue({
+        isDirectory: () => false,
+      } as any);
+      mockFsPromises.readFile.mockResolvedValue("hello markdown" as any);
+
+      const result = await tool.execute({
+        query: "markdown",
+        paths: "/test/file.txt",
+      });
+
+      expect(result).toContain("/test/file.txt:1: hello markdown");
+    });
+
+    it("should return a helpful message when paths is invalid", async () => {
+      const tool = new SearchTextTool();
+
+      const result = await tool.execute({
+        query: "markdown",
+        paths: { root: "/test" },
+      } as any);
+
+      expect(result).toContain("Invalid arguments for search_text");
+      expect(result).toContain("paths must be a string path or an array");
+    });
   });
 
   describe("SearchFilesTool", () => {

@@ -37,6 +37,29 @@ The system SHALL provide machine-readable output mode.
 - **WHEN** `--json` is enabled
 - **THEN** colors and spinner animation SHALL be disabled
 
+### Requirement: LLM diagnostics visibility
+
+The system SHALL provide optional introspection for LLM request lifecycle events.
+
+#### Scenario: Debug diagnostics enabled by flag
+
+- **WHEN** `--debug-llm` is set
+- **THEN** the CLI SHALL emit structured diagnostics for request start, streaming progress, tool execution, and provider errors
+- **AND** diagnostics SHALL be written to stderr without changing stdout payloads
+
+#### Scenario: Debug diagnostics persisted to file
+
+- **WHEN** `--debug-llm-file <path>` is set
+- **THEN** the CLI SHALL append structured diagnostics for request start, streaming progress, tool execution, and provider errors to the specified file path
+- **AND** the CLI SHALL create missing parent directories for the file path
+- **AND** diagnostics written to file SHALL NOT alter stdout payloads
+
+#### Scenario: Empty response warning
+
+- **WHEN** a request completes without provider error and the final assistant response is empty or whitespace
+- **THEN** the CLI SHALL display a warning indicating an empty response occurred
+- **AND** the warning SHALL include guidance to enable LLM diagnostics
+
 ### Requirement: Cancellation and cleanup
 
 The system SHALL treat interruption and terminal cleanup as first-class behavior.

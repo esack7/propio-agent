@@ -164,6 +164,8 @@ Once running, type your messages and press Enter. The agent maintains session co
 - `--json`: Read one prompt from stdin and print only JSON to stdout
 - `--plain`: Disable ANSI colors and spinner animation
 - `--no-interactive`: Disable prompts/spinners and read one prompt from stdin
+- `--debug-llm`: Emit LLM/provider diagnostics to stderr for debugging silent or empty responses
+- `--debug-llm-file <path>`: Append LLM/provider diagnostics to a file
 
 Examples:
 
@@ -173,6 +175,9 @@ echo "Summarize this repository structure." | npm start -- --no-interactive
 
 # Machine-readable output
 echo "List top-level files." | npm start -- --json
+
+# Persist diagnostics for later analysis
+npm start -- --debug-llm-file /tmp/propio-llm-debug.log
 ```
 
 **Commands:**
