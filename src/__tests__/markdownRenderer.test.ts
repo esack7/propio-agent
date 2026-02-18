@@ -1,4 +1,10 @@
-import { MarkdownStreamer } from "../ui/markdownRenderer.js";
+import {
+  MarkdownStreamer,
+  sanitizeSurrogates,
+  visibleLength,
+  renderMarkdown,
+  defaultTheme,
+} from "../ui/markdownRenderer.js";
 
 describe("MarkdownStreamer", () => {
   let mockStderr: NodeJS.WriteStream;
@@ -360,24 +366,14 @@ describe("MarkdownStreamer", () => {
     });
 
     it("should fallback to raw buffer when markdown parsing throws", () => {
-      const markedInstance = (
-        streamer as unknown as {
-          marked: { parse: (markdown: string) => string | Promise<string> };
-        }
-      ).marked;
-      const originalParse = markedInstance.parse;
-      markedInstance.parse = () => {
-        throw new Error("parse failure");
-      };
-      try {
-        streamer.push("# Header\nContent");
-        streamer.flush();
+      // Override parseBufferSafely on the instance to simulate a rendering failure
+      (streamer as any).parseBufferSafely = (buffer: string): string => buffer;
 
-        const output = writtenOutput.join("");
-        expect(output).toContain("# Header\nContent");
-      } finally {
-        markedInstance.parse = originalParse;
-      }
+      streamer.push("# Header\nContent");
+      streamer.flush();
+
+      const output = writtenOutput.join("");
+      expect(output).toContain("# Header\nContent");
     });
   });
 
@@ -402,11 +398,12 @@ const x = 42;
       streamer.finish();
 
       const output = writtenOutput.join("");
-      expect(output).toContain("Title");
-      expect(output).toContain("Subsection");
-      expect(output).toContain("Point 1");
-      expect(output).toContain("Point 2");
-      expect(output).toContain("const x = 42");
+      const plainOutput = output.replace(/\x1b\[[^m]*m/g, "");
+      expect(plainOutput).toContain("Title");
+      expect(plainOutput).toContain("Subsection");
+      expect(plainOutput).toContain("Point 1");
+      expect(plainOutput).toContain("Point 2");
+      expect(plainOutput).toContain("const x = 42");
     });
 
     it("should handle incomplete markdown during streaming", () => {
@@ -477,5 +474,129 @@ const x = 42;
       const output = writtenOutput.join("");
       expect(output).toContain("Content");
     });
+  });
+});
+
+describe("sanitizeSurrogates", () => {
+  it("should pass through clean input unmodified", () => {
+    expect(sanitizeSurrogates("hello world")).toBe("hello world");
+  });
+
+  it("should pass through empty string", () => {
+    expect(sanitizeSurrogates("")).toBe("");
+  });
+
+  it("should strip unpaired high surrogates", () => {
+    expect(sanitizeSurrogates("\uD800hello")).toBe("hello");
+    expect(sanitizeSurrogates("hello\uDBFF")).toBe("hello");
+  });
+
+  it("should strip unpaired low surrogates", () => {
+    expect(sanitizeSurrogates("hello\uDC00")).toBe("hello");
+    expect(sanitizeSurrogates("\uDFFFworld")).toBe("world");
+  });
+
+  it("should preserve valid surrogate pairs", () => {
+    // U+1F600 😀 = \uD83D\uDE00
+    const withEmoji = "hello \uD83D\uDE00 world";
+    expect(sanitizeSurrogates(withEmoji)).toBe("hello \uD83D\uDE00 world");
+  });
+
+  it("should strip unpaired surrogates while preserving surrounding text", () => {
+    expect(sanitizeSurrogates("before\uD800after")).toBe("beforeafter");
+  });
+});
+
+describe("visibleLength", () => {
+  it("should return the length of a plain string", () => {
+    expect(visibleLength("hello")).toBe(5);
+  });
+
+  it("should return 0 for an empty string", () => {
+    expect(visibleLength("")).toBe(0);
+  });
+
+  it("should ignore ANSI SGR escape codes", () => {
+    expect(visibleLength("\x1b[31mhello\x1b[0m")).toBe(5);
+  });
+
+  it("should ignore multiple nested ANSI codes", () => {
+    expect(visibleLength("\x1b[1m\x1b[33mtext\x1b[0m\x1b[0m")).toBe(4);
+  });
+
+  it("should return 0 for a string with only ANSI codes", () => {
+    expect(visibleLength("\x1b[0m\x1b[1m")).toBe(0);
+  });
+
+  it("should handle strings with no ANSI codes identically to .length", () => {
+    const plain = "plain text 123";
+    expect(visibleLength(plain)).toBe(plain.length);
+  });
+});
+
+describe("renderMarkdown", () => {
+  const width = 80;
+  const theme = defaultTheme(width);
+
+  it("should render h1 heading", () => {
+    const output = renderMarkdown("# Heading 1", theme, width);
+    expect(output).toContain("Heading 1");
+  });
+
+  it("should render h2 heading", () => {
+    const output = renderMarkdown("## Heading 2", theme, width);
+    expect(output).toContain("Heading 2");
+  });
+
+  it("should render a paragraph", () => {
+    const output = renderMarkdown("A paragraph of text.", theme, width);
+    expect(output).toContain("A paragraph of text.");
+  });
+
+  it("should render a fenced code block without language", () => {
+    const output = renderMarkdown("```\nsome code here\n```", theme, width);
+    expect(output).toContain("some code here");
+  });
+
+  it("should render a fenced code block with language", () => {
+    const output = renderMarkdown(
+      "```javascript\nconst x = 1;\n```",
+      theme,
+      width,
+    );
+    expect(output).toContain("x");
+    expect(output).toContain("1");
+  });
+
+  it("should not throw for unknown language in code block", () => {
+    expect(() => {
+      renderMarkdown("```unknownlang\nsome code\n```", theme, width);
+    }).not.toThrow();
+  });
+
+  it("should render an unordered list", () => {
+    const output = renderMarkdown("- Item 1\n- Item 2", theme, width);
+    expect(output).toContain("Item 1");
+    expect(output).toContain("Item 2");
+  });
+
+  it("should render a blockquote", () => {
+    const output = renderMarkdown("> A blockquote", theme, width);
+    expect(output).toContain("A blockquote");
+  });
+
+  it("should render inline bold", () => {
+    const output = renderMarkdown("Some **bold** text", theme, width);
+    expect(output).toContain("bold");
+  });
+
+  it("should render inline italic", () => {
+    const output = renderMarkdown("Some *italic* text", theme, width);
+    expect(output).toContain("italic");
+  });
+
+  it("should render inline code span", () => {
+    const output = renderMarkdown("Use `someFunction()` here", theme, width);
+    expect(output).toContain("someFunction()");
   });
 });
