@@ -416,6 +416,14 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (parsedArgs.parseErrors.length > 0) {
+    for (const error of parsedArgs.parseErrors) {
+      ui.error(error);
+    }
+    ui.cleanup();
+    return 1;
+  }
+
   let mode: AppMode = "idle";
   const setMode = (nextMode: AppMode) => {
     mode = nextMode;

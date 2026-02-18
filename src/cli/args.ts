@@ -18,10 +18,12 @@ export interface ParsedCliArgs {
     help: boolean;
   };
   forwardedArgs: string[];
+  parseErrors: string[];
 }
 
 export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const forwardedArgs: string[] = [];
+  const parseErrors: string[] = [];
   const flags: ParsedCliArgs["flags"] = {
     sandbox: false,
     json: false,
@@ -56,6 +58,10 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
         forwardedArgs.push(filePath);
         i++;
         continue;
+      } else {
+        parseErrors.push(
+          `${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`,
+        );
       }
     } else if (arg === CLI_FLAG_HELP || arg === CLI_FLAG_HELP_SHORT) {
       flags.help = true;
@@ -64,7 +70,7 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     forwardedArgs.push(arg);
   }
 
-  return { flags, forwardedArgs };
+  return { flags, forwardedArgs, parseErrors };
 }
 
 export function parseSandboxArgs(args: ReadonlyArray<string>): {

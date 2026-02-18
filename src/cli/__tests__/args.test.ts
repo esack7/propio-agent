@@ -79,6 +79,25 @@ describe("cli args parsing", () => {
     ]);
   });
 
+  it("records a parse error when --debug-llm-file has no following path", () => {
+    const parsed = parseCliArgs(["--debug-llm-file"]);
+
+    expect(parsed.flags.debugLlmFile).toBeUndefined();
+    expect(parsed.parseErrors).toContain(
+      "--debug-llm-file requires a file path argument",
+    );
+  });
+
+  it("records a parse error when --debug-llm-file is followed by another flag", () => {
+    const parsed = parseCliArgs(["--debug-llm-file", "--json"]);
+
+    expect(parsed.flags.debugLlmFile).toBeUndefined();
+    expect(parsed.flags.json).toBe(true);
+    expect(parsed.parseErrors).toContain(
+      "--debug-llm-file requires a file path argument",
+    );
+  });
+
   it("retains compatibility helper output shape", () => {
     const parsed = parseSandboxArgs(["--sandbox", "--help"]);
 

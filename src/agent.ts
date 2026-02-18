@@ -530,7 +530,7 @@ export class Agent {
         type: "provider_error",
         provider: this.provider.name,
         model: this.model,
-        iteration: iterationCount + 1,
+        iteration: iterationCount,
         errorName: error instanceof Error ? error.name : "UnknownError",
         message: error instanceof Error ? error.message : String(error),
       });
