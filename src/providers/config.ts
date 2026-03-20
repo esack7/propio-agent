@@ -43,12 +43,21 @@ export interface OpenRouterProviderConfig extends BaseProviderConfig {
 }
 
 /**
+ * xAI (Grok) provider configuration using the OpenAI-compatible API at api.x.ai
+ */
+export interface XaiProviderConfig extends BaseProviderConfig {
+  type: "xai";
+  apiKey?: string;
+}
+
+/**
  * Configuration for a single LLM provider (discriminated union)
  */
 export type ProviderConfig =
   | OllamaProviderConfig
   | BedrockProviderConfig
-  | OpenRouterProviderConfig;
+  | OpenRouterProviderConfig
+  | XaiProviderConfig;
 
 /**
  * Multi-provider configuration

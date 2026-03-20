@@ -5,10 +5,12 @@ import {
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
+  XaiProviderConfig,
 } from "../config.js";
 import { OllamaProvider } from "../ollama.js";
 import { BedrockProvider } from "../bedrock.js";
 import { OpenRouterProvider } from "../openrouter.js";
+import { XaiProvider } from "../xai.js";
 
 describe("Provider Factory", () => {
   describe("createProvider", () => {
@@ -111,8 +113,23 @@ describe("Provider Factory", () => {
       };
 
       expect(() => createProvider(config)).toThrow(
-        /ollama.*bedrock|bedrock.*ollama|openrouter/,
+        /ollama.*bedrock|bedrock.*ollama|openrouter|xai/,
       );
+    });
+
+    it("should create XaiProvider from xai config", () => {
+      const config: XaiProviderConfig = {
+        name: "xai",
+        type: "xai",
+        models: [{ name: "Grok Fast", key: "grok-4-1-fast-reasoning" }],
+        defaultModel: "grok-4-1-fast-reasoning",
+        apiKey: "xai-test-key",
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(XaiProvider);
+      expect(provider.name).toBe("xai");
     });
 
     it("should use flat host field for Ollama", () => {

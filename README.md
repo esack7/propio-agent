@@ -1,640 +1,444 @@
-# Multi-Provider AI Agent
+# propio-agent
 
-A TypeScript AI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, and OpenRouter) with a unified interface and runtime provider switching capability.
+A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation.
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+- [Running the Agent](#running-the-agent)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Tools](#tools)
+- [Project Structure](#project-structure)
+- [Architecture](#architecture)
+- [Sandbox Mode](#sandbox-mode)
+- [Troubleshooting](#troubleshooting)
+
+---
 
 ## Prerequisites
 
-### For Native Mode (npm start)
-
 - Node.js 20+ with npm
+- Docker and Docker Compose _(sandbox mode only)_
+- [Ollama](https://ollama.ai/) _(Ollama provider only)_
 
-### For Sandbox Mode (bin/propio-sandbox)
-
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
-- Ollama (optional, for local LLM provider)
-
-### Optional: Ollama Setup
-
-To use Ollama as your LLM provider:
-
-1. Install [Ollama](https://ollama.ai/)
-2. Pull a model with **tool calling support**:
-
-   ```bash
-   # Recommended models with good tool calling support:
-   ollama pull llama3.1:8b        # Llama 3.1 (fast, good tool calling)
-   ollama pull mistral:7b-instruct-v0.3  # Mistral with tool support
-   ollama pull deepseek-coder-v2:16b     # DeepSeek Coder v2
-
-   # Or use your preferred model (tool calling quality varies by model)
-   ollama pull qwen3-coder:30b
-   ```
-
-3. Ensure Ollama is running:
-   ```bash
-   ollama serve
-   ```
-
-**Important:** Not all Ollama models support tool calling equally well. If you see the model outputting XML-like syntax (`<function=...>`) instead of making actual tool calls, try switching to a different model known for better tool calling support (like `llama3.1:8b` or `mistral:7b-instruct-v0.3`).
+---
 
 ## Setup
 
-1. Pull the Ollama model:
-
-   ```bash
-   ollama pull qwen3-coder:30b
-   ```
-
-2. Ensure Ollama is running:
-
-   ```bash
-   ollama serve
-   ```
-
-3. Create the configuration directory and providers file:
-
-   ```bash
-   mkdir -p ~/.propio
-   ```
-
-   Create `~/.propio/providers.json` with your provider configuration (see Configuration section below for details).
-
-### Migrating from Previous Versions
-
-If you're upgrading from a version that used project-local `.propio/providers.json`:
-
-```bash
-# Copy your existing config to the home directory
-mkdir -p ~/.propio
-cp .propio/providers.json ~/.propio/providers.json
-
-# Verify the file is in place
-ls -la ~/.propio/providers.json
-
-# (Optional) Remove old project-local config
-rm -rf .propio
-```
-
-## Running the Agent
-
-### Native Mode (unrestricted filesystem access)
+### 1. Install dependencies
 
 ```bash
 npm install
+```
+
+### 2. Configure providers
+
+Create the config directory and provider file:
+
+```bash
+mkdir -p ~/.propio
+```
+
+Then create `~/.propio/providers.json`. See the [Configuration](#configuration) section for the full schema and per-provider examples.
+
+### Migrating from an older version
+
+If you previously used a project-local `.propio/providers.json`:
+
+```bash
+mkdir -p ~/.propio
+cp .propio/providers.json ~/.propio/providers.json
+rm -rf .propio  # optional cleanup
+```
+
+---
+
+## Running the Agent
+
+### Native mode
+
+Runs with full filesystem access — recommended for development on trusted codebases.
+
+```bash
+npm run build
 npm start
 ```
 
-### Sandbox Mode (recommended for untrusted codebases)
-
-The sandbox mode restricts filesystem access to the current working directory, protecting your system from accidental or malicious file access.
-
-**Prerequisites:** Docker and Docker Compose
-
-#### From the native entrypoint (delegates to wrapper):
+For a faster dev loop without a build step:
 
 ```bash
+npm run dev
+```
+
+### Sandbox mode
+
+Runs the agent inside Docker, restricting filesystem access to the current working directory. Recommended when working on untrusted codebases.
+
+```bash
+# From the agent project directory
+bin/propio-sandbox
+
+# Or via npm start
+npm start -- --sandbox
 node dist/index.js --sandbox
 ```
 
-```bash
-npm start -- --sandbox
-```
-
-Both commands delegate to `bin/propio-sandbox`, which runs the Docker-based sandbox flow.
-
-#### From the agent directory:
+For system-wide access from any directory, create a symlink:
 
 ```bash
-bin/propio-sandbox
+ln -s /path/to/propio-agent/bin/propio-sandbox ~/bin/propio-sandbox
 ```
 
-#### From any directory (including external repositories):
-
-```bash
-# Create a symlink for global access (optional)
-ln -s /path/to/propio/bin/propio-sandbox ~/bin/propio-sandbox
-
-# Then use from any directory
-propio-sandbox
-```
-
-#### How it works:
-
-- The current working directory is mounted as `/workspace` inside the container (read-write)
-- Agent configuration (`~/.propio/`) is mounted as read-only from your home directory
-- LLM provider tools (`read_file`, `write_file`) can only access files within `/workspace` and its subdirectories
-- Network access is preserved for LLM providers and local Ollama
-
-#### Rebuild after code changes:
+Rebuild the Docker image after code changes:
 
 ```bash
 docker compose build
-```
-
-### Using Docker Compose (development)
-
-```bash
-docker compose run --rm agent
-```
-
-### Using Docker directly
-
-```bash
-docker build -t propio-agent .
-docker run -it --rm propio-agent
 ```
 
 ### VS Code Dev Container
 
-1. Open the project in VS Code
-2. When prompted, click "Reopen in Container" (or use Command Palette: `Dev Containers: Reopen in Container`)
-3. Wait for the container to build and dependencies to install
-4. Run the agent:
-   ```bash
-   npm run dev
-   ```
+1. Open the project in VS Code.
+2. Click **Reopen in Container** (or use **Dev Containers: Reopen in Container** from the Command Palette).
+3. Run `npm run dev` inside the container.
 
-## Usage
-
-Once running, type your messages and press Enter. The agent maintains session context across messages.
-
-### Runtime Flags
-
-- `--help`, `-h`: Show CLI help
-- `--json`: Read one prompt from stdin and print only JSON to stdout
-- `--plain`: Disable ANSI colors and spinner animation
-- `--no-interactive`: Disable prompts/spinners and read one prompt from stdin
-- `--debug-llm`: Emit LLM/provider diagnostics to stderr for debugging silent or empty responses
-- `--debug-llm-file <path>`: Append LLM/provider diagnostics to a file
-
-Examples:
-
-```bash
-# One-shot non-interactive run
-echo "Summarize this repository structure." | npm start -- --no-interactive
-
-# Machine-readable output
-echo "List top-level files." | npm start -- --json
-
-# Persist diagnostics for later analysis
-npm start -- --debug-llm-file /tmp/propio-llm-debug.log
-```
-
-**Commands:**
-
-- `/clear` - Clear session context
-- `/context` - Show session context
-- `/tools` - Enable/disable tools at runtime
-- `/exit` - Quit the agent
-
-## Tool Calling & Agentic Loop
-
-The agent supports tool calling with an agentic loop, allowing it to:
-
-1. Call tools to perform actions
-2. See the results of those tool calls
-3. Decide whether to call more tools or respond to the user
-4. Chain multiple tool calls together to complete complex tasks
-
-### Available Tools
-
-The agent comes with 10 built-in tools for file operations, search, and execution:
-
-#### Filesystem Tools
-
-- **read_file**: Reads content from a file
-- **write_file**: Writes content to a file
-- **list_dir**: Lists directory contents with file/directory types
-- **mkdir**: Creates directories (with recursive parent creation)
-- **move**: Moves or renames files and directories
-- **remove**: ⚠️ Deletes files or directories (recursive) - **Disabled by default**
-
-#### Search Tools
-
-- **search_text**: Searches for text patterns in files (supports regex)
-- **search_files**: Finds files by glob patterns (e.g., `**/*.ts`)
-
-#### Execution Tools
-
-- **run_bash**: ⚠️ Executes shell commands - **Disabled by default**
-
-#### Context Tools
-
-- **save_session_context**: Saves current session context to `session_context.txt`
-
-### Security: Destructive Tools
-
-The `remove` and `run_bash` tools are **disabled by default** due to their destructive potential:
-
-- **remove**: Can permanently delete files and directories
-- **run_bash**: Can execute arbitrary shell commands
-
-#### Enabling Destructive Tools
-
-⚠️ **Warning**: Only enable these tools in trusted environments. All tools include path validation to prevent directory traversal, but destructive operations cannot be undone.
-
-To enable these tools programmatically:
-
-```typescript
-import { Agent } from "./src/agent";
-import { createDefaultToolRegistry } from "./src/tools/factory";
-
-const agent = new Agent({
-  providerConfig: {
-    provider: "ollama",
-    ollama: { model: "llama3.1:8b" },
-  },
-});
-
-// Enable destructive tools
-agent.toolRegistry.enable("remove"); // Enable file/directory deletion
-agent.toolRegistry.enable("run_bash"); // Enable shell command execution
-```
-
-#### Security Features
-
-All filesystem tools include:
-
-- **Path validation**: Prevents access outside the current working directory
-- **Error handling**: User-friendly error messages for permission, file-not-found, etc.
-- **Async operations**: Non-blocking file I/O for better performance
-
-### How it Works
-
-When you send a message, the agent can:
-
-- Call one or more tools
-- Receive and process the tool results
-- Make additional tool calls based on the results
-- Provide a final response incorporating the information from the tools
-
-You'll see notifications like `[Executing tool: save_session_context]` and `[Tool result: ...]` showing the agent's actions in real-time.
+---
 
 ## Configuration
 
-The agent is configured using a `~/.propio/providers.json` file in your home directory. This allows you to share the same provider configuration across all projects.
+Agent configuration lives in `~/.propio/providers.json` and is shared across all projects.
 
-**Cross-platform support:**
+| Platform    | Path                                               |
+| ----------- | -------------------------------------------------- |
+| Unix/macOS  | `~/.propio/providers.json`                         |
+| Windows     | `%USERPROFILE%\.propio\providers.json`             |
 
-- Unix/macOS: `~/.propio/providers.json` (e.g., `/Users/yourname/.propio/providers.json`)
-- Windows: `%USERPROFILE%\.propio\providers.json` (e.g., `C:\Users\yourname\.propio\providers.json`)
-
-### Provider Configuration File
-
-Create `~/.propio/providers.json` with the following structure:
+### Schema
 
 ```json
 {
-  "default": "local-ollama",
+  "default": "<provider-name>",
   "providers": [
     {
-      "name": "local-ollama",
-      "type": "ollama",
-      "host": "http://localhost:11434",
-      "models": [
-        {
-          "name": "Qwen3 Coder: 30b",
-          "key": "qwen3-coder:30b"
-        },
-        {
-          "name": "GPT OSS: 20b",
-          "key": "gpt-oss:20b"
-        }
-      ],
-      "defaultModel": "qwen3-coder:30b"
-    },
-    {
-      "name": "bedrock",
-      "type": "bedrock",
-      "region": "us-east-1",
-      "models": [
-        {
-          "name": "Claude Sonnet 4.5",
-          "key": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        },
-        {
-          "name": "Claude Haiku 4.5",
-          "key": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-        },
-        {
-          "name": "Claude Opus 4.6",
-          "key": "global.anthropic.claude-opus-4-6-v1"
-        }
-      ],
-      "defaultModel": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      "name": "string — unique identifier for this entry",
+      "type": "ollama | bedrock | openrouter | xai",
+      "models": [{ "name": "Human label", "key": "provider-model-id" }],
+      "defaultModel": "provider-model-id"
     }
   ]
 }
 ```
 
-**Configuration Fields:**
+### Ollama
 
-- `default`: The name of the default provider to use
-- `providers`: Array of provider configurations
-  - `name`: Unique identifier for this provider
-  - `type`: Provider type (`ollama`, `bedrock`, or `openrouter`)
-  - `host`: (Ollama only) Ollama server URL
-  - `region`: (Bedrock only) AWS region
-  - `apiKey`: (OpenRouter only) OpenRouter API key; can be omitted if `OPENROUTER_API_KEY` env var is set
-  - `httpReferer`: (OpenRouter only, optional) Site URL for OpenRouter leaderboard tracking
-  - `xTitle`: (OpenRouter only, optional) Site name for OpenRouter leaderboard tracking
-  - `models`: Array of available models
-    - `name`: Human-readable model name
-    - `key`: Model identifier used by the provider
-  - `defaultModel`: The default model key to use for this provider
+```json
+{
+  "name": "local-ollama",
+  "type": "ollama",
+  "host": "http://localhost:11434",
+  "models": [
+    { "name": "Qwen3 Coder 30b", "key": "qwen3-coder:30b" },
+    { "name": "Llama 3.1 8b", "key": "llama3.1:8b" }
+  ],
+  "defaultModel": "qwen3-coder:30b"
+}
+```
 
-#### Important: Bedrock Model IDs
-
-For AWS Bedrock, you must use **inference profile IDs** instead of direct model IDs:
-
-- ✅ **Correct**: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- ❌ **Incorrect**: `anthropic.claude-sonnet-4-5-20250929-v1:0`
-
-Newer Claude 4.x models require inference profiles to work with on-demand throughput. Using direct model IDs will result in an error: "on-demand throughput isn't supported."
-
-The `global.anthropic.*` prefix provides cross-region inference profiles that support on-demand access. To list available inference profiles for your AWS account:
+Pull a model before use:
 
 ```bash
-aws bedrock list-inference-profiles --region us-east-1
+ollama pull llama3.1:8b
+ollama serve
 ```
 
-### Provider Interface
+> **Tip:** Not all Ollama models support tool calling well. If you see XML-like output (`<function=...>`) instead of real tool calls, switch to `llama3.1:8b` or `mistral:7b-instruct-v0.3`. See [Troubleshooting](#troubleshooting).
 
-The agent supports multiple LLM providers through a unified interface:
-
-### Ollama Provider (Default)
-
-```javascript
-import { Agent } from "./src/agent";
-
-const agent = new Agent({
-  providerConfig: {
-    provider: "ollama",
-    ollama: {
-      model: "qwen3-coder:30b",
-      host: "http://localhost:11434", // Optional, defaults to localhost:11434
-    },
-  },
-});
-```
-
-### Amazon Bedrock Provider
-
-```javascript
-import { Agent } from "./src/agent";
-
-const agent = new Agent({
-  providerConfig: {
-    provider: "bedrock",
-    bedrock: {
-      model: "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-      region: "us-east-1", // Optional, defaults to us-east-1
-    },
-  },
-});
-```
-
-**Note:** Use inference profile IDs (with `global.anthropic.*` or `us.anthropic.*` prefix) for Claude 4.x models. Direct model IDs will not work with on-demand throughput.
-
-### OpenRouter Provider
-
-[OpenRouter](https://openrouter.ai/) provides access to 300+ models (OpenAI, Anthropic, DeepSeek, etc.) through a single API. Use it for affordable models with tool-calling support.
-
-**Required:** `type`, `models`, `defaultModel`, and either `apiKey` or the `OPENROUTER_API_KEY` environment variable.
-
-**Optional:** `httpReferer` and `xTitle` for leaderboard/site tracking on OpenRouter.
-
-**Model format:** Use OpenRouter's `provider/model` format (e.g. `openai/gpt-4o`, `openai/gpt-3.5-turbo`, `deepseek/deepseek-chat`).
-
-Example `.propio/providers.json` with OpenRouter:
+### Amazon Bedrock
 
 ```json
 {
-  "default": "openrouter",
-  "providers": [
+  "name": "bedrock",
+  "type": "bedrock",
+  "region": "us-east-1",
+  "models": [
     {
-      "name": "openrouter",
-      "type": "openrouter",
-      "models": [
-        { "name": "GPT-3.5 Turbo", "key": "openai/gpt-3.5-turbo" },
-        { "name": "DeepSeek Chat", "key": "deepseek/deepseek-chat" }
-      ],
-      "defaultModel": "openai/gpt-3.5-turbo",
-      "apiKey": "sk-or-v1-...",
-      "httpReferer": "https://myapp.com",
-      "xTitle": "My App"
+      "name": "Claude Sonnet 4.5",
+      "key": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
     }
-  ]
+  ],
+  "defaultModel": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 }
 ```
 
-Store your API key in `~/.propio/providers.json` or set `OPENROUTER_API_KEY` in your environment. Affordable models with tool-calling support include `openai/gpt-3.5-turbo` and `deepseek/deepseek-chat`.
+> **Important:** Claude 4.x models require **inference profile IDs** (e.g. `global.anthropic.claude-sonnet-4-5-...`). Direct model IDs will fail with an "on-demand throughput isn't supported" error. To list available profiles:
+>
+> ```bash
+> aws bedrock list-inference-profiles --region us-east-1
+> ```
 
-### Backward Compatibility
+### OpenRouter
 
-The agent maintains backward compatibility with legacy configuration:
+Provides access to 300+ models through a single API key.
 
-```javascript
-const agent = new Agent({
-  model: "qwen3-coder:30b",
-  host: "http://localhost:11434",
-  systemPrompt: "You are a helpful assistant",
-});
-// This automatically uses Ollama provider with the specified settings
+```json
+{
+  "name": "openrouter",
+  "type": "openrouter",
+  "models": [
+    { "name": "GPT-4o", "key": "openai/gpt-4o" },
+    { "name": "DeepSeek Chat", "key": "deepseek/deepseek-chat" }
+  ],
+  "defaultModel": "openai/gpt-4o",
+  "apiKey": "sk-or-v1-...",
+  "httpReferer": "https://myapp.com",
+  "xTitle": "My App"
+}
 ```
 
-### Runtime Provider Switching
+The `apiKey` can also be set via the `OPENROUTER_API_KEY` environment variable. `httpReferer` and `xTitle` are optional and used for OpenRouter leaderboard tracking.
 
-Switch between providers without losing session context:
+### xAI
 
-```javascript
-const agent = new Agent();
-
-// Chat with Ollama
-const response1 = await agent.streamChat('Hello!', (token) => {
-  process.stdout.write(token);
-});
-
-// Switch to Bedrock
-(agent as any).switchProvider({
-  provider: 'bedrock',
-  bedrock: {
-    model: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0'
-  }
-});
-
-// Continue chatting with Bedrock, session context is preserved
-const response2 = await agent.streamChat('Continue the conversation...', (token) => {
-  process.stdout.write(token);
-});
+```json
+{
+  "name": "xai",
+  "type": "xai",
+  "models": [{ "name": "Grok Beta", "key": "grok-beta" }],
+  "defaultModel": "grok-beta",
+  "apiKey": "xai-..."
+}
 ```
+
+The `apiKey` can also be set via the `XAI_API_KEY` environment variable.
+
+---
+
+## Usage
+
+Start the agent and type messages at the prompt. Session context is maintained across turns.
+
+### CLI flags
+
+| Flag                        | Description                                              |
+| --------------------------- | -------------------------------------------------------- |
+| `--help`, `-h`              | Show CLI help                                            |
+| `--sandbox`                 | Run in Docker sandbox mode                               |
+| `--json`                    | Read one prompt from stdin, print JSON to stdout         |
+| `--plain`                   | Disable ANSI colors and spinner                          |
+| `--no-interactive`          | Disable prompts/spinners, read one prompt from stdin     |
+| `--debug-llm`               | Emit provider diagnostics to stderr                      |
+| `--debug-llm-file <path>`   | Append provider diagnostics to a file                    |
+
+```bash
+# One-shot non-interactive
+echo "Summarize this repository." | npm start -- --no-interactive
+
+# Machine-readable JSON output
+echo "List top-level files." | npm start -- --json
+
+# Persist diagnostics
+npm start -- --debug-llm-file /tmp/propio-debug.log
+```
+
+### Session commands
+
+| Command    | Description                          |
+| ---------- | ------------------------------------ |
+| `/clear`   | Clear session context                |
+| `/context` | Show current session context         |
+| `/tools`   | Enable or disable tools at runtime   |
+| `/exit`    | Quit the agent                       |
+
+---
+
+## Tools
+
+The agent has a built-in tool registry and an agentic loop: it calls tools, processes results, and can chain additional tool calls before returning a final response.
+
+### Built-in tools
+
+| Tool                   | Category   | Default  | Description                                        |
+| ---------------------- | ---------- | -------- | -------------------------------------------------- |
+| `read_file`            | Filesystem | enabled  | Read file contents                                 |
+| `write_file`           | Filesystem | enabled  | Write content to a file                            |
+| `list_dir`             | Filesystem | enabled  | List directory contents                            |
+| `mkdir`                | Filesystem | enabled  | Create directories (recursive)                     |
+| `move`                 | Filesystem | enabled  | Move or rename files and directories               |
+| `remove`               | Filesystem | disabled | Delete files or directories ⚠️                     |
+| `search_text`          | Search     | enabled  | Search for regex patterns in files                 |
+| `search_files`         | Search     | enabled  | Find files by glob pattern                         |
+| `run_bash`             | Execution  | disabled | Execute shell commands ⚠️                          |
+| `save_session_context` | Context    | enabled  | Persist session context to `session_context.txt`   |
+
+`remove` and `run_bash` are **disabled by default** because they are destructive or execute arbitrary code. Enable them at runtime with `/tools`, or programmatically:
+
+```typescript
+agent.toolRegistry.enable("remove");
+agent.toolRegistry.enable("run_bash");
+```
+
+All filesystem tools validate paths to prevent traversal outside the working directory.
+
+---
 
 ## Project Structure
 
 ```
-├── .devcontainer/
-│   └── devcontainer.json                # VS Code dev container config
+propio-agent/
+├── bin/
+│   └── propio-sandbox          # Shell wrapper for Docker sandbox mode
 ├── src/
-│   ├── agent.ts                          # Agent class with provider abstraction
-│   ├── index.ts                          # CLI entry point
+│   ├── index.ts                # CLI entry point
+│   ├── agent.ts                # Agent class and agentic loop
+│   ├── agentsMd.ts             # AGENTS.md loader
+│   ├── diagnostics.ts          # LLM diagnostics helpers
+│   ├── sandboxDelegation.ts    # Sandbox delegation logic
+│   ├── cli/
+│   │   └── args.ts             # CLI argument parsing
 │   ├── providers/
-│   │   ├── interface.ts                  # LLMProvider interface definition
-│   │   ├── types.ts                      # Provider-agnostic types and errors
-│   │   ├── config.ts                     # Provider configuration types
-│   │   ├── ollama.ts                     # Ollama provider implementation
-│   │   ├── bedrock.ts                    # Bedrock provider implementation
-│   │   ├── openrouter.ts                 # OpenRouter provider implementation
-│   │   └── __tests__/                    # Provider tests
-│   └── __tests__/                        # Agent tests
+│   │   ├── interface.ts        # LLMProvider interface
+│   │   ├── types.ts            # Shared message/request/response types
+│   │   ├── config.ts           # Provider config types
+│   │   ├── configLoader.ts     # Config file loading
+│   │   ├── factory.ts          # Provider factory
+│   │   ├── ollama.ts           # Ollama provider
+│   │   ├── bedrock.ts          # Amazon Bedrock provider
+│   │   ├── openrouter.ts       # OpenRouter provider
+│   │   ├── xai.ts              # xAI provider
+│   │   └── __tests__/
+│   ├── tools/
+│   │   ├── interface.ts        # Tool interface
+│   │   ├── types.ts            # Tool types
+│   │   ├── registry.ts         # Tool registry
+│   │   ├── factory.ts          # Default tool registry factory
+│   │   ├── fileSystem.ts       # Filesystem tools
+│   │   ├── search.ts           # Search tools
+│   │   ├── bash.ts             # Bash execution tool
+│   │   ├── sessionContext.ts   # Session context tool
+│   │   └── __tests__/
+│   └── ui/
+│       ├── banner.ts           # Startup banner
+│       ├── colors.ts           # Color helpers
+│       ├── formatting.ts       # Output formatting
+│       ├── markdownRenderer.ts # Terminal markdown rendering
+│       ├── spinner.ts          # Ora spinner wrapper
+│       ├── symbols.ts          # UI symbols
+│       ├── terminal.ts         # Terminal utilities
+│       └── toolMenu.ts         # Interactive tool enable/disable menu
+├── openspec/                   # Spec-driven change management
 ├── Dockerfile
 ├── docker-compose.yml
-├── jest.config.js                       # Jest testing configuration
-├── package.json
-└── tsconfig.json
+├── jest.config.js
+├── tsconfig.json
+└── package.json
 ```
 
-## Provider Architecture
+---
 
-The agent uses a provider abstraction layer that allows swapping between different LLM backends without changing application code.
+## Architecture
 
-### Core Components
+### Provider abstraction
 
-- **LLMProvider Interface** (`providers/interface.ts`): Defines the standard interface that all providers must implement
-  - `streamChat()`: Streaming completions
-  - `name`: Provider identifier
+All LLM backends implement the `LLMProvider` interface (`src/providers/interface.ts`), which exposes a single `streamChat()` method. The `Agent` class communicates only through this interface, making providers interchangeable at runtime.
 
-- **Provider-Agnostic Types** (`providers/types.ts`):
-  - `ChatMessage`, `ChatTool`, `ChatToolCall`: Unified message and tool representations
-  - `ChatRequest`, `ChatResponse`, `ChatChunk`: Unified request/response formats
-  - Error types: `ProviderError`, `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderModelNotFoundError`
+Shared types (`src/providers/types.ts`) — `ChatMessage`, `ChatTool`, `ChatRequest`, `ChatResponse`, etc. — provide a provider-agnostic layer. Each provider implementation translates between these types and its own native API format.
 
-- **Provider Implementations**:
-  - `OllamaProvider`: Uses the Ollama local model server
-  - `BedrockProvider`: Uses Amazon Bedrock with the AWS SDK
-  - `OpenRouterProvider`: Uses OpenRouter's unified API (OpenAI-compatible)
+Provider-specific errors (`ProviderError`, `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderModelNotFoundError`) are also defined in `types.ts` and are thrown consistently across providers.
 
-### Type Translation
+### Agentic loop
 
-Each provider translates between its native types and the provider-agnostic types, allowing the Agent to work seamlessly with any provider.
+The `Agent` class (`src/agent.ts`) drives a tool-calling loop:
 
-## Sandbox Mode Details
+1. Send user message to the active provider.
+2. If the provider returns tool calls, execute them via the tool registry.
+3. Append tool results to the conversation and repeat.
+4. Return the final text response to the caller.
 
-### Environment Variable Handling
+### Tool registry
 
-The `bin/propio-sandbox` wrapper automatically passes the following environment variables from your host into the container when they are set:
+`src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.toolRegistry` API.
 
-- `OLLAMA_HOST`: Ollama server URL (defaults to `http://host.docker.internal:11434` if not set)
-- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`: For AWS Bedrock provider
-- `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`: Additional AWS configuration
-- `OPENROUTER_API_KEY`: For OpenRouter provider
+---
 
-No extra configuration is needed — just set the variables in your shell before running `bin/propio-sandbox`.
+## Sandbox Mode
 
-**Note:** If you use `docker compose run --rm agent` directly, environment variables are not passed automatically. Use `-e VAR_NAME` flags to pass them manually.
+The sandbox runs the agent in Docker with filesystem isolation:
 
-**Note:** Model selection is configured via `.propio/providers.json`, not environment variables.
+- **Read-write**: The current working directory is mounted at `/workspace`.
+- **Read-only**: `~/.propio/` is mounted at `/app/.propio` (provider configs and credentials).
+- **Blocked**: All other host paths.
 
-### Rebuild Requirement
+### Environment variable passthrough
 
-**Important:** After modifying agent source code, rebuild the Docker image before using sandbox mode:
+`bin/propio-sandbox` automatically forwards these variables when set in your shell:
 
-```bash
-docker compose build
-```
+| Variable                                            | Provider       |
+| --------------------------------------------------- | -------------- |
+| `OLLAMA_HOST`                                       | Ollama         |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Bedrock |
+| `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`  | Bedrock        |
+| `OPENROUTER_API_KEY`                                | OpenRouter     |
+| `XAI_API_KEY`                                       | xAI            |
 
-The `npm start` (native mode) does not require rebuilds and is faster for development iteration.
+> **Note:** When using `docker compose run --rm agent` directly, variables are not forwarded automatically — pass them with `-e VAR_NAME`.
 
-### Security Boundaries
-
-The sandbox container enforces filesystem isolation through Docker volume mounts:
-
-- **Read-write**: Current working directory mounted at `/workspace`
-- **Read-only**: Agent configuration from `~/.propio` mounted at `/app/.propio` (provider configs and credentials)
-- **Blocked**: Access to other home directory files, system files, and other mounted paths
-
-This ensures that LLM tool calls (`read_file`, `write_file`) cannot access sensitive files outside the current project directory.
+---
 
 ## Troubleshooting
 
-### Tool Calling Issues with Ollama
+### Ollama tool calling: XML output instead of tool calls
 
-**Symptom:** The agent outputs XML-like text instead of actually calling tools:
+**Symptom:**
 
-```xml
+```
 <function=search_text>
 <parameter=query>some query</parameter>
 ```
 
-**Cause:** The model doesn't properly support Ollama's native tool calling format.
-
-**Solution:**
-
-1. Switch to a model with better tool calling support:
-
-   ```bash
-   ollama pull llama3.1:8b
-   # Update your ~/.propio/providers.json to use llama3.1:8b
-   ```
-
-2. Models with confirmed good tool calling support:
-   - `llama3.1:8b`, `llama3.1:70b` - Excellent tool calling
-   - `mistral:7b-instruct-v0.3` - Good tool calling
-   - `deepseek-coder-v2:16b` - Good for coding tasks
-   - `qwen2.5:14b` - Decent tool calling
-
-3. Test tool calling works:
-   ```
-   You: List the files in the src directory
-   Assistant: [Executing tool: list_dir]  ← Should see this, not XML output
-   ```
-
-### Docker Errors
-
-**Error: `docker: command not found`**
-
-Docker is not installed. Install Docker Desktop from https://docs.docker.com/get-docker/
-
-**Error: `Cannot connect to Docker daemon`**
-
-Docker daemon is not running. Start Docker Desktop or the Docker service.
-
-**Error: `no such file or directory: ./docker-compose.yml`**
-
-Make sure you're running the command from the agent project directory.
-
-**Error: `image not found`**
-
-Rebuild the Docker image:
+**Fix:** Switch to a model with better tool calling support:
 
 ```bash
-docker compose build
+ollama pull llama3.1:8b
+# Update defaultModel in ~/.propio/providers.json
 ```
 
-### Provider Connection Issues
+Models with confirmed good tool calling: `llama3.1:8b`, `llama3.1:70b`, `mistral:7b-instruct-v0.3`, `deepseek-coder-v2:16b`, `qwen2.5:14b`.
 
-**Ollama in sandbox mode doesn't connect**
+---
 
-The sandbox uses `host.docker.internal` to reach services on the host. Ensure Ollama is listening on the network (not localhost-only).
+### Docker errors
 
-On Linux, `host.docker.internal` may not work. Use your host's IP address instead by setting `OLLAMA_HOST` in docker-compose.yml:
+| Error                                      | Fix                                                    |
+| ------------------------------------------ | ------------------------------------------------------ |
+| `docker: command not found`                | Install [Docker Desktop](https://docs.docker.com/get-docker/) |
+| `Cannot connect to Docker daemon`          | Start Docker Desktop or the Docker service             |
+| `no such file or directory: ./docker-compose.yml` | Run from the agent project directory           |
+| `image not found`                          | Run `docker compose build`                             |
+
+---
+
+### Ollama unreachable from sandbox
+
+The sandbox uses `host.docker.internal` to reach the host. On Linux this may not resolve — use your host's IP instead:
 
 ```bash
-# Find your host IP
 hostname -I
-# Then set in docker-compose.yml environment section
-OLLAMA_HOST=http://192.168.1.100:11434
+# Set OLLAMA_HOST=http://<your-ip>:11434 before running bin/propio-sandbox
 ```
 
-**AWS Bedrock authentication fails in sandbox**
+Alternatively, add `--network=host` to the docker run command.
 
-Ensure AWS credentials are available. Set credentials via docker-compose.yml environment section or pass them as command-line flags:
+---
 
-1. AWS CLI: `aws configure` (then pass via environment)
-2. Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+### AWS Bedrock auth fails in sandbox
 
-## Linux Users
+Ensure credentials are exported in your shell before running `bin/propio-sandbox`:
 
-On Linux, `host.docker.internal` may not work. Use one of these alternatives:
+```bash
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+bin/propio-sandbox
+```
 
-1. Add `--network=host` to docker run
-2. Set `OLLAMA_HOST` to your host IP address
+Or run `aws configure` and export `AWS_PROFILE`.
