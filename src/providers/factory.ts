@@ -4,10 +4,12 @@ import {
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
+  XaiProviderConfig,
 } from "./config.js";
 import { OllamaProvider } from "./ollama.js";
 import { BedrockProvider } from "./bedrock.js";
 import { OpenRouterProvider } from "./openrouter.js";
+import { XaiProvider } from "./xai.js";
 
 /**
  * Factory function to create LLM provider instances from configuration.
@@ -69,9 +71,16 @@ export function createProvider(
         xTitle: openRouterConfig.xTitle,
       });
     }
+    case "xai": {
+      const xaiConfig = config as XaiProviderConfig;
+      return new XaiProvider({
+        model,
+        apiKey: xaiConfig.apiKey,
+      });
+    }
     default:
       throw new Error(
-        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter`,
+        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter, xai`,
       );
   }
 }
