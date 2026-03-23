@@ -227,13 +227,13 @@ async function streamAssistantResponse(
       abortSignal,
       onEvent: renderVisibilityEvent,
       ...(useLegacyToolCallbacks
-          ? {
+        ? {
             onToolStart: (toolName) => {
               mdStream.flush();
               // Prefer a persistent line over spinner-only feedback so long-running
               // tools provide visible progress in all terminals/renderers.
               ui.info(`Starting ${toolName}...`);
-              ui.status(`Executing ${toolName}...`);
+              ui.status(`Executing ${toolName}...`, "tool call");
             },
             onToolEnd: (toolName, result) => {
               const summary = previewToolResult(result);

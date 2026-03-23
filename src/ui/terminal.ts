@@ -71,7 +71,7 @@ export class TerminalUi {
     return this.applyStyle(text, formatUserMessage);
   }
 
-  status(text: string): void {
+  status(text: string, phase?: string): void {
     if (this.json) {
       return;
     }
@@ -86,11 +86,13 @@ export class TerminalUi {
       this.spinner = new OperationSpinner(formatted, {
         enabled: true,
         stream: this.stderr,
+        phase,
       });
       this.spinner.start();
       return;
     }
 
+    this.spinner.setPhase(phase ?? null);
     this.spinner.setText(formatted);
   }
 
@@ -289,7 +291,7 @@ export class TerminalUi {
   }
 
   private wrapLineAtWordBoundaries(line: string, maxWidth: number): string[] {
-    if (line.length <= maxWidth) {
+    if (this.visibleLength(line) <= maxWidth) {
       return [line];
     }
 
@@ -299,7 +301,7 @@ export class TerminalUi {
 
     for (const word of words) {
       if (currentLine.length === 0) {
-        if (word.length > maxWidth) {
+        if (this.visibleLength(word) > maxWidth) {
           wrappedLines.push(word);
         } else {
           currentLine = word;
@@ -308,13 +310,13 @@ export class TerminalUi {
       }
 
       const candidate = `${currentLine} ${word}`;
-      if (candidate.length <= maxWidth) {
+      if (this.visibleLength(candidate) <= maxWidth) {
         currentLine = candidate;
         continue;
       }
 
       wrappedLines.push(currentLine);
-      if (word.length > maxWidth) {
+      if (this.visibleLength(word) > maxWidth) {
         wrappedLines.push(word);
         currentLine = "";
       } else {
@@ -327,5 +329,9 @@ export class TerminalUi {
     }
 
     return wrappedLines.length > 0 ? wrappedLines : [line];
+  }
+
+  private visibleLength(value: string): number {
+    return value.replace(/\x1b\[[0-9;]*m/g, "").length;
   }
 }

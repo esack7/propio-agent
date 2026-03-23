@@ -3,36 +3,101 @@ import ora from "ora";
 interface OperationSpinnerOptions {
   enabled?: boolean;
   stream?: NodeJS.WriteStream;
+  phase?: string;
+  showElapsed?: boolean;
+  elapsedUpdateIntervalMs?: number;
 }
 
 export class OperationSpinner {
   private spinner: ReturnType<typeof ora>;
+  private baseText: string;
+  private phase: string | null;
+  private readonly showElapsed: boolean;
+  private readonly elapsedUpdateIntervalMs: number;
+  private startedAtMs: number | null = null;
+  private elapsedTimerId: NodeJS.Timeout | null = null;
 
   constructor(text: string, options: OperationSpinnerOptions = {}) {
+    this.baseText = text;
+    this.phase = options.phase ?? null;
+    this.showElapsed = options.showElapsed ?? true;
+    this.elapsedUpdateIntervalMs = options.elapsedUpdateIntervalMs ?? 1000;
     this.spinner = ora({
-      text,
+      text: this.composeText(),
       stream: options.stream ?? process.stderr,
       isEnabled: options.enabled,
     });
   }
 
   start(): void {
+    this.startedAtMs = Date.now();
+    this.refreshText();
+    this.startElapsedTicker();
     this.spinner.start();
   }
 
   setText(text: string): void {
-    this.spinner.text = text;
+    this.baseText = text;
+    this.refreshText();
+  }
+
+  setPhase(phase: string | null): void {
+    this.phase = phase;
+    this.refreshText();
   }
 
   succeed(message: string): void {
+    this.stopElapsedTicker();
     this.spinner.succeed(message);
   }
 
   fail(message: string): void {
+    this.stopElapsedTicker();
     this.spinner.fail(message);
   }
 
   stop(): void {
+    this.stopElapsedTicker();
     this.spinner.stop();
+  }
+
+  private composeText(): string {
+    const phasePrefix = this.phase ? `[${this.phase}] ` : "";
+    const elapsedSuffix = this.getElapsedSuffix();
+    return `${phasePrefix}${this.baseText}${elapsedSuffix}`;
+  }
+
+  private getElapsedSuffix(): string {
+    if (!this.showElapsed || this.startedAtMs === null) {
+      return "";
+    }
+
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((Date.now() - this.startedAtMs) / 1000),
+    );
+
+    return ` (${elapsedSeconds}s)`;
+  }
+
+  private refreshText(): void {
+    this.spinner.text = this.composeText();
+  }
+
+  private startElapsedTicker(): void {
+    if (!this.showElapsed || this.elapsedTimerId !== null) {
+      return;
+    }
+
+    this.elapsedTimerId = setInterval(() => {
+      this.refreshText();
+    }, this.elapsedUpdateIntervalMs);
+  }
+
+  private stopElapsedTicker(): void {
+    if (this.elapsedTimerId !== null) {
+      clearInterval(this.elapsedTimerId);
+      this.elapsedTimerId = null;
+    }
   }
 }

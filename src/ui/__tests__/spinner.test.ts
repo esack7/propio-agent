@@ -1,18 +1,24 @@
 describe("OperationSpinner class", () => {
   let spinnerModule: any;
+  let mockOraSpinner: any;
+  let mockOraFactory: any;
 
   beforeEach(async () => {
     // Clear module cache before each test
     jest.resetModules();
 
+    mockOraSpinner = {
+      text: "",
+      start: jest.fn().mockReturnThis(),
+      succeed: jest.fn().mockReturnThis(),
+      fail: jest.fn().mockReturnThis(),
+      stop: jest.fn().mockReturnThis(),
+    };
+    mockOraFactory = jest.fn().mockReturnValue(mockOraSpinner);
+
     // Mock ora before importing the spinner module
     jest.doMock("ora", () => ({
-      default: jest.fn().mockReturnValue({
-        start: jest.fn().mockReturnThis(),
-        succeed: jest.fn().mockReturnThis(),
-        fail: jest.fn().mockReturnThis(),
-        stop: jest.fn().mockReturnThis(),
-      }),
+      default: mockOraFactory,
     }));
 
     spinnerModule = await import("../spinner.js");
@@ -47,6 +53,7 @@ describe("OperationSpinner class", () => {
       const spinner = new spinnerModule.OperationSpinner("Starting operation");
       const result = spinner.start();
       expect(result).toBeUndefined();
+      spinner.stop();
     });
   });
 
@@ -112,6 +119,8 @@ describe("OperationSpinner class", () => {
     it("should have all required methods", () => {
       const spinner = new spinnerModule.OperationSpinner("test");
       expect(typeof spinner.start).toBe("function");
+      expect(typeof spinner.setText).toBe("function");
+      expect(typeof spinner.setPhase).toBe("function");
       expect(typeof spinner.succeed).toBe("function");
       expect(typeof spinner.fail).toBe("function");
       expect(typeof spinner.stop).toBe("function");
@@ -170,6 +179,40 @@ describe("OperationSpinner class", () => {
         spinner.start();
         spinner.succeed("done");
       }).not.toThrow();
+    });
+  });
+
+  describe("elapsed time and phase labels", () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it("prefixes spinner text with the provided phase", () => {
+      const spinner = new spinnerModule.OperationSpinner("Executing tool", {
+        phase: "tool call",
+      });
+
+      spinner.start();
+      expect((spinner as any).composeText()).toContain(
+        "[tool call] Executing tool",
+      );
+      spinner.stop();
+    });
+
+    it("updates elapsed time while running", () => {
+      const spinner = new spinnerModule.OperationSpinner("Running", {
+        elapsedUpdateIntervalMs: 1000,
+      });
+
+      spinner.start();
+      jest.advanceTimersByTime(2100);
+
+      expect((spinner as any).composeText()).toContain("(2s)");
+      spinner.stop();
     });
   });
 });
