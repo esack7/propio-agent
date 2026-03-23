@@ -127,6 +127,16 @@ function previewToolResult(result: string, maxLength = 70): string {
   return `${compact.substring(0, maxLength)}...`;
 }
 
+function printSlashCommandHelp(ui: Pick<TerminalUi, "info" | "command">): void {
+  ui.info("Available slash commands:");
+  ui.command("/help    - show this help menu");
+  ui.command("/clear   - clear session context");
+  ui.command("/context - show session context");
+  ui.command("/tools   - manage enabled tools");
+  ui.command("/exit    - save context and exit");
+  ui.command("");
+}
+
 async function readStdinInput(): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     let content = "";
@@ -349,21 +359,17 @@ async function runInteractiveSession(
     process.kill(process.pid, "SIGINT");
   });
 
-  ui.info("AI Agent started. Type your message and press Enter.");
-  ui.command(
-    "Commands: /clear - clear context, /context - show context, /tools - manage tools, /exit - quit",
-  );
-  ui.command("(use --help for runtime flags)");
+  ui.command("Type /help to view available slash commands.");
+  ui.command("Exit with /exit or Ctrl+C.");
   ui.command("");
 
-  const tools = agent.getTools();
-  ui.info(
-    `Loaded ${tools.length} tools: ${tools.map((t) => t.function.name).join(", ")}`,
-  );
-  ui.command("");
-
+  let shownReadyPromptMessage = false;
   while (!shouldExit()) {
     setMode("awaitingInput");
+    if (!shownReadyPromptMessage) {
+      ui.info("AI Agent started. Type your message and press Enter.");
+      shownReadyPromptMessage = true;
+    }
     const input = await promptOnce(rl, ui.prompt("You: "));
     const trimmedInput = input.trim();
 
@@ -391,6 +397,11 @@ async function runInteractiveSession(
       rl.close();
       setActiveReadline(null);
       return 0;
+    }
+
+    if (trimmedInput === "/help") {
+      printSlashCommandHelp(ui);
+      continue;
     }
 
     if (trimmedInput === "/clear") {
