@@ -28,6 +28,10 @@ describe("cli args parsing", () => {
       "--json",
       "--plain",
       "--no-interactive",
+      "--show-activity",
+      "--show-status",
+      "--show-reasoning-summary",
+      "--show-trace",
       "--debug-llm",
       "-h",
       "--foo",
@@ -37,12 +41,20 @@ describe("cli args parsing", () => {
     expect(parsed.flags.json).toBe(true);
     expect(parsed.flags.plain).toBe(true);
     expect(parsed.flags.noInteractive).toBe(true);
+    expect(parsed.flags.showActivity).toBe(true);
+    expect(parsed.flags.showStatus).toBe(true);
+    expect(parsed.flags.showReasoningSummary).toBe(true);
+    expect(parsed.flags.showTrace).toBe(true);
     expect(parsed.flags.debugLlm).toBe(true);
     expect(parsed.flags.help).toBe(true);
     expect(parsed.forwardedArgs).toEqual([
       "--json",
       "--plain",
       "--no-interactive",
+      "--show-activity",
+      "--show-status",
+      "--show-reasoning-summary",
+      "--show-trace",
       "--debug-llm",
       "-h",
       "--foo",

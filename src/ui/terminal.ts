@@ -94,6 +94,40 @@ export class TerminalUi {
     this.spinner.setText(formatted);
   }
 
+  traceStatus(text: string): void {
+    if (this.json) {
+      return;
+    }
+    this.done();
+    this.writeStderrLine(this.applyStyle(`Status: ${text}`, formatSubtle));
+  }
+
+  traceActivity(text: string, level: "info" | "error" = "info"): void {
+    if (this.json) {
+      return;
+    }
+    this.done();
+    if (level === "error") {
+      this.writeStderrLine(this.applyStyle(`Activity: ${text}`, formatError));
+      return;
+    }
+    this.writeStderrLine(this.applyStyle(`Activity: ${text}`, formatInfo));
+  }
+
+  reasoningSummary(summary: string, source: "agent" | "provider"): void {
+    if (this.json) {
+      return;
+    }
+    this.done();
+    this.writeStderrLine("");
+    this.writeStderrLine(
+      this.applyStyle(
+        `Reasoning summary (${source}): ${summary}`,
+        formatSubtle,
+      ),
+    );
+  }
+
   info(text: string): void {
     if (this.json) {
       return;

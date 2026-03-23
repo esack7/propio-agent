@@ -65,13 +65,48 @@ export interface ChatResponse {
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
 }
 
+export type ProviderReasoningSummarySource = "provider" | "agent";
+
+export interface AssistantTextStreamEvent {
+  type: "assistant_text";
+  delta: string;
+}
+
+export interface ToolCallsStreamEvent {
+  type: "tool_calls";
+  toolCalls: ChatToolCall[];
+}
+
+export interface StatusStreamEvent {
+  type: "status";
+  status: string;
+  phase?: string;
+}
+
+export interface ReasoningSummaryStreamEvent {
+  type: "reasoning_summary";
+  summary: string;
+  source: ProviderReasoningSummarySource;
+}
+
 /**
- * Streaming chat chunk
+ * Backward-compatible streaming chunk shape.
+ * New implementations should emit ChatStreamEvent variants with a `type`.
  */
 export interface ChatChunk {
   delta: string;
   toolCalls?: ChatToolCall[];
 }
+
+/**
+ * Streaming event model used across providers/agent runtime.
+ */
+export type ChatStreamEvent =
+  | AssistantTextStreamEvent
+  | ToolCallsStreamEvent
+  | StatusStreamEvent
+  | ReasoningSummaryStreamEvent
+  | ChatChunk;
 
 /**
  * Base provider error class

@@ -2,6 +2,10 @@ export const CLI_FLAG_SANDBOX = "--sandbox";
 export const CLI_FLAG_JSON = "--json";
 export const CLI_FLAG_PLAIN = "--plain";
 export const CLI_FLAG_NO_INTERACTIVE = "--no-interactive";
+export const CLI_FLAG_SHOW_ACTIVITY = "--show-activity";
+export const CLI_FLAG_SHOW_STATUS = "--show-status";
+export const CLI_FLAG_SHOW_REASONING_SUMMARY = "--show-reasoning-summary";
+export const CLI_FLAG_SHOW_TRACE = "--show-trace";
 export const CLI_FLAG_DEBUG_LLM = "--debug-llm";
 export const CLI_FLAG_DEBUG_LLM_FILE = "--debug-llm-file";
 export const CLI_FLAG_HELP = "--help";
@@ -13,6 +17,10 @@ export interface ParsedCliArgs {
     json: boolean;
     plain: boolean;
     noInteractive: boolean;
+    showActivity: boolean;
+    showStatus: boolean;
+    showReasoningSummary: boolean;
+    showTrace: boolean;
     debugLlm: boolean;
     debugLlmFile?: string;
     help: boolean;
@@ -29,6 +37,10 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     json: false,
     plain: false,
     noInteractive: false,
+    showActivity: false,
+    showStatus: false,
+    showReasoningSummary: false,
+    showTrace: false,
     debugLlm: false,
     debugLlmFile: undefined,
     help: false,
@@ -46,6 +58,14 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       flags.plain = true;
     } else if (arg === CLI_FLAG_NO_INTERACTIVE) {
       flags.noInteractive = true;
+    } else if (arg === CLI_FLAG_SHOW_ACTIVITY) {
+      flags.showActivity = true;
+    } else if (arg === CLI_FLAG_SHOW_STATUS) {
+      flags.showStatus = true;
+    } else if (arg === CLI_FLAG_SHOW_REASONING_SUMMARY) {
+      flags.showReasoningSummary = true;
+    } else if (arg === CLI_FLAG_SHOW_TRACE) {
+      flags.showTrace = true;
     } else if (arg === CLI_FLAG_DEBUG_LLM) {
       flags.debugLlm = true;
     } else if (arg.startsWith(`${CLI_FLAG_DEBUG_LLM_FILE}=`)) {

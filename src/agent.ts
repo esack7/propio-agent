@@ -4,6 +4,8 @@ import {
   ChatMessage,
   ChatTool,
   ChatToolCall,
+  ChatStreamEvent,
+  ProviderReasoningSummarySource,
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
@@ -21,9 +23,42 @@ import { ExecutableTool } from "./tools/interface.js";
 import { ToolContext } from "./tools/types.js";
 import { AgentDiagnosticEvent } from "./diagnostics.js";
 
+export type AgentVisibilityEvent =
+  | { type: "status"; status: string; phase?: string }
+  | {
+      type: "tool_started";
+      toolName: string;
+      toolCallId: string;
+      argumentChars: number;
+      argumentPreview: string;
+    }
+  | {
+      type: "tool_finished";
+      toolName: string;
+      toolCallId: string;
+      resultPreview: string;
+    }
+  | {
+      type: "tool_failed";
+      toolName: string;
+      toolCallId: string;
+      resultPreview: string;
+    }
+  | {
+      type: "reasoning_summary";
+      summary: string;
+      source: ProviderReasoningSummarySource;
+    };
+
+export interface TurnReasoningSummary {
+  summary: string;
+  source: ProviderReasoningSummarySource;
+}
+
 export class Agent {
   private static readonly MAX_TOOL_RESULT_CHARS = 12000;
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
+  private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private provider: LLMProvider;
   private model: string;
   private sessionContext: ChatMessage[];
@@ -33,6 +68,7 @@ export class Agent {
   private providersConfig: ProvidersConfig;
   private diagnosticsEnabled: boolean;
   private diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
+  private lastTurnReasoningSummary: TurnReasoningSummary | null = null;
 
   /**
    * Initialize an Agent with multi-provider configuration.
@@ -158,6 +194,109 @@ export class Agent {
     this.diagnosticsListener(event);
   }
 
+  private emitVisibilityEvent(
+    options:
+      | {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+        }
+      | undefined,
+    event: AgentVisibilityEvent,
+  ): void {
+    options?.onEvent?.(event);
+  }
+
+  private emitStatus(
+    options:
+      | {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+        }
+      | undefined,
+    status: string,
+    phase?: string,
+  ): void {
+    this.emitVisibilityEvent(options, { type: "status", status, phase });
+  }
+
+  private toPreview(text: string): string {
+    const compact = text.replace(/\s+/g, " ").trim();
+    if (compact.length <= Agent.MAX_VISIBILITY_PREVIEW_CHARS) {
+      return compact;
+    }
+    return `${compact.slice(0, Agent.MAX_VISIBILITY_PREVIEW_CHARS)}...`;
+  }
+
+  private normalizeStreamEvent(event: ChatStreamEvent): {
+    delta?: string;
+    toolCalls?: ChatToolCall[];
+    status?: { status: string; phase?: string };
+    reasoningSummary?: {
+      summary: string;
+      source: ProviderReasoningSummarySource;
+    };
+  } {
+    if (!("type" in event)) {
+      return {
+        delta: event.delta,
+        toolCalls: event.toolCalls,
+      };
+    }
+
+    if (event.type === "assistant_text") {
+      return { delta: event.delta };
+    }
+
+    if (event.type === "tool_calls") {
+      return { toolCalls: event.toolCalls };
+    }
+
+    if (event.type === "status") {
+      return { status: { status: event.status, phase: event.phase } };
+    }
+
+    if (event.type === "reasoning_summary") {
+      return {
+        reasoningSummary: {
+          summary: event.summary,
+          source: event.source,
+        },
+      };
+    }
+
+    return {};
+  }
+
+  private synthesizeAgentReasoningSummary(
+    iterationCount: number,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): string {
+    if (toolExecutionEvents.length === 0) {
+      return iterationCount > 1
+        ? "Reviewed prior context and generated the final answer without running tools."
+        : "Read your request and generated the answer directly without running tools.";
+    }
+
+    const namesInOrder: string[] = [];
+    for (const event of toolExecutionEvents) {
+      if (!namesInOrder.includes(event.name)) {
+        namesInOrder.push(event.name);
+      }
+    }
+    const failedCount = toolExecutionEvents.filter(
+      (event) => event.failed,
+    ).length;
+    const completedCount = toolExecutionEvents.length - failedCount;
+    const toolLabel =
+      namesInOrder.length === 1
+        ? namesInOrder[0]
+        : `${namesInOrder.slice(0, -1).join(", ")} and ${namesInOrder[namesInOrder.length - 1]}`;
+
+    if (failedCount === 0) {
+      return `Used ${toolLabel}, processed the results, then generated the final answer.`;
+    }
+
+    return `Used ${toolLabel}; ${completedCount} completed and ${failedCount} failed. Continued with the available results to produce the final answer.`;
+  }
+
   /**
    * Switch to a different provider at runtime
    *
@@ -201,6 +340,11 @@ export class Agent {
     onToken: (token: string) => void,
     abortSignal: AbortSignal | undefined,
     iteration: number,
+    options?:
+      | {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+        }
+      | undefined,
   ): Promise<string> {
     const messages: ChatMessage[] = [
       { role: "system", content: this.systemPrompt },
@@ -223,7 +367,8 @@ export class Agent {
 
     let fullResponse = "";
     let chunkCount = 0;
-    for await (const chunk of this.provider.streamChat({
+    this.emitStatus(options, "Streaming response", "response");
+    for await (const event of this.provider.streamChat({
       model: this.model,
       messages,
       signal: abortSignal,
@@ -232,8 +377,20 @@ export class Agent {
         throw new Error("Request cancelled");
       }
 
-      const token = chunk.delta;
-      fullResponse += token;
+      const normalizedEvent = this.normalizeStreamEvent(event);
+
+      if (normalizedEvent.status) {
+        this.emitStatus(
+          options,
+          normalizedEvent.status.status,
+          normalizedEvent.status.phase,
+        );
+      }
+
+      const token = normalizedEvent.delta ?? "";
+      if (token) {
+        fullResponse += token;
+      }
       chunkCount++;
       this.emitDiagnostic({
         type: "chunk_received",
@@ -244,9 +401,7 @@ export class Agent {
         chunkChars: token.length,
         accumulatedChars: fullResponse.length,
       });
-      if (token) {
-        onToken(token);
-      }
+      if (token) onToken(token);
     }
 
     this.sessionContext.push({
@@ -282,6 +437,7 @@ export class Agent {
     options?: {
       onToolStart?: (toolName: string) => void;
       onToolEnd?: (toolName: string, result: string) => void;
+      onEvent?: (event: AgentVisibilityEvent) => void;
       abortSignal?: AbortSignal;
     },
   ): Promise<string> {
@@ -293,8 +449,12 @@ export class Agent {
       role: "user",
       content: userMessage,
     });
+    this.lastTurnReasoningSummary = null;
+    this.emitStatus(options, "Preparing request", "request");
 
     let iterationCount = 0;
+    const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
+    let providerReasoningSummary: TurnReasoningSummary | null = null;
     try {
       let finalResponse = "";
       let continueLoop = true;
@@ -320,8 +480,9 @@ export class Agent {
         let fullResponse = "";
         let toolCalls: ChatToolCall[] | undefined;
         let chunkCount = 0;
+        this.emitStatus(options, "Streaming response", "response");
 
-        for await (const chunk of this.provider.streamChat({
+        for await (const event of this.provider.streamChat({
           model: this.model,
           messages: messages,
           tools: this.toolRegistry.getEnabledSchemas(),
@@ -331,8 +492,28 @@ export class Agent {
             throw new Error("Request cancelled");
           }
 
-          const token = chunk.delta;
-          fullResponse += token;
+          const normalizedEvent = this.normalizeStreamEvent(event);
+
+          if (normalizedEvent.status) {
+            this.emitStatus(
+              options,
+              normalizedEvent.status.status,
+              normalizedEvent.status.phase,
+            );
+          }
+
+          if (
+            normalizedEvent.reasoningSummary &&
+            !providerReasoningSummary &&
+            normalizedEvent.reasoningSummary.summary.trim().length > 0
+          ) {
+            providerReasoningSummary = normalizedEvent.reasoningSummary;
+          }
+
+          const token = normalizedEvent.delta ?? "";
+          if (token) {
+            fullResponse += token;
+          }
           chunkCount++;
           this.emitDiagnostic({
             type: "chunk_received",
@@ -348,8 +529,8 @@ export class Agent {
           }
 
           // Capture tool calls from chunks
-          if (chunk.toolCalls) {
-            toolCalls = chunk.toolCalls;
+          if (normalizedEvent.toolCalls) {
+            toolCalls = normalizedEvent.toolCalls;
           }
         }
 
@@ -358,6 +539,7 @@ export class Agent {
           id: toolCall.id || `toolcall_${iterationCount}_${index}`,
         }));
         if (normalizedToolCalls && normalizedToolCalls.length > 0) {
+          this.emitStatus(options, "Tool call received", "tool");
           this.emitDiagnostic({
             type: "tool_calls_received",
             provider: this.provider.name,
@@ -427,6 +609,7 @@ export class Agent {
               onToken,
               options?.abortSignal,
               iterationCount + 1,
+              options,
             );
             continueLoop = false;
             if (finalResponse.trim().length === 0) {
@@ -449,6 +632,14 @@ export class Agent {
             const toolName = toolCall.function.name;
             const serializedArgs = JSON.stringify(args ?? {});
             const toolCallId = toolCall.id!;
+            this.emitStatus(options, `Executing ${toolName}`, "tool");
+            this.emitVisibilityEvent(options, {
+              type: "tool_started",
+              toolName,
+              toolCallId,
+              argumentChars: serializedArgs.length,
+              argumentPreview: this.toPreview(serializedArgs),
+            });
             this.emitDiagnostic({
               type: "tool_execution_started",
               provider: this.provider.name,
@@ -468,6 +659,11 @@ export class Agent {
 
             const result = await this.toolRegistry.execute(toolName, args);
             const contextSafeResult = this.sanitizeToolResultForContext(result);
+            const failed =
+              result.trimStart().startsWith("Error") ||
+              result.startsWith("Tool not found:") ||
+              result.startsWith("Tool not available:");
+            toolExecutionEvents.push({ name: toolName, failed });
             this.emitDiagnostic({
               type: "tool_execution_finished",
               provider: this.provider.name,
@@ -483,6 +679,13 @@ export class Agent {
               toolCallId,
               toolName: toolName,
               content: contextSafeResult,
+            });
+
+            this.emitVisibilityEvent(options, {
+              type: failed ? "tool_failed" : "tool_finished",
+              toolName,
+              toolCallId,
+              resultPreview: this.toPreview(result),
             });
 
             // Invoke onToolEnd callback if provided, otherwise use onToken
@@ -502,10 +705,12 @@ export class Agent {
             toolResults: toolResults,
           });
 
+          this.emitStatus(options, "Processing tool results", "tool");
           onToken("\n");
           // Continue loop to let agent process tool results
         } else {
           // No tool calls, we're done
+          this.emitStatus(options, "Generating final answer", "answer");
           continueLoop = false;
         }
       }
@@ -523,6 +728,26 @@ export class Agent {
           );
         }
       }
+
+      const agentSummary = this.synthesizeAgentReasoningSummary(
+        iterationCount,
+        toolExecutionEvents,
+      );
+      const selectedReasoningSummary: TurnReasoningSummary =
+        agentSummary.trim().length > 0
+          ? { summary: agentSummary, source: "agent" }
+          : (providerReasoningSummary ?? {
+              summary:
+                "Completed the request and generated the final response.",
+              source: "agent",
+            });
+
+      this.lastTurnReasoningSummary = selectedReasoningSummary;
+      this.emitVisibilityEvent(options, {
+        type: "reasoning_summary",
+        summary: selectedReasoningSummary.summary,
+        source: selectedReasoningSummary.source,
+      });
 
       return finalResponse;
     } catch (error) {
@@ -544,6 +769,12 @@ export class Agent {
 
   getContext(): ChatMessage[] {
     return [...this.sessionContext];
+  }
+
+  getLastTurnReasoningSummary(): TurnReasoningSummary | null {
+    return this.lastTurnReasoningSummary
+      ? { ...this.lastTurnReasoningSummary }
+      : null;
   }
 
   setSystemPrompt(prompt: string): void {

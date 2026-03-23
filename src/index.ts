@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 import { fileURLToPath } from "url";
-import { Agent } from "./agent.js";
+import { Agent, AgentVisibilityEvent } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
@@ -24,6 +24,12 @@ type AppMode =
   | "showingResults"
   | "error";
 
+interface VisibilityOptions {
+  showActivity: boolean;
+  showStatus: boolean;
+  showReasoningSummary: boolean;
+}
+
 const HELP_TEXT = `Usage: propio-agent [options]
 
 Options:
@@ -31,6 +37,11 @@ Options:
   --json              Emit only JSON response payloads on stdout
   --plain             Disable ANSI color styling and spinner animation
   --no-interactive    Disable prompts/spinners and read one prompt from stdin
+  --show-activity     Show normalized tool activity events (started/finished/failed)
+  --show-status       Show high-level agent lifecycle status updates
+  --show-reasoning-summary
+                      Show a concise reasoning summary after each turn
+  --show-trace        Enable --show-activity, --show-status, and --show-reasoning-summary
   --debug-llm         Emit provider/stream/tool diagnostic events to stderr
   --debug-llm-file    Append provider/stream/tool diagnostic events to a file
   -h, --help          Show this help text
@@ -154,12 +165,56 @@ async function streamAssistantResponse(
   userInput: string,
   ui: TerminalUi,
   abortSignal: AbortSignal,
-): Promise<string> {
+  visibility: {
+    showActivity: boolean;
+    showStatus: boolean;
+    showReasoningSummary: boolean;
+  },
+): Promise<{
+  response: string;
+  reasoningSummary?: { summary: string; source: "agent" | "provider" };
+}> {
   const mdStream = ui.createMarkdownStream();
 
   if (!ui.isJsonMode()) {
     ui.writeAssistant("Assistant: ");
   }
+
+  const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
+    if (event.type === "status") {
+      if (visibility.showStatus) {
+        mdStream.flush();
+        ui.traceStatus(event.status);
+      }
+      return;
+    }
+
+    if (!visibility.showActivity) {
+      return;
+    }
+
+    mdStream.flush();
+    if (event.type === "tool_started") {
+      ui.traceActivity(
+        `${event.toolName} started (${event.argumentChars} arg chars)`,
+      );
+      return;
+    }
+
+    if (event.type === "tool_finished") {
+      ui.traceActivity(`${event.toolName} finished: ${event.resultPreview}`);
+      return;
+    }
+
+    if (event.type === "tool_failed") {
+      ui.traceActivity(
+        `${event.toolName} failed: ${event.resultPreview}`,
+        "error",
+      );
+    }
+  };
+
+  const useLegacyToolCallbacks = !visibility.showActivity;
 
   const response = await agent.streamChat(
     userInput,
@@ -170,18 +225,26 @@ async function streamAssistantResponse(
     },
     {
       abortSignal,
-      onToolStart: (toolName) => {
-        mdStream.flush();
-        ui.status(`Executing ${toolName}...`);
-      },
-      onToolEnd: (toolName, result) => {
-        const summary = previewToolResult(result);
-        if (result.trimStart().startsWith("Error")) {
-          ui.error(`${toolName} failed: ${summary}`);
-          return;
-        }
-        ui.success(`${toolName} completed: ${summary}`);
-      },
+      onEvent: renderVisibilityEvent,
+      ...(useLegacyToolCallbacks
+          ? {
+            onToolStart: (toolName) => {
+              mdStream.flush();
+              // Prefer a persistent line over spinner-only feedback so long-running
+              // tools provide visible progress in all terminals/renderers.
+              ui.info(`Starting ${toolName}...`);
+              ui.status(`Executing ${toolName}...`);
+            },
+            onToolEnd: (toolName, result) => {
+              const summary = previewToolResult(result);
+              if (result.trimStart().startsWith("Error")) {
+                ui.error(`${toolName} failed: ${summary}`);
+                return;
+              }
+              ui.success(`${toolName} completed: ${summary}`);
+            },
+          }
+        : {}),
     },
   );
 
@@ -196,7 +259,12 @@ async function streamAssistantResponse(
     ui.newline();
   }
 
-  return response;
+  const reasoningSummary = agent.getLastTurnReasoningSummary() ?? undefined;
+  if (visibility.showReasoningSummary && reasoningSummary && !ui.isJsonMode()) {
+    ui.reasoningSummary(reasoningSummary.summary, reasoningSummary.source);
+  }
+
+  return { response, reasoningSummary };
 }
 
 async function runNonInteractiveSession(
@@ -204,6 +272,7 @@ async function runNonInteractiveSession(
   ui: TerminalUi,
   setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
+  visibility: VisibilityOptions,
 ): Promise<number> {
   if (process.stdin.isTTY) {
     ui.error(
@@ -223,15 +292,24 @@ async function runNonInteractiveSession(
   setMode("running");
 
   try {
-    const response = await streamAssistantResponse(
+    const result = await streamAssistantResponse(
       agent,
       stdinInput,
       ui,
       abortController.signal,
+      visibility,
     );
     setMode("showingResults");
     if (ui.isJsonMode()) {
-      ui.writeJson({ response });
+      ui.writeJson({
+        response: result.response,
+        ...(visibility.showReasoningSummary && result.reasoningSummary
+          ? {
+              reasoningSummary: result.reasoningSummary.summary,
+              reasoningSummarySource: result.reasoningSummary.source,
+            }
+          : {}),
+      });
     }
     return 0;
   } catch (error) {
@@ -259,6 +337,7 @@ async function runInteractiveSession(
   setCurrentAbortController: (controller: AbortController | null) => void,
   setActiveReadline: (rl: readline.Interface | null) => void,
   shouldExit: () => boolean,
+  visibility: VisibilityOptions,
 ): Promise<number> {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -354,6 +433,7 @@ async function runInteractiveSession(
         trimmedInput,
         ui,
         abortController.signal,
+        visibility,
       );
       setMode("showingResults");
       ui.command("");
@@ -401,6 +481,12 @@ async function main(): Promise<number> {
   const debugLlmFilePath = parsedArgs.flags.debugLlmFile;
   const diagnosticsEnabled = debugLlmToStderr || Boolean(debugLlmFilePath);
   const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
+  const showTrace = parsedArgs.flags.showTrace;
+  const visibility: VisibilityOptions = {
+    showActivity: parsedArgs.flags.showActivity || showTrace,
+    showStatus: parsedArgs.flags.showStatus || showTrace,
+    showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
+  };
 
   setColorEnabled(colorEnabled);
 
@@ -496,6 +582,7 @@ Always provide clear, concise responses and summarize what you did after complet
         setCurrentAbortController,
         setActiveReadline,
         () => shouldExit,
+        visibility,
       );
       if (code === 130) {
         return shouldExit ? 130 : code;
@@ -508,6 +595,7 @@ Always provide clear, concise responses and summarize what you did after complet
       ui,
       setMode,
       setCurrentAbortController,
+      visibility,
     );
     if (shouldExit) {
       return 130;

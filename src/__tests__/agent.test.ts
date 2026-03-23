@@ -5,6 +5,7 @@ import { LLMProvider } from "../providers/interface.js";
 import {
   ChatRequest,
   ChatResponse,
+  ChatStreamEvent,
   ChatChunk,
   ChatMessage,
 } from "../providers/types.js";
@@ -1086,6 +1087,95 @@ describe("Agent with Multi-Provider Configuration", () => {
       const systemMessage = messages.find((m) => m.role === "system");
       expect(systemMessage).toBeDefined();
       expect(systemMessage?.content).toContain(agentsMdContent);
+    });
+  });
+
+  describe("Visibility events and reasoning summary", () => {
+    it("should emit status/tool/reasoning visibility events when onEvent is provided", async () => {
+      class VisibilityMockProvider implements LLMProvider {
+        name = "visibility-mock";
+        private callCount = 0;
+
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          this.callCount++;
+          if (this.callCount === 1) {
+            yield { type: "assistant_text", delta: "Working on it." };
+            yield {
+              type: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tool-1",
+                  function: {
+                    name: "list_directory",
+                    arguments: {},
+                  },
+                },
+              ],
+            };
+            return;
+          }
+          yield { type: "assistant_text", delta: "Done." };
+        }
+      }
+
+      const mockProvider = new VisibilityMockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const eventTypes: string[] = [];
+      const statuses: string[] = [];
+      await agent.streamChat("Test visibility", jest.fn(), {
+        onEvent: (event) => {
+          eventTypes.push(event.type);
+          if (event.type === "status") {
+            statuses.push(event.status);
+          }
+        },
+      });
+
+      expect(eventTypes).toContain("tool_started");
+      expect(
+        eventTypes.includes("tool_finished") ||
+          eventTypes.includes("tool_failed"),
+      ).toBe(true);
+      expect(eventTypes).toContain("reasoning_summary");
+      expect(statuses).toContain("Preparing request");
+      expect(statuses).toContain("Tool call received");
+    });
+
+    it("should store last turn reasoning summary separately from session context", async () => {
+      class DirectAnswerProvider implements LLMProvider {
+        name = "direct-answer";
+
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          yield {
+            type: "reasoning_summary",
+            summary: "Provider summary",
+            source: "provider",
+          };
+          yield { type: "assistant_text", delta: "Final answer." };
+        }
+      }
+
+      const mockProvider = new DirectAnswerProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Answer directly", jest.fn());
+      const reasoning = agent.getLastTurnReasoningSummary();
+
+      expect(reasoning).toBeDefined();
+      expect(reasoning?.summary.length).toBeGreaterThan(0);
+      expect(reasoning?.source).toBe("agent");
+
+      const context = agent.getContext();
+      expect(
+        context.some((message) => message.content.includes("Provider summary")),
+      ).toBe(false);
     });
   });
 });
