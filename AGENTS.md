@@ -44,8 +44,9 @@ If a check is skipped, state that clearly in your final summary.
 
 ## Specs and Change Management
 
-- This repo is spec-driven (`openspec/config.yaml`).
-- For behavior changes (new capability, changed contracts, or user-visible behavior), update the relevant spec(s) under `openspec/specs/` and add/archive change artifacts under `openspec/changes/` as appropriate.
+- OpenSpec is temporarily suspended for agent/tool workflows unless the user explicitly asks to use it.
+- Do not create, update, or archive artifacts under `openspec/` unless the user requests spec work for the current task.
+- Existing `openspec/` files remain in the repository as historical/project documentation.
 - Pure refactors with no behavior change usually only require tests and code updates.
 
 ## Practical Conventions

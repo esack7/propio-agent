@@ -2,7 +2,7 @@ import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
-  ChatChunk,
+  ChatStreamEvent,
   ChatTool,
   ChatToolCall,
   ProviderError,
@@ -112,7 +112,7 @@ export class XaiProvider implements LLMProvider {
     };
   }
 
-  async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const expandedMessages = this.expandToolResults(request.messages);
       const messages = expandedMessages.map((m) =>
@@ -192,7 +192,7 @@ export class XaiProvider implements LLMProvider {
 
           const delta = choice.delta;
           if (delta.content != null && delta.content !== "") {
-            yield { delta: delta.content };
+            yield { type: "assistant_text", delta: delta.content };
           }
 
           if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
@@ -229,7 +229,7 @@ export class XaiProvider implements LLMProvider {
               });
             }
             if (toolCalls.length > 0) {
-              yield { delta: "", toolCalls };
+              yield { type: "tool_calls", toolCalls };
             }
           }
         }
@@ -282,10 +282,7 @@ export class XaiProvider implements LLMProvider {
         msg.includes("ETIMEDOUT") ||
         msg.includes("fetch failed"))
     ) {
-      return new ProviderError(
-        "Failed to connect to xAI API",
-        originalError,
-      );
+      return new ProviderError("Failed to connect to xAI API", originalError);
     }
     return new ProviderError(
       originalError.message || "xAI request failed",

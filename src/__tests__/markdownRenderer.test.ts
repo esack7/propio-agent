@@ -474,6 +474,28 @@ const x = 42;
       const output = writtenOutput.join("");
       expect(output).toContain("Content");
     });
+
+    it("should adapt wrapping when terminal columns change", () => {
+      const dynamicStderr = {
+        write: (chunk: string) => {
+          writtenOutput.push(chunk);
+          return true;
+        },
+        isTTY: true,
+        columns: 120,
+      } as unknown as NodeJS.WriteStream;
+
+      const dynamicStreamer = new MarkdownStreamer(dynamicStderr);
+      dynamicStderr.columns = 50;
+
+      dynamicStreamer.push(
+        "0123456789 0123456789 0123456789 0123456789 0123456789 0123456789",
+      );
+      dynamicStreamer.flush();
+
+      const plainOutput = writtenOutput.join("").replace(/\x1b\[[0-9;]*m/g, "");
+      expect(plainOutput).toContain("\n");
+    });
   });
 });
 

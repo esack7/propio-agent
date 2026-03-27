@@ -333,13 +333,13 @@ export class MarkdownStreamer implements Streamer {
   private lastRenderTime: number = 0;
   private readonly stderr: NodeJS.WriteStream;
   private readonly renderIntervalMs: number;
-  private readonly theme: MarkdownTheme;
-  private readonly width: number;
+  private theme: MarkdownTheme;
+  private width: number;
 
   constructor(stderr: NodeJS.WriteStream, renderIntervalMs: number = 80) {
     this.stderr = stderr;
     this.renderIntervalMs = renderIntervalMs;
-    this.width = Math.max((stderr.columns ?? 80) - 1, 40);
+    this.width = this.resolveRenderWidth();
     this.theme = defaultTheme(this.width);
   }
 
@@ -392,6 +392,7 @@ export class MarkdownStreamer implements Streamer {
     }
 
     this.lastRenderTime = Date.now();
+    this.refreshRenderGeometry();
 
     const parsed = this.parseBufferSafely(this.buffer);
     const stripped = stripTrailingAnsi(parsed);
@@ -418,6 +419,7 @@ export class MarkdownStreamer implements Streamer {
     }
 
     this.lastRenderTime = Date.now();
+    this.refreshRenderGeometry();
 
     const parsed = this.parseBufferSafely(this.buffer);
     const stripped = stripTrailingAnsi(parsed);
@@ -487,6 +489,18 @@ export class MarkdownStreamer implements Streamer {
     if (this.throttleTimerId !== null) {
       clearTimeout(this.throttleTimerId);
       this.throttleTimerId = null;
+    }
+  }
+
+  private resolveRenderWidth(): number {
+    return Math.max((this.stderr.columns ?? 80) - 1, 40);
+  }
+
+  private refreshRenderGeometry(): void {
+    const nextWidth = this.resolveRenderWidth();
+    if (nextWidth !== this.width) {
+      this.width = nextWidth;
+      this.theme = defaultTheme(this.width);
     }
   }
 

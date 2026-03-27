@@ -5,6 +5,7 @@ import {
   ChatRequest,
   ChatResponse,
   ChatChunk,
+  ChatStreamEvent,
   ProviderError,
   ProviderAuthenticationError,
   ProviderRateLimitError,
@@ -264,6 +265,25 @@ describe("Provider Types", () => {
         ],
       };
       expect(chunk.toolCalls).toHaveLength(1);
+    });
+  });
+
+  describe("ChatStreamEvent", () => {
+    it("should support typed assistant_text events", () => {
+      const event: ChatStreamEvent = {
+        type: "assistant_text",
+        delta: "Hello",
+      };
+      expect(event.type).toBe("assistant_text");
+    });
+
+    it("should support typed reasoning_summary events", () => {
+      const event: ChatStreamEvent = {
+        type: "reasoning_summary",
+        summary: "Checked tools and answered from results.",
+        source: "provider",
+      };
+      expect(event.type).toBe("reasoning_summary");
     });
   });
 

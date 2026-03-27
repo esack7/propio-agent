@@ -7,8 +7,7 @@ import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
-  ChatResponse,
-  ChatChunk,
+  ChatStreamEvent,
   ChatTool,
   ChatToolCall,
   ProviderError,
@@ -31,7 +30,7 @@ export class BedrockProvider implements LLMProvider {
     this.model = options.model;
   }
 
-  async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       // Extract system message if present
       const systemMessage = request.messages.find((m) => m.role === "system");
@@ -91,7 +90,7 @@ export class BedrockProvider implements LLMProvider {
 
           // Handle text delta
           if ((delta as any).text) {
-            yield { delta: (delta as any).text };
+            yield { type: "assistant_text", delta: (delta as any).text };
           }
 
           // Handle tool use delta - accumulate tool input
@@ -136,7 +135,7 @@ export class BedrockProvider implements LLMProvider {
       // Yield final chunk with tool calls if any
       if (toolCalls.length > 0) {
         yield {
-          delta: "",
+          type: "tool_calls",
           toolCalls,
         };
       }

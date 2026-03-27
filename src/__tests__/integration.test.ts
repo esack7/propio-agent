@@ -1,6 +1,11 @@
 import { Agent } from "../agent.js";
 import { LLMProvider } from "../providers/interface.js";
-import { ChatRequest, ChatResponse, ChatChunk } from "../providers/types.js";
+import {
+  ChatRequest,
+  ChatResponse,
+  ChatChunk,
+  ChatStreamEvent,
+} from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -363,6 +368,24 @@ describe("Agent Integration Tests", () => {
       // Verify tool was executed (context should have tool message)
       const context = agent.getContext();
       expect(context.some((m) => m.role === "tool")).toBe(true);
+    });
+
+    it("should consume typed stream events and expose turn reasoning summary", async () => {
+      const mockProvider = new MockIntegrationProvider("typed");
+      mockProvider.streamChat =
+        async function* (): AsyncIterable<ChatStreamEvent> {
+          yield { type: "assistant_text", delta: "Typed response" };
+        };
+
+      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const response = await agent.streamChat("Test typed stream", () => {});
+      const summary = agent.getLastTurnReasoningSummary();
+
+      expect(response).toBe("Typed response");
+      expect(summary).toBeDefined();
+      expect(summary?.source).toBe("agent");
     });
   });
 

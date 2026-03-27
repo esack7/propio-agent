@@ -153,4 +153,20 @@ describe("TerminalUi", () => {
     expect(output).toContain("word");
     expect(output).not.toContain("…");
   });
+
+  it("wraps ANSI-colored lines by visible width", () => {
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+    });
+
+    const line = "\x1b[31mred\x1b[0m \x1b[32mblue\x1b[0m \x1b[33mgreen\x1b[0m";
+    const wrapped = (ui as any).wrapLineAtWordBoundaries(line, 12);
+    const stripped = wrapped.map((value: string) =>
+      value.replace(/\x1b\[[0-9;]*m/g, ""),
+    );
+
+    expect(stripped).toEqual(["red blue", "green"]);
+  });
 });

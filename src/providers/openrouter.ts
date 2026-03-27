@@ -2,8 +2,7 @@ import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
-  ChatResponse,
-  ChatChunk,
+  ChatStreamEvent,
   ChatTool,
   ChatToolCall,
   ProviderError,
@@ -171,7 +170,7 @@ export class OpenRouterProvider implements LLMProvider {
     };
   }
 
-  async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       // Expand batched tool results before converting to OpenAI format
       const expandedMessages = this.expandToolResults(request.messages);
@@ -254,7 +253,7 @@ export class OpenRouterProvider implements LLMProvider {
 
           const delta = choice.delta;
           if (delta.content != null && delta.content !== "") {
-            yield { delta: delta.content };
+            yield { type: "assistant_text", delta: delta.content };
           }
 
           if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
@@ -291,7 +290,7 @@ export class OpenRouterProvider implements LLMProvider {
               });
             }
             if (toolCalls.length > 0) {
-              yield { delta: "", toolCalls };
+              yield { type: "tool_calls", toolCalls };
             }
           }
         }

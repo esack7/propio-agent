@@ -3,8 +3,7 @@ import { LLMProvider } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
-  ChatResponse,
-  ChatChunk,
+  ChatStreamEvent,
   ChatTool,
   ChatToolCall,
   ProviderError,
@@ -54,7 +53,7 @@ export class OllamaProvider implements LLMProvider {
     return configuredHost;
   }
 
-  async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+  async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       if (request.signal?.aborted) {
         throw new ProviderError("Request cancelled");
@@ -85,7 +84,7 @@ export class OllamaProvider implements LLMProvider {
 
         // Yield delta content
         if (chunk.message.content) {
-          yield { delta: chunk.message.content };
+          yield { type: "assistant_text", delta: chunk.message.content };
         }
 
         // Capture tool calls from the final chunk
@@ -99,7 +98,7 @@ export class OllamaProvider implements LLMProvider {
       // Yield final chunk with tool calls if present
       if (lastToolCalls && lastToolCalls.length > 0) {
         yield {
-          delta: "",
+          type: "tool_calls",
           toolCalls: lastToolCalls,
         };
       }

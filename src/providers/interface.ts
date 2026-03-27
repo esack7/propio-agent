@@ -1,4 +1,4 @@
-import { ChatRequest, ChatResponse, ChatChunk } from "./types.js";
+import { ChatRequest, ChatStreamEvent } from "./types.js";
 
 /**
  * LLMProvider interface defining the contract for all LLM provider implementations
@@ -12,7 +12,7 @@ export interface LLMProvider {
   /**
    * Streaming chat completion
    * @param request - The chat request with messages, model, and optional tools
-   * @returns AsyncIterable yielding ChatChunk objects for each token/chunk of the response
+   * @returns AsyncIterable yielding ChatStreamEvent objects for assistant text/tool calls/status updates
    */
-  streamChat(request: ChatRequest): AsyncIterable<ChatChunk>;
+  streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent>;
 }
