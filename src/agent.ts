@@ -27,6 +27,7 @@ import {
   RESERVED_OUTPUT_TOKENS,
 } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
+import { ContextManager } from "./context/contextManager.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -66,7 +67,7 @@ export class Agent {
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private provider: LLMProvider;
   private model: string;
-  private sessionContext: ChatMessage[];
+  private contextManager: ContextManager;
   private systemPrompt: string;
   private sessionContextFilePath: string;
   private toolRegistry: ToolRegistry;
@@ -171,16 +172,18 @@ export class Agent {
     this.provider = createProvider(resolvedProvider, resolvedModelKey);
     this.model = resolvedModelKey;
 
-    this.sessionContext = [];
+    this.contextManager = new ContextManager();
 
-    // Create ToolContext using property getters for live state access
+    // Create ToolContext using property getters for live state access.
+    // Each property read returns a fresh snapshot so tools cannot mutate
+    // internal ContextManager state.
     const self = this;
     const toolContext: ToolContext = {
       get systemPrompt() {
         return self.systemPrompt;
       },
       get sessionContext() {
-        return self.sessionContext;
+        return self.contextManager.getSnapshot();
       },
       get sessionContextFilePath() {
         return self.sessionContextFilePath;
@@ -349,17 +352,16 @@ export class Agent {
         }
       | undefined,
   ): Promise<string> {
-    const messages: ChatMessage[] = [
-      { role: "system", content: this.systemPrompt },
-      ...this.sessionContext,
-      {
-        role: "user",
-        content:
-          "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.",
-      },
-    ];
+    const noToolsInstruction =
+      "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.";
+    const plan = this.contextManager.buildPromptPlan(
+      this.systemPrompt,
+      noToolsInstruction,
+    );
+    const messages = plan.messages as ChatMessage[];
 
-    const contextMetrics = measureMessages(this.sessionContext);
+    const contextSnapshot = this.contextManager.getSnapshot();
+    const contextMetrics = measureMessages(contextSnapshot);
     this.emitDiagnostic({
       type: "context_snapshot",
       ...contextMetrics,
@@ -417,10 +419,7 @@ export class Agent {
       if (token) onToken(token);
     }
 
-    this.sessionContext.push({
-      role: "assistant",
-      content: fullResponse,
-    });
+    this.contextManager.commitAssistantResponse(fullResponse);
     this.emitDiagnostic({
       type: "iteration_finished",
       provider: this.provider.name,
@@ -437,7 +436,7 @@ export class Agent {
         provider: this.provider.name,
         model: this.model,
         iteration,
-        contextMessages: this.sessionContext.length,
+        contextMessages: this.contextManager.messageCount,
       });
     }
 
@@ -458,10 +457,7 @@ export class Agent {
       throw new Error("Request cancelled");
     }
 
-    this.sessionContext.push({
-      role: "user",
-      content: userMessage,
-    });
+    this.contextManager.beginUserTurn(userMessage);
     this.lastTurnReasoningSummary = null;
     this.emitStatus(options, "Preparing request", "request");
 
@@ -471,17 +467,16 @@ export class Agent {
     try {
       let finalResponse = "";
       let continueLoop = true;
-      const maxIterations = 10; // Prevent infinite loops
+      const maxIterations = 10;
       let emptyToolOnlyStreak = 0;
 
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const messages: ChatMessage[] = [
-          { role: "system", content: this.systemPrompt },
-          ...this.sessionContext,
-        ];
-        const contextMetrics = measureMessages(this.sessionContext);
+        const plan = this.contextManager.buildPromptPlan(this.systemPrompt);
+        const messages = plan.messages as ChatMessage[];
+        const contextSnapshot = this.contextManager.getSnapshot();
+        const contextMetrics = measureMessages(contextSnapshot);
         this.emitDiagnostic({
           type: "context_snapshot",
           ...contextMetrics,
@@ -551,7 +546,6 @@ export class Agent {
             onToken(token);
           }
 
-          // Capture tool calls from chunks
           if (normalizedEvent.toolCalls) {
             toolCalls = normalizedEvent.toolCalls;
           }
@@ -575,11 +569,10 @@ export class Agent {
           });
         }
 
-        this.sessionContext.push({
-          role: "assistant",
-          content: fullResponse,
-          toolCalls: normalizedToolCalls,
-        });
+        this.contextManager.commitAssistantResponse(
+          fullResponse,
+          normalizedToolCalls,
+        );
         this.emitDiagnostic({
           type: "iteration_finished",
           provider: this.provider.name,
@@ -599,7 +592,7 @@ export class Agent {
             provider: this.provider.name,
             model: this.model,
             iteration: iterationCount,
-            contextMessages: this.sessionContext.length,
+            contextMessages: this.contextManager.messageCount,
           });
         }
 
@@ -611,7 +604,6 @@ export class Agent {
         emptyToolOnlyStreak =
           hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
 
-        // Handle tool calls if present
         if (hasToolCalls) {
           if (emptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
             this.emitDiagnostic({
@@ -624,9 +616,7 @@ export class Agent {
               action: "fallback_no_tools",
             });
 
-            // Remove the latest assistant tool-call message before fallback finalization.
-            // It has unresolved tool calls that can keep the model in a loop.
-            this.sessionContext.pop();
+            this.contextManager.removeLastUnresolvedAssistantMessage();
 
             finalResponse = await this.requestFinalResponseWithoutTools(
               onToken,
@@ -673,7 +663,6 @@ export class Agent {
               argsChars: serializedArgs.length,
             });
 
-            // Invoke onToolStart callback if provided, otherwise use onToken
             if (options?.onToolStart) {
               options.onToolStart(toolName);
             } else {
@@ -713,7 +702,6 @@ export class Agent {
               resultPreview: this.toPreview(result),
             });
 
-            // Invoke onToolEnd callback if provided, otherwise use onToken
             if (options?.onToolEnd) {
               options.onToolEnd(toolName, result);
             } else {
@@ -723,18 +711,11 @@ export class Agent {
             }
           }
 
-          // Add single message with all tool results batched together
-          this.sessionContext.push({
-            role: "tool",
-            content: "", // Empty content, actual results are in toolResults array
-            toolResults: toolResults,
-          });
+          this.contextManager.recordToolResults(toolResults);
 
           this.emitStatus(options, "Processing tool results", "tool");
           onToken("\n");
-          // Continue loop to let agent process tool results
         } else {
-          // No tool calls, we're done
           this.emitStatus(options, "Generating final answer", "answer");
           continueLoop = false;
         }
@@ -789,11 +770,11 @@ export class Agent {
   }
 
   clearContext(): void {
-    this.sessionContext = [];
+    this.contextManager.clear();
   }
 
   getContext(): ChatMessage[] {
-    return [...this.sessionContext];
+    return this.contextManager.getSnapshot();
   }
 
   getLastTurnReasoningSummary(): TurnReasoningSummary | null {
