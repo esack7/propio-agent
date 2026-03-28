@@ -9,6 +9,9 @@ import {
   afterEach,
 } from "@jest/globals";
 
+import type { ToolContext } from "../types.js";
+import type { ChatMessage } from "../../providers/types.js";
+
 // Mock fs modules BEFORE any imports
 jest.unstable_mockModule("fs", () => ({
   writeFileSync: jest.fn(),
@@ -25,8 +28,6 @@ jest.unstable_mockModule("fs/promises", () => ({
 
 // All imports must be dynamic to ensure mocks are in place
 let createDefaultToolRegistry: any;
-let ToolContext: any;
-let ChatMessage: any;
 let ReadFileTool: any;
 let WriteFileTool: any;
 let SaveSessionContextTool: any;
@@ -44,12 +45,6 @@ beforeAll(async () => {
   // Now import modules that depend on fs
   const { createDefaultToolRegistry: factory } = await import("../factory.js");
   createDefaultToolRegistry = factory;
-
-  const { ToolContext: TC } = await import("../types.js");
-  ToolContext = TC;
-
-  const { ChatMessage: CM } = await import("../../providers/types.js");
-  ChatMessage = CM;
 
   const fileSystemModule = await import("../fileSystem.js");
   ReadFileTool = fileSystemModule.ReadFileTool;
@@ -221,7 +216,7 @@ describe("Tool Implementations", () => {
 
   describe("SaveSessionContextTool", () => {
     it("should write context to file using ToolContext", async () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test system prompt",
         sessionContext: [
           { role: "user", content: "Hello" },
@@ -262,11 +257,11 @@ describe("Tool Implementations", () => {
 
     it("should read live context values via property getters", async () => {
       let currentSystemPrompt = "Initial prompt";
-      let currentSessionContext: any[] = [
+      let currentSessionContext: ChatMessage[] = [
         { role: "user", content: "First message" },
       ];
 
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         get systemPrompt() {
           return currentSystemPrompt;
         },
@@ -301,7 +296,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should have correct schema", () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -314,7 +309,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should have name matching schema", () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -328,7 +323,7 @@ describe("Tool Implementations", () => {
 
   describe("createDefaultToolRegistry", () => {
     it("should register all 10 built-in tools", () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -351,7 +346,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should enable 8 tools by default", () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -374,7 +369,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should disable remove and run_bash by default", () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -390,7 +385,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should allow enabling disabled tools", () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -408,7 +403,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should register tools that are executable", async () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",
@@ -426,7 +421,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should reject execution of disabled tools", async () => {
-      const mockContext: any = {
+      const mockContext: ToolContext = {
         systemPrompt: "Test",
         sessionContext: [],
         sessionContextFilePath: "/test",

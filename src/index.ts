@@ -6,11 +6,7 @@ import { Agent, AgentVisibilityEvent } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
-import {
-  discoverAgentsMdFiles,
-  loadAgentsMdContent,
-  composeSystemPrompt,
-} from "./agentsMd.js";
+import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { printStartupBanner } from "./ui/banner.js";
@@ -572,14 +568,9 @@ When you need to perform actions like reading files, searching code, or executin
 
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
-    const systemPrompt = composeSystemPrompt(
-      agentsMdContent,
-      defaultSystemPrompt,
-    );
-
     const agent = new Agent({
       providersConfig: configPath,
-      systemPrompt,
+      systemPrompt: defaultSystemPrompt,
       agentsMdContent,
       diagnosticsEnabled,
       onDiagnosticEvent: diagnosticLogger.onEvent,

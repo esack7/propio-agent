@@ -21,7 +21,12 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import { ToolContext } from "./tools/types.js";
-import { AgentDiagnosticEvent } from "./diagnostics.js";
+import {
+  AgentDiagnosticEvent,
+  measureMessages,
+  RESERVED_OUTPUT_TOKENS,
+} from "./diagnostics.js";
+import { composeSystemPrompt } from "./agentsMd.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -133,12 +138,10 @@ export class Agent {
     const basePrompt =
       options.systemPrompt || "You are a helpful AI assistant.";
 
-    // Prepend agentsMdContent if provided and non-empty
-    if (options.agentsMdContent) {
-      this.systemPrompt = `${options.agentsMdContent}\n\n${basePrompt}`;
-    } else {
-      this.systemPrompt = basePrompt;
-    }
+    this.systemPrompt = composeSystemPrompt(
+      options.agentsMdContent ?? "",
+      basePrompt,
+    );
     this.sessionContextFilePath =
       options.sessionContextFilePath ||
       path.join(process.cwd(), "session_context.txt");
@@ -356,6 +359,12 @@ export class Agent {
       },
     ];
 
+    const contextMetrics = measureMessages(this.sessionContext);
+    this.emitDiagnostic({
+      type: "context_snapshot",
+      ...contextMetrics,
+    });
+    const promptMetrics = measureMessages(messages);
     this.emitDiagnostic({
       type: "request_started",
       provider: this.provider.name,
@@ -363,6 +372,10 @@ export class Agent {
       iteration,
       contextMessages: messages.length,
       enabledTools: 0,
+      promptMessageCount: promptMetrics.messageCount,
+      promptChars: promptMetrics.totalChars,
+      estimatedPromptTokens: promptMetrics.estimatedTokens,
+      reservedOutputTokens: RESERVED_OUTPUT_TOKENS,
     });
 
     let fullResponse = "";
@@ -468,6 +481,12 @@ export class Agent {
           { role: "system", content: this.systemPrompt },
           ...this.sessionContext,
         ];
+        const contextMetrics = measureMessages(this.sessionContext);
+        this.emitDiagnostic({
+          type: "context_snapshot",
+          ...contextMetrics,
+        });
+        const promptMetrics = measureMessages(messages);
         this.emitDiagnostic({
           type: "request_started",
           provider: this.provider.name,
@@ -475,6 +494,10 @@ export class Agent {
           iteration: iterationCount,
           contextMessages: messages.length,
           enabledTools: this.toolRegistry.getEnabledSchemas().length,
+          promptMessageCount: promptMetrics.messageCount,
+          promptChars: promptMetrics.totalChars,
+          estimatedPromptTokens: promptMetrics.estimatedTokens,
+          reservedOutputTokens: RESERVED_OUTPUT_TOKENS,
         });
 
         let fullResponse = "";
@@ -657,12 +680,13 @@ export class Agent {
               onToken(`[Executing tool: ${toolName}]\n`);
             }
 
-            const result = await this.toolRegistry.execute(toolName, args);
+            const execResult = await this.toolRegistry.executeWithStatus(
+              toolName,
+              args,
+            );
+            const result = execResult.content;
             const contextSafeResult = this.sanitizeToolResultForContext(result);
-            const failed =
-              result.trimStart().startsWith("Error") ||
-              result.startsWith("Tool not found:") ||
-              result.startsWith("Tool not available:");
+            const failed = execResult.status !== "success";
             toolExecutionEvents.push({ name: toolName, failed });
             this.emitDiagnostic({
               type: "tool_execution_finished",
@@ -673,6 +697,7 @@ export class Agent {
               toolCallId,
               resultChars: result.length,
               truncatedForContext: contextSafeResult.length < result.length,
+              status: execResult.status,
             });
 
             toolResults.push({

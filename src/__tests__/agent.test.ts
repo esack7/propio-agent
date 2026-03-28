@@ -1000,6 +1000,146 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Stopped after repeated empty tool-calling turns with no final assistant response.",
       );
     });
+
+    it("should emit context_snapshot and enriched request_started for normal request", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      const mockProvider = new MockProvider();
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("hello", () => {});
+
+      const snapshot = events.find((e) => e.type === "context_snapshot");
+      expect(snapshot).toBeDefined();
+      expect(snapshot!.type).toBe("context_snapshot");
+      if (snapshot!.type === "context_snapshot") {
+        expect(snapshot!.messageCount).toBeGreaterThanOrEqual(0);
+        expect(snapshot!.totalChars).toBeGreaterThanOrEqual(0);
+        expect(snapshot!.estimatedTokens).toBeGreaterThanOrEqual(0);
+      }
+
+      const reqStarted = events.find((e) => e.type === "request_started");
+      expect(reqStarted).toBeDefined();
+      if (reqStarted!.type === "request_started") {
+        expect(reqStarted!.promptMessageCount).toBeGreaterThan(0);
+        expect(reqStarted!.promptChars).toBeGreaterThan(0);
+        expect(reqStarted!.estimatedPromptTokens).toBeGreaterThan(0);
+        expect(reqStarted!.reservedOutputTokens).toBe(2048);
+      }
+    });
+
+    it("should emit enriched request_started for no-tools fallback request", async () => {
+      class LoopTool implements ExecutableTool {
+        readonly name = "loop_tool";
+        getSchema() {
+          return {
+            type: "function" as const,
+            function: {
+              name: "loop_tool",
+              description: "No-op",
+              parameters: { type: "object", properties: {} },
+            },
+          };
+        }
+        async execute(): Promise<string> {
+          return "ok";
+        }
+      }
+
+      class LoopingProvider implements LLMProvider {
+        name = "looping-provider";
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          if (!request.tools || request.tools.length === 0) {
+            yield { delta: "Final answer." };
+            return;
+          }
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                id: `call-${Date.now()}`,
+                function: { name: "loop_tool", arguments: {} },
+              },
+            ],
+          };
+        }
+      }
+
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      agent.addTool(new LoopTool());
+      (agent as any).provider = new LoopingProvider();
+
+      await agent.streamChat("hello", () => {});
+
+      const reqStartedEvents = events.filter(
+        (e) => e.type === "request_started",
+      );
+      expect(reqStartedEvents.length).toBeGreaterThanOrEqual(2);
+
+      // The fallback request (last request_started) should have enabledTools: 0
+      const fallbackReq = reqStartedEvents[reqStartedEvents.length - 1];
+      if (fallbackReq.type === "request_started") {
+        expect(fallbackReq.enabledTools).toBe(0);
+        expect(fallbackReq.promptMessageCount).toBeGreaterThan(0);
+        expect(fallbackReq.promptChars).toBeGreaterThan(0);
+        expect(fallbackReq.estimatedPromptTokens).toBeGreaterThan(0);
+        expect(fallbackReq.reservedOutputTokens).toBe(2048);
+      }
+    });
+
+    it("should include structured status in tool_execution_finished diagnostics", async () => {
+      class ToolCallProvider implements LLMProvider {
+        name = "tool-status-provider";
+        private callCount = 0;
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.callCount++;
+          if (this.callCount === 1) {
+            yield {
+              delta: "",
+              toolCalls: [
+                {
+                  id: "c1",
+                  function: { name: "list_dir", arguments: { path: "." } },
+                },
+              ],
+            };
+            return;
+          }
+          yield { delta: "Done." };
+        }
+      }
+
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => events.push(event),
+      });
+      (agent as any).provider = new ToolCallProvider();
+
+      await agent.streamChat("test", () => {});
+
+      const toolFinished = events.find(
+        (e) => e.type === "tool_execution_finished",
+      );
+      expect(toolFinished).toBeDefined();
+      if (toolFinished?.type === "tool_execution_finished") {
+        expect(toolFinished.status).toBe("success");
+      }
+    });
   });
 
   describe("Constructor with agentsMdContent option", () => {
@@ -1087,6 +1227,35 @@ describe("Agent with Multi-Provider Configuration", () => {
       const systemMessage = messages.find((m) => m.role === "system");
       expect(systemMessage).toBeDefined();
       expect(systemMessage?.content).toContain(agentsMdContent);
+    });
+
+    it("should compose agentsMdContent exactly once when CLI passes both systemPrompt and agentsMdContent", async () => {
+      const mockProvider = new MockProvider();
+      const agentsMdContent = "## Project Instructions\nDo X, Y, Z.";
+      const defaultPrompt = "You are a helpful AI coding assistant.";
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        systemPrompt: defaultPrompt,
+        agentsMdContent,
+      });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Test", () => {});
+
+      const messages = mockProvider.streamChatCalls[0].messages;
+      const systemMessage = messages.find((m) => m.role === "system");
+      expect(systemMessage).toBeDefined();
+      const systemContent = systemMessage!.content;
+
+      // AGENTS content appears exactly once (no double-prepend)
+      const firstIdx = systemContent.indexOf(agentsMdContent);
+      const secondIdx = systemContent.indexOf(agentsMdContent, firstIdx + 1);
+      expect(firstIdx).toBeGreaterThanOrEqual(0);
+      expect(secondIdx).toBe(-1);
+
+      // Both parts are present
+      expect(systemContent).toContain(agentsMdContent);
+      expect(systemContent).toContain(defaultPrompt);
     });
   });
 

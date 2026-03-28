@@ -1,5 +1,16 @@
 import { ChatMessage } from "../providers/types.js";
 
+export type ToolExecutionStatus =
+  | "success"
+  | "tool_not_found"
+  | "tool_disabled"
+  | "error";
+
+export interface ToolExecutionResult {
+  status: ToolExecutionStatus;
+  content: string;
+}
+
 /**
  * ToolContext interface for dependency injection.
  *
@@ -34,10 +45,11 @@ export interface ToolContext {
   readonly systemPrompt: string;
 
   /**
-   * Current session context messages.
+   * Current session context messages (read-only view).
    * Use property getter to ensure fresh value after clearContext() or new messages.
+   * Tools must not mutate this array or its elements.
    */
-  readonly sessionContext: ChatMessage[];
+  readonly sessionContext: ReadonlyArray<Readonly<ChatMessage>>;
 
   /**
    * File path where session context is persisted.

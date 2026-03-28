@@ -1,4 +1,42 @@
+import { ChatMessage } from "./providers/types.js";
+
+export const RESERVED_OUTPUT_TOKENS = 2048;
+
+export function estimateTokens(chars: number): number {
+  return Math.ceil(chars / 4);
+}
+
+export function measureMessages(
+  messages: ReadonlyArray<Readonly<ChatMessage>>,
+): {
+  messageCount: number;
+  totalChars: number;
+  estimatedTokens: number;
+} {
+  let totalChars = 0;
+  for (const msg of messages) {
+    totalChars += msg.content.length;
+    if (msg.toolCalls) {
+      totalChars += JSON.stringify(msg.toolCalls).length;
+    }
+    if (msg.toolResults) {
+      totalChars += JSON.stringify(msg.toolResults).length;
+    }
+  }
+  return {
+    messageCount: messages.length,
+    totalChars,
+    estimatedTokens: estimateTokens(totalChars),
+  };
+}
+
 export type AgentDiagnosticEvent =
+  | {
+      type: "context_snapshot";
+      messageCount: number;
+      totalChars: number;
+      estimatedTokens: number;
+    }
   | {
       type: "request_started";
       provider: string;
@@ -6,6 +44,10 @@ export type AgentDiagnosticEvent =
       iteration: number;
       contextMessages: number;
       enabledTools: number;
+      promptMessageCount: number;
+      promptChars: number;
+      estimatedPromptTokens: number;
+      reservedOutputTokens: number;
     }
   | {
       type: "chunk_received";
@@ -42,6 +84,7 @@ export type AgentDiagnosticEvent =
       toolCallId: string;
       resultChars: number;
       truncatedForContext: boolean;
+      status: "success" | "tool_not_found" | "tool_disabled" | "error";
     }
   | {
       type: "iteration_finished";

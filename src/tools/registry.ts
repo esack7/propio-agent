@@ -1,5 +1,6 @@
 import { ExecutableTool } from "./interface.js";
 import { ChatTool } from "../providers/types.js";
+import { ToolExecutionResult } from "./types.js";
 
 /**
  * ToolRegistry manages tool registration, lifecycle, and execution.
@@ -123,23 +124,38 @@ export class ToolRegistry {
    * @param args - The arguments to pass to the tool
    * @returns Promise resolving to the string result from the tool, or an error message if execution fails
    */
-  async execute(name: string, args: Record<string, unknown>): Promise<string> {
+  async executeWithStatus(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolExecutionResult> {
     const tool = this.tools.get(name);
 
     if (!tool) {
-      return `Tool not found: ${name}`;
+      return { status: "tool_not_found", content: `Tool not found: ${name}` };
     }
 
     if (!this.enabledTools.has(name)) {
-      return `Tool not available: ${name}`;
+      return {
+        status: "tool_disabled",
+        content: `Tool not available: ${name}`,
+      };
     }
 
     try {
-      return await tool.execute(args);
+      const content = await tool.execute(args);
+      return { status: "success", content };
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      return `Error executing ${name}: ${errorMessage}`;
+      return {
+        status: "error",
+        content: `Error executing ${name}: ${errorMessage}`,
+      };
     }
+  }
+
+  async execute(name: string, args: Record<string, unknown>): Promise<string> {
+    const result = await this.executeWithStatus(name, args);
+    return result.content;
   }
 }
