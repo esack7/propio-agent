@@ -129,7 +129,7 @@ function printSlashCommandHelp(ui: Pick<TerminalUi, "info" | "command">): void {
   ui.command("/clear   - clear session context");
   ui.command("/context - show session context");
   ui.command("/tools   - manage enabled tools");
-  ui.command("/exit    - save context and exit");
+  ui.command("/exit    - exit the session");
   ui.command("");
 }
 
@@ -380,15 +380,6 @@ async function runInteractiveSession(
     }
 
     if (trimmedInput === "/exit") {
-      setMode("running");
-      ui.info("Saving session context...");
-      try {
-        await agent.saveContext("Exiting application");
-      } catch (error) {
-        ui.error(
-          `Failed to save session context: ${error instanceof Error ? error.message : "Unknown error"}`,
-        );
-      }
       ui.success("Goodbye!");
       rl.close();
       setActiveReadline(null);

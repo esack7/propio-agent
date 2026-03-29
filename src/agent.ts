@@ -1,4 +1,3 @@
-import * as path from "path";
 import { LLMProvider } from "./providers/interface.js";
 import {
   ChatMessage,
@@ -10,7 +9,7 @@ import {
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
 } from "./providers/types.js";
-import { ProvidersConfig, ProviderConfig } from "./providers/config.js";
+import { ProvidersConfig } from "./providers/config.js";
 import { createProvider } from "./providers/factory.js";
 import {
   loadProvidersConfig,
@@ -20,7 +19,6 @@ import {
 import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
-import { ToolContext } from "./tools/types.js";
 import {
   AgentDiagnosticEvent,
   measureMessages,
@@ -28,6 +26,7 @@ import {
 } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
 import { ContextManager } from "./context/contextManager.js";
+import { ArtifactToolResult } from "./context/types.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -62,74 +61,29 @@ export interface TurnReasoningSummary {
 }
 
 export class Agent {
-  private static readonly MAX_TOOL_RESULT_CHARS = 12000;
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private provider: LLMProvider;
   private model: string;
   private contextManager: ContextManager;
   private systemPrompt: string;
-  private sessionContextFilePath: string;
   private toolRegistry: ToolRegistry;
   private providersConfig: ProvidersConfig;
   private diagnosticsEnabled: boolean;
   private diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
   private lastTurnReasoningSummary: TurnReasoningSummary | null = null;
 
-  /**
-   * Initialize an Agent with multi-provider configuration.
-   *
-   * The Agent orchestrates interactions with an LLM provider. It maintains session context,
-   * manages tools, and handles both regular and streaming chat interactions. Provider instances
-   * are created using the factory pattern, allowing new providers to be supported without
-   * modifying the Agent class.
-   *
-   * @param options - Configuration options for the agent
-   * @param options.providersConfig - Multi-provider configuration (ProvidersConfig object or file path string).
-   *                                  Required - will throw an error if not provided.
-   * @param options.providerName - Optional provider name to use. If not provided, uses config.default
-   * @param options.modelKey - Optional model key to use. If not provided, uses provider.defaultModel
-   * @param options.systemPrompt - System prompt to use in all LLM requests. Defaults to a generic helpful assistant prompt.
-   * @param options.sessionContextFilePath - Path to persist session context. Defaults to './session_context.txt'.
-   *
-   * @example
-   * // Use default provider from config file
-   * const agent = new Agent({
-   *   providersConfig: './providers.json'
-   * });
-   *
-   * @example
-   * // Use specific provider and model with inline config
-   * const agent = new Agent({
-   *   providersConfig: {
-   *     default: 'ollama',
-   *     providers: [
-   *       {
-   *         name: 'ollama',
-   *         type: 'ollama',
-   *         models: [{ name: 'Llama', key: 'llama3.2' }],
-   *         defaultModel: 'llama3.2'
-   *       }
-   *     ]
-   *   },
-   *   providerName: 'ollama',
-   *   modelKey: 'llama3.2',
-   *   systemPrompt: 'You are a helpful coding assistant.'
-   * });
-   */
   constructor(
     options: {
       providersConfig: ProvidersConfig | string;
       providerName?: string;
       modelKey?: string;
       systemPrompt?: string;
-      sessionContextFilePath?: string;
       agentsMdContent?: string;
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
     } = {} as any,
   ) {
-    // Validate required providersConfig
     if (!options.providersConfig) {
       throw new Error(
         "Provider configuration is required. Please provide a providersConfig option with provider settings.",
@@ -143,11 +97,7 @@ export class Agent {
       options.agentsMdContent ?? "",
       basePrompt,
     );
-    this.sessionContextFilePath =
-      options.sessionContextFilePath ||
-      path.join(process.cwd(), "session_context.txt");
 
-    // Load configuration from file if string path provided, otherwise use directly
     let config: ProvidersConfig;
     if (typeof options.providersConfig === "string") {
       config = loadProvidersConfig(options.providersConfig);
@@ -159,38 +109,17 @@ export class Agent {
     this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
     this.diagnosticsListener = options.onDiagnosticEvent;
 
-    // Resolve provider from config
     const resolvedProvider = resolveProvider(config, options.providerName);
-
-    // Resolve model key from provider
     const resolvedModelKey = resolveModelKey(
       resolvedProvider,
       options.modelKey,
     );
 
-    // Create provider instance using factory
     this.provider = createProvider(resolvedProvider, resolvedModelKey);
     this.model = resolvedModelKey;
 
     this.contextManager = new ContextManager();
-
-    // Create ToolContext using property getters for live state access.
-    // Each property read returns a fresh snapshot so tools cannot mutate
-    // internal ContextManager state.
-    const self = this;
-    const toolContext: ToolContext = {
-      get systemPrompt() {
-        return self.systemPrompt;
-      },
-      get sessionContext() {
-        return self.contextManager.getSnapshot();
-      },
-      get sessionContextFilePath() {
-        return self.sessionContextFilePath;
-      },
-    };
-
-    this.toolRegistry = createDefaultToolRegistry(toolContext);
+    this.toolRegistry = createDefaultToolRegistry();
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -303,43 +232,16 @@ export class Agent {
     return `Used ${toolLabel}; ${completedCount} completed and ${failedCount} failed. Continued with the available results to produce the final answer.`;
   }
 
-  /**
-   * Switch to a different provider at runtime
-   *
-   * @param providerName - Name of provider to switch to (from providersConfig)
-   * @param modelKey - Optional model key to use in the new provider. Uses provider.defaultModel if not specified.
-   * @throws Error if provider name or model key is not found in configuration
-   */
   private switchProvider(providerName: string, modelKey?: string): void {
-    // Resolve and validate provider from stored config
     const resolvedProvider = resolveProvider(
       this.providersConfig,
       providerName,
     );
-
-    // Resolve and validate model key
     const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
-
-    // Create new provider instance
     const newProvider = createProvider(resolvedProvider, resolvedModelKey);
 
-    // Update provider and model
     this.provider = newProvider;
     this.model = resolvedModelKey;
-  }
-
-  /**
-   * Keep tool outputs bounded before feeding them back to the model.
-   * Large payloads can starve the follow-up completion and yield empty responses.
-   */
-  private sanitizeToolResultForContext(result: string): string {
-    if (result.length <= Agent.MAX_TOOL_RESULT_CHARS) {
-      return result;
-    }
-
-    const truncated = result.substring(0, Agent.MAX_TOOL_RESULT_CHARS);
-    const omittedChars = result.length - Agent.MAX_TOOL_RESULT_CHARS;
-    return `${truncated}\n\n[tool output truncated: omitted ${omittedChars} chars]`;
   }
 
   private async requestFinalResponseWithoutTools(
@@ -634,7 +536,7 @@ export class Agent {
           }
 
           onToken("\n");
-          const toolResults = [];
+          const artifactToolResults: ArtifactToolResult[] = [];
 
           for (const toolCall of toolCallsToExecute) {
             if (options?.abortSignal?.aborted) {
@@ -674,7 +576,6 @@ export class Agent {
               args,
             );
             const result = execResult.content;
-            const contextSafeResult = this.sanitizeToolResultForContext(result);
             const failed = execResult.status !== "success";
             toolExecutionEvents.push({ name: toolName, failed });
             this.emitDiagnostic({
@@ -685,14 +586,15 @@ export class Agent {
               toolName,
               toolCallId,
               resultChars: result.length,
-              truncatedForContext: contextSafeResult.length < result.length,
+              truncatedForContext: false,
               status: execResult.status,
             });
 
-            toolResults.push({
+            artifactToolResults.push({
               toolCallId,
-              toolName: toolName,
-              content: contextSafeResult,
+              toolName,
+              rawContent: result,
+              status: failed ? "error" : "success",
             });
 
             this.emitVisibilityEvent(options, {
@@ -711,7 +613,7 @@ export class Agent {
             }
           }
 
-          this.contextManager.recordToolResults(toolResults);
+          this.contextManager.recordToolResults(artifactToolResults);
 
           this.emitStatus(options, "Processing tool results", "tool");
           onToken("\n");
@@ -791,71 +693,30 @@ export class Agent {
     return this.toolRegistry.getEnabledSchemas();
   }
 
-  async saveContext(reason?: string): Promise<string> {
-    return await this.toolRegistry.execute("save_session_context", { reason });
-  }
-
-  /**
-   * Add a custom tool to the agent at runtime.
-   * The tool is registered and enabled by default.
-   *
-   * @param tool - ExecutableTool implementation to add
-   */
   addTool(tool: ExecutableTool): void {
     this.toolRegistry.register(tool);
   }
 
-  /**
-   * Remove a tool from the agent at runtime.
-   * Idempotent - removing a nonexistent tool has no effect.
-   *
-   * @param name - Name of the tool to remove
-   */
   removeTool(name: string): void {
     this.toolRegistry.unregister(name);
   }
 
-  /**
-   * Enable a tool, making it available for LLM requests.
-   *
-   * @param name - Name of the tool to enable
-   */
   enableTool(name: string): void {
     this.toolRegistry.enable(name);
   }
 
-  /**
-   * Disable a tool, excluding it from LLM requests.
-   * The tool remains registered and can be re-enabled later.
-   *
-   * @param name - Name of the tool to disable
-   */
   disableTool(name: string): void {
     this.toolRegistry.disable(name);
   }
 
-  /**
-   * Get names of all registered tools in registration order.
-   *
-   * @returns Array of tool names (both enabled and disabled)
-   */
   getToolNames(): string[] {
     return this.toolRegistry.getToolNames();
   }
 
-  /**
-   * Check if a tool is registered and enabled.
-   *
-   * @param name - The name of the tool to check
-   * @returns true if the tool is registered and enabled, false otherwise
-   */
   isToolEnabled(name: string): boolean {
     return this.toolRegistry.isToolEnabled(name);
   }
 
-  /**
-   * Handle and translate provider errors to meaningful messages
-   */
   private handleProviderError(error: any): Error {
     const providerName = this.provider.name;
 

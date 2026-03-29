@@ -10,18 +10,57 @@ import {
   TurnEntry,
   TurnRecord,
   ConversationState,
+  ArtifactRecord,
+  ToolInvocationRecord,
+  ArtifactToolResult,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const SUMMARY_MAX_CHARS = 1500;
+const REHYDRATION_MAX_CHARS = 12000;
 
 // ---------------------------------------------------------------------------
 // Internal mutable counterparts of the public readonly types.  The public
 // API returns deep-cloned readonly data; internally we mutate freely.
 // ---------------------------------------------------------------------------
 
+interface MutableToolInvocation {
+  toolCallId: string;
+  toolName: string;
+  status: "success" | "error";
+  resultSummary: string;
+  artifactId: string;
+  mediaType: string;
+  contentSizeChars: number;
+  estimatedTokens?: number;
+}
+
+interface MutableArtifact {
+  id: string;
+  type:
+    | "tool_result"
+    | "file_snapshot"
+    | "command_output"
+    | "image"
+    | "pdf"
+    | "other";
+  mediaType: string;
+  createdAt: string;
+  content: string | Uint8Array;
+  contentSizeChars: number;
+  estimatedTokens?: number;
+  referencingTurnIds: string[];
+}
+
 interface MutableTurnEntry {
   kind: "assistant" | "tool";
   createdAt: string;
   estimatedTokens?: number;
   message: ChatMessage;
+  toolInvocations?: MutableToolInvocation[];
 }
 
 interface MutableTurnRecord {
@@ -64,13 +103,25 @@ function cloneMessage(msg: ChatMessage): ChatMessage {
   return clone;
 }
 
+function cloneInvocation(inv: MutableToolInvocation): ToolInvocationRecord {
+  return { ...inv };
+}
+
 function cloneEntry(entry: MutableTurnEntry): TurnEntry {
-  return {
+  const base = {
     kind: entry.kind,
     createdAt: entry.createdAt,
     estimatedTokens: entry.estimatedTokens,
     message: cloneMessage(entry.message),
-  } as TurnEntry;
+  };
+  if (entry.kind === "tool" && entry.toolInvocations) {
+    return {
+      ...base,
+      kind: "tool" as const,
+      toolInvocations: entry.toolInvocations.map(cloneInvocation),
+    };
+  }
+  return base as TurnEntry;
 }
 
 function cloneTurn(turn: MutableTurnRecord): TurnRecord {
@@ -84,6 +135,54 @@ function cloneTurn(turn: MutableTurnRecord): TurnRecord {
     userMessage: cloneMessage(turn.userMessage),
     entries: turn.entries.map(cloneEntry),
   };
+}
+
+function cloneArtifact(artifact: MutableArtifact): ArtifactRecord {
+  return {
+    ...artifact,
+    content:
+      artifact.content instanceof Uint8Array
+        ? new Uint8Array(artifact.content)
+        : artifact.content,
+    referencingTurnIds: [...artifact.referencingTurnIds],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Summary generation
+// ---------------------------------------------------------------------------
+
+function generateTextSummary(text: string): string {
+  if (text.length <= SUMMARY_MAX_CHARS) {
+    return text;
+  }
+  const truncated = text.substring(0, SUMMARY_MAX_CHARS);
+  const omitted = text.length - SUMMARY_MAX_CHARS;
+  return `${truncated}\n\n[... ${omitted} more chars truncated]`;
+}
+
+function generateBinarySummary(byteLength: number, mediaType: string): string {
+  return `[binary content: ${byteLength} bytes, ${mediaType}]`;
+}
+
+function capForRehydration(rawContent: string): string {
+  if (rawContent.length <= REHYDRATION_MAX_CHARS) {
+    return rawContent;
+  }
+  const truncated = rawContent.substring(0, REHYDRATION_MAX_CHARS);
+  const omitted = rawContent.length - REHYDRATION_MAX_CHARS;
+  return `${truncated}\n\n[output truncated: ${omitted} chars omitted]`;
+}
+
+function resolveMediaType(result: ArtifactToolResult): string {
+  if (result.mediaType) return result.mediaType;
+  return typeof result.rawContent === "string"
+    ? "text/plain"
+    : "application/octet-stream";
+}
+
+function contentSizeChars(content: string | Uint8Array): number {
+  return typeof content === "string" ? content.length : content.byteLength;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,36 +203,26 @@ function messageChars(msg: ChatMessage): number {
 /**
  * ContextManager owns conversational state for an Agent session.
  *
- * Phase 2 stores the canonical conversation as structured TurnRecord[] while
- * preserving all Phase 1 external behavior.  Provider payloads, tool-context
- * snapshots, and public Agent APIs continue to receive flat ChatMessage[]
- * via getSnapshot() and buildPromptPlan().
+ * Phase 3 adds artifact-backed tool output storage. Raw tool results are
+ * stored as artifacts; only compact summaries persist in the canonical turn
+ * entries. The prompt builder rehydrates full raw content from artifacts for
+ * the current (incomplete) turn's tool messages, ensuring the model sees
+ * complete evidence for immediate follow-up while older completed turns
+ * carry only summaries.
  *
- * Metadata fields (completedAt, estimatedTokens, importance) are
- * informational only in this phase; they do not alter runtime behavior.
- *
- * Tool results are committed in provider tool-call order.  The API assumes
+ * Tool results are committed in provider tool-call order. The API assumes
  * the current sequential execution model; it does not promise concurrent
  * mutation safety.
  */
 export class ContextManager {
-  /**
-   * Messages recorded before any turn exists.  This preserves Phase 1
-   * semantics: callers that commit assistant/tool messages without a
-   * preceding beginUserTurn() get exactly those messages in getSnapshot()
-   * and messageCount — no phantom user message is injected.
-   */
   private preTurnMessages: ChatMessage[] = [];
-
   private turns: MutableTurnRecord[] = [];
+  private artifacts: Map<string, MutableArtifact> = new Map();
 
   // -------------------------------------------------------------------
   // Turn lifecycle
   // -------------------------------------------------------------------
 
-  /**
-   * Record the start of a new user turn by creating a TurnRecord.
-   */
   beginUserTurn(userMessage: string): void {
     this.turns.push({
       id: randomUUID(),
@@ -144,13 +233,6 @@ export class ContextManager {
     });
   }
 
-  /**
-   * Commit an assistant response (with optional tool calls) for the current
-   * iteration.  Called once per provider streaming round.
-   *
-   * When committed without tool calls the active turn is marked complete
-   * and its aggregate token estimate is calculated.
-   */
   commitAssistantResponse(content: string, toolCalls?: ChatToolCall[]): void {
     const message: ChatMessage = { role: "assistant", content, toolCalls };
 
@@ -173,17 +255,64 @@ export class ContextManager {
   }
 
   /**
-   * Record one or more tool results as a single batched tool message.
-   * Results must already be ordered to match provider tool-call order.
+   * Record tool results backed by artifacts. Each result is stored as an
+   * artifact with the full raw content; the turn entry receives only a
+   * compact summary. During prompt assembly, the current turn's tool
+   * messages are rehydrated from artifacts for the provider.
    */
-  recordToolResults(results: ToolResult[]): void {
+  recordToolResults(results: ArtifactToolResult[]): void {
+    const turn = this.currentTurn();
+    const turnId = turn?.id;
+
+    const invocations: MutableToolInvocation[] = [];
+    const toolResults: ToolResult[] = [];
+
+    for (const result of results) {
+      const artifactId = randomUUID();
+      const mediaType = resolveMediaType(result);
+      const size = contentSizeChars(result.rawContent);
+
+      const summary =
+        typeof result.rawContent === "string"
+          ? generateTextSummary(result.rawContent)
+          : generateBinarySummary(size, mediaType);
+
+      const artifact: MutableArtifact = {
+        id: artifactId,
+        type: "tool_result",
+        mediaType,
+        createdAt: new Date().toISOString(),
+        content: result.rawContent,
+        contentSizeChars: size,
+        estimatedTokens: estimateTokens(size),
+        referencingTurnIds: turnId ? [turnId] : [],
+      };
+      this.artifacts.set(artifactId, artifact);
+
+      invocations.push({
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        status: result.status,
+        resultSummary: summary,
+        artifactId,
+        mediaType,
+        contentSizeChars: size,
+        estimatedTokens: estimateTokens(size),
+      });
+
+      toolResults.push({
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        content: summary,
+      });
+    }
+
     const message: ChatMessage = {
       role: "tool",
       content: "",
-      toolResults: results,
+      toolResults,
     };
 
-    const turn = this.currentTurn();
     if (!turn) {
       this.preTurnMessages.push(message);
       return;
@@ -194,18 +323,10 @@ export class ContextManager {
       createdAt: new Date().toISOString(),
       estimatedTokens: estimateTokens(messageChars(message)),
       message,
+      toolInvocations: invocations,
     });
   }
 
-  /**
-   * Remove the latest assistant message only if it contains unresolved
-   * tool calls (i.e. tool calls with no matching tool-result following).
-   * Used by the no-tools fallback to prevent the model from looping on
-   * dangling tool-call messages.
-   *
-   * When turns exist the check targets the last entry in the last turn.
-   * When no turns exist it falls back to the pre-turn messages buffer.
-   */
   removeLastUnresolvedAssistantMessage(): void {
     if (this.turns.length === 0) {
       if (this.preTurnMessages.length === 0) {
@@ -236,12 +357,10 @@ export class ContextManager {
     }
   }
 
-  /**
-   * Reset all structured state to empty.
-   */
   clear(): void {
     this.preTurnMessages = [];
     this.turns = [];
+    this.artifacts.clear();
   }
 
   // -------------------------------------------------------------------
@@ -250,12 +369,12 @@ export class ContextManager {
 
   /**
    * Return a deep-cloned copy of the stored messages in flat chronological
-   * order.  Callers cannot mutate internal state through the returned
-   * objects.  The ordering is identical to the Phase 1 flat array.
+   * order. Tool messages use summary content for all turns (both completed
+   * and in-progress). For full raw content, use getConversationState()
+   * to access artifacts by ID.
    */
   getSnapshot(): ChatMessage[] {
-    const messages: ChatMessage[] =
-      this.preTurnMessages.map(cloneMessage);
+    const messages: ChatMessage[] = this.preTurnMessages.map(cloneMessage);
     for (const turn of this.turns) {
       messages.push(cloneMessage(turn.userMessage));
       for (const entry of turn.entries) {
@@ -265,10 +384,6 @@ export class ContextManager {
     return messages;
   }
 
-  /**
-   * Return the number of stored messages (pre-turn messages + user
-   * messages + entries).
-   */
   get messageCount(): number {
     let count = this.preTurnMessages.length;
     for (const turn of this.turns) {
@@ -277,17 +392,11 @@ export class ContextManager {
     return count;
   }
 
-  /**
-   * Return deep-cloned readonly structured conversation state.
-   * Internal-only API for tests and future consumers.
-   *
-   * The returned state is full-fidelity: preamble + turns represent
-   * the same logical content as getSnapshot().
-   */
   getConversationState(): ConversationState {
     return {
       preamble: this.preTurnMessages.map(cloneMessage),
       turns: this.turns.map(cloneTurn),
+      artifacts: Array.from(this.artifacts.values()).map(cloneArtifact),
     };
   }
 
@@ -298,10 +407,12 @@ export class ContextManager {
   /**
    * Build the prompt messages array to send to the provider.
    *
-   * Assembles systemPrompt + pre-turn messages + flattened turns, and
-   * optionally appends an extra user instruction (used by the no-tools
-   * fallback).  Returns estimated metrics derived from the existing
-   * chars/4 heuristic.
+   * Within the current (incomplete) turn, only the *unresolved* trailing
+   * tool messages — those after the last assistant entry — are rehydrated
+   * with full raw artifact content. Earlier tool messages in the same turn
+   * already had a follow-up assistant response, so they use summaries just
+   * like completed turns. This avoids replaying large tool output from
+   * prior iterations of a multi-step tool loop.
    */
   buildPromptPlan(
     systemPrompt: string,
@@ -314,8 +425,30 @@ export class ContextManager {
 
     for (const turn of this.turns) {
       assembled.push(turn.userMessage);
-      for (const entry of turn.entries) {
-        assembled.push(entry.message);
+      const isCurrentTurn = !turn.completedAt;
+
+      let lastAssistantIdx = -1;
+      if (isCurrentTurn) {
+        for (let i = turn.entries.length - 1; i >= 0; i--) {
+          if (turn.entries[i].kind === "assistant") {
+            lastAssistantIdx = i;
+            break;
+          }
+        }
+      }
+
+      for (let i = 0; i < turn.entries.length; i++) {
+        const entry = turn.entries[i];
+        const isUnresolved =
+          isCurrentTurn &&
+          i > lastAssistantIdx &&
+          entry.kind === "tool" &&
+          entry.toolInvocations != null;
+        if (isUnresolved) {
+          assembled.push(this.rehydrateToolMessage(entry));
+        } else {
+          assembled.push(entry.message);
+        }
       }
     }
 
@@ -349,5 +482,31 @@ export class ContextManager {
       totalChars += messageChars(entry.message);
     }
     turn.estimatedTokens = estimateTokens(totalChars);
+  }
+
+  /**
+   * Reconstruct a tool ChatMessage with full raw content from artifacts,
+   * capped at REHYDRATION_MAX_CHARS to bound prompt size.
+   */
+  private rehydrateToolMessage(entry: MutableTurnEntry): ChatMessage {
+    if (!entry.toolInvocations || !entry.message.toolResults) {
+      return entry.message;
+    }
+
+    const rehydratedResults = entry.message.toolResults.map((tr, i) => {
+      const invocation = entry.toolInvocations![i];
+      if (!invocation) return tr;
+
+      const artifact = this.artifacts.get(invocation.artifactId);
+      if (artifact && typeof artifact.content === "string") {
+        return { ...tr, content: capForRehydration(artifact.content) };
+      }
+      return tr;
+    });
+
+    return {
+      ...entry.message,
+      toolResults: rehydratedResults,
+    };
   }
 }

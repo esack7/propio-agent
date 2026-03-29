@@ -103,15 +103,6 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(agent).toBeDefined();
     });
 
-    it("should accept systemPrompt and sessionContextFilePath options", () => {
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        systemPrompt: "Custom prompt",
-        sessionContextFilePath: path.join(tempDir, "session.txt"),
-      });
-      expect(agent).toBeDefined();
-    });
-
     it("should throw error if providerName does not exist", () => {
       expect(() => {
         new Agent({
@@ -388,7 +379,6 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should keep tool management methods unchanged", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       expect(typeof agent.getTools).toBe("function");
-      expect(typeof agent.saveContext).toBe("function");
     });
   });
 
@@ -797,7 +787,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     }
 
-    it("should truncate oversized tool result payloads before adding them to context", async () => {
+    it("should cap rehydrated oversized tool results in the follow-up provider request", async () => {
       const provider = new MockProviderCapturingToolResult();
       const agent = new Agent({ providersConfig: testProvidersConfig });
       agent.addTool(new LargeResultTool());
@@ -811,7 +801,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const toolContent = toolMessage?.toolResults?.[0]?.content ?? "";
 
       expect(toolContent.length).toBeLessThan(13000);
-      expect(toolContent).toContain("[tool output truncated:");
+      expect(toolContent).toContain("[output truncated:");
     });
   });
 

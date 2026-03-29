@@ -1,6 +1,15 @@
 import { ContextManager } from "../contextManager.js";
 import { RESERVED_OUTPUT_TOKENS, estimateTokens } from "../../diagnostics.js";
-import { ConversationState, TurnRecord } from "../types.js";
+import { ArtifactToolResult } from "../types.js";
+
+function toolResult(
+  toolCallId: string,
+  toolName: string,
+  rawContent: string,
+  status: "success" | "error" = "success",
+): ArtifactToolResult {
+  return { toolCallId, toolName, rawContent, status };
+}
 
 describe("ContextManager", () => {
   let manager: ContextManager;
@@ -49,9 +58,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Reply", [
         { id: "tc-1", function: { name: "tool", arguments: { a: 1 } } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "result" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "result")]);
 
       const snapshot = manager.getSnapshot();
 
@@ -131,11 +138,10 @@ describe("ContextManager", () => {
         { id: "tc-2", function: { name: "write_file", arguments: {} } },
       ]);
 
-      const results = [
-        { toolCallId: "tc-1", toolName: "read_file", content: "file content" },
-        { toolCallId: "tc-2", toolName: "write_file", content: "ok" },
-      ];
-      manager.recordToolResults(results);
+      manager.recordToolResults([
+        toolResult("tc-1", "read_file", "file content"),
+        toolResult("tc-2", "write_file", "ok"),
+      ]);
 
       const snapshot = manager.getSnapshot();
       expect(snapshot).toHaveLength(3);
@@ -155,8 +161,8 @@ describe("ContextManager", () => {
       ];
       manager.commitAssistantResponse("", toolCalls);
       manager.recordToolResults([
-        { toolCallId: "call-a", toolName: "tool_a", content: "result-a" },
-        { toolCallId: "call-b", toolName: "tool_b", content: "result-b" },
+        toolResult("call-a", "tool_a", "result-a"),
+        toolResult("call-b", "tool_b", "result-b"),
       ]);
 
       const snapshot = manager.getSnapshot();
@@ -274,9 +280,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "result" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "result")]);
 
       const plan = manager.buildPromptPlan(
         "system",
@@ -316,9 +320,7 @@ describe("ContextManager", () => {
       expect(manager.messageCount).toBe(1);
       manager.commitAssistantResponse("B");
       expect(manager.messageCount).toBe(2);
-      manager.recordToolResults([
-        { toolCallId: "tc", toolName: "t", content: "r" },
-      ]);
+      manager.recordToolResults([toolResult("tc", "t", "r")]);
       expect(manager.messageCount).toBe(3);
     });
   });
@@ -338,9 +340,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "result" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "result")]);
 
       const snapshot = manager.getSnapshot();
       expect(snapshot).toHaveLength(2);
@@ -388,9 +388,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "result" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "result")]);
 
       const state = manager.getConversationState();
       expect(state.preamble).toHaveLength(2);
@@ -415,9 +413,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Reply", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "ok")]);
       manager.commitAssistantResponse("Final");
 
       const snapshot = manager.getSnapshot();
@@ -439,10 +435,11 @@ describe("ContextManager", () => {
   // =================================================================
 
   describe("getConversationState", () => {
-    it("should return empty preamble and turns for a new manager", () => {
+    it("should return empty preamble, turns, and artifacts for a new manager", () => {
       const state = manager.getConversationState();
       expect(state.preamble).toEqual([]);
       expect(state.turns).toEqual([]);
+      expect(state.artifacts).toEqual([]);
     });
 
     it("should create one TurnRecord per user prompt", () => {
@@ -491,9 +488,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Sure", [
         { id: "tc-1", function: { name: "ls", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "ls", content: "file.txt" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "ls", "file.txt")]);
       manager.commitAssistantResponse("Found file.txt");
 
       const state = manager.getConversationState();
@@ -508,23 +503,16 @@ describe("ContextManager", () => {
     it("should store multi-iteration tool loops as one turn with many entries", () => {
       manager.beginUserTurn("Complex task");
 
-      // Iteration 1: assistant calls tool
       manager.commitAssistantResponse("Step 1", [
         { id: "tc-1", function: { name: "read", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "read", content: "data1" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "read", "data1")]);
 
-      // Iteration 2: assistant calls another tool
       manager.commitAssistantResponse("Step 2", [
         { id: "tc-2", function: { name: "write", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-2", toolName: "write", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-2", "write", "ok")]);
 
-      // Final answer
       manager.commitAssistantResponse("All done");
 
       const state = manager.getConversationState();
@@ -564,9 +552,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("OK", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "result" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "result")]);
       manager.commitAssistantResponse("Done");
 
       const snapshot = manager.getSnapshot();
@@ -582,14 +568,10 @@ describe("ContextManager", () => {
   describe("removeLastUnresolvedAssistantMessage (turn-aware)", () => {
     it("should remove only the trailing unresolved assistant entry and leave earlier entries intact", () => {
       manager.beginUserTurn("Task");
-      // First iteration: tool call + result
       manager.commitAssistantResponse("Step 1", [
         { id: "tc-1", function: { name: "read", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "read", content: "data" },
-      ]);
-      // Second iteration: another tool call (unresolved)
+      manager.recordToolResults([toolResult("tc-1", "read", "data")]);
       manager.commitAssistantResponse("Step 2", [
         { id: "tc-2", function: { name: "write", arguments: {} } },
       ]);
@@ -610,9 +592,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Call", [
         { id: "tc-1", function: { name: "t", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "t", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "ok")]);
 
       manager.removeLastUnresolvedAssistantMessage();
 
@@ -627,9 +607,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Working", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "ok")]);
 
       const state = manager.getConversationState();
       expect(state.turns[0].completedAt).toBeUndefined();
@@ -649,9 +627,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Step", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "ok")]);
 
       expect(
         manager.getConversationState().turns[0].completedAt,
@@ -659,9 +635,7 @@ describe("ContextManager", () => {
 
       manager.commitAssistantResponse("Final answer");
 
-      expect(
-        manager.getConversationState().turns[0].completedAt,
-      ).toBeDefined();
+      expect(manager.getConversationState().turns[0].completedAt).toBeDefined();
     });
 
     it("should set completedAt when final answer comes via no-tools fallback pattern", () => {
@@ -669,11 +643,8 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("", [
         { id: "tc-1", function: { name: "tool", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "tool", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "ok")]);
 
-      // Simulate no-tools fallback: remove unresolved assistant, then commit final
       manager.commitAssistantResponse("", [
         { id: "tc-2", function: { name: "tool", arguments: {} } },
       ]);
@@ -701,9 +672,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("", [
         { id: "tc-1", function: { name: "t", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "t", content: "big result here" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "big result here")]);
 
       const state = manager.getConversationState();
       const toolEntry = state.turns[0].entries[1];
@@ -776,9 +745,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("", [
         { id: "tc-1", function: { name: "t", arguments: {} } },
       ]);
-      manager.recordToolResults([
-        { toolCallId: "tc-1", toolName: "t", content: "ok" },
-      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "ok")]);
       manager.commitAssistantResponse("Done");
 
       const state = manager.getConversationState();
@@ -815,6 +782,645 @@ describe("ContextManager", () => {
       const state = manager.getConversationState();
       expect(state.preamble).toEqual([]);
       expect(state.turns).toEqual([]);
+    });
+  });
+
+  // =================================================================
+  // Phase 3 artifact-backed tool output tests
+  // =================================================================
+
+  describe("artifact creation", () => {
+    it("should create an artifact for each tool result", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "read", arguments: {} } },
+        { id: "tc-2", function: { name: "write", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-1", "read", "file contents here"),
+        toolResult("tc-2", "write", "ok"),
+      ]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts).toHaveLength(2);
+      expect(state.artifacts[0].type).toBe("tool_result");
+      expect(state.artifacts[0].mediaType).toBe("text/plain");
+      expect(state.artifacts[0].content).toBe("file contents here");
+      expect(state.artifacts[0].contentSizeChars).toBe(
+        "file contents here".length,
+      );
+      expect(state.artifacts[1].content).toBe("ok");
+    });
+
+    it("should assign unique IDs to each artifact", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "a", arguments: {} } },
+        { id: "tc-2", function: { name: "b", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-1", "a", "one"),
+        toolResult("tc-2", "b", "two"),
+      ]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts[0].id).toBeDefined();
+      expect(state.artifacts[1].id).toBeDefined();
+      expect(state.artifacts[0].id).not.toBe(state.artifacts[1].id);
+    });
+
+    it("should set estimatedTokens on artifacts", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "a".repeat(400))]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts[0].estimatedTokens).toBe(estimateTokens(400));
+    });
+
+    it("should record the turn ID in artifact referencingTurnIds", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "result")]);
+
+      const state = manager.getConversationState();
+      const turnId = state.turns[0].id;
+      expect(state.artifacts[0].referencingTurnIds).toContain(turnId);
+    });
+
+    it("should create artifacts even for pre-turn tool results", () => {
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "pre-turn result")]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts).toHaveLength(1);
+      expect(state.artifacts[0].content).toBe("pre-turn result");
+      expect(state.artifacts[0].referencingTurnIds).toEqual([]);
+    });
+
+    it("should deep-clone artifacts in getConversationState", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "original")]);
+
+      const state1 = manager.getConversationState();
+      (state1.artifacts[0] as any).content = "MUTATED";
+
+      const state2 = manager.getConversationState();
+      expect(state2.artifacts[0].content).toBe("original");
+    });
+  });
+
+  describe("tool invocation records", () => {
+    it("should attach toolInvocations to tool entries", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "read_file", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "read_file", "file data")]);
+
+      const state = manager.getConversationState();
+      const toolEntry = state.turns[0].entries[1];
+      expect(toolEntry.kind).toBe("tool");
+      if (toolEntry.kind === "tool") {
+        expect(toolEntry.toolInvocations).toHaveLength(1);
+        expect(toolEntry.toolInvocations[0].toolCallId).toBe("tc-1");
+        expect(toolEntry.toolInvocations[0].toolName).toBe("read_file");
+        expect(toolEntry.toolInvocations[0].status).toBe("success");
+        expect(toolEntry.toolInvocations[0].artifactId).toBeDefined();
+        expect(toolEntry.toolInvocations[0].mediaType).toBe("text/plain");
+      }
+    });
+
+    it("should record error status in tool invocations", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "read_file", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-1", "read_file", "Error: file not found", "error"),
+      ]);
+
+      const state = manager.getConversationState();
+      const toolEntry = state.turns[0].entries[1];
+      if (toolEntry.kind === "tool") {
+        expect(toolEntry.toolInvocations[0].status).toBe("error");
+      }
+    });
+
+    it("should link invocation artifactId to a matching artifact", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "payload")]);
+
+      const state = manager.getConversationState();
+      const toolEntry = state.turns[0].entries[1];
+      if (toolEntry.kind === "tool") {
+        const artifactId = toolEntry.toolInvocations[0].artifactId;
+        const artifact = state.artifacts.find((a) => a.id === artifactId);
+        expect(artifact).toBeDefined();
+        expect(artifact!.content).toBe("payload");
+      }
+    });
+
+    it("should store contentSizeChars and estimatedTokens on invocations", () => {
+      const rawContent = "x".repeat(200);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", rawContent)]);
+
+      const state = manager.getConversationState();
+      const toolEntry = state.turns[0].entries[1];
+      if (toolEntry.kind === "tool") {
+        expect(toolEntry.toolInvocations[0].contentSizeChars).toBe(200);
+        expect(toolEntry.toolInvocations[0].estimatedTokens).toBe(
+          estimateTokens(200),
+        );
+      }
+    });
+  });
+
+  describe("summary generation", () => {
+    it("should use full content as summary for short results", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "short result")]);
+
+      const snapshot = manager.getSnapshot();
+      const toolMsg = snapshot[2];
+      expect(toolMsg.toolResults![0].content).toBe("short result");
+    });
+
+    it("should truncate long success results in the summary", () => {
+      const longResult = "x".repeat(5000);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+
+      const snapshot = manager.getSnapshot();
+      const summary = snapshot[2].toolResults![0].content;
+      expect(summary.length).toBeLessThan(longResult.length);
+      expect(summary).toContain("more chars truncated");
+    });
+
+    it("should use full content as summary for short error results", () => {
+      const shortError = "Error: file not found";
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", shortError, "error")]);
+
+      const snapshot = manager.getSnapshot();
+      expect(snapshot[2].toolResults![0].content).toBe(shortError);
+    });
+
+    it("should truncate long error results in the summary", () => {
+      const longError = "Error: " + "detail ".repeat(500);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longError, "error")]);
+
+      const snapshot = manager.getSnapshot();
+      const content = snapshot[2].toolResults![0].content;
+      expect(content.length).toBeLessThan(longError.length);
+      expect(content).toContain("more chars truncated");
+    });
+
+    it("should store resultSummary on tool invocation records", () => {
+      const longResult = "y".repeat(5000);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+
+      const state = manager.getConversationState();
+      const toolEntry = state.turns[0].entries[1];
+      if (toolEntry.kind === "tool") {
+        const inv = toolEntry.toolInvocations[0];
+        expect(inv.resultSummary.length).toBeLessThan(longResult.length);
+        expect(inv.resultSummary).toContain("more chars truncated");
+      }
+    });
+  });
+
+  describe("prompt rehydration", () => {
+    it("should rehydrate raw artifact content for the current incomplete turn", () => {
+      const longResult = "z".repeat(5000);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsg).toBeDefined();
+      expect(toolMsg!.toolResults![0].content).toBe(longResult);
+    });
+
+    it("should use summary content for completed turns in the prompt", () => {
+      const longResult = "z".repeat(5000);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+      manager.commitAssistantResponse("Done");
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsg).toBeDefined();
+      const content = toolMsg!.toolResults![0].content;
+      expect(content.length).toBeLessThan(longResult.length);
+      expect(content).toContain("more chars truncated");
+    });
+
+    it("should cap rehydrated content at the rehydration limit", () => {
+      const hugeResult = "a".repeat(20000);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", hugeResult)]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsg!.toolResults![0].content.length).toBeLessThan(
+        hugeResult.length,
+      );
+      expect(toolMsg!.toolResults![0].content).toContain("output truncated:");
+    });
+
+    it("should rehydrate multiple tool results in the same batch", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "a", arguments: {} } },
+        { id: "tc-2", function: { name: "b", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-1", "a", "result-a"),
+        toolResult("tc-2", "b", "result-b"),
+      ]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsg!.toolResults![0].content).toBe("result-a");
+      expect(toolMsg!.toolResults![1].content).toBe("result-b");
+    });
+
+    it("should rehydrate current turn but summarize earlier completed turns", () => {
+      const longResult1 = "x".repeat(5000);
+      const longResult2 = "y".repeat(5000);
+
+      // Turn 1: completed
+      manager.beginUserTurn("First task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longResult1)]);
+      manager.commitAssistantResponse("First done");
+
+      // Turn 2: still in progress
+      manager.beginUserTurn("Second task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-2", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-2", "t", longResult2)]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsgs = plan.messages.filter(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsgs).toHaveLength(2);
+
+      // Turn 1 tool message: summary (completed)
+      const turn1Content = toolMsgs[0].toolResults![0].content;
+      expect(turn1Content.length).toBeLessThan(longResult1.length);
+      expect(turn1Content).toContain("more chars truncated");
+
+      // Turn 2 tool message: rehydrated (current)
+      const turn2Content = toolMsgs[1].toolResults![0].content;
+      expect(turn2Content).toBe(longResult2);
+    });
+
+    it("should only rehydrate trailing unresolved tool results in a multi-iteration loop", () => {
+      const iterationOneResult = "a".repeat(5000);
+      const iterationTwoResult = "b".repeat(5000);
+
+      manager.beginUserTurn("Complex task");
+
+      // Iteration 1: assistant calls a tool, results come back
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "read_file", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-1", "read_file", iterationOneResult),
+      ]);
+
+      // Iteration 2: assistant calls another tool (model already saw iteration 1 results)
+      manager.commitAssistantResponse("", [
+        { id: "tc-2", function: { name: "list_dir", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-2", "list_dir", iterationTwoResult),
+      ]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsgs = plan.messages.filter(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsgs).toHaveLength(2);
+
+      // Iteration 1 tool results: summary (resolved — assistant already responded)
+      const iter1Content = toolMsgs[0].toolResults![0].content;
+      expect(iter1Content.length).toBeLessThan(iterationOneResult.length);
+      expect(iter1Content).toContain("more chars truncated");
+
+      // Iteration 2 tool results: rehydrated (unresolved — no follow-up yet)
+      const iter2Content = toolMsgs[1].toolResults![0].content;
+      expect(iter2Content).toBe(iterationTwoResult);
+    });
+
+    it("should summarize all tool results when last entry is assistant in current turn", () => {
+      const longResult = "c".repeat(5000);
+
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+      // Assistant responds with more tool calls — previous tool results are resolved
+      manager.commitAssistantResponse("", [
+        { id: "tc-2", function: { name: "t2", arguments: {} } },
+      ]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsgs = plan.messages.filter(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsgs).toHaveLength(1);
+
+      // Tool results from before the latest assistant entry: summary
+      const content = toolMsgs[0].toolResults![0].content;
+      expect(content.length).toBeLessThan(longResult.length);
+      expect(content).toContain("more chars truncated");
+    });
+
+    it("should handle three-iteration loop correctly", () => {
+      const r1 = "x".repeat(5000);
+      const r2 = "y".repeat(5000);
+      const r3 = "z".repeat(5000);
+
+      manager.beginUserTurn("Long task");
+
+      // Iteration 1
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", r1)]);
+
+      // Iteration 2
+      manager.commitAssistantResponse("", [
+        { id: "tc-2", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-2", "t", r2)]);
+
+      // Iteration 3
+      manager.commitAssistantResponse("", [
+        { id: "tc-3", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-3", "t", r3)]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsgs = plan.messages.filter(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsgs).toHaveLength(3);
+
+      // Iterations 1 and 2: summarized (resolved)
+      expect(toolMsgs[0].toolResults![0].content).toContain(
+        "more chars truncated",
+      );
+      expect(toolMsgs[1].toolResults![0].content).toContain(
+        "more chars truncated",
+      );
+
+      // Iteration 3: rehydrated (unresolved)
+      expect(toolMsgs[2].toolResults![0].content).toBe(r3);
+    });
+  });
+
+  describe("clear removes artifacts", () => {
+    it("should clear artifacts along with turns", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "artifact content")]);
+
+      expect(manager.getConversationState().artifacts).toHaveLength(1);
+
+      manager.clear();
+
+      expect(manager.getConversationState().artifacts).toEqual([]);
+    });
+
+    it("should allow new artifacts after clearing", () => {
+      manager.beginUserTurn("Task 1");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "first")]);
+
+      manager.clear();
+
+      manager.beginUserTurn("Task 2");
+      manager.commitAssistantResponse("", [
+        { id: "tc-2", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-2", "t", "second")]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts).toHaveLength(1);
+      expect(state.artifacts[0].content).toBe("second");
+    });
+  });
+
+  describe("media-type-aware artifact ingestion", () => {
+    it("should default to text/plain for string content", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "t", "text content")]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts[0].mediaType).toBe("text/plain");
+    });
+
+    it("should default to application/octet-stream for Uint8Array content", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        {
+          toolCallId: "tc-1",
+          toolName: "t",
+          rawContent: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+          status: "success" as const,
+        },
+      ]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts[0].mediaType).toBe("application/octet-stream");
+      expect(state.artifacts[0].content).toBeInstanceOf(Uint8Array);
+    });
+
+    it("should use caller-supplied mediaType when provided", () => {
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        {
+          toolCallId: "tc-1",
+          toolName: "t",
+          rawContent: new Uint8Array([0xff, 0xd8, 0xff]),
+          mediaType: "image/jpeg",
+          status: "success" as const,
+        },
+      ]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts[0].mediaType).toBe("image/jpeg");
+      const toolEntry = state.turns[0].entries[1];
+      if (toolEntry.kind === "tool") {
+        expect(toolEntry.toolInvocations[0].mediaType).toBe("image/jpeg");
+      }
+    });
+
+    it("should generate a descriptive summary for binary artifacts", () => {
+      const binaryData = new Uint8Array(2048);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        {
+          toolCallId: "tc-1",
+          toolName: "t",
+          rawContent: binaryData,
+          mediaType: "image/png",
+          status: "success" as const,
+        },
+      ]);
+
+      const snapshot = manager.getSnapshot();
+      const summary = snapshot[2].toolResults![0].content;
+      expect(summary).toContain("binary content");
+      expect(summary).toContain("2048 bytes");
+      expect(summary).toContain("image/png");
+    });
+
+    it("should store contentSizeChars as byte length for binary artifacts", () => {
+      const data = new Uint8Array(512);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        {
+          toolCallId: "tc-1",
+          toolName: "t",
+          rawContent: data,
+          status: "success" as const,
+        },
+      ]);
+
+      const state = manager.getConversationState();
+      expect(state.artifacts[0].contentSizeChars).toBe(512);
+    });
+
+    it("should not rehydrate binary artifacts into prompt messages", () => {
+      const binaryData = new Uint8Array([1, 2, 3]);
+      manager.beginUserTurn("Task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        {
+          toolCallId: "tc-1",
+          toolName: "t",
+          rawContent: binaryData,
+          mediaType: "image/png",
+          status: "success" as const,
+        },
+      ]);
+
+      const plan = manager.buildPromptPlan("system");
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsg!.toolResults![0].content).toContain("binary content");
+    });
+  });
+
+  describe("multi-tool batch ordering", () => {
+    it("should preserve tool-call/tool-result ID alignment through artifacts", () => {
+      manager.beginUserTurn("Run tools");
+      const toolCalls = [
+        { id: "call-a", function: { name: "tool_a", arguments: {} } },
+        { id: "call-b", function: { name: "tool_b", arguments: {} } },
+      ];
+      manager.commitAssistantResponse("", toolCalls);
+      manager.recordToolResults([
+        toolResult("call-a", "tool_a", "result-a"),
+        toolResult("call-b", "tool_b", "result-b"),
+      ]);
+
+      const plan = manager.buildPromptPlan("system");
+      const assistantMsg = plan.messages.find(
+        (m) => m.role === "assistant" && m.toolCalls?.length,
+      );
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+
+      expect(assistantMsg!.toolCalls![0].id).toBe(
+        toolMsg!.toolResults![0].toolCallId,
+      );
+      expect(assistantMsg!.toolCalls![1].id).toBe(
+        toolMsg!.toolResults![1].toolCallId,
+      );
     });
   });
 });
