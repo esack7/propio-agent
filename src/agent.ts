@@ -36,6 +36,12 @@ import {
   PromptPlan,
 } from "./context/types.js";
 import { SummaryManager } from "./context/summaryManager.js";
+import {
+  serializeSession,
+  parseSession,
+  restoreConversationState,
+  SessionMetadata,
+} from "./context/persistence.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -963,6 +969,42 @@ export class Agent {
 
   getContext(): ChatMessage[] {
     return this.contextManager.getSnapshot();
+  }
+
+  /**
+   * Export the current session as a versioned JSON snapshot string.
+   * The snapshot includes structured context state and runtime metadata
+   * (provider, model, system prompt, policies) for analysis and future
+   * resume UX. The metadata is informational; importing a snapshot does
+   * not auto-switch provider/model.
+   */
+  exportSession(): string {
+    const state = this.contextManager.getConversationState();
+    const metadata: SessionMetadata = {
+      providerName: this.provider.name,
+      modelKey: this.model,
+      systemPrompt: this.systemPrompt,
+      promptBudgetPolicy: DEFAULT_BUDGET_POLICY,
+      summaryPolicy: this.summaryPolicy,
+      contextWindowTokens: this.resolveContextWindowTokens(),
+    };
+    return serializeSession(state, metadata);
+  }
+
+  /**
+   * Import a validated snapshot into the current agent instance,
+   * replacing all in-memory context state. Persisted metadata
+   * (provider, model, system prompt) is preserved in the snapshot
+   * for analysis but does not alter the agent's current configuration.
+   *
+   * Throws SessionParseError on malformed or unsupported snapshots.
+   */
+  importSession(json: string): void {
+    const persisted = parseSession(json);
+    const state = restoreConversationState(persisted);
+    this.summaryGeneration++;
+    this.summaryDirty = false;
+    this.contextManager.importState(state);
   }
 
   getLastTurnReasoningSummary(): TurnReasoningSummary | null {

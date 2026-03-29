@@ -159,6 +159,56 @@ function cloneArtifact(artifact: MutableArtifact): ArtifactRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Import helpers (readonly → mutable, used by importState)
+// ---------------------------------------------------------------------------
+
+function toMutableInvocation(inv: ToolInvocationRecord): MutableToolInvocation {
+  return { ...inv };
+}
+
+function toMutableEntry(entry: TurnEntry): MutableTurnEntry {
+  const base: MutableTurnEntry = {
+    kind: entry.kind,
+    createdAt: entry.createdAt,
+    estimatedTokens: entry.estimatedTokens,
+    message: cloneMessage(entry.message),
+  };
+  if (entry.kind === "tool") {
+    base.toolInvocations = entry.toolInvocations.map(toMutableInvocation);
+  }
+  return base;
+}
+
+function toMutableTurnRecord(turn: TurnRecord): MutableTurnRecord {
+  return {
+    id: turn.id,
+    startedAt: turn.startedAt,
+    completedAt: turn.completedAt,
+    importance: turn.importance,
+    summary: turn.summary,
+    estimatedTokens: turn.estimatedTokens,
+    userMessage: cloneMessage(turn.userMessage),
+    entries: turn.entries.map(toMutableEntry),
+  };
+}
+
+function toMutableArtifactRecord(artifact: ArtifactRecord): MutableArtifact {
+  return {
+    id: artifact.id,
+    type: artifact.type,
+    mediaType: artifact.mediaType,
+    createdAt: artifact.createdAt,
+    content:
+      artifact.content instanceof Uint8Array
+        ? new Uint8Array(artifact.content)
+        : artifact.content,
+    contentSizeChars: artifact.contentSizeChars,
+    estimatedTokens: artifact.estimatedTokens,
+    referencingTurnIds: [...artifact.referencingTurnIds],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Summary generation
 // ---------------------------------------------------------------------------
 
@@ -373,6 +423,28 @@ export class ContextManager {
     this.turns = [];
     this.artifacts.clear();
     this.rollingSummary = undefined;
+  }
+
+  /**
+   * Atomically replace all in-memory state from a validated
+   * ConversationState. The incoming state is deep-cloned so the caller
+   * retains no mutable references into the manager's internals.
+   */
+  importState(state: ConversationState): void {
+    this.preTurnMessages = state.preamble.map(cloneMessage);
+    this.turns = state.turns.map(toMutableTurnRecord);
+
+    this.artifacts.clear();
+    for (const artifact of state.artifacts) {
+      this.artifacts.set(artifact.id, toMutableArtifactRecord(artifact));
+    }
+
+    this.rollingSummary = state.rollingSummary
+      ? {
+          ...state.rollingSummary,
+          coveredTurnIds: [...state.rollingSummary.coveredTurnIds],
+        }
+      : undefined;
   }
 
   // -------------------------------------------------------------------
