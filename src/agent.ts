@@ -8,8 +8,9 @@ import {
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
 } from "./providers/types.js";
-import { ProvidersConfig } from "./providers/config.js";
+import { ProvidersConfig, ProviderConfig } from "./providers/config.js";
 import { createProvider } from "./providers/factory.js";
 import {
   loadProvidersConfig,
@@ -26,7 +27,12 @@ import {
 } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
 import { ContextManager } from "./context/contextManager.js";
-import { ArtifactToolResult } from "./context/types.js";
+import {
+  ArtifactToolResult,
+  PromptBudgetPolicy,
+  DEFAULT_BUDGET_POLICY,
+  PromptPlan,
+} from "./context/types.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -63,8 +69,10 @@ export interface TurnReasoningSummary {
 export class Agent {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
+  private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
   private provider: LLMProvider;
   private model: string;
+  private resolvedProviderConfig: ProviderConfig;
   private contextManager: ContextManager;
   private systemPrompt: string;
   private toolRegistry: ToolRegistry;
@@ -115,6 +123,7 @@ export class Agent {
       options.modelKey,
     );
 
+    this.resolvedProviderConfig = resolvedProvider;
     this.provider = createProvider(resolvedProvider, resolvedModelKey);
     this.model = resolvedModelKey;
 
@@ -240,8 +249,58 @@ export class Agent {
     const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
     const newProvider = createProvider(resolvedProvider, resolvedModelKey);
 
+    this.resolvedProviderConfig = resolvedProvider;
     this.provider = newProvider;
     this.model = resolvedModelKey;
+  }
+
+  /**
+   * Resolve the effective context window size. Per-model config override
+   * takes precedence over the provider's built-in capability default.
+   */
+  private resolveContextWindowTokens(): number {
+    const modelEntry = this.resolvedProviderConfig.models.find(
+      (m) => m.key === this.model,
+    );
+    if (modelEntry?.contextWindowTokens) {
+      return modelEntry.contextWindowTokens;
+    }
+    return this.provider.getCapabilities().contextWindowTokens;
+  }
+
+  private buildPlan(
+    extraUserInstruction?: string,
+    retryLevel?: number,
+  ): PromptPlan {
+    const contextWindowTokens = this.resolveContextWindowTokens();
+    const plan = this.contextManager.buildPromptPlan(
+      this.systemPrompt,
+      extraUserInstruction,
+      {
+        contextWindowTokens,
+        retryLevel,
+      },
+    );
+    return plan;
+  }
+
+  private emitPromptPlanDiagnostic(plan: PromptPlan, iteration: number): void {
+    const contextWindowTokens = this.resolveContextWindowTokens();
+    this.emitDiagnostic({
+      type: "prompt_plan",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      contextWindowTokens,
+      availableInputBudget: contextWindowTokens - plan.reservedOutputTokens,
+      estimatedPromptTokens: plan.estimatedPromptTokens,
+      reservedOutputTokens: plan.reservedOutputTokens,
+      retryLevel: plan.retryLevel,
+      includedTurnCount: plan.includedTurnIds.length,
+      omittedTurnCount: plan.omittedTurnIds.length,
+      includedArtifactCount: plan.includedArtifactIds.length,
+      usedRollingSummary: plan.usedRollingSummary,
+    });
   }
 
   private async requestFinalResponseWithoutTools(
@@ -256,93 +315,117 @@ export class Agent {
   ): Promise<string> {
     const noToolsInstruction =
       "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.";
-    const plan = this.contextManager.buildPromptPlan(
-      this.systemPrompt,
-      noToolsInstruction,
-    );
-    const messages = plan.messages as ChatMessage[];
 
-    const contextSnapshot = this.contextManager.getSnapshot();
-    const contextMetrics = measureMessages(contextSnapshot);
-    this.emitDiagnostic({
-      type: "context_snapshot",
-      ...contextMetrics,
-    });
-    const promptMetrics = measureMessages(messages);
-    this.emitDiagnostic({
-      type: "request_started",
-      provider: this.provider.name,
-      model: this.model,
-      iteration,
-      contextMessages: messages.length,
-      enabledTools: 0,
-      promptMessageCount: promptMetrics.messageCount,
-      promptChars: promptMetrics.totalChars,
-      estimatedPromptTokens: promptMetrics.estimatedTokens,
-      reservedOutputTokens: RESERVED_OUTPUT_TOKENS,
-    });
+    let retryLevel = 0;
 
-    let fullResponse = "";
-    let chunkCount = 0;
-    this.emitStatus(options, "Streaming response", "response");
-    for await (const event of this.provider.streamChat({
-      model: this.model,
-      messages,
-      signal: abortSignal,
-    })) {
-      if (abortSignal?.aborted) {
-        throw new Error("Request cancelled");
-      }
+    while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
+      const plan = this.buildPlan(noToolsInstruction, retryLevel);
+      const messages = plan.messages as ChatMessage[];
+      this.emitPromptPlanDiagnostic(plan, iteration);
 
-      const normalizedEvent = this.normalizeStreamEvent(event);
-
-      if (normalizedEvent.status) {
-        this.emitStatus(
-          options,
-          normalizedEvent.status.status,
-          normalizedEvent.status.phase,
-        );
-      }
-
-      const token = normalizedEvent.delta ?? "";
-      if (token) {
-        fullResponse += token;
-      }
-      chunkCount++;
+      const contextSnapshot = this.contextManager.getSnapshot();
+      const contextMetrics = measureMessages(contextSnapshot);
       this.emitDiagnostic({
-        type: "chunk_received",
+        type: "context_snapshot",
+        ...contextMetrics,
+      });
+      const promptMetrics = measureMessages(messages);
+      this.emitDiagnostic({
+        type: "request_started",
         provider: this.provider.name,
         model: this.model,
         iteration,
-        chunkIndex: chunkCount,
-        chunkChars: token.length,
-        accumulatedChars: fullResponse.length,
+        contextMessages: messages.length,
+        enabledTools: 0,
+        promptMessageCount: promptMetrics.messageCount,
+        promptChars: promptMetrics.totalChars,
+        estimatedPromptTokens: promptMetrics.estimatedTokens,
+        reservedOutputTokens: plan.reservedOutputTokens,
       });
-      if (token) onToken(token);
+
+      try {
+        let fullResponse = "";
+        let chunkCount = 0;
+        this.emitStatus(options, "Streaming response", "response");
+        for await (const event of this.provider.streamChat({
+          model: this.model,
+          messages,
+          signal: abortSignal,
+        })) {
+          if (abortSignal?.aborted) {
+            throw new Error("Request cancelled");
+          }
+
+          const normalizedEvent = this.normalizeStreamEvent(event);
+
+          if (normalizedEvent.status) {
+            this.emitStatus(
+              options,
+              normalizedEvent.status.status,
+              normalizedEvent.status.phase,
+            );
+          }
+
+          const token = normalizedEvent.delta ?? "";
+          if (token) {
+            fullResponse += token;
+          }
+          chunkCount++;
+          this.emitDiagnostic({
+            type: "chunk_received",
+            provider: this.provider.name,
+            model: this.model,
+            iteration,
+            chunkIndex: chunkCount,
+            chunkChars: token.length,
+            accumulatedChars: fullResponse.length,
+          });
+          if (token) onToken(token);
+        }
+
+        this.contextManager.commitAssistantResponse(fullResponse);
+        this.emitDiagnostic({
+          type: "iteration_finished",
+          provider: this.provider.name,
+          model: this.model,
+          iteration,
+          responseChars: fullResponse.length,
+          responseIsEmpty: fullResponse.trim().length === 0,
+          toolCalls: 0,
+        });
+
+        if (fullResponse.trim().length === 0) {
+          this.emitDiagnostic({
+            type: "empty_response",
+            provider: this.provider.name,
+            model: this.model,
+            iteration,
+            contextMessages: this.contextManager.messageCount,
+          });
+        }
+
+        return fullResponse;
+      } catch (error) {
+        if (
+          error instanceof ProviderContextLengthError &&
+          retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
+        ) {
+          retryLevel++;
+          this.emitDiagnostic({
+            type: "provider_error",
+            provider: this.provider.name,
+            model: this.model,
+            iteration,
+            errorName: "ProviderContextLengthError",
+            message: `Context length exceeded, retrying at level ${retryLevel}`,
+          });
+          continue;
+        }
+        throw error;
+      }
     }
 
-    this.contextManager.commitAssistantResponse(fullResponse);
-    this.emitDiagnostic({
-      type: "iteration_finished",
-      provider: this.provider.name,
-      model: this.model,
-      iteration,
-      responseChars: fullResponse.length,
-      responseIsEmpty: fullResponse.trim().length === 0,
-      toolCalls: 0,
-    });
-
-    if (fullResponse.trim().length === 0) {
-      this.emitDiagnostic({
-        type: "empty_response",
-        provider: this.provider.name,
-        model: this.model,
-        iteration,
-        contextMessages: this.contextManager.messageCount,
-      });
-    }
-
-    return fullResponse;
+    throw new Error("Exhausted all context retry levels");
   }
 
   async streamChat(
@@ -364,6 +447,7 @@ export class Agent {
     this.emitStatus(options, "Preparing request", "request");
 
     let iterationCount = 0;
+    let contextRetryLevel = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
     try {
@@ -375,8 +459,9 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const plan = this.contextManager.buildPromptPlan(this.systemPrompt);
+        const plan = this.buildPlan(undefined, contextRetryLevel);
         const messages = plan.messages as ChatMessage[];
+        this.emitPromptPlanDiagnostic(plan, iterationCount);
         const contextSnapshot = this.contextManager.getSnapshot();
         const contextMetrics = measureMessages(contextSnapshot);
         this.emitDiagnostic({
@@ -394,7 +479,7 @@ export class Agent {
           promptMessageCount: promptMetrics.messageCount,
           promptChars: promptMetrics.totalChars,
           estimatedPromptTokens: promptMetrics.estimatedTokens,
-          reservedOutputTokens: RESERVED_OUTPUT_TOKENS,
+          reservedOutputTokens: plan.reservedOutputTokens,
         });
 
         let fullResponse = "";
@@ -402,56 +487,78 @@ export class Agent {
         let chunkCount = 0;
         this.emitStatus(options, "Streaming response", "response");
 
-        for await (const event of this.provider.streamChat({
-          model: this.model,
-          messages: messages,
-          tools: this.toolRegistry.getEnabledSchemas(),
-          signal: options?.abortSignal,
-        })) {
-          if (options?.abortSignal?.aborted) {
-            throw new Error("Request cancelled");
-          }
-
-          const normalizedEvent = this.normalizeStreamEvent(event);
-
-          if (normalizedEvent.status) {
-            this.emitStatus(
-              options,
-              normalizedEvent.status.status,
-              normalizedEvent.status.phase,
-            );
-          }
-
-          if (
-            normalizedEvent.reasoningSummary &&
-            !providerReasoningSummary &&
-            normalizedEvent.reasoningSummary.summary.trim().length > 0
-          ) {
-            providerReasoningSummary = normalizedEvent.reasoningSummary;
-          }
-
-          const token = normalizedEvent.delta ?? "";
-          if (token) {
-            fullResponse += token;
-          }
-          chunkCount++;
-          this.emitDiagnostic({
-            type: "chunk_received",
-            provider: this.provider.name,
+        try {
+          for await (const event of this.provider.streamChat({
             model: this.model,
-            iteration: iterationCount,
-            chunkIndex: chunkCount,
-            chunkChars: token.length,
-            accumulatedChars: fullResponse.length,
-          });
-          if (token) {
-            onToken(token);
-          }
+            messages: messages,
+            tools: this.toolRegistry.getEnabledSchemas(),
+            signal: options?.abortSignal,
+          })) {
+            if (options?.abortSignal?.aborted) {
+              throw new Error("Request cancelled");
+            }
 
-          if (normalizedEvent.toolCalls) {
-            toolCalls = normalizedEvent.toolCalls;
+            const normalizedEvent = this.normalizeStreamEvent(event);
+
+            if (normalizedEvent.status) {
+              this.emitStatus(
+                options,
+                normalizedEvent.status.status,
+                normalizedEvent.status.phase,
+              );
+            }
+
+            if (
+              normalizedEvent.reasoningSummary &&
+              !providerReasoningSummary &&
+              normalizedEvent.reasoningSummary.summary.trim().length > 0
+            ) {
+              providerReasoningSummary = normalizedEvent.reasoningSummary;
+            }
+
+            const token = normalizedEvent.delta ?? "";
+            if (token) {
+              fullResponse += token;
+            }
+            chunkCount++;
+            this.emitDiagnostic({
+              type: "chunk_received",
+              provider: this.provider.name,
+              model: this.model,
+              iteration: iterationCount,
+              chunkIndex: chunkCount,
+              chunkChars: token.length,
+              accumulatedChars: fullResponse.length,
+            });
+            if (token) {
+              onToken(token);
+            }
+
+            if (normalizedEvent.toolCalls) {
+              toolCalls = normalizedEvent.toolCalls;
+            }
           }
+        } catch (streamError) {
+          if (
+            streamError instanceof ProviderContextLengthError &&
+            contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
+          ) {
+            contextRetryLevel++;
+            this.emitDiagnostic({
+              type: "provider_error",
+              provider: this.provider.name,
+              model: this.model,
+              iteration: iterationCount,
+              errorName: "ProviderContextLengthError",
+              message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
+            });
+            iterationCount--;
+            continue;
+          }
+          throw streamError;
         }
+
+        contextRetryLevel = 0;
 
         const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
           ...toolCall,

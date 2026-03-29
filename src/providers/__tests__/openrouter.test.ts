@@ -3,6 +3,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
   ProviderError,
 } from "../types.js";
 import { ChatRequest, ChatMessage } from "../types.js";
@@ -391,6 +392,67 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+    });
+
+    it("should throw ProviderContextLengthError on 400 with context length message in body", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: {
+                message:
+                  "This model's maximum context length is 128000 tokens. However, your messages resulted in 200000 tokens.",
+              },
+            }),
+          ),
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderContextLengthError);
+    });
+
+    it("should throw generic ProviderError on 400 without context length message", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ error: { message: "Invalid request format" } }),
+          ),
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderError);
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.not.toThrow(ProviderContextLengthError);
     });
   });
 

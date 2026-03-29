@@ -160,3 +160,15 @@ export class ProviderModelNotFoundError extends ProviderError {
     this.modelName = modelName;
   }
 }
+
+/**
+ * Context length exceeded error. Thrown when the prompt exceeds the model's
+ * context window. The agent loop uses this signal to rebuild the prompt at
+ * a tighter retry level instead of surfacing the error to the user.
+ */
+export class ProviderContextLengthError extends ProviderError {
+  constructor(message: string, originalError?: Error) {
+    super(message, originalError);
+    this.name = "ProviderContextLengthError";
+  }
+}

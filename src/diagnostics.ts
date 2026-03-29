@@ -124,4 +124,19 @@ export type AgentDiagnosticEvent =
       iteration: number;
       errorName: string;
       message: string;
+    }
+  | {
+      type: "prompt_plan";
+      provider: string;
+      model: string;
+      iteration: number;
+      contextWindowTokens: number;
+      availableInputBudget: number;
+      estimatedPromptTokens: number;
+      reservedOutputTokens: number;
+      retryLevel: number;
+      includedTurnCount: number;
+      omittedTurnCount: number;
+      includedArtifactCount: number;
+      usedRollingSummary: boolean;
     };

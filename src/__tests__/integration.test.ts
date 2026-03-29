@@ -32,6 +32,10 @@ class MockIntegrationProvider implements LLMProvider {
     this.name = name;
   }
 
+  getCapabilities() {
+    return { contextWindowTokens: 128000 };
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     const chunks = `Response from ${this.name}`.split(" ");
     for (const chunk of chunks) {

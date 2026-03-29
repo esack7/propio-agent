@@ -1,14 +1,43 @@
 import { ChatMessage } from "../providers/types.js";
 
 /**
- * Phase 1 prompt plan: behavior-preserving precursor to the richer PromptBuilder
- * planned for Phase 4. Returns the exact messages array to send plus current
- * metrics from the existing estimator.
+ * Configurable budget policy for prompt assembly. Controls how much of the
+ * context window is available for prompt content vs. reserved for output,
+ * and sets caps on turn/artifact inclusion.
+ */
+export interface PromptBudgetPolicy {
+  readonly reservedOutputTokens: number;
+  readonly maxRecentTurns: number;
+  readonly artifactInlineCharCap: number;
+  readonly contextWindowOverrideTokens?: number;
+}
+
+export const DEFAULT_BUDGET_POLICY: PromptBudgetPolicy = {
+  reservedOutputTokens: 2048,
+  maxRecentTurns: 50,
+  artifactInlineCharCap: 12000,
+};
+
+/**
+ * Prompt plan produced by the PromptBuilder. Contains the messages to send
+ * plus diagnostic metadata describing what was included, what was omitted,
+ * and at what retry level the plan was built.
+ *
+ * retryLevel semantics:
+ *   0 = initial build (full budget)
+ *   1 = fewer historical turns
+ *   2 = tighter artifact/raw-content caps
+ *   3 = minimal prompt (system + current user + unresolved tool chain)
  */
 export interface PromptPlan {
   readonly messages: ReadonlyArray<ChatMessage>;
   readonly estimatedPromptTokens: number;
   readonly reservedOutputTokens: number;
+  readonly includedTurnIds: ReadonlyArray<string>;
+  readonly includedArtifactIds: ReadonlyArray<string>;
+  readonly omittedTurnIds: ReadonlyArray<string>;
+  readonly usedRollingSummary: boolean;
+  readonly retryLevel: number;
 }
 
 /**

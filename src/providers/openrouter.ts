@@ -1,4 +1,4 @@
-import { LLMProvider } from "./interface.js";
+import { LLMProvider, ProviderCapabilities } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -9,6 +9,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
 } from "./types.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -45,6 +46,21 @@ export class OpenRouterProvider implements LLMProvider {
   private readonly httpReferer?: string;
   private readonly xTitle?: string;
 
+  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
+    "anthropic/claude-sonnet-4": 200000,
+    "anthropic/claude-3.5-sonnet": 200000,
+    "anthropic/claude-3-opus": 200000,
+    "anthropic/claude-3-haiku": 200000,
+    "google/gemini-2.5-pro-preview": 1000000,
+    "google/gemini-2.0-flash": 1000000,
+    "openai/gpt-4o": 128000,
+    "openai/gpt-4-turbo": 128000,
+    "openai/o3-mini": 200000,
+    "meta-llama/llama-3.3-70b-instruct": 131072,
+  };
+
+  private static readonly DEFAULT_CONTEXT_WINDOW = 128000;
+
   constructor(options: {
     model: string;
     apiKey?: string;
@@ -61,6 +77,14 @@ export class OpenRouterProvider implements LLMProvider {
     this.apiKey = apiKey;
     this.httpReferer = options.httpReferer;
     this.xTitle = options.xTitle;
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    return {
+      contextWindowTokens:
+        OpenRouterProvider.CONTEXT_WINDOWS[this.model] ??
+        OpenRouterProvider.DEFAULT_CONTEXT_WINDOW,
+    };
   }
 
   /**
@@ -200,8 +224,14 @@ export class OpenRouterProvider implements LLMProvider {
       });
 
       if (!response.ok) {
+        let errorBody = "";
+        try {
+          errorBody = await response.text();
+        } catch {
+          // ignore read failures
+        }
         throw this.translateError(
-          new Error(`HTTP ${response.status}`),
+          new Error(errorBody || `HTTP ${response.status}`),
           response,
         );
       }
@@ -301,10 +331,34 @@ export class OpenRouterProvider implements LLMProvider {
     }
   }
 
+  private isContextLengthError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("context length") ||
+      lower.includes("context window") ||
+      lower.includes("maximum context") ||
+      lower.includes("token limit") ||
+      lower.includes("too many tokens") ||
+      lower.includes("input is too long") ||
+      lower.includes("prompt is too long") ||
+      lower.includes("exceeds the model") ||
+      lower.includes("reduce your prompt")
+    );
+  }
+
   private translateError(error: unknown, response?: Response): ProviderError {
     const originalError =
       error instanceof Error ? error : new Error(String(error));
     if (response) {
+      if (
+        response.status === 400 &&
+        this.isContextLengthError(originalError.message)
+      ) {
+        return new ProviderContextLengthError(
+          `Context length exceeded: ${originalError.message}`,
+          originalError,
+        );
+      }
       if (response.status === 401) {
         return new ProviderAuthenticationError(
           "Invalid OpenRouter API key",
@@ -340,6 +394,14 @@ export class OpenRouterProvider implements LLMProvider {
       }
     }
     const msg = originalError.message;
+
+    if (this.isContextLengthError(msg)) {
+      return new ProviderContextLengthError(
+        `Context length exceeded: ${msg}`,
+        originalError,
+      );
+    }
+
     if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
       return new ProviderError("Request cancelled", originalError);
     }

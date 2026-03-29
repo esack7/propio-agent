@@ -7,6 +7,8 @@ import {
 } from "../diagnostics.js";
 import {
   PromptPlan,
+  PromptBudgetPolicy,
+  DEFAULT_BUDGET_POLICY,
   TurnEntry,
   TurnRecord,
   ConversationState,
@@ -14,6 +16,7 @@ import {
   ToolInvocationRecord,
   ArtifactToolResult,
 } from "./types.js";
+import { PromptBuilder, PromptBuildRequest } from "./promptBuilder.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -404,65 +407,49 @@ export class ContextManager {
   // Prompt assembly
   // -------------------------------------------------------------------
 
+  private readonly promptBuilder = new PromptBuilder();
+
   /**
-   * Build the prompt messages array to send to the provider.
+   * Build the prompt plan to send to the provider. Delegates to
+   * PromptBuilder for budget-aware assembly and retry support.
    *
-   * Within the current (incomplete) turn, only the *unresolved* trailing
-   * tool messages — those after the last assistant entry — are rehydrated
-   * with full raw artifact content. Earlier tool messages in the same turn
-   * already had a follow-up assistant response, so they use summaries just
-   * like completed turns. This avoids replaying large tool output from
-   * prior iterations of a multi-step tool loop.
+   * @param systemPrompt - System prompt text
+   * @param extraUserInstruction - Optional extra user message appended at the end
+   * @param options - Optional overrides for budget policy, context window, retry level, and rolling summary
    */
   buildPromptPlan(
     systemPrompt: string,
     extraUserInstruction?: string,
+    options?: {
+      contextWindowTokens?: number;
+      policy?: PromptBudgetPolicy;
+      retryLevel?: number;
+      rollingSummary?: string;
+    },
   ): PromptPlan {
-    const assembled: ChatMessage[] = [
-      { role: "system", content: systemPrompt },
-      ...this.preTurnMessages,
-    ];
+    const policy = options?.policy ?? DEFAULT_BUDGET_POLICY;
+    const contextWindow = options?.contextWindowTokens ?? 1_000_000;
 
-    for (const turn of this.turns) {
-      assembled.push(turn.userMessage);
-      const isCurrentTurn = !turn.completedAt;
-
-      let lastAssistantIdx = -1;
-      if (isCurrentTurn) {
-        for (let i = turn.entries.length - 1; i >= 0; i--) {
-          if (turn.entries[i].kind === "assistant") {
-            lastAssistantIdx = i;
-            break;
-          }
-        }
-      }
-
-      for (let i = 0; i < turn.entries.length; i++) {
-        const entry = turn.entries[i];
-        const isUnresolved =
-          isCurrentTurn &&
-          i > lastAssistantIdx &&
-          entry.kind === "tool" &&
-          entry.toolInvocations != null;
-        if (isUnresolved) {
-          assembled.push(this.rehydrateToolMessage(entry));
-        } else {
-          assembled.push(entry.message);
-        }
-      }
-    }
-
-    if (extraUserInstruction) {
-      assembled.push({ role: "user", content: extraUserInstruction });
-    }
-
-    const metrics = measureMessages(assembled);
-
-    return {
-      messages: assembled,
-      estimatedPromptTokens: metrics.estimatedTokens,
-      reservedOutputTokens: RESERVED_OUTPUT_TOKENS,
+    const request: PromptBuildRequest = {
+      systemPrompt,
+      conversationState: {
+        preamble: this.preTurnMessages,
+        turns: this.turns as unknown as ReadonlyArray<TurnRecord>,
+        artifacts: Array.from(this.artifacts.values()) as ArtifactRecord[],
+      },
+      contextWindowTokens: contextWindow,
+      policy,
+      extraUserInstruction,
+      rollingSummary: options?.rollingSummary,
+      retryLevel: options?.retryLevel,
+      artifactLookup: (id: string) => this.artifacts.get(id),
+      isCurrentTurnUnresolved: (turnId: string) => {
+        const turn = this.turns.find((t) => t.id === turnId);
+        return turn != null && !turn.completedAt;
+      },
     };
+
+    return this.promptBuilder.buildPlan(request);
   }
 
   // -------------------------------------------------------------------
@@ -482,31 +469,5 @@ export class ContextManager {
       totalChars += messageChars(entry.message);
     }
     turn.estimatedTokens = estimateTokens(totalChars);
-  }
-
-  /**
-   * Reconstruct a tool ChatMessage with full raw content from artifacts,
-   * capped at REHYDRATION_MAX_CHARS to bound prompt size.
-   */
-  private rehydrateToolMessage(entry: MutableTurnEntry): ChatMessage {
-    if (!entry.toolInvocations || !entry.message.toolResults) {
-      return entry.message;
-    }
-
-    const rehydratedResults = entry.message.toolResults.map((tr, i) => {
-      const invocation = entry.toolInvocations![i];
-      if (!invocation) return tr;
-
-      const artifact = this.artifacts.get(invocation.artifactId);
-      if (artifact && typeof artifact.content === "string") {
-        return { ...tr, content: capForRehydration(artifact.content) };
-      }
-      return tr;
-    });
-
-    return {
-      ...entry.message,
-      toolResults: rehydratedResults,
-    };
   }
 }
