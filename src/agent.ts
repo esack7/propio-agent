@@ -340,15 +340,6 @@ export class Agent {
         return;
       }
 
-      this.emitDiagnostic({
-        type: "summary_refresh_started",
-        provider: this.provider.name,
-        model: this.model,
-        eligibleTurnCount: eligibility.eligibleTurns.length,
-        newEligibleCount: eligibility.newEligibleCount,
-        reason,
-      });
-
       const startTime = Date.now();
       const result = await this.summaryManager.generateSummary(
         this.provider,
@@ -356,6 +347,22 @@ export class Agent {
         eligibility.eligibleTurns,
         this.contextManager.getRollingSummary(),
         this.summaryPolicy,
+        undefined,
+        {
+          onRequestMeasured: (metrics) => {
+            this.emitDiagnostic({
+              type: "summary_refresh_started",
+              provider: this.provider.name,
+              model: this.model,
+              eligibleTurnCount: eligibility.eligibleTurns.length,
+              newEligibleCount: eligibility.newEligibleCount,
+              reason,
+              promptMessageCount: metrics.promptMessageCount,
+              promptChars: metrics.promptChars,
+              estimatedPromptTokens: metrics.estimatedPromptTokens,
+            });
+          },
+        },
       );
 
       if (this.summaryGeneration !== generation) {

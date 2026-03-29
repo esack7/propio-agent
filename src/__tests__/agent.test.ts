@@ -1580,6 +1580,40 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
+  describe("summary refresh diagnostics", () => {
+    it("should measure summary prompt size before the summary provider call", async () => {
+      const diagnosticEvents: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
+      });
+      const mockProvider = new MockProvider();
+      (agent as any).provider = mockProvider;
+      (agent as any).summaryPolicy = {
+        rawRecentTurns: 0,
+        refreshIntervalTurns: 999,
+        summaryTargetTokens: 256,
+        contextPressureThreshold: 2,
+      };
+
+      await agent.streamChat("First", () => {});
+      await agent.streamChat("Second", () => {});
+      await (agent as any).runSummaryRefresh("turn_cadence");
+
+      const startEvent = diagnosticEvents.find(
+        (event) => event.type === "summary_refresh_started",
+      );
+
+      expect(startEvent).toBeDefined();
+      if (startEvent?.type === "summary_refresh_started") {
+        expect(startEvent.promptMessageCount).toBe(2);
+        expect(startEvent.promptChars).toBeGreaterThan(0);
+        expect(startEvent.estimatedPromptTokens).toBeGreaterThan(0);
+      }
+    });
+  });
+
   describe("Pinned memory wrapper methods", () => {
     let agent: Agent;
 

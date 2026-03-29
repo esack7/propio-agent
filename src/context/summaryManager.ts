@@ -1,4 +1,4 @@
-import { estimateTokens } from "../diagnostics.js";
+import { estimateTokens, measureMessages } from "../diagnostics.js";
 import { LLMProvider } from "../providers/interface.js";
 import {
   RollingSummaryRecord,
@@ -143,6 +143,16 @@ export interface SummaryRefreshResult {
   readonly refreshedTurnCount: number;
 }
 
+export interface SummaryRequestMetrics {
+  readonly promptMessageCount: number;
+  readonly promptChars: number;
+  readonly estimatedPromptTokens: number;
+}
+
+export interface SummaryGenerationHooks {
+  readonly onRequestMeasured?: (metrics: SummaryRequestMetrics) => void;
+}
+
 /**
  * Generates rolling summaries using an LLM provider. Summaries are built
  * incrementally: the previous summary is combined with newly eligible turns
@@ -165,6 +175,7 @@ export class SummaryManager {
     previousSummary: RollingSummaryRecord | undefined,
     policy: SummaryPolicy,
     signal?: AbortSignal,
+    hooks?: SummaryGenerationHooks,
   ): Promise<SummaryRefreshResult> {
     const coveredSet = new Set(previousSummary?.coveredTurnIds ?? []);
     const newTurns = eligibleTurns.filter((t) => !coveredSet.has(t.id));
@@ -187,13 +198,21 @@ export class SummaryManager {
       policy.summaryTargetTokens,
     );
 
+    const messages = [
+      { role: "system" as const, content: SUMMARY_SYSTEM_PROMPT },
+      { role: "user" as const, content: userPrompt },
+    ];
+    const requestMetrics = measureMessages(messages);
+    hooks?.onRequestMeasured?.({
+      promptMessageCount: requestMetrics.messageCount,
+      promptChars: requestMetrics.totalChars,
+      estimatedPromptTokens: requestMetrics.estimatedTokens,
+    });
+
     let content = "";
     for await (const event of provider.streamChat({
       model,
-      messages: [
-        { role: "system", content: SUMMARY_SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
-      ],
+      messages,
       signal,
     })) {
       if (signal?.aborted) {

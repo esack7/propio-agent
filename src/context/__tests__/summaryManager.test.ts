@@ -401,6 +401,46 @@ describe("SummaryManager", () => {
     expect(userMsg.content).toContain("256 tokens");
   });
 
+  it("should measure the summary prompt before calling the provider", async () => {
+    let measured:
+      | {
+          promptMessageCount: number;
+          promptChars: number;
+          estimatedPromptTokens: number;
+        }
+      | undefined;
+    let providerSawMeasurement = false;
+
+    const provider: LLMProvider = {
+      name: "mock",
+      getCapabilities: () => ({ contextWindowTokens: 128000 }),
+      async *streamChat(request: ChatRequest) {
+        providerSawMeasurement = measured != null;
+        yield { type: "assistant_text" as const, delta: "Summary" };
+      },
+    };
+
+    await manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+      undefined,
+      {
+        onRequestMeasured: (metrics) => {
+          measured = metrics;
+        },
+      },
+    );
+
+    expect(providerSawMeasurement).toBe(true);
+    expect(measured).toBeDefined();
+    expect(measured!.promptMessageCount).toBe(2);
+    expect(measured!.promptChars).toBeGreaterThan(0);
+    expect(measured!.estimatedPromptTokens).toBeGreaterThan(0);
+  });
+
   it("should handle provider errors gracefully (throws for caller to catch)", async () => {
     const provider: LLMProvider = {
       name: "mock",

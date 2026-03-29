@@ -147,6 +147,9 @@ export type AgentDiagnosticEvent =
       eligibleTurnCount: number;
       newEligibleCount: number;
       reason: "turn_cadence" | "context_pressure" | "synchronous_shrink";
+      promptMessageCount: number;
+      promptChars: number;
+      estimatedPromptTokens: number;
     }
   | {
       type: "summary_refresh_completed";
