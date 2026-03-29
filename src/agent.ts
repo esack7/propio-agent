@@ -34,6 +34,7 @@ import {
   SummaryPolicy,
   DEFAULT_SUMMARY_POLICY,
   PromptPlan,
+  ConversationState,
   PinnedMemoryRecord,
   PinFactInput,
   UpdateMemoryInput,
@@ -71,11 +72,29 @@ export type AgentVisibilityEvent =
       type: "reasoning_summary";
       summary: string;
       source: ProviderReasoningSummarySource;
+    }
+  | {
+      type: "prompt_plan_built";
+      snapshot: PromptPlanSnapshot;
     };
 
 export interface TurnReasoningSummary {
   summary: string;
   source: ProviderReasoningSummarySource;
+}
+
+/**
+ * Snapshot of a prompt plan plus the provider/model metadata that was
+ * active when the plan was built. Surfaced via Agent.getLastPromptPlan()
+ * for the /context prompt introspection command.
+ */
+export interface PromptPlanSnapshot {
+  readonly provider: string;
+  readonly model: string;
+  readonly iteration: number;
+  readonly contextWindowTokens: number;
+  readonly availableInputBudget: number;
+  readonly plan: PromptPlan;
 }
 
 export class Agent {
@@ -92,6 +111,7 @@ export class Agent {
   private diagnosticsEnabled: boolean;
   private diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
   private lastTurnReasoningSummary: TurnReasoningSummary | null = null;
+  private lastPromptPlanSnapshot: PromptPlanSnapshot | null = null;
   private summaryManager: SummaryManager;
   private summaryPolicy: SummaryPolicy;
   private summaryRefreshRunning = false;
@@ -430,6 +450,7 @@ export class Agent {
   private buildPlan(
     extraUserInstruction?: string,
     retryLevel?: number,
+    iteration?: number,
   ): PromptPlan {
     const contextWindowTokens = this.resolveContextWindowTokens();
     const plan = this.contextManager.buildPromptPlan(
@@ -440,6 +461,16 @@ export class Agent {
         retryLevel,
       },
     );
+    if (iteration != null) {
+      this.lastPromptPlanSnapshot = {
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        contextWindowTokens,
+        availableInputBudget: contextWindowTokens - plan.reservedOutputTokens,
+        plan,
+      };
+    }
     return plan;
   }
 
@@ -478,9 +509,13 @@ export class Agent {
     let retryLevel = 0;
 
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
-      const plan = this.buildPlan(noToolsInstruction, retryLevel);
+      const plan = this.buildPlan(noToolsInstruction, retryLevel, iteration);
       const messages = plan.messages as ChatMessage[];
       this.emitPromptPlanDiagnostic(plan, iteration);
+      this.emitVisibilityEvent(options, {
+        type: "prompt_plan_built",
+        snapshot: structuredClone(this.lastPromptPlanSnapshot!),
+      });
 
       const contextSnapshot = this.contextManager.getSnapshot();
       const contextMetrics = measureMessages(contextSnapshot);
@@ -630,9 +665,17 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
 
-        const plan = this.buildPlan(undefined, contextRetryLevel);
+        const plan = this.buildPlan(
+          undefined,
+          contextRetryLevel,
+          iterationCount,
+        );
         const messages = plan.messages as ChatMessage[];
         this.emitPromptPlanDiagnostic(plan, iterationCount);
+        this.emitVisibilityEvent(options, {
+          type: "prompt_plan_built",
+          snapshot: structuredClone(this.lastPromptPlanSnapshot!),
+        });
         const contextSnapshot = this.contextManager.getSnapshot();
         const contextMetrics = measureMessages(contextSnapshot);
         this.emitDiagnostic({
@@ -967,11 +1010,21 @@ export class Agent {
   clearContext(): void {
     this.summaryGeneration++;
     this.summaryDirty = false;
+    this.lastPromptPlanSnapshot = null;
     this.contextManager.clear();
   }
 
   getContext(): ChatMessage[] {
     return this.contextManager.getSnapshot();
+  }
+
+  getConversationState(): ConversationState {
+    return this.contextManager.getConversationState();
+  }
+
+  getLastPromptPlan(): PromptPlanSnapshot | null {
+    if (!this.lastPromptPlanSnapshot) return null;
+    return structuredClone(this.lastPromptPlanSnapshot);
   }
 
   /**
@@ -1007,6 +1060,7 @@ export class Agent {
     const state = restoreConversationState(persisted);
     this.summaryGeneration++;
     this.summaryDirty = false;
+    this.lastPromptPlanSnapshot = null;
     this.contextManager.importState(state);
   }
 

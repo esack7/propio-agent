@@ -6,6 +6,8 @@ export const CLI_FLAG_SHOW_ACTIVITY = "--show-activity";
 export const CLI_FLAG_SHOW_STATUS = "--show-status";
 export const CLI_FLAG_SHOW_REASONING_SUMMARY = "--show-reasoning-summary";
 export const CLI_FLAG_SHOW_TRACE = "--show-trace";
+export const CLI_FLAG_SHOW_CONTEXT_STATS = "--show-context-stats";
+export const CLI_FLAG_SHOW_PROMPT_PLAN = "--show-prompt-plan";
 export const CLI_FLAG_DEBUG_LLM = "--debug-llm";
 export const CLI_FLAG_DEBUG_LLM_FILE = "--debug-llm-file";
 export const CLI_FLAG_HELP = "--help";
@@ -20,6 +22,8 @@ export interface ParsedCliArgs {
     showActivity: boolean;
     showStatus: boolean;
     showReasoningSummary: boolean;
+    showContextStats: boolean;
+    showPromptPlan: boolean;
     showTrace: boolean;
     debugLlm: boolean;
     debugLlmFile?: string;
@@ -40,6 +44,8 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     showActivity: false,
     showStatus: false,
     showReasoningSummary: false,
+    showContextStats: false,
+    showPromptPlan: false,
     showTrace: false,
     debugLlm: false,
     debugLlmFile: undefined,
@@ -64,6 +70,10 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       flags.showStatus = true;
     } else if (arg === CLI_FLAG_SHOW_REASONING_SUMMARY) {
       flags.showReasoningSummary = true;
+    } else if (arg === CLI_FLAG_SHOW_CONTEXT_STATS) {
+      flags.showContextStats = true;
+    } else if (arg === CLI_FLAG_SHOW_PROMPT_PLAN) {
+      flags.showPromptPlan = true;
     } else if (arg === CLI_FLAG_SHOW_TRACE) {
       flags.showTrace = true;
     } else if (arg === CLI_FLAG_DEBUG_LLM) {

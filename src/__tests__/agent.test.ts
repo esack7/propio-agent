@@ -1717,4 +1717,218 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(agent.getPinnedMemory({ includeInactive: true })).toEqual([]);
     });
   });
+
+  // -------------------------------------------------------------------
+  // Phase 8: Context UX & Introspection
+  // -------------------------------------------------------------------
+
+  describe("getConversationState()", () => {
+    it("should return empty state on a fresh agent", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const state = agent.getConversationState();
+
+      expect(state.turns).toHaveLength(0);
+      expect(state.artifacts).toHaveLength(0);
+      expect(state.pinnedMemory).toHaveLength(0);
+      expect(state.rollingSummary).toBeUndefined();
+    });
+
+    it("should reflect structured turns after a conversation", async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Hello", () => {});
+
+      const state = agent.getConversationState();
+      expect(state.turns).toHaveLength(1);
+      expect(state.turns[0].userMessage.content).toBe("Hello");
+      expect(state.turns[0].completedAt).toBeDefined();
+      expect(state.turns[0].entries.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("getLastPromptPlan()", () => {
+    it("should return null before any requests are made", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      expect(agent.getLastPromptPlan()).toBeNull();
+    });
+
+    it("should capture prompt plan after normal request flow", async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Test", () => {});
+
+      const snapshot = agent.getLastPromptPlan();
+      expect(snapshot).not.toBeNull();
+      expect(snapshot!.provider).toBe("mock");
+      expect(snapshot!.model).toBe("llama3.2:3b");
+      expect(snapshot!.iteration).toBe(1);
+      expect(snapshot!.contextWindowTokens).toBe(128000);
+      expect(snapshot!.plan.messages.length).toBeGreaterThan(0);
+      expect(snapshot!.plan.retryLevel).toBe(0);
+      expect(snapshot!.plan.reservedOutputTokens).toBeGreaterThan(0);
+      expect(snapshot!.availableInputBudget).toBe(
+        snapshot!.contextWindowTokens - snapshot!.plan.reservedOutputTokens,
+      );
+    });
+
+    it("should update after context-length retry flow", async () => {
+      let callCount = 0;
+
+      class RetryMockProvider implements LLMProvider {
+        name = "retry-mock";
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          callCount++;
+          if (callCount === 1) {
+            throw new ProviderContextLengthError("too long");
+          }
+          yield { type: "assistant_text" as const, delta: "Recovered" };
+        }
+      }
+
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = new RetryMockProvider();
+
+      await agent.streamChat("Trigger retry", () => {});
+
+      const snapshot = agent.getLastPromptPlan();
+      expect(snapshot).not.toBeNull();
+      expect(snapshot!.plan.retryLevel).toBeGreaterThanOrEqual(1);
+    });
+
+    it("should update after no-tools fallback flow", async () => {
+      let callCount = 0;
+
+      class ToolLoopProvider implements LLMProvider {
+        name = "tool-loop";
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          callCount++;
+          if (callCount <= 3) {
+            yield {
+              type: "tool_calls" as const,
+              toolCalls: [
+                {
+                  id: `tc-${callCount}`,
+                  function: { name: "list_directory", arguments: {} },
+                },
+              ],
+            };
+          } else {
+            yield { type: "assistant_text" as const, delta: "Final" };
+          }
+        }
+      }
+
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = new ToolLoopProvider();
+
+      await agent.streamChat("Loop test", () => {});
+
+      const snapshot = agent.getLastPromptPlan();
+      expect(snapshot).not.toBeNull();
+      expect(snapshot!.plan.messages.length).toBeGreaterThan(0);
+    });
+
+    it("should be a deep defensive copy", async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Test", () => {});
+
+      const snap1 = agent.getLastPromptPlan();
+      const snap2 = agent.getLastPromptPlan();
+      expect(snap1).not.toBe(snap2);
+      expect(snap1!.plan).not.toBe(snap2!.plan);
+      expect(snap1!.plan.messages).not.toBe(snap2!.plan.messages);
+      expect(snap1!.plan.includedTurnIds).not.toBe(snap2!.plan.includedTurnIds);
+      expect(snap1).toEqual(snap2);
+    });
+
+    it("should be null after clearContext()", async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("Build a plan", () => {});
+      expect(agent.getLastPromptPlan()).not.toBeNull();
+
+      agent.clearContext();
+      expect(agent.getLastPromptPlan()).toBeNull();
+    });
+
+    it("should be null after importSession()", async () => {
+      const mockProvider = new MockProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat("First session", () => {});
+      expect(agent.getLastPromptPlan()).not.toBeNull();
+
+      const exported = agent.exportSession();
+      agent.importSession(exported);
+      expect(agent.getLastPromptPlan()).toBeNull();
+    });
+
+    it("should emit prompt_plan_built events for each iteration via onEvent", async () => {
+      let callCount = 0;
+
+      class ToolThenAnswerProvider implements LLMProvider {
+        name = "multi-iter";
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          callCount++;
+          if (callCount === 1) {
+            yield {
+              type: "tool_calls" as const,
+              toolCalls: [
+                {
+                  id: "tc-1",
+                  function: { name: "list_directory", arguments: {} },
+                },
+              ],
+            };
+          } else {
+            yield { type: "assistant_text" as const, delta: "Done" };
+          }
+        }
+      }
+
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = new ToolThenAnswerProvider();
+
+      const planEvents: Array<{ iteration: number; retryLevel: number }> = [];
+      await agent.streamChat("Multi iter", () => {}, {
+        onEvent: (event) => {
+          if (event.type === "prompt_plan_built") {
+            planEvents.push({
+              iteration: event.snapshot.iteration,
+              retryLevel: event.snapshot.plan.retryLevel,
+            });
+          }
+        },
+      });
+
+      expect(planEvents.length).toBeGreaterThanOrEqual(2);
+      expect(planEvents[0].iteration).toBe(1);
+      expect(planEvents[1].iteration).toBe(2);
+    });
+  });
 });

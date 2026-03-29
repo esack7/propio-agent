@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 import { fileURLToPath } from "url";
-import { Agent, AgentVisibilityEvent } from "./agent.js";
+import { Agent, AgentVisibilityEvent, PromptPlanSnapshot } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
@@ -12,6 +12,16 @@ import { showToolMenu } from "./ui/toolMenu.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
 import { AgentDiagnosticEvent } from "./diagnostics.js";
+import {
+  formatContextOverview,
+  formatContextStats,
+  formatPromptPlan,
+  formatPromptPlanCompact,
+  formatMemoryView,
+  type ContextOverviewLine,
+  type PromptPlanLine,
+  type MemoryLine,
+} from "./ui/contextInspector.js";
 
 type AppMode =
   | "idle"
@@ -24,6 +34,8 @@ interface VisibilityOptions {
   showActivity: boolean;
   showStatus: boolean;
   showReasoningSummary: boolean;
+  showContextStats: boolean;
+  showPromptPlan: boolean;
 }
 
 const HELP_TEXT = `Usage: propio-agent [options]
@@ -38,6 +50,9 @@ Options:
   --show-reasoning-summary
                       Show a concise reasoning summary after each turn
   --show-trace        Enable --show-activity, --show-status, and --show-reasoning-summary
+  --show-context-stats
+                      Print compact context stats after each turn
+  --show-prompt-plan  Print prompt plan summary each time a request is built
   --debug-llm         Emit provider/stream/tool diagnostic events to stderr
   --debug-llm-file    Append provider/stream/tool diagnostic events to a file
   -h, --help          Show this help text
@@ -125,11 +140,13 @@ function previewToolResult(result: string, maxLength = 70): string {
 
 function printSlashCommandHelp(ui: Pick<TerminalUi, "info" | "command">): void {
   ui.info("Available slash commands:");
-  ui.command("/help    - show this help menu");
-  ui.command("/clear   - clear session context");
-  ui.command("/context - show session context");
-  ui.command("/tools   - manage enabled tools");
-  ui.command("/exit    - exit the session");
+  ui.command("/help            - show this help menu");
+  ui.command("/clear           - clear session context");
+  ui.command("/context         - show structured context overview");
+  ui.command("/context prompt  - show latest prompt plan details");
+  ui.command("/context memory  - show pinned memory and rolling summary");
+  ui.command("/tools           - manage enabled tools");
+  ui.command("/exit            - exit the session");
   ui.command("");
 }
 
@@ -166,16 +183,31 @@ async function promptOnce(
   });
 }
 
+function renderStyledLines(
+  ui: TerminalUi,
+  lines: ReadonlyArray<{ text: string; style: "info" | "subtle" | "section" }>,
+): void {
+  for (const line of lines) {
+    switch (line.style) {
+      case "section":
+        ui.section(line.text);
+        break;
+      case "info":
+        ui.info(line.text);
+        break;
+      case "subtle":
+        ui.subtle(line.text);
+        break;
+    }
+  }
+}
+
 async function streamAssistantResponse(
   agent: Agent,
   userInput: string,
   ui: TerminalUi,
   abortSignal: AbortSignal,
-  visibility: {
-    showActivity: boolean;
-    showStatus: boolean;
-    showReasoningSummary: boolean;
-  },
+  visibility: VisibilityOptions,
 ): Promise<{
   response: string;
   reasoningSummary?: { summary: string; source: "agent" | "provider" };
@@ -191,6 +223,15 @@ async function streamAssistantResponse(
       if (visibility.showStatus) {
         mdStream.flush();
         ui.traceStatus(event.status);
+      }
+      return;
+    }
+
+    if (event.type === "prompt_plan_built") {
+      if (visibility.showPromptPlan) {
+        mdStream.flush();
+        ui.newline();
+        ui.subtle(formatPromptPlanCompact(event.snapshot));
       }
       return;
     }
@@ -268,6 +309,11 @@ async function streamAssistantResponse(
   const reasoningSummary = agent.getLastTurnReasoningSummary() ?? undefined;
   if (visibility.showReasoningSummary && reasoningSummary && !ui.isJsonMode()) {
     ui.reasoningSummary(reasoningSummary.summary, reasoningSummary.source);
+  }
+
+  if (!ui.isJsonMode() && visibility.showContextStats) {
+    const state = agent.getConversationState();
+    ui.subtle(formatContextStats(state));
   }
 
   return { response, reasoningSummary };
@@ -398,18 +444,37 @@ async function runInteractiveSession(
       continue;
     }
 
-    if (trimmedInput === "/context") {
-      const context = agent.getContext();
-      if (context.length === 0) {
-        ui.info("No session context.");
+    if (trimmedInput === "/context" || trimmedInput.startsWith("/context ")) {
+      const subcommand = trimmedInput.slice("/context".length).trim();
+
+      if (subcommand === "") {
+        const state = agent.getConversationState();
+        const hasContent =
+          state.turns.length > 0 ||
+          state.preamble.length > 0 ||
+          state.artifacts.length > 0 ||
+          state.pinnedMemory.length > 0 ||
+          state.rollingSummary != null;
+        if (!hasContent) {
+          ui.info("No session context.");
+        } else {
+          renderStyledLines(ui, formatContextOverview(state));
+        }
+      } else if (subcommand === "prompt") {
+        const snapshot = agent.getLastPromptPlan();
+        if (!snapshot) {
+          ui.info("No prompt plan yet (no requests have been built).");
+        } else {
+          renderStyledLines(ui, formatPromptPlan(snapshot));
+        }
+      } else if (subcommand === "memory") {
+        const state = agent.getConversationState();
+        renderStyledLines(ui, formatMemoryView(state));
       } else {
-        ui.info("Session Context:");
-        context.forEach((message, index) => {
-          ui.subtle(
-            `${index + 1}. ${message.role.toUpperCase()}: ${message.content}`,
-          );
-        });
+        ui.error(`Unknown /context subcommand: "${subcommand}"`);
+        ui.command("Usage: /context [prompt | memory]");
       }
+
       ui.command("");
       continue;
     }
@@ -484,6 +549,8 @@ async function main(): Promise<number> {
     showActivity: parsedArgs.flags.showActivity || showTrace,
     showStatus: parsedArgs.flags.showStatus || showTrace,
     showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
+    showContextStats: parsedArgs.flags.showContextStats,
+    showPromptPlan: parsedArgs.flags.showPromptPlan,
   };
 
   setColorEnabled(colorEnabled);
