@@ -1,5 +1,50 @@
 import { ChatMessage } from "../providers/types.js";
 
+// ---------------------------------------------------------------------------
+// Pinned Memory (Phase 7)
+// ---------------------------------------------------------------------------
+
+export type MemoryKind = "fact" | "constraint" | "decision";
+export type MemoryScope = "session" | "project";
+export type MemoryLifecycle = "active" | "superseded" | "removed";
+export type MemoryOrigin = "user" | "assistant" | "tool" | "application";
+
+export interface MemorySource {
+  readonly origin: MemoryOrigin;
+  readonly turnId?: string;
+  readonly toolCallId?: string;
+}
+
+export interface PinnedMemoryRecord {
+  readonly id: string;
+  readonly kind: MemoryKind;
+  readonly scope: MemoryScope;
+  readonly content: string;
+  readonly source: MemorySource;
+  readonly rationale?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lifecycle: MemoryLifecycle;
+  readonly supersededById?: string;
+}
+
+export interface PinFactInput {
+  readonly kind: MemoryKind;
+  readonly scope?: MemoryScope;
+  readonly content: string;
+  readonly source: MemorySource;
+  readonly rationale?: string;
+}
+
+export interface UpdateMemoryInput {
+  readonly content?: string;
+  readonly rationale?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Budget and summary policies
+// ---------------------------------------------------------------------------
+
 /**
  * Configurable budget policy for prompt assembly. Controls how much of the
  * context window is available for prompt content vs. reserved for output,
@@ -193,4 +238,5 @@ export interface ConversationState {
   readonly turns: ReadonlyArray<TurnRecord>;
   readonly artifacts: ReadonlyArray<ArtifactRecord>;
   readonly rollingSummary?: RollingSummaryRecord;
+  readonly pinnedMemory: ReadonlyArray<PinnedMemoryRecord>;
 }

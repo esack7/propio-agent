@@ -34,6 +34,9 @@ import {
   SummaryPolicy,
   DEFAULT_SUMMARY_POLICY,
   PromptPlan,
+  PinnedMemoryRecord,
+  PinFactInput,
+  UpdateMemoryInput,
 } from "./context/types.js";
 import { SummaryManager } from "./context/summaryManager.js";
 import {
@@ -1005,6 +1008,36 @@ export class Agent {
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.contextManager.importState(state);
+  }
+
+  // -------------------------------------------------------------------
+  // Pinned memory (Phase 7)
+  // -------------------------------------------------------------------
+
+  pinFact(input: PinFactInput): string {
+    return this.contextManager.pinFact(input);
+  }
+
+  addProjectConstraint(
+    content: string,
+    source: PinFactInput["source"],
+    rationale?: string,
+  ): string {
+    return this.contextManager.addProjectConstraint(content, source, rationale);
+  }
+
+  updateMemory(id: string, input: UpdateMemoryInput): string {
+    return this.contextManager.updateMemory(id, input);
+  }
+
+  unpinFact(id: string, rationale?: string): void {
+    this.contextManager.unpinFact(id, rationale);
+  }
+
+  getPinnedMemory(opts?: {
+    includeInactive?: boolean;
+  }): ReadonlyArray<PinnedMemoryRecord> {
+    return this.contextManager.getPinnedMemory(opts);
   }
 
   getLastTurnReasoningSummary(): TurnReasoningSummary | null {

@@ -17,6 +17,8 @@ import {
 
 export interface PromptBuildRequest {
   readonly systemPrompt: string;
+  /** Pre-rendered pinned memory block (from memoryManager.renderPinnedMemoryBlock). */
+  readonly pinnedMemoryBlock?: string;
   readonly conversationState: ConversationState;
   readonly contextWindowTokens: number;
   readonly policy: PromptBudgetPolicy;
@@ -69,6 +71,18 @@ const RETRY_LEVELS: RetryLevelConfig[] = [
 // ---------------------------------------------------------------------------
 
 export class PromptBuilder {
+  /**
+   * Compose the base system prompt with pinned memory appended. The
+   * pinned memory block is placed after the system prompt and before
+   * any rolling summary, giving it a stable position for cacheability.
+   */
+  private composeSystemBase(request: PromptBuildRequest): string {
+    if (request.pinnedMemoryBlock) {
+      return `${request.systemPrompt}\n\n${request.pinnedMemoryBlock}`;
+    }
+    return request.systemPrompt;
+  }
+
   buildPlan(request: PromptBuildRequest): PromptPlan {
     const level = Math.min(request.retryLevel ?? 0, 3);
 
@@ -125,7 +139,8 @@ export class PromptBuilder {
     // This determines which turns would be omitted by budget alone.
     // We then check whether the summary actually covers all of them. ---
 
-    const baseSystemTokens = estimateTokens(request.systemPrompt.length);
+    const systemBase = this.composeSystemBase(request);
+    const baseSystemTokens = estimateTokens(systemBase.length);
 
     // Reserve budget for current turn
     let currentTurnTokens = 0;
@@ -180,7 +195,7 @@ export class PromptBuilder {
       if (uncoveredOmissions.length === 0) {
         return this.assemblePlan(
           request,
-          `${request.systemPrompt}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+          `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
           summaryResult.selectedTurns,
           currentTurn,
           summaryResult.omittedTurnIds,
@@ -223,7 +238,7 @@ export class PromptBuilder {
       );
       return this.assemblePlan(
         request,
-        `${request.systemPrompt}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+        `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
         summaryResult.selectedTurns,
         currentTurn,
         summaryResult.omittedTurnIds,
@@ -234,7 +249,7 @@ export class PromptBuilder {
 
     return this.assemblePlan(
       request,
-      request.systemPrompt,
+      systemBase,
       noSummaryResult.selectedTurns,
       currentTurn,
       noSummaryResult.omittedTurnIds,
@@ -392,9 +407,8 @@ export class PromptBuilder {
   // -----------------------------------------------------------------------
 
   private buildMinimalPlan(request: PromptBuildRequest): PromptPlan {
-    const messages: ChatMessage[] = [
-      { role: "system", content: request.systemPrompt },
-    ];
+    const systemBase = this.composeSystemBase(request);
+    const messages: ChatMessage[] = [{ role: "system", content: systemBase }];
 
     const allTurns = request.conversationState.turns;
     const currentTurn =

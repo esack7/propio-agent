@@ -5,6 +5,8 @@ import {
   RollingSummaryRecord,
   DEFAULT_SUMMARY_POLICY,
 } from "../types.js";
+import type { PinFactInput } from "../types.js";
+import { MemoryValidationError } from "../memoryManager.js";
 
 function toolResult(
   toolCallId: string,
@@ -1715,6 +1717,404 @@ describe("ContextManager", () => {
       );
       expect(toolMsg).toBeDefined();
       expect(toolMsg!.toolResults![0].content).toBe("tool output data");
+    });
+  });
+
+  describe("pinned memory", () => {
+    const userSource: PinFactInput["source"] = { origin: "user" };
+
+    it("pinFact adds an active record retrievable via getPinnedMemory", () => {
+      const id = manager.pinFact({
+        kind: "fact",
+        content: "API base URL is https://example.com",
+        source: userSource,
+      });
+      const records = manager.getPinnedMemory();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe(id);
+      expect(records[0].lifecycle).toBe("active");
+      expect(records[0].content).toBe("API base URL is https://example.com");
+    });
+
+    it("pinFact defaults scope to session", () => {
+      manager.pinFact({
+        kind: "decision",
+        content: "Use ESM",
+        source: userSource,
+      });
+      expect(manager.getPinnedMemory()[0].scope).toBe("session");
+    });
+
+    it("addProjectConstraint creates a project-scoped constraint", () => {
+      manager.addProjectConstraint("No console.log in prod", userSource);
+      const r = manager.getPinnedMemory()[0];
+      expect(r.kind).toBe("constraint");
+      expect(r.scope).toBe("project");
+      expect(r.content).toBe("No console.log in prod");
+    });
+
+    it("duplicate active records are rejected", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "Unique fact",
+        source: userSource,
+      });
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "Unique fact",
+          source: userSource,
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("empty content is rejected (MemoryValidationError)", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "   ",
+          source: userSource,
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("oversized content is rejected", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "x".repeat(501),
+          source: userSource,
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("code fences rejected", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "see ```js code```",
+          source: userSource,
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+  });
+
+  describe("updateMemory", () => {
+    const userSource: PinFactInput["source"] = { origin: "user" };
+
+    it("updateMemory supersedes old record, creates new one", () => {
+      const oldId = manager.pinFact({
+        kind: "fact",
+        content: "v1",
+        source: userSource,
+      });
+      const newId = manager.updateMemory(oldId, { content: "v2" });
+      expect(newId).not.toBe(oldId);
+      const all = manager.getPinnedMemory({ includeInactive: true });
+      const oldRec = all.find((r) => r.id === oldId)!;
+      expect(oldRec.lifecycle).toBe("superseded");
+      expect(oldRec.supersededById).toBe(newId);
+    });
+
+    it("only the replacement is returned by getPinnedMemory (default)", () => {
+      const oldId = manager.pinFact({
+        kind: "fact",
+        content: "a",
+        source: userSource,
+      });
+      manager.updateMemory(oldId, { content: "b" });
+      const active = manager.getPinnedMemory();
+      expect(active).toHaveLength(1);
+      expect(active[0].content).toBe("b");
+      expect(active[0].lifecycle).toBe("active");
+    });
+
+    it("getPinnedMemory with includeInactive shows superseded", () => {
+      const oldId = manager.pinFact({
+        kind: "constraint",
+        content: "c1",
+        source: userSource,
+      });
+      manager.updateMemory(oldId, { content: "c2" });
+      const all = manager.getPinnedMemory({ includeInactive: true });
+      expect(
+        all.some((r) => r.id === oldId && r.lifecycle === "superseded"),
+      ).toBe(true);
+      expect(
+        all.some((r) => r.content === "c2" && r.lifecycle === "active"),
+      ).toBe(true);
+    });
+
+    it("updateMemory on non-existent id throws", () => {
+      expect(() =>
+        manager.updateMemory("00000000-0000-4000-8000-000000000000", {
+          content: "x",
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("updateMemory on non-active record throws", () => {
+      const id = manager.pinFact({
+        kind: "fact",
+        content: "orig",
+        source: userSource,
+      });
+      const nextId = manager.updateMemory(id, { content: "next" });
+      expect(() => manager.updateMemory(id, { content: "again" })).toThrow(
+        MemoryValidationError,
+      );
+      expect(() =>
+        manager.updateMemory(nextId, { content: "ok" }),
+      ).not.toThrow();
+    });
+  });
+
+  describe("unpinFact", () => {
+    const userSource: PinFactInput["source"] = { origin: "user" };
+
+    it("unpinFact marks record as removed", () => {
+      const id = manager.pinFact({
+        kind: "fact",
+        content: "to remove",
+        source: userSource,
+      });
+      manager.unpinFact(id, "no longer needed");
+      const r = manager
+        .getPinnedMemory({ includeInactive: true })
+        .find((x) => x.id === id)!;
+      expect(r.lifecycle).toBe("removed");
+    });
+
+    it("removed records excluded from getPinnedMemory default", () => {
+      const id = manager.pinFact({
+        kind: "fact",
+        content: "gone",
+        source: userSource,
+      });
+      manager.unpinFact(id);
+      expect(manager.getPinnedMemory()).toEqual([]);
+    });
+
+    it("removed records visible with includeInactive", () => {
+      const id = manager.pinFact({
+        kind: "decision",
+        content: "pick A",
+        source: userSource,
+      });
+      manager.unpinFact(id);
+      const all = manager.getPinnedMemory({ includeInactive: true });
+      expect(all.some((r) => r.id === id && r.lifecycle === "removed")).toBe(
+        true,
+      );
+    });
+
+    it("unpinFact on already-removed throws", () => {
+      const id = manager.pinFact({
+        kind: "fact",
+        content: "x",
+        source: userSource,
+      });
+      manager.unpinFact(id);
+      expect(() => manager.unpinFact(id)).toThrow(MemoryValidationError);
+    });
+
+    it("unpinFact on non-existent id throws", () => {
+      expect(() =>
+        manager.unpinFact("00000000-0000-4000-8000-000000000000"),
+      ).toThrow(MemoryValidationError);
+    });
+  });
+
+  describe("pinned memory in buildPromptPlan", () => {
+    const userSource: PinFactInput["source"] = { origin: "user" };
+
+    it("active pinned memory appears in system message as <pinned_memory> block", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "Remember the token budget",
+        source: userSource,
+      });
+      manager.beginUserTurn("Hi");
+      const plan = manager.buildPromptPlan("You are helpful.");
+      expect(plan.messages[0].role).toBe("system");
+      expect(plan.messages[0].content).toContain("<pinned_memory>");
+      expect(plan.messages[0].content).toContain("Remember the token budget");
+    });
+
+    it("superseded/removed memory not in system message", () => {
+      const id = manager.pinFact({
+        kind: "fact",
+        content: "old fact",
+        source: userSource,
+      });
+      manager.updateMemory(id, { content: "new fact" });
+      manager.pinFact({
+        kind: "decision",
+        content: "will unpin",
+        source: userSource,
+      });
+      const decisionId = manager
+        .getPinnedMemory()
+        .find((r) => r.content === "will unpin")!.id;
+      manager.unpinFact(decisionId);
+
+      const plan = manager.buildPromptPlan("sys");
+      const sys = plan.messages[0].content;
+      expect(sys).toContain("new fact");
+      expect(sys).not.toContain("old fact");
+      expect(sys).not.toContain("will unpin");
+    });
+
+    it("pinned memory present at retry level 3", () => {
+      manager.pinFact({
+        kind: "constraint",
+        content: "Always cite sources",
+        source: userSource,
+      });
+      manager.beginUserTurn("Q");
+      manager.commitAssistantResponse("Thinking", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      const plan = manager.buildPromptPlan("system", undefined, {
+        retryLevel: 3,
+      });
+      expect(plan.retryLevel).toBe(3);
+      expect(plan.messages[0].content).toContain("<pinned_memory>");
+      expect(plan.messages[0].content).toContain("Always cite sources");
+    });
+
+    it("empty pinned memory produces no <pinned_memory> block", () => {
+      manager.beginUserTurn("Hi");
+      const plan = manager.buildPromptPlan("Only system");
+      expect(plan.messages[0].content).not.toContain("<pinned_memory>");
+    });
+  });
+
+  describe("pinned memory lifecycle with clear/import", () => {
+    const userSource: PinFactInput["source"] = { origin: "user" };
+
+    it("clear() removes all pinned memory", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "keeps",
+        source: userSource,
+      });
+      manager.clear();
+      expect(manager.getPinnedMemory()).toEqual([]);
+    });
+
+    it("importState restores pinned memory", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "restored",
+        source: userSource,
+      });
+      const snapshot = manager.getConversationState();
+      manager.clear();
+      manager.importState(snapshot);
+      expect(manager.getPinnedMemory()).toHaveLength(1);
+      expect(manager.getPinnedMemory()[0].content).toBe("restored");
+    });
+
+    it("getConversationState includes pinnedMemory array", () => {
+      manager.pinFact({
+        kind: "decision",
+        content: "use vitest",
+        source: userSource,
+      });
+      const state = manager.getConversationState();
+      expect(state.pinnedMemory).toHaveLength(1);
+      expect(state.pinnedMemory[0].kind).toBe("decision");
+    });
+
+    it("getConversationState deep-clones source so mutations do not leak back", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "deep clone test",
+        source: { origin: "tool", turnId: "t-1", toolCallId: "tc-1" },
+      });
+
+      const state = manager.getConversationState();
+      (state.pinnedMemory[0].source as any).origin = "MUTATED";
+      (state.pinnedMemory[0].source as any).turnId = "MUTATED";
+
+      const fresh = manager.getConversationState();
+      expect(fresh.pinnedMemory[0].source.origin).toBe("tool");
+      expect(fresh.pinnedMemory[0].source.turnId).toBe("t-1");
+    });
+
+    it("getPinnedMemory deep-clones source so mutations do not leak back", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "another clone test",
+        source: { origin: "user", turnId: "t-2" },
+      });
+
+      const records = manager.getPinnedMemory();
+      (records[0].source as any).origin = "MUTATED";
+
+      const fresh = manager.getPinnedMemory();
+      expect(fresh[0].source.origin).toBe("user");
+    });
+
+    it("importState deep-clones source so caller mutations do not affect internal state", () => {
+      manager.pinFact({
+        kind: "fact",
+        content: "import clone test",
+        source: { origin: "application" },
+      });
+      const state = manager.getConversationState();
+
+      const target = new ContextManager();
+      target.importState(state);
+
+      (state.pinnedMemory[0].source as any).origin = "MUTATED";
+
+      const internal = target.getPinnedMemory();
+      expect(internal[0].source.origin).toBe("application");
+    });
+  });
+
+  describe("pinned memory write-time validation of scope and source", () => {
+    it("rejects invalid scope at write time", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "test",
+          scope: "global" as any,
+          source: { origin: "user" },
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("rejects invalid source.origin at write time", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "test",
+          source: { origin: "system" as any },
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("rejects missing source at write time", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "test",
+          source: null as any,
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("rejects non-string source.turnId at write time", () => {
+      expect(() =>
+        manager.pinFact({
+          kind: "fact",
+          content: "test",
+          source: { origin: "user", turnId: 123 as any },
+        }),
+      ).toThrow(MemoryValidationError);
     });
   });
 });

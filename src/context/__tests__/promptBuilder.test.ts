@@ -7,6 +7,7 @@ import {
   TurnRecord,
   TurnEntry,
   ArtifactRecord,
+  PinnedMemoryRecord,
 } from "../types.js";
 import { ChatMessage } from "../../providers/types.js";
 import { estimateTokens } from "../../diagnostics.js";
@@ -93,11 +94,13 @@ function makeState(opts?: {
   preamble?: ChatMessage[];
   turns?: TurnRecord[];
   artifacts?: ArtifactRecord[];
+  pinnedMemory?: ReadonlyArray<PinnedMemoryRecord>;
 }): ConversationState {
   return {
     preamble: opts?.preamble ?? [],
     turns: opts?.turns ?? [],
     artifacts: opts?.artifacts ?? [],
+    pinnedMemory: opts?.pinnedMemory ?? [],
   };
 }
 
@@ -111,11 +114,13 @@ function makeRequest(opts: {
   summaryCoveredTurnIds?: ReadonlySet<string>;
   retryLevel?: number;
   artifacts?: Map<string, ArtifactRecord>;
+  pinnedMemoryBlock?: string;
 }): PromptBuildRequest {
   const artifacts = opts.artifacts ?? new Map();
   const state = opts.state ?? makeState();
   return {
     systemPrompt: opts.systemPrompt ?? "You are a helpful assistant.",
+    pinnedMemoryBlock: opts.pinnedMemoryBlock,
     conversationState: state,
     contextWindowTokens: opts.contextWindowTokens ?? 128000,
     policy: opts.policy ?? DEFAULT_BUDGET_POLICY,
@@ -441,6 +446,96 @@ describe("PromptBuilder", () => {
         (m) => m.role === "tool" && m.toolResults?.length,
       );
       expect(toolMsg!.toolResults![0].content).toBe(summary);
+    });
+  });
+
+  describe("pinned memory in system prompt", () => {
+    it("pinnedMemoryBlock is appended to system prompt when provided", () => {
+      const turn = makeTurn({ id: "t1", userMessage: "Hello" });
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns: [turn] }),
+          pinnedMemoryBlock: "<pinned>Remember X</pinned>",
+        }),
+      );
+
+      expect(plan.messages[0].role).toBe("system");
+      expect(plan.messages[0].content).toBe(
+        "You are a helpful assistant.\n\n<pinned>Remember X</pinned>",
+      );
+    });
+
+    it("system prompt is unchanged when pinnedMemoryBlock is empty string", () => {
+      const turn = makeTurn({ id: "t1", userMessage: "Hello" });
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns: [turn] }),
+          pinnedMemoryBlock: "",
+        }),
+      );
+
+      expect(plan.messages[0].content).toBe("You are a helpful assistant.");
+    });
+
+    it("system prompt is unchanged when pinnedMemoryBlock is undefined", () => {
+      const turn = makeTurn({ id: "t1", userMessage: "Hello" });
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns: [turn] }),
+        }),
+      );
+
+      expect(plan.messages[0].content).toBe("You are a helpful assistant.");
+    });
+
+    it("pinned memory appears in system prompt at retry level 3", () => {
+      const currentTurn = makeTurn({
+        id: "current",
+        userMessage: "Latest",
+      });
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns: [currentTurn] }),
+          retryLevel: 3,
+          pinnedMemoryBlock: "PINNED_BLOCK",
+        }),
+      );
+
+      expect(plan.retryLevel).toBe(3);
+      expect(plan.messages[0].content).toBe(
+        "You are a helpful assistant.\n\nPINNED_BLOCK",
+      );
+    });
+
+    it("pinned memory appears before session summary in system prompt (when both are present)", () => {
+      const longMessage = "x".repeat(10000);
+      const turns = Array.from({ length: 10 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: longMessage,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(longMessage)],
+        }),
+      );
+
+      const allTurnIds = new Set(turns.map((t) => t.id));
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          contextWindowTokens: 10000,
+          rollingSummary: "Older session gist",
+          summaryCoveredTurnIds: allTurnIds,
+          pinnedMemoryBlock: "MUST_STAY_VISIBLE",
+        }),
+      );
+
+      expect(plan.usedRollingSummary).toBe(true);
+      const content = plan.messages[0].content;
+      expect(content).toContain("MUST_STAY_VISIBLE");
+      expect(content).toContain("<session_summary>");
+      expect(content.indexOf("MUST_STAY_VISIBLE")).toBeLessThan(
+        content.indexOf("<session_summary>"),
+      );
     });
   });
 

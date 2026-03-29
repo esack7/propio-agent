@@ -18,7 +18,20 @@ import {
   ToolInvocationRecord,
   ArtifactToolResult,
   RollingSummaryRecord,
+  PinnedMemoryRecord,
+  PinFactInput,
+  UpdateMemoryInput,
 } from "./types.js";
+import {
+  validatePinInput,
+  validateUpdateInput,
+  isDuplicateActive,
+  supersedRecord,
+  removeRecord,
+  renderPinnedMemoryBlock,
+  clonePinnedRecord,
+  MemoryValidationError,
+} from "./memoryManager.js";
 import { PromptBuilder, PromptBuildRequest } from "./promptBuilder.js";
 import {
   computeSummaryEligibility,
@@ -279,6 +292,7 @@ export class ContextManager {
   private turns: MutableTurnRecord[] = [];
   private artifacts: Map<string, MutableArtifact> = new Map();
   private rollingSummary: RollingSummaryRecord | undefined;
+  private pinnedMemory: PinnedMemoryRecord[] = [];
 
   // -------------------------------------------------------------------
   // Turn lifecycle
@@ -423,6 +437,7 @@ export class ContextManager {
     this.turns = [];
     this.artifacts.clear();
     this.rollingSummary = undefined;
+    this.pinnedMemory = [];
   }
 
   /**
@@ -445,6 +460,10 @@ export class ContextManager {
           coveredTurnIds: [...state.rollingSummary.coveredTurnIds],
         }
       : undefined;
+
+    this.pinnedMemory = state.pinnedMemory
+      ? state.pinnedMemory.map(clonePinnedRecord)
+      : [];
   }
 
   // -------------------------------------------------------------------
@@ -487,6 +506,7 @@ export class ContextManager {
             coveredTurnIds: [...this.rollingSummary.coveredTurnIds],
           }
         : undefined,
+      pinnedMemory: this.pinnedMemory.map(clonePinnedRecord),
     };
   }
 
@@ -547,6 +567,164 @@ export class ContextManager {
   }
 
   // -------------------------------------------------------------------
+  // Pinned memory (Phase 7)
+  // -------------------------------------------------------------------
+
+  /**
+   * Pin a new fact, constraint, or decision as durable memory.
+   * Validates content guardrails and rejects duplicates.
+   * Returns the newly created record's ID.
+   */
+  pinFact(input: PinFactInput): string {
+    validatePinInput(input);
+
+    if (
+      isDuplicateActive(
+        this.pinnedMemory,
+        input.kind,
+        input.scope ?? "session",
+        input.content,
+      )
+    ) {
+      throw new MemoryValidationError(
+        "Duplicate active record with the same kind, scope, and content",
+      );
+    }
+
+    const now = new Date().toISOString();
+    const record: PinnedMemoryRecord = {
+      id: randomUUID(),
+      kind: input.kind,
+      scope: input.scope ?? "session",
+      content: input.content,
+      source: { ...input.source },
+      rationale: input.rationale,
+      createdAt: now,
+      updatedAt: now,
+      lifecycle: "active",
+    };
+
+    this.pinnedMemory.push(record);
+    return record.id;
+  }
+
+  /**
+   * Convenience wrapper: pin a project-scoped constraint.
+   */
+  addProjectConstraint(
+    content: string,
+    source: PinFactInput["source"],
+    rationale?: string,
+  ): string {
+    return this.pinFact({
+      kind: "constraint",
+      scope: "project",
+      content,
+      source,
+      rationale,
+    });
+  }
+
+  /**
+   * Update an existing pinned memory record. Creates a replacement
+   * record and marks the original as superseded. Returns the new
+   * record's ID.
+   */
+  updateMemory(id: string, input: UpdateMemoryInput): string {
+    validateUpdateInput(input);
+
+    const idx = this.pinnedMemory.findIndex((r) => r.id === id);
+    if (idx === -1) {
+      throw new MemoryValidationError(
+        `No pinned memory record with id "${id}"`,
+      );
+    }
+
+    const existing = this.pinnedMemory[idx];
+    if (existing.lifecycle !== "active") {
+      throw new MemoryValidationError(
+        `Cannot update record "${id}": lifecycle is "${existing.lifecycle}"`,
+      );
+    }
+
+    const newContent = input.content ?? existing.content;
+    const newRationale = input.rationale ?? existing.rationale;
+
+    if (
+      input.content !== undefined &&
+      isDuplicateActive(
+        this.pinnedMemory,
+        existing.kind,
+        existing.scope,
+        newContent,
+      )
+    ) {
+      const normalized = newContent.trim().toLowerCase().replace(/\s+/g, " ");
+      const existingNormalized = existing.content
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+      if (normalized !== existingNormalized) {
+        throw new MemoryValidationError(
+          "Updated content duplicates an existing active record",
+        );
+      }
+    }
+
+    const now = new Date().toISOString();
+    const replacement: PinnedMemoryRecord = {
+      id: randomUUID(),
+      kind: existing.kind,
+      scope: existing.scope,
+      content: newContent,
+      source: { ...existing.source },
+      rationale: newRationale,
+      createdAt: now,
+      updatedAt: now,
+      lifecycle: "active",
+    };
+
+    this.pinnedMemory[idx] = supersedRecord(existing, replacement.id);
+    this.pinnedMemory.push(replacement);
+    return replacement.id;
+  }
+
+  /**
+   * Unpin a memory record. Marks it as removed; it no longer appears
+   * in prompt output but remains in the inspectable history.
+   */
+  unpinFact(id: string, rationale?: string): void {
+    const idx = this.pinnedMemory.findIndex((r) => r.id === id);
+    if (idx === -1) {
+      throw new MemoryValidationError(
+        `No pinned memory record with id "${id}"`,
+      );
+    }
+
+    const existing = this.pinnedMemory[idx];
+    if (existing.lifecycle !== "active") {
+      throw new MemoryValidationError(
+        `Cannot unpin record "${id}": lifecycle is "${existing.lifecycle}"`,
+      );
+    }
+
+    this.pinnedMemory[idx] = removeRecord(existing, rationale);
+  }
+
+  /**
+   * Retrieve pinned memory records. By default returns only active
+   * records. Pass `includeInactive: true` for the full audit trail.
+   */
+  getPinnedMemory(opts?: {
+    includeInactive?: boolean;
+  }): ReadonlyArray<PinnedMemoryRecord> {
+    const records = opts?.includeInactive
+      ? this.pinnedMemory
+      : this.pinnedMemory.filter((r) => r.lifecycle === "active");
+    return records.map(clonePinnedRecord);
+  }
+
+  // -------------------------------------------------------------------
   // Prompt assembly
   // -------------------------------------------------------------------
 
@@ -581,13 +759,17 @@ export class ContextManager {
       options?.rollingSummary ?? this.rollingSummary?.content;
     const coveredTurnIds = this.getSummaryCoveredTurnIds();
 
+    const pinnedMemoryBlock = renderPinnedMemoryBlock(this.pinnedMemory);
+
     const request: PromptBuildRequest = {
       systemPrompt,
+      pinnedMemoryBlock,
       conversationState: {
         preamble: this.preTurnMessages,
         turns: this.turns as unknown as ReadonlyArray<TurnRecord>,
         artifacts: Array.from(this.artifacts.values()) as ArtifactRecord[],
         rollingSummary: this.rollingSummary,
+        pinnedMemory: this.pinnedMemory,
       },
       contextWindowTokens: contextWindow,
       policy,

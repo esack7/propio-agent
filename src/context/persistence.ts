@@ -8,6 +8,12 @@ import {
   RollingSummaryRecord,
   PromptBudgetPolicy,
   SummaryPolicy,
+  PinnedMemoryRecord,
+  MemoryKind,
+  MemoryScope,
+  MemoryLifecycle,
+  MemoryOrigin,
+  MemorySource,
 } from "./types.js";
 import { ChatMessage, ChatToolCall, ToolResult } from "../providers/types.js";
 
@@ -98,6 +104,38 @@ export interface PersistedSessionV1 {
   };
 }
 
+export interface PersistedMemorySource {
+  readonly origin: MemoryOrigin;
+  readonly turnId?: string;
+  readonly toolCallId?: string;
+}
+
+export interface PersistedPinnedMemoryRecord {
+  readonly id: string;
+  readonly kind: MemoryKind;
+  readonly scope: MemoryScope;
+  readonly content: string;
+  readonly source: PersistedMemorySource;
+  readonly rationale?: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lifecycle: MemoryLifecycle;
+  readonly supersededById?: string;
+}
+
+export interface PersistedSessionV2 {
+  readonly version: 2;
+  readonly savedAt: string;
+  readonly metadata: SessionMetadata;
+  readonly context: {
+    readonly preamble: ReadonlyArray<PersistedChatMessage>;
+    readonly turns: ReadonlyArray<PersistedTurnRecord>;
+    readonly rollingSummary?: RollingSummaryRecord;
+    readonly artifacts: ReadonlyArray<PersistedArtifactRecord>;
+    readonly pinnedMemory: ReadonlyArray<PersistedPinnedMemoryRecord>;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Serialization (runtime → persisted JSON string)
 // ---------------------------------------------------------------------------
@@ -166,18 +204,38 @@ function persistArtifact(artifact: ArtifactRecord): PersistedArtifactRecord {
   };
 }
 
+function persistPinnedMemory(
+  record: PinnedMemoryRecord,
+): PersistedPinnedMemoryRecord {
+  const result: Record<string, unknown> = {
+    id: record.id,
+    kind: record.kind,
+    scope: record.scope,
+    content: record.content,
+    source: { ...record.source },
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    lifecycle: record.lifecycle,
+  };
+  if (record.rationale !== undefined) result.rationale = record.rationale;
+  if (record.supersededById !== undefined)
+    result.supersededById = record.supersededById;
+  return result as unknown as PersistedPinnedMemoryRecord;
+}
+
 export function serializeSession(
   state: ConversationState,
   metadata: SessionMetadata,
 ): string {
-  const persisted: PersistedSessionV1 = {
-    version: 1,
+  const persisted: PersistedSessionV2 = {
+    version: 2,
     savedAt: new Date().toISOString(),
     metadata: { ...metadata },
     context: {
       preamble: state.preamble.map(persistMessage),
       turns: state.turns.map(persistTurn),
       artifacts: state.artifacts.map(persistArtifact),
+      pinnedMemory: (state.pinnedMemory ?? []).map(persistPinnedMemory),
       ...(state.rollingSummary
         ? {
             rollingSummary: {
@@ -236,6 +294,23 @@ const VALID_ROLES = new Set(["user", "assistant", "system", "tool"]);
 const VALID_ENTRY_KINDS = new Set(["assistant", "tool"]);
 const VALID_IMPORTANCE = new Set(["low", "normal", "high"]);
 const VALID_CONTENT_ENCODING = new Set(["utf8", "base64"]);
+const VALID_MEMORY_KINDS = new Set<MemoryKind>([
+  "fact",
+  "constraint",
+  "decision",
+]);
+const VALID_MEMORY_SCOPES = new Set<MemoryScope>(["session", "project"]);
+const VALID_MEMORY_LIFECYCLES = new Set<MemoryLifecycle>([
+  "active",
+  "superseded",
+  "removed",
+]);
+const VALID_MEMORY_ORIGINS = new Set<MemoryOrigin>([
+  "user",
+  "assistant",
+  "tool",
+  "application",
+]);
 
 function validateToolCall(tc: unknown, label: string): void {
   assertObject(tc, label);
@@ -401,6 +476,62 @@ function validateRollingSummary(summary: unknown, label: string): void {
   assertNumber(summary.estimatedTokens, `${label}.estimatedTokens`);
 }
 
+function validateMemorySource(source: unknown, label: string): void {
+  assertObject(source, label);
+  assertString(source.origin, `${label}.origin`);
+  if (!VALID_MEMORY_ORIGINS.has(source.origin as MemoryOrigin)) {
+    throw new SessionParseError(
+      `${label}.origin must be one of: user, assistant, tool, application`,
+    );
+  }
+  const src = source as Record<string, unknown>;
+  if (src.turnId !== undefined) {
+    assertString(src.turnId, `${label}.turnId`);
+  }
+  if (src.toolCallId !== undefined) {
+    assertString(src.toolCallId, `${label}.toolCallId`);
+  }
+}
+
+function validatePinnedMemoryRecord(record: unknown, label: string): void {
+  assertObject(record, label);
+  assertString(record.id, `${label}.id`);
+  assertString(record.kind, `${label}.kind`);
+  if (!VALID_MEMORY_KINDS.has(record.kind as MemoryKind)) {
+    throw new SessionParseError(
+      `${label}.kind must be one of: fact, constraint, decision`,
+    );
+  }
+  assertString(record.scope, `${label}.scope`);
+  if (!VALID_MEMORY_SCOPES.has(record.scope as MemoryScope)) {
+    throw new SessionParseError(
+      `${label}.scope must be one of: session, project`,
+    );
+  }
+  assertString(record.content, `${label}.content`);
+  validateMemorySource(record.source, `${label}.source`);
+  assertString(record.createdAt, `${label}.createdAt`);
+  assertString(record.updatedAt, `${label}.updatedAt`);
+  assertString(record.lifecycle, `${label}.lifecycle`);
+  if (!VALID_MEMORY_LIFECYCLES.has(record.lifecycle as MemoryLifecycle)) {
+    throw new SessionParseError(
+      `${label}.lifecycle must be one of: active, superseded, removed`,
+    );
+  }
+  const rec = record as Record<string, unknown>;
+  if (rec.rationale !== undefined) {
+    assertString(rec.rationale, `${label}.rationale`);
+  }
+  if (rec.supersededById !== undefined) {
+    assertString(rec.supersededById, `${label}.supersededById`);
+  }
+  if (record.lifecycle === "superseded" && rec.supersededById === undefined) {
+    throw new SessionParseError(
+      `${label} has lifecycle "superseded" but is missing required supersededById`,
+    );
+  }
+}
+
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
   assertString(metadata.providerName, "metadata.providerName");
@@ -415,7 +546,9 @@ function validateMetadata(metadata: unknown): void {
 // Parsing (JSON string → validated PersistedSessionV1)
 // ---------------------------------------------------------------------------
 
-export function parseSession(json: string): PersistedSessionV1 {
+export function parseSession(
+  json: string,
+): PersistedSessionV1 | PersistedSessionV2 {
   let raw: unknown;
   try {
     raw = JSON.parse(json);
@@ -425,9 +558,10 @@ export function parseSession(json: string): PersistedSessionV1 {
 
   assertObject(raw, "session");
 
-  if (raw.version !== 1) {
+  const version = raw.version;
+  if (version !== 1 && version !== 2) {
     throw new SessionParseError(
-      `Unsupported session version: ${String(raw.version)}. Only version 1 is supported.`,
+      `Unsupported session version: ${String(version)}. Supported versions: 1, 2.`,
     );
   }
 
@@ -457,6 +591,17 @@ export function parseSession(json: string): PersistedSessionV1 {
 
   if (ctx.rollingSummary !== undefined) {
     validateRollingSummary(ctx.rollingSummary, "context.rollingSummary");
+  }
+
+  if (version === 2) {
+    assertArray(ctx.pinnedMemory, "context.pinnedMemory");
+    for (let i = 0; i < (ctx.pinnedMemory as unknown[]).length; i++) {
+      validatePinnedMemoryRecord(
+        (ctx.pinnedMemory as unknown[])[i],
+        `context.pinnedMemory[${i}]`,
+      );
+    }
+    return raw as unknown as PersistedSessionV2;
   }
 
   return raw as unknown as PersistedSessionV1;
@@ -542,9 +687,33 @@ function restoreArtifact(artifact: PersistedArtifactRecord): ArtifactRecord {
   };
 }
 
+function restorePinnedMemory(
+  record: PersistedPinnedMemoryRecord,
+): PinnedMemoryRecord {
+  return {
+    id: record.id,
+    kind: record.kind,
+    scope: record.scope,
+    content: record.content,
+    source: { ...record.source },
+    rationale: record.rationale,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    lifecycle: record.lifecycle,
+    supersededById: record.supersededById,
+  };
+}
+
 export function restoreConversationState(
-  persisted: PersistedSessionV1,
+  persisted: PersistedSessionV1 | PersistedSessionV2,
 ): ConversationState {
+  const pinnedMemory =
+    persisted.version === 2
+      ? (persisted as PersistedSessionV2).context.pinnedMemory.map(
+          restorePinnedMemory,
+        )
+      : [];
+
   return {
     preamble: persisted.context.preamble.map(restoreMessage),
     turns: persisted.context.turns.map(restoreTurn),
@@ -555,5 +724,6 @@ export function restoreConversationState(
           coveredTurnIds: [...persisted.context.rollingSummary.coveredTurnIds],
         }
       : undefined,
+    pinnedMemory,
   };
 }

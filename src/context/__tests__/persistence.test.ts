@@ -13,6 +13,7 @@ import {
   DEFAULT_BUDGET_POLICY,
   DEFAULT_SUMMARY_POLICY,
   ConversationState,
+  PinnedMemoryRecord,
 } from "../types.js";
 import { Buffer } from "buffer";
 
@@ -72,6 +73,12 @@ function buildPopulatedManager(): ContextManager {
 
 function roundTrip(manager: ContextManager): ConversationState {
   const state = manager.getConversationState();
+  const json = serializeSession(state, TEST_METADATA);
+  const parsed = parseSession(json);
+  return restoreConversationState(parsed);
+}
+
+function roundTripState(state: ConversationState): ConversationState {
   const json = serializeSession(state, TEST_METADATA);
   const parsed = parseSession(json);
   return restoreConversationState(parsed);
@@ -285,12 +292,12 @@ describe("persistence", () => {
   // =================================================================
 
   describe("metadata", () => {
-    it("should include version 1 in the serialized output", () => {
+    it("should include version 2 in the serialized output", () => {
       const manager = new ContextManager();
       const state = manager.getConversationState();
       const json = serializeSession(state, TEST_METADATA);
       const parsed = parseSession(json);
-      expect(parsed.version).toBe(1);
+      expect(parsed.version).toBe(2);
     });
 
     it("should include savedAt timestamp", () => {
@@ -314,6 +321,282 @@ describe("persistence", () => {
       expect(parsed.metadata.contextWindowTokens).toBe(128000);
       expect(parsed.metadata.promptBudgetPolicy).toEqual(DEFAULT_BUDGET_POLICY);
       expect(parsed.metadata.summaryPolicy).toEqual(DEFAULT_SUMMARY_POLICY);
+    });
+  });
+
+  describe("version 2 pinned memory", () => {
+    it("should round-trip pinned memory records through serialize → parse → restore", () => {
+      const records: PinnedMemoryRecord[] = [
+        {
+          id: "pm-a",
+          kind: "fact",
+          scope: "session",
+          content: "Alpha",
+          source: { origin: "assistant", turnId: "t1" },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T01:00:00Z",
+          lifecycle: "active",
+        },
+        {
+          id: "pm-b",
+          kind: "constraint",
+          scope: "project",
+          content: "Beta",
+          source: { origin: "tool", toolCallId: "tc-9" },
+          createdAt: "2026-01-02T00:00:00Z",
+          updatedAt: "2026-01-02T00:00:00Z",
+          lifecycle: "superseded",
+          supersededById: "pm-a",
+          rationale: "replaced by newer fact",
+        },
+      ];
+
+      const state: ConversationState = {
+        preamble: [],
+        turns: [],
+        artifacts: [],
+        pinnedMemory: records,
+      };
+
+      const restored = roundTripState(state);
+      expect(restored.pinnedMemory).toHaveLength(2);
+      expect(restored.pinnedMemory[0]).toEqual(records[0]);
+      expect(restored.pinnedMemory[1]).toEqual(records[1]);
+    });
+
+    it("should preserve lifecycle states (active, superseded, removed)", () => {
+      const records: PinnedMemoryRecord[] = [
+        {
+          id: "l1",
+          kind: "fact",
+          scope: "session",
+          content: "active",
+          source: { origin: "user" },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          lifecycle: "active",
+        },
+        {
+          id: "l2",
+          kind: "decision",
+          scope: "session",
+          content: "superseded",
+          source: { origin: "assistant" },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          lifecycle: "superseded",
+          supersededById: "l1",
+        },
+        {
+          id: "l3",
+          kind: "constraint",
+          scope: "project",
+          content: "removed",
+          source: { origin: "application" },
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          lifecycle: "removed",
+        },
+      ];
+
+      const state: ConversationState = {
+        preamble: [],
+        turns: [],
+        artifacts: [],
+        pinnedMemory: records,
+      };
+
+      const restored = roundTripState(state);
+      expect(restored.pinnedMemory.map((r) => r.lifecycle)).toEqual([
+        "active",
+        "superseded",
+        "removed",
+      ]);
+    });
+
+    it("should preserve source metadata (origin, turnId, toolCallId)", () => {
+      const record: PinnedMemoryRecord = {
+        id: "src-1",
+        kind: "fact",
+        scope: "session",
+        content: "with source",
+        source: {
+          origin: "tool",
+          turnId: "turn-42",
+          toolCallId: "call-99",
+        },
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        lifecycle: "active",
+      };
+
+      const state: ConversationState = {
+        preamble: [],
+        turns: [],
+        artifacts: [],
+        pinnedMemory: [record],
+      };
+
+      const restored = roundTripState(state);
+      expect(restored.pinnedMemory[0].source).toEqual(record.source);
+    });
+
+    it("should preserve rationale and supersededById", () => {
+      const record: PinnedMemoryRecord = {
+        id: "r1",
+        kind: "decision",
+        scope: "project",
+        content: "pick option A",
+        source: { origin: "user", turnId: "t-7" },
+        rationale: "user confirmed budget",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+        lifecycle: "superseded",
+        supersededById: "r2",
+      };
+
+      const state: ConversationState = {
+        preamble: [],
+        turns: [],
+        artifacts: [],
+        pinnedMemory: [record],
+      };
+
+      const restored = roundTripState(state);
+      expect(restored.pinnedMemory[0].rationale).toBe("user confirmed budget");
+      expect(restored.pinnedMemory[0].supersededById).toBe("r2");
+    });
+  });
+
+  describe("version 2 pinned memory validation", () => {
+    function v2Session(pinnedMemory: unknown[]): string {
+      return JSON.stringify({
+        version: 2,
+        savedAt: "2026-01-01T00:00:00Z",
+        metadata: TEST_METADATA,
+        context: {
+          preamble: [],
+          turns: [],
+          artifacts: [],
+          pinnedMemory,
+        },
+      });
+    }
+
+    function validRecord(
+      overrides: Record<string, unknown> = {},
+    ): Record<string, unknown> {
+      return {
+        id: "pm-1",
+        kind: "fact",
+        scope: "session",
+        content: "test",
+        source: { origin: "user" },
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        lifecycle: "active",
+        ...overrides,
+      };
+    }
+
+    it("should reject non-string source.turnId", () => {
+      const record = validRecord({
+        source: { origin: "user", turnId: 42 },
+      });
+      expect(() => parseSession(v2Session([record]))).toThrow(
+        SessionParseError,
+      );
+      expect(() => parseSession(v2Session([record]))).toThrow("turnId");
+    });
+
+    it("should reject non-string source.toolCallId", () => {
+      const record = validRecord({
+        source: { origin: "tool", toolCallId: true },
+      });
+      expect(() => parseSession(v2Session([record]))).toThrow(
+        SessionParseError,
+      );
+      expect(() => parseSession(v2Session([record]))).toThrow("toolCallId");
+    });
+
+    it("should reject non-string rationale", () => {
+      const record = validRecord({ rationale: 123 });
+      expect(() => parseSession(v2Session([record]))).toThrow(
+        SessionParseError,
+      );
+      expect(() => parseSession(v2Session([record]))).toThrow("rationale");
+    });
+
+    it("should reject non-string supersededById", () => {
+      const record = validRecord({
+        lifecycle: "superseded",
+        supersededById: 99,
+      });
+      expect(() => parseSession(v2Session([record]))).toThrow(
+        SessionParseError,
+      );
+      expect(() => parseSession(v2Session([record]))).toThrow("supersededById");
+    });
+
+    it("should reject superseded lifecycle without supersededById", () => {
+      const record = validRecord({ lifecycle: "superseded" });
+      expect(() => parseSession(v2Session([record]))).toThrow(
+        SessionParseError,
+      );
+      expect(() => parseSession(v2Session([record]))).toThrow("supersededById");
+    });
+
+    it("should accept superseded record with valid supersededById", () => {
+      const record = validRecord({
+        lifecycle: "superseded",
+        supersededById: "pm-2",
+      });
+      expect(() => parseSession(v2Session([record]))).not.toThrow();
+    });
+
+    it("should accept valid optional string source.turnId and toolCallId", () => {
+      const record = validRecord({
+        source: { origin: "tool", turnId: "t-1", toolCallId: "tc-1" },
+      });
+      expect(() => parseSession(v2Session([record]))).not.toThrow();
+    });
+
+    it("should accept valid optional rationale", () => {
+      const record = validRecord({ rationale: "good reason" });
+      expect(() => parseSession(v2Session([record]))).not.toThrow();
+    });
+  });
+
+  describe("version 1 backward compatibility", () => {
+    it("should parse a valid v1 session JSON successfully", () => {
+      const data: PersistedSessionV1 = {
+        version: 1,
+        savedAt: "2026-01-01T00:00:00Z",
+        metadata: TEST_METADATA,
+        context: {
+          preamble: [],
+          turns: [],
+          artifacts: [],
+        },
+      };
+      const parsed = parseSession(JSON.stringify(data));
+      expect(parsed.version).toBe(1);
+    });
+
+    it("should restore empty pinnedMemory from v1 sessions", () => {
+      const data: PersistedSessionV1 = {
+        version: 1,
+        savedAt: "2026-01-01T00:00:00Z",
+        metadata: TEST_METADATA,
+        context: {
+          preamble: [],
+          turns: [],
+          artifacts: [],
+        },
+      };
+      const parsed = parseSession(JSON.stringify(data));
+      const restored = restoreConversationState(parsed);
+      expect(restored.pinnedMemory).toEqual([]);
     });
   });
 
@@ -482,7 +765,7 @@ describe("persistence", () => {
         SessionParseError,
       );
       expect(() => parseSession(JSON.stringify(data))).toThrow(
-        "Unsupported session version: 99",
+        "Unsupported session version: 99. Supported versions: 1, 2.",
       );
     });
 

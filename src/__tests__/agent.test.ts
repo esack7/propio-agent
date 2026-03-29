@@ -1579,4 +1579,142 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(typeof planEvent.usedRollingSummary).toBe("boolean");
     });
   });
+
+  describe("Pinned memory wrapper methods", () => {
+    let agent: Agent;
+
+    beforeEach(() => {
+      agent = new Agent({ providersConfig: testProvidersConfig });
+    });
+
+    it("pinFact should add a retrievable active memory record", () => {
+      const id = agent.pinFact({
+        kind: "fact",
+        content: "Node.js 20 is required",
+        source: { origin: "user" },
+      });
+
+      expect(typeof id).toBe("string");
+      const records = agent.getPinnedMemory();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe(id);
+      expect(records[0].kind).toBe("fact");
+      expect(records[0].content).toBe("Node.js 20 is required");
+      expect(records[0].lifecycle).toBe("active");
+    });
+
+    it("addProjectConstraint should pin a project-scoped constraint", () => {
+      const id = agent.addProjectConstraint(
+        "Never commit secrets",
+        { origin: "application" },
+        "security policy",
+      );
+
+      const records = agent.getPinnedMemory();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe(id);
+      expect(records[0].kind).toBe("constraint");
+      expect(records[0].scope).toBe("project");
+      expect(records[0].rationale).toBe("security policy");
+    });
+
+    it("updateMemory should supersede the old record and return a new one", () => {
+      const oldId = agent.pinFact({
+        kind: "decision",
+        content: "Use Jest for tests",
+        source: { origin: "user" },
+      });
+
+      const newId = agent.updateMemory(oldId, {
+        content: "Use Vitest for tests",
+        rationale: "faster execution",
+      });
+
+      expect(newId).not.toBe(oldId);
+
+      const active = agent.getPinnedMemory();
+      expect(active).toHaveLength(1);
+      expect(active[0].id).toBe(newId);
+      expect(active[0].content).toBe("Use Vitest for tests");
+
+      const all = agent.getPinnedMemory({ includeInactive: true });
+      expect(all).toHaveLength(2);
+      const superseded = all.find((r) => r.id === oldId);
+      expect(superseded?.lifecycle).toBe("superseded");
+      expect(superseded?.supersededById).toBe(newId);
+    });
+
+    it("unpinFact should remove a record from active memory", () => {
+      const id = agent.pinFact({
+        kind: "fact",
+        content: "temporary fact",
+        source: { origin: "user" },
+      });
+
+      agent.unpinFact(id, "no longer relevant");
+
+      expect(agent.getPinnedMemory()).toHaveLength(0);
+
+      const all = agent.getPinnedMemory({ includeInactive: true });
+      expect(all).toHaveLength(1);
+      expect(all[0].lifecycle).toBe("removed");
+    });
+
+    it("getPinnedMemory should default to active-only", () => {
+      agent.pinFact({
+        kind: "fact",
+        content: "fact A",
+        source: { origin: "user" },
+      });
+      const bId = agent.pinFact({
+        kind: "fact",
+        content: "fact B",
+        source: { origin: "user" },
+      });
+      agent.unpinFact(bId);
+
+      expect(agent.getPinnedMemory()).toHaveLength(1);
+      expect(agent.getPinnedMemory({ includeInactive: true })).toHaveLength(2);
+    });
+
+    it("pinned memory should survive export/import and affect subsequent prompt plans", async () => {
+      agent.pinFact({
+        kind: "constraint",
+        content: "Always use TypeScript strict mode",
+        source: { origin: "application" },
+      });
+
+      const json = agent.exportSession();
+      const agent2 = new Agent({ providersConfig: testProvidersConfig });
+      agent2.importSession(json);
+
+      const records = agent2.getPinnedMemory();
+      expect(records).toHaveLength(1);
+      expect(records[0].content).toBe("Always use TypeScript strict mode");
+
+      const mockProvider = new MockProvider();
+      (agent2 as any).provider = mockProvider;
+
+      await agent2.streamChat("Test", () => {});
+
+      const systemMsg = mockProvider.streamChatCalls[0].messages.find(
+        (m) => m.role === "system",
+      );
+      expect(systemMsg?.content).toContain("<pinned_memory>");
+      expect(systemMsg?.content).toContain("Always use TypeScript strict mode");
+    });
+
+    it("clearContext should remove all pinned memory", () => {
+      agent.pinFact({
+        kind: "fact",
+        content: "will be cleared",
+        source: { origin: "user" },
+      });
+
+      agent.clearContext();
+
+      expect(agent.getPinnedMemory()).toEqual([]);
+      expect(agent.getPinnedMemory({ includeInactive: true })).toEqual([]);
+    });
+  });
 });
