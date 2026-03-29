@@ -1,6 +1,10 @@
 import { ContextManager } from "../contextManager.js";
 import { RESERVED_OUTPUT_TOKENS, estimateTokens } from "../../diagnostics.js";
-import { ArtifactToolResult } from "../types.js";
+import {
+  ArtifactToolResult,
+  RollingSummaryRecord,
+  DEFAULT_SUMMARY_POLICY,
+} from "../types.js";
 
 function toolResult(
   toolCallId: string,
@@ -1421,6 +1425,296 @@ describe("ContextManager", () => {
       expect(assistantMsg!.toolCalls![1].id).toBe(
         toolMsg!.toolResults![1].toolCallId,
       );
+    });
+  });
+
+  // =================================================================
+  // Phase 5 rolling summary tests
+  // =================================================================
+
+  describe("rolling summary state", () => {
+    it("should start with no rolling summary", () => {
+      expect(manager.getRollingSummary()).toBeUndefined();
+      expect(manager.getConversationState().rollingSummary).toBeUndefined();
+    });
+
+    it("should store and retrieve a rolling summary", () => {
+      const summary: RollingSummaryRecord = {
+        content: "User discussed file operations",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: ["t1", "t2"],
+        estimatedTokens: 10,
+      };
+
+      manager.setRollingSummary(summary);
+
+      const stored = manager.getRollingSummary();
+      expect(stored).toBeDefined();
+      expect(stored!.content).toBe("User discussed file operations");
+      expect(stored!.coveredTurnIds).toEqual(["t1", "t2"]);
+    });
+
+    it("should deep-clone rolling summary so mutations do not leak back", () => {
+      const summary: RollingSummaryRecord = {
+        content: "Original",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: ["t1"],
+        estimatedTokens: 5,
+      };
+
+      manager.setRollingSummary(summary);
+
+      const retrieved = manager.getRollingSummary()!;
+      (retrieved as any).content = "MUTATED";
+      (retrieved.coveredTurnIds as any).push("t99");
+
+      const fresh = manager.getRollingSummary()!;
+      expect(fresh.content).toBe("Original");
+      expect(fresh.coveredTurnIds).toEqual(["t1"]);
+    });
+
+    it("should include rolling summary in getConversationState", () => {
+      const summary: RollingSummaryRecord = {
+        content: "Summary text",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: ["t1"],
+        estimatedTokens: 5,
+      };
+
+      manager.setRollingSummary(summary);
+
+      const state = manager.getConversationState();
+      expect(state.rollingSummary).toBeDefined();
+      expect(state.rollingSummary!.content).toBe("Summary text");
+    });
+
+    it("should atomically replace the rolling summary", () => {
+      manager.setRollingSummary({
+        content: "First",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: ["t1"],
+        estimatedTokens: 5,
+      });
+
+      manager.setRollingSummary({
+        content: "Second",
+        updatedAt: "2026-01-01T00:20:00Z",
+        coveredTurnIds: ["t1", "t2"],
+        estimatedTokens: 8,
+      });
+
+      const stored = manager.getRollingSummary()!;
+      expect(stored.content).toBe("Second");
+      expect(stored.coveredTurnIds).toEqual(["t1", "t2"]);
+    });
+
+    it("should clear rolling summary on context clear", () => {
+      manager.setRollingSummary({
+        content: "Summary",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: ["t1"],
+        estimatedTokens: 5,
+      });
+
+      manager.clear();
+
+      expect(manager.getRollingSummary()).toBeUndefined();
+      expect(manager.getConversationState().rollingSummary).toBeUndefined();
+    });
+  });
+
+  describe("summary eligibility", () => {
+    it("should return no eligibility with fewer than rawRecentTurns completed", () => {
+      for (let i = 0; i < 4; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const eligibility = manager.getSummaryEligibility();
+      expect(eligibility.shouldRefresh).toBe(false);
+      expect(eligibility.eligibleTurns).toHaveLength(0);
+    });
+
+    it("should identify eligible turns beyond recent window", () => {
+      for (let i = 0; i < 10; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const eligibility = manager.getSummaryEligibility();
+      expect(eligibility.eligibleTurns.length).toBeGreaterThan(0);
+      expect(eligibility.shouldRefresh).toBe(true);
+    });
+
+    it("should track new eligible count against stored summary", () => {
+      for (let i = 0; i < 10; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const state = manager.getConversationState();
+      const coveredIds = state.turns.slice(0, 2).map((t) => t.id);
+
+      manager.setRollingSummary({
+        content: "Covered first 2 turns",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: coveredIds,
+        estimatedTokens: 10,
+      });
+
+      const eligibility = manager.getSummaryEligibility();
+      expect(eligibility.newEligibleCount).toBe(
+        eligibility.eligibleTurns.length - 2,
+      );
+    });
+
+    it("should not count in-progress turns as eligible", () => {
+      for (let i = 0; i < 8; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+      // Start a new turn but don't complete it
+      manager.beginUserTurn("in progress");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "tool", arguments: {} } },
+      ]);
+
+      const eligibility = manager.getSummaryEligibility();
+      // Only completed turns are eligible
+      for (const turn of eligibility.eligibleTurns) {
+        const state = manager.getConversationState();
+        const matched = state.turns.find((t) => t.id === turn.id);
+        expect(matched?.completedAt).toBeDefined();
+      }
+    });
+  });
+
+  describe("summary-covered turn IDs", () => {
+    it("should return empty set with no summary", () => {
+      expect(manager.getSummaryCoveredTurnIds().size).toBe(0);
+    });
+
+    it("should return covered IDs from stored summary", () => {
+      manager.setRollingSummary({
+        content: "Summary",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: ["t1", "t2", "t3"],
+        estimatedTokens: 5,
+      });
+
+      const covered = manager.getSummaryCoveredTurnIds();
+      expect(covered.has("t1")).toBe(true);
+      expect(covered.has("t2")).toBe(true);
+      expect(covered.has("t3")).toBe(true);
+      expect(covered.has("t4")).toBe(false);
+    });
+  });
+
+  describe("buildPromptPlan with stored rolling summary", () => {
+    it("should source rolling summary from stored state by default", () => {
+      for (let i = 0; i < 10; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const state = manager.getConversationState();
+      const coveredIds = state.turns.slice(0, 4).map((t) => t.id);
+
+      manager.setRollingSummary({
+        content: "Summary of turns 0-3",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: coveredIds,
+        estimatedTokens: 10,
+      });
+
+      const plan = manager.buildPromptPlan("system");
+
+      expect(plan.usedRollingSummary).toBe(true);
+      expect(plan.messages[0].content).toContain("<session_summary>");
+      expect(plan.messages[0].content).toContain("Summary of turns 0-3");
+    });
+
+    it("should exclude summary-covered turns from raw history", () => {
+      for (let i = 0; i < 10; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const state = manager.getConversationState();
+      const coveredIds = state.turns.slice(0, 4).map((t) => t.id);
+
+      manager.setRollingSummary({
+        content: "Summary of turns 0-3",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: coveredIds,
+        estimatedTokens: 10,
+      });
+
+      const plan = manager.buildPromptPlan("system");
+
+      for (const coveredId of coveredIds) {
+        expect(plan.includedTurnIds).not.toContain(coveredId);
+        expect(plan.omittedTurnIds).toContain(coveredId);
+      }
+    });
+
+    it("should preserve recent unsummarized turns in raw history", () => {
+      for (let i = 0; i < 10; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const state = manager.getConversationState();
+      const coveredIds = state.turns.slice(0, 4).map((t) => t.id);
+      const recentIds = state.turns.slice(4).map((t) => t.id);
+
+      manager.setRollingSummary({
+        content: "Summary",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: coveredIds,
+        estimatedTokens: 10,
+      });
+
+      const plan = manager.buildPromptPlan("system");
+
+      for (const recentId of recentIds) {
+        expect(plan.includedTurnIds).toContain(recentId);
+      }
+    });
+
+    it("should still rehydrate unresolved tool chains with a summary present", () => {
+      // Create enough completed turns to warrant a summary
+      for (let i = 0; i < 8; i++) {
+        manager.beginUserTurn(`msg ${i}`);
+        manager.commitAssistantResponse(`reply ${i}`);
+      }
+
+      const state = manager.getConversationState();
+      const coveredIds = state.turns.slice(0, 2).map((t) => t.id);
+
+      manager.setRollingSummary({
+        content: "Summary",
+        updatedAt: "2026-01-01T00:10:00Z",
+        coveredTurnIds: coveredIds,
+        estimatedTokens: 10,
+      });
+
+      // Start a new turn with tools
+      manager.beginUserTurn("Current task");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "tool", arguments: {} } },
+      ]);
+      manager.recordToolResults([
+        toolResult("tc-1", "tool", "tool output data"),
+      ]);
+
+      const plan = manager.buildPromptPlan("system");
+
+      const toolMsg = plan.messages.find(
+        (m) => m.role === "tool" && m.toolResults?.length,
+      );
+      expect(toolMsg).toBeDefined();
+      expect(toolMsg!.toolResults![0].content).toBe("tool output data");
     });
   });
 });

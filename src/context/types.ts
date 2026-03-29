@@ -19,6 +19,47 @@ export const DEFAULT_BUDGET_POLICY: PromptBudgetPolicy = {
 };
 
 /**
+ * Policy controlling when and how rolling summaries are generated.
+ *
+ * `rawRecentTurns` — the number of newest completed turns that are always
+ * included verbatim in the prompt (the "protected" recent window).
+ *
+ * `refreshIntervalTurns` — after this many newly eligible turns accumulate
+ * beyond the current summary coverage, a summary refresh is triggered.
+ *
+ * `summaryTargetTokens` — soft cap on generated summary length; included
+ * as guidance in the summarization prompt.
+ *
+ * `contextPressureThreshold` — fraction of the available input budget.
+ * When estimated prompt tokens exceed this ratio, a summary refresh is
+ * triggered regardless of the turn-count cadence.
+ */
+export interface SummaryPolicy {
+  readonly rawRecentTurns: number;
+  readonly refreshIntervalTurns: number;
+  readonly summaryTargetTokens: number;
+  readonly contextPressureThreshold: number;
+}
+
+export const DEFAULT_SUMMARY_POLICY: SummaryPolicy = {
+  rawRecentTurns: 6,
+  refreshIntervalTurns: 3,
+  summaryTargetTokens: 512,
+  contextPressureThreshold: 0.6,
+};
+
+/**
+ * Persistent record of the rolling summary that compacts older turns
+ * into a concise narrative for long-session continuity.
+ */
+export interface RollingSummaryRecord {
+  readonly content: string;
+  readonly updatedAt: string;
+  readonly coveredTurnIds: ReadonlyArray<string>;
+  readonly estimatedTokens: number;
+}
+
+/**
  * Prompt plan produced by the PromptBuilder. Contains the messages to send
  * plus diagnostic metadata describing what was included, what was omitted,
  * and at what retry level the plan was built.
@@ -151,4 +192,5 @@ export interface ConversationState {
   readonly preamble: ReadonlyArray<ChatMessage>;
   readonly turns: ReadonlyArray<TurnRecord>;
   readonly artifacts: ReadonlyArray<ArtifactRecord>;
+  readonly rollingSummary?: RollingSummaryRecord;
 }

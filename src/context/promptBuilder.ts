@@ -8,6 +8,7 @@ import {
   TurnRecord,
   TurnEntry,
   ArtifactRecord,
+  RollingSummaryRecord,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,9 @@ export interface PromptBuildRequest {
   readonly policy: PromptBudgetPolicy;
   readonly extraUserInstruction?: string;
   readonly rollingSummary?: string;
+  /** Turn IDs already covered by the rolling summary. These are excluded
+   *  from raw history inclusion when a summary is available. */
+  readonly summaryCoveredTurnIds?: ReadonlySet<string>;
   readonly retryLevel?: number;
   readonly artifactLookup: (id: string) => ArtifactRecord | undefined;
   readonly isCurrentTurnUnresolved: (turnId: string) => boolean;
@@ -31,6 +35,9 @@ export interface PromptBuildRequest {
 // ---------------------------------------------------------------------------
 
 const REHYDRATION_MAX_CHARS = 12000;
+
+// Approximate overhead of the <session_summary> wrapper tags + newlines
+const SESSION_SUMMARY_WRAPPER_OVERHEAD = 40;
 
 function capForRehydration(rawContent: string): string {
   if (rawContent.length <= REHYDRATION_MAX_CHARS) {
@@ -86,23 +93,6 @@ export class PromptBuilder {
     const inputBudget =
       request.contextWindowTokens - policy.reservedOutputTokens;
 
-    const systemMsg: ChatMessage = {
-      role: "system",
-      content: request.systemPrompt,
-    };
-    const systemTokens = estimateTokens(request.systemPrompt.length);
-
-    let remainingTokens = inputBudget - systemTokens;
-    const messages: ChatMessage[] = [systemMsg];
-
-    // Preamble messages (pre-turn)
-    for (const msg of request.conversationState.preamble) {
-      messages.push(msg);
-      remainingTokens -= estimateTokens(messageChars(msg));
-    }
-
-    // Determine which turns to include. Current (incomplete) turn always
-    // gets priority; completed turns fill remaining budget newest-first.
     const allTurns = request.conversationState.turns;
     const maxTurns = Math.max(
       1,
@@ -121,7 +111,23 @@ export class PromptBuilder {
       ? allTurns.slice(0, allTurns.length - 1)
       : [...allTurns];
 
-    // Reserve budget for current turn first
+    const coveredIds = request.summaryCoveredTurnIds;
+    const hasCoveredIds = !!(coveredIds && coveredIds.size > 0);
+
+    let rollingSummaryTokens = 0;
+    if (request.rollingSummary) {
+      rollingSummaryTokens = estimateTokens(
+        request.rollingSummary.length + SESSION_SUMMARY_WRAPPER_OVERHEAD,
+      );
+    }
+
+    // --- First pass: select turns WITHOUT assuming the summary is used.
+    // This determines which turns would be omitted by budget alone.
+    // We then check whether the summary actually covers all of them. ---
+
+    const baseSystemTokens = estimateTokens(request.systemPrompt.length);
+
+    // Reserve budget for current turn
     let currentTurnTokens = 0;
     if (currentTurn) {
       currentTurnTokens = this.estimateTurnTokens(
@@ -132,7 +138,6 @@ export class PromptBuilder {
       );
     }
 
-    // Reserve budget for extra user instruction
     let extraInstructionTokens = 0;
     if (request.extraUserInstruction) {
       extraInstructionTokens = estimateTokens(
@@ -140,63 +145,203 @@ export class PromptBuilder {
       );
     }
 
-    // Reserve budget for rolling summary
-    let rollingSummaryTokens = 0;
-    if (request.rollingSummary) {
-      rollingSummaryTokens = estimateTokens(request.rollingSummary.length);
+    let preambleTokens = 0;
+    for (const msg of request.conversationState.preamble) {
+      preambleTokens += estimateTokens(messageChars(msg));
     }
 
-    const reservedForCurrentAndExtras =
-      currentTurnTokens + extraInstructionTokens + rollingSummaryTokens;
-    let budgetForHistory = Math.max(
-      0,
-      remainingTokens - reservedForCurrentAndExtras,
+    const fixedOverhead =
+      baseSystemTokens +
+      preambleTokens +
+      currentTurnTokens +
+      extraInstructionTokens;
+
+    // --- Attempt a summary-aware build first if we have summary coverage ---
+
+    if (hasCoveredIds && request.rollingSummary) {
+      const summaryResult = this.buildWithSummary(
+        request,
+        completedTurns,
+        currentTurn,
+        coveredIds!,
+        inputBudget,
+        fixedOverhead,
+        rollingSummaryTokens,
+        maxTurns,
+        artifactCap,
+      );
+
+      // Guard: only use the summary if every omitted turn is actually
+      // covered by it. If budget pressure dropped uncovered turns, fall
+      // through to the no-summary path so those turns stay visible.
+      const uncoveredOmissions = summaryResult.omittedTurnIds.filter(
+        (id) => !coveredIds!.has(id),
+      );
+      if (uncoveredOmissions.length === 0) {
+        return this.assemblePlan(
+          request,
+          `${request.systemPrompt}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+          summaryResult.selectedTurns,
+          currentTurn,
+          summaryResult.omittedTurnIds,
+          true,
+          artifactCap,
+        );
+      }
+    }
+
+    // --- No-summary path: all completed turns compete for budget ---
+
+    const turnLimit = currentTurn ? maxTurns - 1 : maxTurns;
+    const noSummaryResult = this.selectTurnsByBudget(
+      completedTurns,
+      request,
+      inputBudget - fixedOverhead,
+      turnLimit,
+      artifactCap,
     );
 
-    // Select completed turns (newest-first) within budget and turn cap
-    const selectedCompletedTurns: TurnRecord[] = [];
-    const omittedTurnIds: string[] = [];
+    // If turns were omitted by budget and a summary exists that covers
+    // every one of them, rebuild via the summary-aware path so the
+    // summary token cost is properly reserved in the budget.
+    if (
+      request.rollingSummary &&
+      hasCoveredIds &&
+      noSummaryResult.omittedTurnIds.length > 0 &&
+      noSummaryResult.omittedTurnIds.every((id) => coveredIds!.has(id))
+    ) {
+      const summaryResult = this.buildWithSummary(
+        request,
+        completedTurns,
+        currentTurn,
+        coveredIds!,
+        inputBudget,
+        fixedOverhead,
+        rollingSummaryTokens,
+        maxTurns,
+        artifactCap,
+      );
+      return this.assemblePlan(
+        request,
+        `${request.systemPrompt}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+        summaryResult.selectedTurns,
+        currentTurn,
+        summaryResult.omittedTurnIds,
+        true,
+        artifactCap,
+      );
+    }
+
+    return this.assemblePlan(
+      request,
+      request.systemPrompt,
+      noSummaryResult.selectedTurns,
+      currentTurn,
+      noSummaryResult.omittedTurnIds,
+      false,
+      artifactCap,
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // Summary-aware turn selection: pre-filters covered turns, then budgets
+  // the remaining candidates.
+  // -----------------------------------------------------------------------
+
+  private buildWithSummary(
+    request: PromptBuildRequest,
+    completedTurns: TurnRecord[],
+    currentTurn: TurnRecord | undefined,
+    coveredIds: ReadonlySet<string>,
+    inputBudget: number,
+    fixedOverhead: number,
+    summaryTokens: number,
+    maxTurns: number,
+    artifactCap: number,
+  ): { selectedTurns: TurnRecord[]; omittedTurnIds: string[] } {
+    const candidateTurns = completedTurns.filter((t) => !coveredIds.has(t.id));
+    const coveredOmitted = completedTurns
+      .filter((t) => coveredIds.has(t.id))
+      .map((t) => t.id);
+
+    const budgetForHistory = Math.max(
+      0,
+      inputBudget - fixedOverhead - summaryTokens,
+    );
     const turnLimit = currentTurn ? maxTurns - 1 : maxTurns;
 
-    for (let i = completedTurns.length - 1; i >= 0; i--) {
-      if (selectedCompletedTurns.length >= turnLimit) {
-        omittedTurnIds.push(completedTurns[i].id);
+    const result = this.selectTurnsByBudget(
+      candidateTurns,
+      request,
+      budgetForHistory,
+      turnLimit,
+      artifactCap,
+    );
+
+    return {
+      selectedTurns: result.selectedTurns,
+      omittedTurnIds: [...coveredOmitted, ...result.omittedTurnIds],
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Shared budget-driven turn selection (newest-first)
+  // -----------------------------------------------------------------------
+
+  private selectTurnsByBudget(
+    candidateTurns: ReadonlyArray<TurnRecord>,
+    request: PromptBuildRequest,
+    budgetTokens: number,
+    turnLimit: number,
+    artifactCap: number,
+  ): { selectedTurns: TurnRecord[]; omittedTurnIds: string[] } {
+    const selected: TurnRecord[] = [];
+    const omitted: string[] = [];
+    let remaining = budgetTokens;
+
+    for (let i = candidateTurns.length - 1; i >= 0; i--) {
+      if (selected.length >= turnLimit) {
+        omitted.push(candidateTurns[i].id);
         continue;
       }
       const turnTokens = this.estimateTurnTokens(
-        completedTurns[i],
+        candidateTurns[i],
         request,
         false,
         artifactCap,
       );
-      if (turnTokens <= budgetForHistory) {
-        selectedCompletedTurns.unshift(completedTurns[i]);
-        budgetForHistory -= turnTokens;
+      if (turnTokens <= remaining) {
+        selected.unshift(candidateTurns[i]);
+        remaining -= turnTokens;
       } else {
-        omittedTurnIds.push(completedTurns[i].id);
+        omitted.push(candidateTurns[i].id);
       }
     }
 
-    // Collect the rest of the omitted IDs (turns before the oldest selected)
-    for (let i = 0; i < completedTurns.length; i++) {
-      const t = completedTurns[i];
-      if (
-        !selectedCompletedTurns.includes(t) &&
-        !omittedTurnIds.includes(t.id)
-      ) {
-        omittedTurnIds.push(t.id);
-      }
+    return { selectedTurns: selected, omittedTurnIds: omitted };
+  }
+
+  // -----------------------------------------------------------------------
+  // Assemble the final PromptPlan from selected components
+  // -----------------------------------------------------------------------
+
+  private assemblePlan(
+    request: PromptBuildRequest,
+    systemContent: string,
+    selectedCompletedTurns: TurnRecord[],
+    currentTurn: TurnRecord | undefined,
+    omittedTurnIds: string[],
+    usedRollingSummary: boolean,
+    artifactCap: number,
+  ): PromptPlan {
+    const messages: ChatMessage[] = [
+      { role: "system", content: systemContent },
+    ];
+
+    for (const msg of request.conversationState.preamble) {
+      messages.push(msg);
     }
 
-    // Insert rolling summary if available and turns were omitted
-    let usedRollingSummary = false;
-    if (request.rollingSummary && omittedTurnIds.length > 0) {
-      messages.push({ role: "user", content: request.rollingSummary });
-      remainingTokens -= rollingSummaryTokens;
-      usedRollingSummary = true;
-    }
-
-    // Assemble messages for selected completed turns
     const includedTurnIds: string[] = [];
     const includedArtifactIds: string[] = [];
 
@@ -212,7 +357,6 @@ export class PromptBuilder {
       );
     }
 
-    // Assemble messages for current turn
     if (currentTurn) {
       includedTurnIds.push(currentTurn.id);
       this.appendTurnMessages(
@@ -225,7 +369,6 @@ export class PromptBuilder {
       );
     }
 
-    // Extra user instruction
     if (request.extraUserInstruction) {
       messages.push({ role: "user", content: request.extraUserInstruction });
     }
@@ -235,7 +378,7 @@ export class PromptBuilder {
     return {
       messages,
       estimatedPromptTokens: metrics.estimatedTokens,
-      reservedOutputTokens: policy.reservedOutputTokens,
+      reservedOutputTokens: request.policy.reservedOutputTokens,
       includedTurnIds,
       includedArtifactIds,
       omittedTurnIds,

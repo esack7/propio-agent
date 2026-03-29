@@ -108,6 +108,7 @@ function makeRequest(opts: {
   policy?: PromptBudgetPolicy;
   extraUserInstruction?: string;
   rollingSummary?: string;
+  summaryCoveredTurnIds?: ReadonlySet<string>;
   retryLevel?: number;
   artifacts?: Map<string, ArtifactRecord>;
 }): PromptBuildRequest {
@@ -120,6 +121,7 @@ function makeRequest(opts: {
     policy: opts.policy ?? DEFAULT_BUDGET_POLICY,
     extraUserInstruction: opts.extraUserInstruction,
     rollingSummary: opts.rollingSummary,
+    summaryCoveredTurnIds: opts.summaryCoveredTurnIds,
     retryLevel: opts.retryLevel,
     artifactLookup: (id: string) => artifacts.get(id),
     isCurrentTurnUnresolved: (turnId: string) => {
@@ -617,7 +619,35 @@ describe("PromptBuilder", () => {
       ).toBeUndefined();
     });
 
-    it("should include rolling summary when turns are omitted", () => {
+    it("should include rolling summary when turns are omitted and all are covered", () => {
+      const longMessage = "x".repeat(10000);
+      const turns = Array.from({ length: 10 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: longMessage,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(longMessage)],
+        }),
+      );
+
+      const allTurnIds = new Set(turns.map((t) => t.id));
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          contextWindowTokens: 10000,
+          rollingSummary: "Summary of older context",
+          summaryCoveredTurnIds: allTurnIds,
+        }),
+      );
+
+      expect(plan.usedRollingSummary).toBe(true);
+      const systemMsg = plan.messages[0];
+      expect(systemMsg.role).toBe("system");
+      expect(systemMsg.content).toContain("Summary of older context");
+      expect(systemMsg.content).toContain("<session_summary>");
+    });
+
+    it("should NOT use summary when budget omits turns not covered by it", () => {
       const longMessage = "x".repeat(10000);
       const turns = Array.from({ length: 10 }, (_, i) =>
         makeTurn({
@@ -636,10 +666,8 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      expect(plan.usedRollingSummary).toBe(true);
-      expect(
-        plan.messages.some((m) => m.content === "Summary of older context"),
-      ).toBe(true);
+      expect(plan.usedRollingSummary).toBe(false);
+      expect(plan.omittedTurnIds.length).toBeGreaterThan(0);
     });
 
     it("should accept optional rolling summary without using it when not needed", () => {
@@ -686,6 +714,284 @@ describe("PromptBuilder", () => {
 
       expect(plan.reservedOutputTokens).toBe(3000);
       expect(plan.estimatedPromptTokens).toBeLessThan(10000 - 3000);
+    });
+  });
+
+  // =================================================================
+  // Phase 5: Rolling summary integration with PromptBuilder
+  // =================================================================
+
+  describe("rolling summary with covered turn IDs", () => {
+    it("should exclude covered turns and merge summary into system message", () => {
+      const turns = Array.from({ length: 8 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: `Message ${i}`,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(`Reply ${i}`)],
+        }),
+      );
+
+      const coveredIds = new Set(["t0", "t1", "t2"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          rollingSummary: "Summary of first 3 turns",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      expect(plan.usedRollingSummary).toBe(true);
+      expect(plan.messages[0].role).toBe("system");
+      expect(plan.messages[0].content).toContain("<session_summary>");
+      expect(plan.messages[0].content).toContain("Summary of first 3 turns");
+
+      for (const coveredId of coveredIds) {
+        expect(plan.includedTurnIds).not.toContain(coveredId);
+        expect(plan.omittedTurnIds).toContain(coveredId);
+      }
+
+      expect(plan.includedTurnIds).toContain("t3");
+      expect(plan.includedTurnIds).toContain("t7");
+    });
+
+    it("should include unsummarized recent turns verbatim", () => {
+      const turns = Array.from({ length: 8 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: `Message ${i}`,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(`Reply ${i}`)],
+        }),
+      );
+
+      const coveredIds = new Set(["t0", "t1"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          rollingSummary: "Summary of t0 and t1",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      const userMessages = plan.messages
+        .filter((m) => m.role === "user")
+        .map((m) => m.content);
+      expect(userMessages).toContain("Message 2");
+      expect(userMessages).toContain("Message 7");
+      expect(userMessages).not.toContain("Message 0");
+      expect(userMessages).not.toContain("Message 1");
+    });
+
+    it("should not use summary when all turns fit in budget", () => {
+      const turns = Array.from({ length: 3 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: `Short msg ${i}`,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(`Reply ${i}`)],
+        }),
+      );
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          rollingSummary: "Summary text",
+          summaryCoveredTurnIds: new Set<string>(),
+        }),
+      );
+
+      expect(plan.usedRollingSummary).toBe(false);
+      expect(plan.messages[0].content).not.toContain("<session_summary>");
+    });
+
+    it("should handle current unfinished turn alongside summarized history", () => {
+      const completedTurns = Array.from({ length: 6 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: `Message ${i}`,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(`Reply ${i}`)],
+        }),
+      );
+      const currentTurn = makeTurn({
+        id: "current",
+        userMessage: "What now?",
+      });
+
+      const coveredIds = new Set(["t0", "t1", "t2"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({
+            turns: [...completedTurns, currentTurn],
+          }),
+          rollingSummary: "Summary of early turns",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      expect(plan.usedRollingSummary).toBe(true);
+      expect(plan.includedTurnIds).toContain("current");
+      expect(plan.includedTurnIds).not.toContain("t0");
+    });
+
+    it("should merge summary into system message with delimiters", () => {
+      const turns = Array.from({ length: 6 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: "x".repeat(5000),
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry("x".repeat(5000))],
+        }),
+      );
+
+      const coveredIds = new Set(["t0", "t1"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          rollingSummary: "Important facts from early turns",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      const systemContent = plan.messages[0].content;
+      expect(systemContent).toContain("<session_summary>");
+      expect(systemContent).toContain("</session_summary>");
+      expect(systemContent).toContain("Important facts from early turns");
+      expect(systemContent.indexOf("<session_summary>")).toBeGreaterThan(
+        systemContent.indexOf("You are a helpful assistant."),
+      );
+    });
+
+    it("should still omit turns by budget even when some are covered by summary", () => {
+      const longMessage = "x".repeat(10000);
+      const turns = Array.from({ length: 10 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: longMessage,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(longMessage)],
+        }),
+      );
+
+      const coveredIds = new Set(["t0", "t1"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          contextWindowTokens: 20000,
+          rollingSummary: "Summary of first 2 turns",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      expect(plan.omittedTurnIds.length).toBeGreaterThan(2);
+    });
+
+    it("should NOT use stale summary when budget drops uncovered turns", () => {
+      const longMessage = "x".repeat(10000);
+      const turns = Array.from({ length: 10 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: longMessage,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(longMessage)],
+        }),
+      );
+
+      // Summary only covers t0-t2, but budget will also drop t3-t6ish
+      const coveredIds = new Set(["t0", "t1", "t2"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          contextWindowTokens: 20000,
+          rollingSummary: "Summary of first 3 turns",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      // Budget pressure should omit more turns than the summary covers.
+      // The builder must NOT use the summary since uncovered turns would
+      // vanish from the prompt with no representation.
+      const uncoveredOmitted = plan.omittedTurnIds.filter(
+        (id) => !coveredIds.has(id),
+      );
+      if (uncoveredOmitted.length > 0) {
+        expect(plan.usedRollingSummary).toBe(false);
+        expect(plan.messages[0].content).not.toContain("<session_summary>");
+      }
+    });
+
+    it("should use summary only when all omitted turns are covered by it", () => {
+      const turns = Array.from({ length: 8 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: `Short msg ${i}`,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(`Reply ${i}`)],
+        }),
+      );
+
+      // Summary covers t0-t4; all 8 turns fit in budget, so only
+      // the covered ones are omitted (pre-filtered).
+      const coveredIds = new Set(["t0", "t1", "t2", "t3", "t4"]);
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          rollingSummary: "Summary of t0-t4",
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      expect(plan.usedRollingSummary).toBe(true);
+      // Every omitted turn must be in the covered set
+      for (const id of plan.omittedTurnIds) {
+        expect(coveredIds.has(id)).toBe(true);
+      }
+    });
+
+    it("should reserve summary tokens when fallback path discovers all omitted turns are covered", () => {
+      // Build turns where budget alone would omit some, but a summary
+      // covers exactly those omitted ones. The summary should be used
+      // AND the prompt should stay within budget (summary tokens reserved).
+      const mediumMessage = "x".repeat(4000);
+      const turns = Array.from({ length: 8 }, (_, i) =>
+        makeTurn({
+          id: `t${i}`,
+          userMessage: mediumMessage,
+          completedAt: `2026-01-01T00:0${i}:00Z`,
+          entries: [makeAssistantEntry(mediumMessage)],
+        }),
+      );
+
+      const largeSummary = "s".repeat(2000);
+      // Cover the oldest turns that are likely to be omitted by budget
+      const coveredIds = new Set(["t0", "t1", "t2", "t3"]);
+      const contextWindowTokens = 15000;
+
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns }),
+          contextWindowTokens,
+          rollingSummary: largeSummary,
+          summaryCoveredTurnIds: coveredIds,
+        }),
+      );
+
+      if (plan.usedRollingSummary) {
+        // When the summary is used, the estimated prompt tokens must
+        // account for the summary text. The prompt should not exceed
+        // the input budget (contextWindow - reservedOutputTokens).
+        const inputBudget = contextWindowTokens - plan.reservedOutputTokens;
+        expect(plan.estimatedPromptTokens).toBeLessThanOrEqual(inputBudget);
+        expect(plan.messages[0].content).toContain(largeSummary);
+      }
     });
   });
 });

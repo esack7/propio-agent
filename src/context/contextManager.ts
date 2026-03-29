@@ -9,14 +9,21 @@ import {
   PromptPlan,
   PromptBudgetPolicy,
   DEFAULT_BUDGET_POLICY,
+  SummaryPolicy,
+  DEFAULT_SUMMARY_POLICY,
   TurnEntry,
   TurnRecord,
   ConversationState,
   ArtifactRecord,
   ToolInvocationRecord,
   ArtifactToolResult,
+  RollingSummaryRecord,
 } from "./types.js";
 import { PromptBuilder, PromptBuildRequest } from "./promptBuilder.js";
+import {
+  computeSummaryEligibility,
+  SummaryEligibility,
+} from "./summaryManager.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -221,6 +228,7 @@ export class ContextManager {
   private preTurnMessages: ChatMessage[] = [];
   private turns: MutableTurnRecord[] = [];
   private artifacts: Map<string, MutableArtifact> = new Map();
+  private rollingSummary: RollingSummaryRecord | undefined;
 
   // -------------------------------------------------------------------
   // Turn lifecycle
@@ -364,6 +372,7 @@ export class ContextManager {
     this.preTurnMessages = [];
     this.turns = [];
     this.artifacts.clear();
+    this.rollingSummary = undefined;
   }
 
   // -------------------------------------------------------------------
@@ -400,7 +409,69 @@ export class ContextManager {
       preamble: this.preTurnMessages.map(cloneMessage),
       turns: this.turns.map(cloneTurn),
       artifacts: Array.from(this.artifacts.values()).map(cloneArtifact),
+      rollingSummary: this.rollingSummary
+        ? {
+            ...this.rollingSummary,
+            coveredTurnIds: [...this.rollingSummary.coveredTurnIds],
+          }
+        : undefined,
     };
+  }
+
+  // -------------------------------------------------------------------
+  // Rolling summary state
+  // -------------------------------------------------------------------
+
+  getRollingSummary(): RollingSummaryRecord | undefined {
+    return this.rollingSummary
+      ? {
+          ...this.rollingSummary,
+          coveredTurnIds: [...this.rollingSummary.coveredTurnIds],
+        }
+      : undefined;
+  }
+
+  /**
+   * Atomically replace the stored rolling summary. Called after a
+   * successful summary refresh. The previous summary is discarded.
+   */
+  setRollingSummary(summary: RollingSummaryRecord): void {
+    this.rollingSummary = {
+      ...summary,
+      coveredTurnIds: [...summary.coveredTurnIds],
+    };
+  }
+
+  /**
+   * Compute summary eligibility based on completed turns and current
+   * rolling summary state.
+   */
+  getSummaryEligibility(
+    policy?: SummaryPolicy,
+    estimatedPromptTokens?: number,
+    availableInputBudget?: number,
+  ): SummaryEligibility {
+    const effectivePolicy = policy ?? DEFAULT_SUMMARY_POLICY;
+    const completedTurns = this.turns.filter(
+      (t) => t.completedAt != null,
+    ) as unknown as ReadonlyArray<TurnRecord>;
+
+    return computeSummaryEligibility(
+      completedTurns,
+      this.rollingSummary,
+      effectivePolicy,
+      estimatedPromptTokens,
+      availableInputBudget,
+    );
+  }
+
+  /**
+   * Return completed turn IDs that the rolling summary already covers.
+   * The PromptBuilder uses this to exclude summarized turns from raw
+   * inclusion.
+   */
+  getSummaryCoveredTurnIds(): ReadonlySet<string> {
+    return new Set(this.rollingSummary?.coveredTurnIds ?? []);
   }
 
   // -------------------------------------------------------------------
@@ -412,6 +483,9 @@ export class ContextManager {
   /**
    * Build the prompt plan to send to the provider. Delegates to
    * PromptBuilder for budget-aware assembly and retry support.
+   *
+   * By default, sources the rolling summary from stored state. The
+   * `rollingSummary` option is for test/internal override only.
    *
    * @param systemPrompt - System prompt text
    * @param extraUserInstruction - Optional extra user message appended at the end
@@ -425,10 +499,15 @@ export class ContextManager {
       policy?: PromptBudgetPolicy;
       retryLevel?: number;
       rollingSummary?: string;
+      summaryPolicy?: SummaryPolicy;
     },
   ): PromptPlan {
     const policy = options?.policy ?? DEFAULT_BUDGET_POLICY;
     const contextWindow = options?.contextWindowTokens ?? 1_000_000;
+
+    const summaryContent =
+      options?.rollingSummary ?? this.rollingSummary?.content;
+    const coveredTurnIds = this.getSummaryCoveredTurnIds();
 
     const request: PromptBuildRequest = {
       systemPrompt,
@@ -436,11 +515,13 @@ export class ContextManager {
         preamble: this.preTurnMessages,
         turns: this.turns as unknown as ReadonlyArray<TurnRecord>,
         artifacts: Array.from(this.artifacts.values()) as ArtifactRecord[],
+        rollingSummary: this.rollingSummary,
       },
       contextWindowTokens: contextWindow,
       policy,
       extraUserInstruction,
-      rollingSummary: options?.rollingSummary,
+      rollingSummary: summaryContent,
+      summaryCoveredTurnIds: coveredTurnIds,
       retryLevel: options?.retryLevel,
       artifactLookup: (id: string) => this.artifacts.get(id),
       isCurrentTurnUnresolved: (turnId: string) => {

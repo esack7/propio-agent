@@ -139,4 +139,27 @@ export type AgentDiagnosticEvent =
       omittedTurnCount: number;
       includedArtifactCount: number;
       usedRollingSummary: boolean;
+    }
+  | {
+      type: "summary_refresh_started";
+      provider: string;
+      model: string;
+      eligibleTurnCount: number;
+      newEligibleCount: number;
+      reason: "turn_cadence" | "context_pressure" | "synchronous_shrink";
+    }
+  | {
+      type: "summary_refresh_completed";
+      provider: string;
+      model: string;
+      coveredTurnCount: number;
+      summaryTokens: number;
+      durationMs: number;
+    }
+  | {
+      type: "summary_refresh_failed";
+      provider: string;
+      model: string;
+      errorName: string;
+      message: string;
     };

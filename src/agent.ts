@@ -31,8 +31,11 @@ import {
   ArtifactToolResult,
   PromptBudgetPolicy,
   DEFAULT_BUDGET_POLICY,
+  SummaryPolicy,
+  DEFAULT_SUMMARY_POLICY,
   PromptPlan,
 } from "./context/types.js";
+import { SummaryManager } from "./context/summaryManager.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -80,6 +83,11 @@ export class Agent {
   private diagnosticsEnabled: boolean;
   private diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
   private lastTurnReasoningSummary: TurnReasoningSummary | null = null;
+  private summaryManager: SummaryManager;
+  private summaryPolicy: SummaryPolicy;
+  private summaryRefreshRunning = false;
+  private summaryDirty = false;
+  private summaryGeneration = 0;
 
   constructor(
     options: {
@@ -129,6 +137,8 @@ export class Agent {
 
     this.contextManager = new ContextManager();
     this.toolRegistry = createDefaultToolRegistry();
+    this.summaryManager = new SummaryManager();
+    this.summaryPolicy = DEFAULT_SUMMARY_POLICY;
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -266,6 +276,146 @@ export class Agent {
       return modelEntry.contextWindowTokens;
     }
     return this.provider.getCapabilities().contextWindowTokens;
+  }
+
+  /**
+   * Schedule a best-effort background summary refresh. If one is already
+   * running, mark dirty so it reruns after completion. Non-fatal: failures
+   * are logged via diagnostics and the previous summary is preserved.
+   */
+  private scheduleSummaryRefresh(
+    reason: "turn_cadence" | "context_pressure",
+  ): void {
+    if (this.summaryRefreshRunning) {
+      this.summaryDirty = true;
+      return;
+    }
+
+    this.runSummaryRefresh(reason).catch(() => {
+      // Errors already emitted as diagnostics; nothing to propagate.
+    });
+  }
+
+  private async runSummaryRefresh(
+    reason: "turn_cadence" | "context_pressure" | "synchronous_shrink",
+  ): Promise<void> {
+    this.summaryRefreshRunning = true;
+    this.summaryDirty = false;
+    const generation = this.summaryGeneration;
+
+    try {
+      const eligibility = this.contextManager.getSummaryEligibility(
+        this.summaryPolicy,
+      );
+      if (eligibility.eligibleTurns.length === 0) {
+        return;
+      }
+
+      this.emitDiagnostic({
+        type: "summary_refresh_started",
+        provider: this.provider.name,
+        model: this.model,
+        eligibleTurnCount: eligibility.eligibleTurns.length,
+        newEligibleCount: eligibility.newEligibleCount,
+        reason,
+      });
+
+      const startTime = Date.now();
+      const result = await this.summaryManager.generateSummary(
+        this.provider,
+        this.model,
+        eligibility.eligibleTurns,
+        this.contextManager.getRollingSummary(),
+        this.summaryPolicy,
+      );
+
+      if (this.summaryGeneration !== generation) {
+        return;
+      }
+
+      this.contextManager.setRollingSummary(result.summary);
+
+      this.emitDiagnostic({
+        type: "summary_refresh_completed",
+        provider: this.provider.name,
+        model: this.model,
+        coveredTurnCount: result.summary.coveredTurnIds.length,
+        summaryTokens: result.summary.estimatedTokens,
+        durationMs: Date.now() - startTime,
+      });
+    } catch (error) {
+      this.emitDiagnostic({
+        type: "summary_refresh_failed",
+        provider: this.provider.name,
+        model: this.model,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.summaryRefreshRunning = false;
+
+      if (this.summaryDirty && this.summaryGeneration === generation) {
+        this.scheduleSummaryRefresh("turn_cadence");
+      }
+    }
+  }
+
+  /**
+   * Attempt a synchronous summary refresh before escalating to the next
+   * retry level. Returns true if the summary was refreshed (caller should
+   * rebuild at the same level), false if nothing could be done (caller
+   * should bump retryLevel).
+   *
+   * Only fires when the current plan omits unsummarized turns, meaning
+   * a fresh summary would let the builder use the summary-aware path
+   * instead of dropping them silently.
+   */
+  private async attemptSynchronousShrink(plan: PromptPlan): Promise<boolean> {
+    const coveredIds = this.contextManager.getSummaryCoveredTurnIds();
+    const uncoveredOmitted = plan.omittedTurnIds.filter(
+      (id) => !coveredIds.has(id),
+    );
+    if (uncoveredOmitted.length === 0) {
+      return false;
+    }
+
+    // Invalidate any in-flight background refresh so it cannot overwrite
+    // the result we are about to produce. The background job checks
+    // summaryGeneration before calling setRollingSummary and will discard
+    // its stale result.
+    if (this.summaryRefreshRunning) {
+      this.summaryGeneration++;
+      this.summaryDirty = false;
+    }
+
+    try {
+      await this.runSummaryRefresh("synchronous_shrink");
+    } catch {
+      return false;
+    }
+
+    const newCoveredIds = this.contextManager.getSummaryCoveredTurnIds();
+    return uncoveredOmitted.some((id) => newCoveredIds.has(id));
+  }
+
+  /**
+   * Check eligibility and schedule a background refresh after a turn
+   * completes. Called at the end of streamChat.
+   */
+  private checkAndScheduleSummary(): void {
+    const contextWindow = this.resolveContextWindowTokens();
+    const plan = this.buildPlan();
+    const availableInputBudget = contextWindow - plan.reservedOutputTokens;
+
+    const eligibility = this.contextManager.getSummaryEligibility(
+      this.summaryPolicy,
+      plan.estimatedPromptTokens,
+      availableInputBudget,
+    );
+
+    if (eligibility.shouldRefresh && eligibility.reason) {
+      this.scheduleSummaryRefresh(eligibility.reason);
+    }
   }
 
   private buildPlan(
@@ -410,6 +560,18 @@ export class Agent {
           error instanceof ProviderContextLengthError &&
           retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
         ) {
+          const shrunk = await this.attemptSynchronousShrink(plan);
+          if (shrunk) {
+            this.emitDiagnostic({
+              type: "provider_error",
+              provider: this.provider.name,
+              model: this.model,
+              iteration,
+              errorName: "ProviderContextLengthError",
+              message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
+            });
+            continue;
+          }
           retryLevel++;
           this.emitDiagnostic({
             type: "provider_error",
@@ -543,6 +705,19 @@ export class Agent {
             streamError instanceof ProviderContextLengthError &&
             contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
           ) {
+            const shrunk = await this.attemptSynchronousShrink(plan);
+            if (shrunk) {
+              this.emitDiagnostic({
+                type: "provider_error",
+                provider: this.provider.name,
+                model: this.model,
+                iteration: iterationCount,
+                errorName: "ProviderContextLengthError",
+                message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+              });
+              iterationCount--;
+              continue;
+            }
             contextRetryLevel++;
             this.emitDiagnostic({
               type: "provider_error",
@@ -764,6 +939,8 @@ export class Agent {
         source: selectedReasoningSummary.source,
       });
 
+      this.checkAndScheduleSummary();
+
       return finalResponse;
     } catch (error) {
       this.emitDiagnostic({
@@ -779,6 +956,8 @@ export class Agent {
   }
 
   clearContext(): void {
+    this.summaryGeneration++;
+    this.summaryDirty = false;
     this.contextManager.clear();
   }
 
