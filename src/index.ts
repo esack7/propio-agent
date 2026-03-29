@@ -22,6 +22,12 @@ import {
   type PromptPlanLine,
   type MemoryLine,
 } from "./ui/contextInspector.js";
+import { getDefaultSessionsDir } from "./sessions/sessionHistory.js";
+import {
+  saveSessionOnExit,
+  handleSessionCommand as handleSessionCmd,
+  hasSessionContent,
+} from "./sessions/sessionCommands.js";
 
 type AppMode =
   | "idle"
@@ -140,13 +146,16 @@ function previewToolResult(result: string, maxLength = 70): string {
 
 function printSlashCommandHelp(ui: Pick<TerminalUi, "info" | "command">): void {
   ui.info("Available slash commands:");
-  ui.command("/help            - show this help menu");
-  ui.command("/clear           - clear session context");
-  ui.command("/context         - show structured context overview");
-  ui.command("/context prompt  - show latest prompt plan details");
-  ui.command("/context memory  - show pinned memory and rolling summary");
-  ui.command("/tools           - manage enabled tools");
-  ui.command("/exit            - exit the session");
+  ui.command("/help              - show this help menu");
+  ui.command("/clear             - clear session context");
+  ui.command("/context           - show structured context overview");
+  ui.command("/context prompt    - show latest prompt plan details");
+  ui.command("/context memory    - show pinned memory and rolling summary");
+  ui.command("/tools             - manage enabled tools");
+  ui.command("/session list      - list saved session snapshots");
+  ui.command("/session load      - load the latest saved session");
+  ui.command("/session load <id> - load a specific saved session");
+  ui.command("/exit              - save session snapshot and exit");
   ui.command("");
 }
 
@@ -382,6 +391,28 @@ async function runNonInteractiveSession(
   }
 }
 
+function saveSessionSnapshot(agent: Agent, ui: TerminalUi): void {
+  saveSessionOnExit(agent, getDefaultSessionsDir(), ui);
+}
+
+async function handleSessionCommand(
+  input: string,
+  agent: Agent,
+  rl: readline.Interface,
+  ui: TerminalUi,
+): Promise<void> {
+  await handleSessionCmd(input, agent, getDefaultSessionsDir(), {
+    info: (msg) => ui.info(msg),
+    error: (msg) => ui.error(msg),
+    success: (msg) => ui.success(msg),
+    command: (msg) => ui.command(msg),
+    promptConfirm: async (msg) => {
+      const answer = await promptOnce(rl, ui.prompt(msg));
+      return answer.trim().toLowerCase() === "y";
+    },
+  });
+}
+
 async function runInteractiveSession(
   agent: Agent,
   ui: TerminalUi,
@@ -426,6 +457,7 @@ async function runInteractiveSession(
     }
 
     if (trimmedInput === "/exit") {
+      saveSessionSnapshot(agent, ui);
       ui.success("Goodbye!");
       rl.close();
       setActiveReadline(null);
@@ -476,6 +508,11 @@ async function runInteractiveSession(
       }
 
       ui.command("");
+      continue;
+    }
+
+    if (trimmedInput === "/session" || trimmedInput.startsWith("/session ")) {
+      await handleSessionCommand(trimmedInput, agent, rl, ui);
       continue;
     }
 
