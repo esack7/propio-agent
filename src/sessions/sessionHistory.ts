@@ -1,8 +1,10 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+import * as os from "os";
+import { execSync } from "child_process";
 
-const DEFAULT_SESSIONS_DIR = ".propio/sessions";
+const GLOBAL_SESSIONS_ROOT = path.join(os.homedir(), ".propio", "sessions");
 const INDEX_FILE = "index.json";
 
 // ---------------------------------------------------------------------------
@@ -24,11 +26,37 @@ export interface SessionIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Workspace resolution
+// ---------------------------------------------------------------------------
+
+export function resolveWorkspaceRoot(): string {
+  try {
+    const gitRoot = execSync("git rev-parse --show-toplevel", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    if (gitRoot) return path.resolve(gitRoot);
+  } catch {
+    // not in a git repo or git unavailable
+  }
+  return path.resolve(process.cwd());
+}
+
+export function hashWorkspace(workspacePath: string): string {
+  return crypto.createHash("sha256").update(workspacePath).digest("hex");
+}
+
+export function getWorkspaceSessionsDir(workspaceRoot?: string): string {
+  const root = path.resolve(workspaceRoot ?? resolveWorkspaceRoot());
+  return path.join(GLOBAL_SESSIONS_ROOT, hashWorkspace(root));
+}
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
 export function getDefaultSessionsDir(): string {
-  return path.resolve(process.cwd(), DEFAULT_SESSIONS_DIR);
+  return getWorkspaceSessionsDir();
 }
 
 function indexPath(sessionsDir: string): string {

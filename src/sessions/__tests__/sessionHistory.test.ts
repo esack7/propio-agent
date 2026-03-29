@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as crypto from "crypto";
 import {
   writeSnapshot,
   readSnapshot,
@@ -10,6 +11,10 @@ import {
   listSessions,
   resolveLatestSession,
   resolveSessionById,
+  resolveWorkspaceRoot,
+  hashWorkspace,
+  getWorkspaceSessionsDir,
+  getDefaultSessionsDir,
   SessionIndex,
   SessionIndexEntry,
 } from "../sessionHistory.js";
@@ -516,5 +521,143 @@ describe("sessionHistory", () => {
 
       expect(entry.turnCount).toBe(3);
     });
+  });
+});
+
+// ===================================================================
+// Workspace resolution and session scoping
+// ===================================================================
+
+describe("workspace resolution", () => {
+  describe("resolveWorkspaceRoot", () => {
+    it("should resolve to the git root when inside a git repo", () => {
+      const root = resolveWorkspaceRoot();
+      expect(path.isAbsolute(root)).toBe(true);
+      expect(fs.existsSync(path.join(root, ".git"))).toBe(true);
+    });
+
+    it("should fall back to cwd when not inside a git repo", () => {
+      const nonGitDir = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), "no-git-")),
+      );
+      const origCwd = process.cwd();
+      try {
+        process.chdir(nonGitDir);
+        const root = resolveWorkspaceRoot();
+        expect(root).toBe(nonGitDir);
+      } finally {
+        process.chdir(origCwd);
+        fs.rmSync(nonGitDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("hashWorkspace", () => {
+    it("should return a hex SHA-256 hash of the input path", () => {
+      const hash = hashWorkspace("/some/path");
+      const expected = crypto
+        .createHash("sha256")
+        .update("/some/path")
+        .digest("hex");
+      expect(hash).toBe(expected);
+    });
+
+    it("should produce different hashes for different paths", () => {
+      const a = hashWorkspace("/workspace/a");
+      const b = hashWorkspace("/workspace/b");
+      expect(a).not.toBe(b);
+    });
+
+    it("should produce the same hash for the same path", () => {
+      const h1 = hashWorkspace("/same/path");
+      const h2 = hashWorkspace("/same/path");
+      expect(h1).toBe(h2);
+    });
+  });
+
+  describe("getWorkspaceSessionsDir", () => {
+    it("should return a path under ~/.propio/sessions/<hash>", () => {
+      const dir = getWorkspaceSessionsDir("/my/project");
+      const expectedHash = hashWorkspace("/my/project");
+      expect(dir).toBe(
+        path.join(os.homedir(), ".propio", "sessions", expectedHash),
+      );
+    });
+
+    it("should auto-resolve workspace root when no argument given", () => {
+      const dir = getWorkspaceSessionsDir();
+      expect(dir).toContain(path.join(".propio", "sessions"));
+      expect(path.isAbsolute(dir)).toBe(true);
+    });
+
+    it("should normalize a relative path to absolute before hashing", () => {
+      const fromRelative = getWorkspaceSessionsDir(".");
+      const fromAbsolute = getWorkspaceSessionsDir(path.resolve("."));
+      expect(fromRelative).toBe(fromAbsolute);
+    });
+
+    it("should normalize paths with .. segments before hashing", () => {
+      const base = path.resolve(".");
+      const withDotDot = path.join(base, "sub", "..");
+      expect(getWorkspaceSessionsDir(withDotDot)).toBe(
+        getWorkspaceSessionsDir(base),
+      );
+    });
+  });
+
+  describe("getDefaultSessionsDir", () => {
+    it("should return a path under ~/.propio/sessions", () => {
+      const dir = getDefaultSessionsDir();
+      expect(
+        dir.startsWith(path.join(os.homedir(), ".propio", "sessions")),
+      ).toBe(true);
+      expect(path.isAbsolute(dir)).toBe(true);
+    });
+  });
+});
+
+describe("workspace isolation", () => {
+  it("two different workspaces get different session directories", () => {
+    const dirA = getWorkspaceSessionsDir("/workspace/alpha");
+    const dirB = getWorkspaceSessionsDir("/workspace/beta");
+    expect(dirA).not.toBe(dirB);
+  });
+
+  it("sessions saved in one workspace are not visible from another", () => {
+    const dirA = path.join(freshDir(), "ws-a");
+    const dirB = path.join(freshDir(), "ws-b");
+
+    writeSnapshot(
+      dirA,
+      minimalSessionJson({
+        savedAt: "2026-03-29T10:00:00.000Z",
+        turns: [makeTurn("t1", "hello from A")],
+      }),
+    );
+
+    const sessionsA = listSessions(dirA);
+    const sessionsB = listSessions(dirB);
+
+    expect(sessionsA).toHaveLength(1);
+    expect(sessionsB).toHaveLength(0);
+  });
+
+  it("subdirectories of the same git repo share one session history via git root", () => {
+    const gitRoot = resolveWorkspaceRoot();
+    const sub = path.join(gitRoot, "src");
+
+    let rootFromSub: string;
+    const origCwd = process.cwd();
+    try {
+      process.chdir(sub);
+      rootFromSub = resolveWorkspaceRoot();
+    } finally {
+      process.chdir(origCwd);
+    }
+
+    expect(rootFromSub).toBe(gitRoot);
+    expect(getWorkspaceSessionsDir(rootFromSub)).toBe(
+      getWorkspaceSessionsDir(gitRoot),
+    );
   });
 });
