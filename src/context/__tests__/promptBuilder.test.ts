@@ -238,7 +238,7 @@ describe("PromptBuilder", () => {
       expect(plan.retryLevel).toBe(0);
     });
 
-    it("should report includedArtifactIds for tool entries", () => {
+    it("should NOT report includedArtifactIds for completed turn tool entries (summary only)", () => {
       const artifact = makeArtifact("art-1", "tool output data", ["t1"]);
       const toolEntry = makeToolEntry([
         {
@@ -267,7 +267,76 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      expect(plan.includedArtifactIds).toContain("art-1");
+      expect(plan.includedArtifactIds).not.toContain("art-1");
+      expect(plan.includedArtifactIds).toEqual([]);
+    });
+
+    it("should report includedArtifactIds for unresolved current-turn tool entries when rehydrated", () => {
+      const rawContent = "full raw artifact body for payload";
+      const artifact = makeArtifact("art-1", rawContent, ["t1"]);
+      const toolEntry = makeToolEntry([
+        {
+          toolCallId: "tc-1",
+          toolName: "read",
+          content: "summary only",
+          artifactId: "art-1",
+        },
+      ]);
+      const currentTurn = makeTurn({
+        id: "t1",
+        userMessage: "Read it",
+        entries: [makeAssistantEntry(""), toolEntry],
+      });
+
+      const artifacts = new Map([["art-1", artifact]]);
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({ turns: [currentTurn], artifacts: [artifact] }),
+          artifacts,
+        }),
+      );
+
+      expect(plan.includedArtifactIds).toEqual(["art-1"]);
+    });
+
+    it("should leave includedArtifactIds empty when completed turns have tools but current turn has no tool entries", () => {
+      const artifact = makeArtifact("art-old", "old data", ["t1"]);
+      const toolEntry = makeToolEntry([
+        {
+          toolCallId: "tc-1",
+          toolName: "read",
+          content: "summary",
+          artifactId: "art-old",
+        },
+      ]);
+      const completed = makeTurn({
+        id: "t1",
+        userMessage: "First task",
+        completedAt: "2026-01-01T00:01:00Z",
+        entries: [
+          makeAssistantEntry("ok"),
+          toolEntry,
+          makeAssistantEntry("done"),
+        ],
+      });
+      const current = makeTurn({
+        id: "t2",
+        userMessage: "Follow up",
+        entries: [makeAssistantEntry("no tools here")],
+      });
+
+      const artifacts = new Map([["art-old", artifact]]);
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({
+            turns: [completed, current],
+            artifacts: [artifact],
+          }),
+          artifacts,
+        }),
+      );
+
+      expect(plan.includedArtifactIds).toEqual([]);
     });
   });
 
@@ -689,6 +758,62 @@ describe("PromptBuilder", () => {
       expect(toolMsg).toBeDefined();
       expect(toolMsg!.toolResults![0].content).toBe(rawContent);
       expect(plan.includedArtifactIds).toContain("art-1");
+    });
+
+    it("at level 3 should report only rehydrated artifacts in includedArtifactIds (not completed-turn summaries)", () => {
+      const oldArtifact = makeArtifact("art-old", "completed turn raw", ["done"]);
+      const oldTool = makeToolEntry([
+        {
+          toolCallId: "tc-old",
+          toolName: "read",
+          content: "old summary",
+          artifactId: "art-old",
+        },
+      ]);
+      const completed = makeTurn({
+        id: "done",
+        userMessage: "Past task",
+        completedAt: "2026-01-01T00:01:00Z",
+        entries: [
+          makeAssistantEntry("a"),
+          oldTool,
+          makeAssistantEntry("b"),
+        ],
+      });
+      const newRaw = "current unresolved raw output";
+      const newArtifact = makeArtifact("art-new", newRaw, ["current"]);
+      const newTool = makeToolEntry([
+        {
+          toolCallId: "tc-new",
+          toolName: "read",
+          content: "new summary",
+          artifactId: "art-new",
+        },
+      ]);
+      const current = makeTurn({
+        id: "current",
+        userMessage: "Now",
+        entries: [makeAssistantEntry("call"), newTool],
+      });
+
+      const artifacts = new Map([
+        ["art-old", oldArtifact],
+        ["art-new", newArtifact],
+      ]);
+      const plan = builder.buildPlan(
+        makeRequest({
+          state: makeState({
+            turns: [completed, current],
+            artifacts: [oldArtifact, newArtifact],
+          }),
+          artifacts,
+          retryLevel: 3,
+        }),
+      );
+
+      expect(plan.retryLevel).toBe(3);
+      expect(plan.includedArtifactIds).toEqual(["art-new"]);
+      expect(plan.includedArtifactIds).not.toContain("art-old");
     });
   });
 

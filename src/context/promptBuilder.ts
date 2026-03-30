@@ -516,17 +516,9 @@ export class PromptBuilder {
         );
         messages.push(rehydrated);
       } else {
-        if (
-          entry.kind === "tool" &&
-          "toolInvocations" in entry &&
-          entry.toolInvocations
-        ) {
-          for (const inv of entry.toolInvocations) {
-            if (inv.artifactId) {
-              includedArtifactIds.push(inv.artifactId);
-            }
-          }
-        }
+        // Resolved/completed tool entries use summary content only;
+        // their artifact IDs are NOT recorded in includedArtifactIds
+        // because the raw artifact body is not inlined into the payload.
         messages.push(entry.message);
       }
     }

@@ -3,7 +3,9 @@ import type {
   TurnRecord,
   TurnEntry,
 } from "../context/types.js";
+import type { ChatMessage } from "../providers/types.js";
 import type { PromptPlanSnapshot } from "../agent.js";
+import { estimateTokens } from "../diagnostics.js";
 
 // ---------------------------------------------------------------------------
 // Retry level labels (0-3)
@@ -48,18 +50,24 @@ export function formatContextOverview(
 ): ContextOverviewLine[] {
   const lines: ContextOverviewLine[] = [];
 
+  const preambleCount = state.preamble.length;
   const turnCount = state.turns.length;
   const artifactCount = state.artifacts.length;
   const activePinned = state.pinnedMemory.filter(
     (r) => r.lifecycle === "active",
   );
 
-  let totalEstimatedTokens = 0;
-  for (const turn of state.turns) {
-    if (turn.estimatedTokens != null)
-      totalEstimatedTokens += turn.estimatedTokens;
+  let preambleTokens = 0;
+  for (const msg of state.preamble) {
+    preambleTokens += estimateTokens(estimateMessageChars(msg));
   }
 
+  let turnTokens = 0;
+  for (const turn of state.turns) {
+    if (turn.estimatedTokens != null) turnTokens += turn.estimatedTokens;
+  }
+
+  const totalEstimatedTokens = preambleTokens + turnTokens;
   const summaryTokens = state.rollingSummary?.estimatedTokens ?? 0;
 
   lines.push({
@@ -67,12 +75,18 @@ export function formatContextOverview(
     style: "section",
   });
 
+  if (preambleCount > 0) {
+    lines.push({
+      text: `  Preamble: ${preambleCount} ${plural(preambleCount, "message")}`,
+      style: "info",
+    });
+  }
   lines.push({
     text: `  Turns: ${turnCount}`,
     style: "info",
   });
   lines.push({
-    text: `  Estimated conversation tokens: ~${totalEstimatedTokens} (estimated, turn history only)`,
+    text: `  Estimated conversation tokens: ~${totalEstimatedTokens} (estimated, stored conversation)`,
     style: "info",
   });
   lines.push({
@@ -87,6 +101,19 @@ export function formatContextOverview(
     text: `  Pinned memory: ${activePinned.length} active ${plural(activePinned.length, "record")}`,
     style: "info",
   });
+
+  if (preambleCount > 0) {
+    lines.push({ text: "", style: "subtle" });
+    lines.push({ text: "Preamble", style: "section" });
+
+    for (const msg of state.preamble) {
+      const preview = previewText(msg.content);
+      lines.push({
+        text: `  ${msg.role.toUpperCase()}: ${preview}`,
+        style: "info",
+      });
+    }
+  }
 
   if (turnCount > 0) {
     lines.push({ text: "", style: "subtle" });
@@ -160,6 +187,13 @@ function formatTurnEntrySummary(entries: ReadonlyArray<TurnEntry>): string {
   return parts.join(" | ");
 }
 
+function estimateMessageChars(msg: ChatMessage): number {
+  let chars = msg.content.length;
+  if (msg.toolCalls) chars += JSON.stringify(msg.toolCalls).length;
+  if (msg.toolResults) chars += JSON.stringify(msg.toolResults).length;
+  return chars;
+}
+
 function hasArtifactReference(entry: TurnEntry): boolean {
   if (entry.kind !== "tool") return false;
   return entry.toolInvocations.some((inv) => inv.artifactId);
@@ -186,6 +220,9 @@ function collectArtifactIds(entries: ReadonlyArray<TurnEntry>): string[] {
 export function formatContextStats(state: ConversationState): string {
   const turnCount = state.turns.length;
   let totalTokens = 0;
+  for (const msg of state.preamble) {
+    totalTokens += estimateTokens(estimateMessageChars(msg));
+  }
   for (const turn of state.turns) {
     if (turn.estimatedTokens != null) totalTokens += turn.estimatedTokens;
   }
@@ -195,7 +232,12 @@ export function formatContextStats(state: ConversationState): string {
     (r) => r.lifecycle === "active",
   ).length;
 
-  return `Context: ${turnCount} ${plural(turnCount, "turn")} | ~${totalTokens} conversation tokens (est.) | ${artifactCount} ${plural(artifactCount, "artifact")} | summary ~${summaryTokens} tokens | ${pinnedCount} pinned`;
+  const preambleLabel =
+    state.preamble.length > 0
+      ? `${state.preamble.length} preamble + `
+      : "";
+
+  return `Context: ${preambleLabel}${turnCount} ${plural(turnCount, "turn")} | ~${totalTokens} conversation tokens (est.) | ${artifactCount} ${plural(artifactCount, "artifact")} | summary ~${summaryTokens} tokens | ${pinnedCount} pinned`;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +293,7 @@ export function formatPromptPlan(
     style: "subtle",
   });
   lines.push({
-    text: `  Included artifacts: ${plan.includedArtifactIds.length}${plan.includedArtifactIds.length > 0 ? ` (${plan.includedArtifactIds.join(", ")})` : ""}`,
+    text: `  Inlined artifacts: ${plan.includedArtifactIds.length}${plan.includedArtifactIds.length > 0 ? ` (${plan.includedArtifactIds.join(", ")})` : ""}`,
     style: "subtle",
   });
   lines.push({

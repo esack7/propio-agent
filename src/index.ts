@@ -291,9 +291,9 @@ async function streamAssistantResponse(
               ui.info(`Starting ${toolName}...`);
               ui.status(`Executing ${toolName}...`, "tool call");
             },
-            onToolEnd: (toolName, result) => {
+            onToolEnd: (toolName, result, status) => {
               const summary = previewToolResult(result);
-              if (result.trimStart().startsWith("Error")) {
+              if (status !== "success") {
                 ui.error(`${toolName} failed: ${summary}`);
                 return;
               }

@@ -39,6 +39,7 @@ import {
   PinFactInput,
   UpdateMemoryInput,
 } from "./context/types.js";
+import { ToolExecutionStatus } from "./tools/types.js";
 import { SummaryManager } from "./context/summaryManager.js";
 import {
   serializeSession,
@@ -646,7 +647,11 @@ export class Agent {
     onToken: (token: string) => void,
     options?: {
       onToolStart?: (toolName: string) => void;
-      onToolEnd?: (toolName: string, result: string) => void;
+      onToolEnd?: (
+        toolName: string,
+        result: string,
+        status: ToolExecutionStatus,
+      ) => void;
       onEvent?: (event: AgentVisibilityEvent) => void;
       abortSignal?: AbortSignal;
     },
@@ -946,7 +951,7 @@ export class Agent {
             });
 
             if (options?.onToolEnd) {
-              options.onToolEnd(toolName, result);
+              options.onToolEnd(toolName, result, execResult.status);
             } else {
               onToken(
                 `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,

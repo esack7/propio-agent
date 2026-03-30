@@ -141,9 +141,14 @@ describe("formatContextOverview", () => {
         (l) =>
           l.text.includes("Estimated conversation tokens") &&
           l.text.includes("~0") &&
+          l.text.includes("stored conversation") &&
           l.style === "info",
       ),
     ).toBe(true);
+    expect(lines.some((l) => l.text.startsWith("  Preamble:"))).toBe(false);
+    expect(
+      lines.some((l) => l.text === "Preamble" && l.style === "section"),
+    ).toBe(false);
     expect(
       lines.some(
         (l) => l.text.includes("Rolling summary: none") && l.style === "info",
@@ -214,9 +219,14 @@ describe("formatContextOverview", () => {
         (l) =>
           l.text.includes("~300") &&
           l.text.includes("Estimated conversation tokens") &&
+          l.text.includes("stored conversation") &&
           l.style === "info",
       ),
     ).toBe(true);
+    expect(lines.some((l) => l.text.startsWith("  Preamble:"))).toBe(false);
+    expect(
+      lines.some((l) => l.text === "Preamble" && l.style === "section"),
+    ).toBe(false);
     expect(
       lines.some(
         (l) =>
@@ -252,6 +262,82 @@ describe("formatContextOverview", () => {
       lines.some(
         (l) =>
           l.text.includes("[completed]") && l.text.includes("Second question"),
+      ),
+    ).toBe(true);
+  });
+
+  it("shows preamble section and non-zero tokens when only preamble is present", () => {
+    const state = emptyConversationState({
+      preamble: [{ role: "assistant", content: "Welcome!" }],
+    });
+
+    const lines = formatContextOverview(state);
+
+    expect(
+      lines.some(
+        (l) => l.text === "  Preamble: 1 message" && l.style === "info",
+      ),
+    ).toBe(true);
+    expect(
+      lines.some((l) => l.text === "  Turns: 0" && l.style === "info"),
+    ).toBe(true);
+    expect(
+      lines.some(
+        (l) =>
+          l.text.includes("Estimated conversation tokens") &&
+          l.text.includes("~2") &&
+          l.text.includes("stored conversation") &&
+          l.style === "info",
+      ),
+    ).toBe(true);
+    expect(
+      lines.some((l) => l.text === "Preamble" && l.style === "section"),
+    ).toBe(true);
+    expect(
+      lines.some(
+        (l) =>
+          l.text.includes("ASSISTANT: Welcome!") && l.style === "info",
+      ),
+    ).toBe(true);
+    expect(lines.some((l) => l.text === "Turns" && l.style === "section")).toBe(
+      false,
+    );
+  });
+
+  it("shows both Preamble and Turns sections and sums preamble and turn tokens", () => {
+    const state = emptyConversationState({
+      preamble: [{ role: "assistant", content: "Welcome!" }],
+      turns: [
+        turnRecord({
+          id: "t1",
+          completedAt: "2026-01-01T12:00:00.000Z",
+          userMessage: { role: "user", content: "Hi" },
+          estimatedTokens: 100,
+          entries: [],
+        }),
+      ],
+    });
+
+    const lines = formatContextOverview(state);
+
+    expect(
+      lines.some(
+        (l) => l.text === "  Preamble: 1 message" && l.style === "info",
+      ),
+    ).toBe(true);
+    expect(
+      lines.some((l) => l.text === "Preamble" && l.style === "section"),
+    ).toBe(true);
+    expect(lines.some((l) => l.text === "Turns" && l.style === "section")).toBe(
+      true,
+    );
+    expect(
+      lines.some(
+        (l) =>
+          l.text.includes("~102") &&
+          l.text.includes("Estimated conversation tokens") &&
+          l.text.includes("stored conversation") &&
+          l.style === "info",
       ),
     ).toBe(true);
   });
@@ -352,10 +438,33 @@ describe("formatContextStats", () => {
 
     const s = formatContextStats(state);
     expect(s).toContain("2 turns");
+    expect(s).not.toContain("preamble +");
     expect(s).toContain("~30 conversation tokens");
     expect(s).toContain("1 artifact");
     expect(s).toContain("summary ~99 tokens");
     expect(s).toContain("1 pinned");
+  });
+
+  it("prefixes turn count with preamble count when preamble exists", () => {
+    const state = emptyConversationState({
+      preamble: [{ role: "assistant", content: "Welcome!" }],
+      turns: [
+        turnRecord({
+          id: "x",
+          estimatedTokens: 10,
+          completedAt: "2026-01-01T00:00:00.000Z",
+        }),
+        turnRecord({
+          id: "y",
+          estimatedTokens: 20,
+          completedAt: "2026-01-01T00:00:01.000Z",
+        }),
+      ],
+    });
+
+    const s = formatContextStats(state);
+    expect(s).toContain("1 preamble + 2 turns");
+    expect(s).toContain("~32 conversation tokens");
   });
 });
 
@@ -445,7 +554,7 @@ describe("formatPromptPlan", () => {
     );
     expect(
       lines.some((l) =>
-        l.text.includes("Included artifacts: 2 (art-a, art-b)"),
+        l.text.includes("Inlined artifacts: 2 (art-a, art-b)"),
       ),
     ).toBe(true);
     expect(

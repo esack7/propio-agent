@@ -12,6 +12,7 @@ import {
 } from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
 import { ExecutableTool } from "../tools/interface.js";
+import type { ToolExecutionStatus } from "../tools/types.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 
 /**
@@ -465,8 +466,8 @@ describe("Agent with Multi-Provider Configuration", () => {
               {
                 id: "call-1",
                 function: {
-                  name: "list_directory",
-                  arguments: {},
+                  name: "list_dir",
+                  arguments: { path: "." },
                 },
               },
             ],
@@ -488,7 +489,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       await agent.streamChat("Test", onToken, { onToolStart });
 
-      expect(onToolStart).toHaveBeenCalledWith("list_directory");
+      expect(onToolStart).toHaveBeenCalledWith("list_dir");
       expect(onToolStart).toHaveBeenCalledTimes(1);
     });
 
@@ -504,8 +505,9 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       expect(onToolEnd).toHaveBeenCalled();
       expect(onToolEnd).toHaveBeenCalledWith(
-        "list_directory",
+        "list_dir",
         expect.any(String),
+        "success",
       );
       expect(onToolEnd).toHaveBeenCalledTimes(1);
     });
@@ -524,11 +526,12 @@ describe("Agent with Multi-Provider Configuration", () => {
         onToolEnd,
       });
 
-      expect(onToolStart).toHaveBeenCalledWith("list_directory");
+      expect(onToolStart).toHaveBeenCalledWith("list_dir");
       expect(onToolStart).toHaveBeenCalledTimes(1);
       expect(onToolEnd).toHaveBeenCalledWith(
-        "list_directory",
+        "list_dir",
         expect.any(String),
+        "success",
       );
       expect(onToolEnd).toHaveBeenCalledTimes(1);
     });
@@ -693,11 +696,13 @@ describe("Agent with Multi-Provider Configuration", () => {
         1,
         "tool_one",
         expect.any(String),
+        "tool_not_found",
       );
       expect(onToolEnd).toHaveBeenNthCalledWith(
         2,
         "tool_two",
         expect.any(String),
+        "tool_not_found",
       );
     });
 
@@ -714,11 +719,82 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(onToolEnd).toHaveBeenCalled();
       const callArgs = onToolEnd.mock.calls[0];
       const result = callArgs[1];
+      const status = callArgs[2] as ToolExecutionStatus;
 
       // Result should be a string
       expect(typeof result).toBe("string");
       // Result should not be empty
       expect(result.length).toBeGreaterThan(0);
+      expect(status).toBe("success");
+    });
+
+    it("should pass 'tool_disabled' status in onToolEnd when tool is disabled", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+      agent.disableTool("list_dir");
+
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolEnd });
+
+      expect(onToolEnd).toHaveBeenCalledTimes(1);
+      expect(onToolEnd).toHaveBeenCalledWith(
+        "list_dir",
+        expect.stringContaining("not available"),
+        "tool_disabled",
+      );
+    });
+
+    it("should pass 'tool_not_found' status in onToolEnd when tool does not exist", async () => {
+      class MockProviderUnknownTool implements LLMProvider {
+        name = "mock-unknown-tool";
+        streamChatCalls: ChatRequest[] = [];
+        callCount = 0;
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          this.callCount++;
+
+          if (this.callCount === 1) {
+            yield {
+              delta: "",
+              toolCalls: [
+                {
+                  id: "call-unknown",
+                  function: {
+                    name: "nonexistent_tool_xyz",
+                    arguments: {},
+                  },
+                },
+              ],
+            };
+          } else {
+            yield { delta: "Done" };
+          }
+        }
+      }
+
+      const mockProvider = new MockProviderUnknownTool();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolEnd = jest.fn();
+      const onToken = jest.fn();
+
+      await agent.streamChat("Test", onToken, { onToolEnd });
+
+      expect(onToolEnd).toHaveBeenCalledTimes(1);
+      expect(onToolEnd).toHaveBeenCalledWith(
+        "nonexistent_tool_xyz",
+        expect.any(String),
+        "tool_not_found",
+      );
     });
 
     it("should pass abortSignal to provider streamChat requests", async () => {
@@ -1963,6 +2039,94 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(planEvents.length).toBeGreaterThanOrEqual(2);
       expect(planEvents[0].iteration).toBe(1);
       expect(planEvents[1].iteration).toBe(2);
+    });
+  });
+
+  describe("Default (non-show-activity) UI rendering path", () => {
+    class SingleToolCallProvider implements LLMProvider {
+      name = "ui-path-mock";
+      private callCount = 0;
+      readonly toolName: string;
+
+      constructor(toolName: string) {
+        this.toolName = toolName;
+      }
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+        this.callCount++;
+        if (this.callCount === 1) {
+          yield {
+            delta: "",
+            toolCalls: [
+              {
+                id: "tc-1",
+                function: { name: this.toolName, arguments: { path: "." } },
+              },
+            ],
+          };
+          return;
+        }
+        yield { delta: "Done." };
+      }
+    }
+
+    function runWithLegacyCallbacks(
+      agent: Agent,
+      userMessage: string,
+    ): Promise<{ renders: Array<{ type: "success" | "error"; text: string }> }> {
+      const renders: Array<{ type: "success" | "error"; text: string }> = [];
+      return agent
+        .streamChat(userMessage, () => {}, {
+          onToolStart: () => {},
+          onToolEnd: (_toolName, result, status) => {
+            if (status !== "success") {
+              renders.push({ type: "error", text: `${_toolName} failed` });
+            } else {
+              renders.push({ type: "success", text: `${_toolName} completed` });
+            }
+          },
+        })
+        .then(() => ({ renders }));
+    }
+
+    it("should render success for a working tool", async () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = new SingleToolCallProvider("list_dir");
+
+      const { renders } = await runWithLegacyCallbacks(agent, "list files");
+
+      expect(renders).toHaveLength(1);
+      expect(renders[0].type).toBe("success");
+      expect(renders[0].text).toContain("list_dir");
+    });
+
+    it("should render failure for a disabled tool", async () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      agent.disableTool("list_dir");
+      (agent as any).provider = new SingleToolCallProvider("list_dir");
+
+      const { renders } = await runWithLegacyCallbacks(agent, "list files");
+
+      expect(renders).toHaveLength(1);
+      expect(renders[0].type).toBe("error");
+      expect(renders[0].text).toContain("list_dir");
+    });
+
+    it("should render failure for a missing tool", async () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = new SingleToolCallProvider(
+        "nonexistent_tool_xyz",
+      );
+
+      const { renders } = await runWithLegacyCallbacks(agent, "run tool");
+
+      expect(renders).toHaveLength(1);
+      expect(renders[0].type).toBe("error");
+      expect(renders[0].text).toContain("nonexistent_tool_xyz");
     });
   });
 });

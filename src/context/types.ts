@@ -120,6 +120,11 @@ export interface PromptPlan {
   readonly estimatedPromptTokens: number;
   readonly reservedOutputTokens: number;
   readonly includedTurnIds: ReadonlyArray<string>;
+  /**
+   * Artifact IDs whose raw content was rehydrated (inlined) into the
+   * provider payload. Resolved/completed tool entries that contribute
+   * only summarized content do NOT appear here.
+   */
   readonly includedArtifactIds: ReadonlyArray<string>;
   readonly omittedTurnIds: ReadonlyArray<string>;
   readonly usedRollingSummary: boolean;
