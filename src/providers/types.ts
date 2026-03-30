@@ -24,6 +24,11 @@ export interface ChatMessage {
  */
 export interface ChatToolCall {
   id?: string; // Provider-specific tool call ID (e.g., Bedrock toolUseId)
+  /**
+   * Gemini thought signature required for function-call rounds on Gemini 3.
+   * Other providers ignore this field.
+   */
+  thoughtSignature?: string;
   function: {
     name: string;
     arguments: Record<string, any>;

@@ -4,11 +4,13 @@ import {
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
+  GeminiProviderConfig,
   XaiProviderConfig,
 } from "./config.js";
 import { OllamaProvider } from "./ollama.js";
 import { BedrockProvider } from "./bedrock.js";
 import { OpenRouterProvider } from "./openrouter.js";
+import { GeminiProvider } from "./gemini.js";
 import { XaiProvider } from "./xai.js";
 
 /**
@@ -71,6 +73,13 @@ export function createProvider(
         xTitle: openRouterConfig.xTitle,
       });
     }
+    case "gemini": {
+      const geminiConfig = config as GeminiProviderConfig;
+      return new GeminiProvider({
+        model,
+        apiKey: geminiConfig.apiKey,
+      });
+    }
     case "xai": {
       const xaiConfig = config as XaiProviderConfig;
       return new XaiProvider({
@@ -80,7 +89,7 @@ export function createProvider(
     }
     default:
       throw new Error(
-        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter, xai`,
+        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter, gemini, xai`,
       );
   }
 }

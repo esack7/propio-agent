@@ -4,6 +4,7 @@ import {
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
+  GeminiProviderConfig,
   ProvidersConfig,
 } from "../config.js";
 
@@ -120,6 +121,17 @@ describe("Configuration Types (New Structure)", () => {
       };
       expect(config.type).toBe("openrouter");
     });
+
+    it("should accept GeminiProviderConfig", () => {
+      const config: ProviderConfig = {
+        name: "gemini",
+        type: "gemini",
+        models: [{ name: "Gemini 3 Flash", key: "gemini-3-flash-preview" }],
+        defaultModel: "gemini-3-flash-preview",
+        apiKey: "gemini-key",
+      };
+      expect(config.type).toBe("gemini");
+    });
   });
 
   describe("OpenRouterProviderConfig", () => {
@@ -137,6 +149,25 @@ describe("Configuration Types (New Structure)", () => {
       expect(config.apiKey).toBe("sk-key");
       expect(config.httpReferer).toBe("https://app.com");
       expect(config.xTitle).toBe("My App");
+    });
+  });
+
+  describe("GeminiProviderConfig", () => {
+    it("should define gemini provider with optional apiKey", () => {
+      const config: GeminiProviderConfig = {
+        name: "gemini",
+        type: "gemini",
+        models: [
+          {
+            name: "Gemini 3.1 Pro Preview",
+            key: "gemini-3.1-pro-preview",
+          },
+        ],
+        defaultModel: "gemini-3.1-pro-preview",
+        apiKey: "gemini-key",
+      };
+      expect(config.type).toBe("gemini");
+      expect(config.apiKey).toBe("gemini-key");
     });
   });
 

@@ -295,8 +295,7 @@ describe("formatContextOverview", () => {
     ).toBe(true);
     expect(
       lines.some(
-        (l) =>
-          l.text.includes("ASSISTANT: Welcome!") && l.style === "info",
+        (l) => l.text.includes("ASSISTANT: Welcome!") && l.style === "info",
       ),
     ).toBe(true);
     expect(lines.some((l) => l.text === "Turns" && l.style === "section")).toBe(
@@ -553,9 +552,7 @@ describe("formatPromptPlan", () => {
       true,
     );
     expect(
-      lines.some((l) =>
-        l.text.includes("Inlined artifacts: 2 (art-a, art-b)"),
-      ),
+      lines.some((l) => l.text.includes("Inlined artifacts: 2 (art-a, art-b)")),
     ).toBe(true);
     expect(
       lines.some((l) => l.text.includes("Used rolling summary: yes")),
