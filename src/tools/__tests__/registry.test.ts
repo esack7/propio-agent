@@ -111,6 +111,51 @@ describe("ToolRegistry", () => {
     });
   });
 
+  describe("executeWithStatus", () => {
+    it("should return success status for successful execution", async () => {
+      const mockTool = createMockTool("test_tool", "expected_result");
+      registry.register(mockTool);
+
+      const result = await registry.executeWithStatus("test_tool", {
+        arg: "value",
+      });
+
+      expect(result.status).toBe("success");
+      expect(result.content).toBe("expected_result");
+    });
+
+    it("should return tool_not_found status for nonexistent tool", async () => {
+      const result = await registry.executeWithStatus("nonexistent", {});
+
+      expect(result.status).toBe("tool_not_found");
+      expect(result.content).toBe("Tool not found: nonexistent");
+    });
+
+    it("should return tool_disabled status for disabled tool", async () => {
+      const mockTool = createMockTool("test_tool");
+      registry.register(mockTool);
+      registry.disable("test_tool");
+
+      const result = await registry.executeWithStatus("test_tool", {});
+
+      expect(result.status).toBe("tool_disabled");
+      expect(result.content).toBe("Tool not available: test_tool");
+    });
+
+    it("should return error status for throwing tool", async () => {
+      const throwingTool = createMockTool("throwing_tool");
+      throwingTool.execute = jest.fn(async () => {
+        throw new Error("Test error");
+      });
+      registry.register(throwingTool);
+
+      const result = await registry.executeWithStatus("throwing_tool", {});
+
+      expect(result.status).toBe("error");
+      expect(result.content).toBe("Error executing throwing_tool: Test error");
+    });
+  });
+
   describe("getEnabledSchemas", () => {
     it("should return only enabled tool schemas", () => {
       const tool1 = createMockTool("tool1");

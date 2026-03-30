@@ -216,7 +216,7 @@ The `apiKey` can also be set via the `XAI_API_KEY` environment variable.
 
 ## Usage
 
-Start the agent and type messages at the prompt. Session context is maintained across turns.
+Start the agent and type messages at the prompt. Session context is maintained across turns, with structured context inspection and workspace-scoped session snapshots available from the CLI.
 
 ### CLI flags
 
@@ -227,6 +227,12 @@ Start the agent and type messages at the prompt. Session context is maintained a
 | `--json`                    | Read one prompt from stdin, print JSON to stdout         |
 | `--plain`                   | Disable ANSI colors and spinner                          |
 | `--no-interactive`          | Disable prompts/spinners, read one prompt from stdin     |
+| `--show-activity`           | Show tool start/finish/failure activity events           |
+| `--show-status`             | Show high-level agent status updates                     |
+| `--show-reasoning-summary`  | Show the turn reasoning summary after each response      |
+| `--show-trace`              | Enable activity, status, and reasoning summary output    |
+| `--show-context-stats`      | Print compact context stats after each turn              |
+| `--show-prompt-plan`        | Print a compact prompt-plan summary for each request     |
 | `--debug-llm`               | Emit provider diagnostics to stderr                      |
 | `--debug-llm-file <path>`   | Append provider diagnostics to a file                    |
 
@@ -243,12 +249,20 @@ npm start -- --debug-llm-file /tmp/propio-debug.log
 
 ### Session commands
 
-| Command    | Description                          |
-| ---------- | ------------------------------------ |
-| `/clear`   | Clear session context                |
-| `/context` | Show current session context         |
-| `/tools`   | Enable or disable tools at runtime   |
-| `/exit`    | Quit the agent                       |
+| Command              | Description                                           |
+| -------------------- | ----------------------------------------------------- |
+| `/help`              | Show slash-command help                               |
+| `/clear`             | Clear session context                                 |
+| `/context`           | Show structured context overview                      |
+| `/context prompt`    | Show the latest prompt plan                           |
+| `/context memory`    | Show rolling summary and pinned memory                |
+| `/tools`             | Enable or disable tools at runtime                    |
+| `/session list`      | List saved session snapshots for the current workspace |
+| `/session load`      | Load the latest saved session snapshot                |
+| `/session load <id>` | Load a specific saved session snapshot                |
+| `/exit`              | Save a session snapshot and quit                      |
+
+Session snapshots are stored under `~/.propio/sessions/` and are scoped by workspace, so different repositories keep separate histories automatically.
 
 ---
 
@@ -269,13 +283,12 @@ The agent has a built-in tool registry and an agentic loop: it calls tools, proc
 | `search_text`          | Search     | enabled  | Search for regex patterns in files                 |
 | `search_files`         | Search     | enabled  | Find files by glob pattern                         |
 | `run_bash`             | Execution  | disabled | Execute shell commands ⚠️                          |
-| `save_session_context` | Context    | enabled  | Persist session context to `session_context.txt`   |
 
 `remove` and `run_bash` are **disabled by default** because they are destructive or execute arbitrary code. Enable them at runtime with `/tools`, or programmatically:
 
 ```typescript
-agent.toolRegistry.enable("remove");
-agent.toolRegistry.enable("run_bash");
+agent.enableTool("remove");
+agent.enableTool("run_bash");
 ```
 
 All filesystem tools validate paths to prevent traversal outside the working directory.
@@ -292,8 +305,10 @@ propio-agent/
 │   ├── index.ts                # CLI entry point
 │   ├── agent.ts                # Agent class and agentic loop
 │   ├── agentsMd.ts             # AGENTS.md loader
+│   ├── context/                # Structured context, prompt planning, memory, persistence
 │   ├── diagnostics.ts          # LLM diagnostics helpers
 │   ├── sandboxDelegation.ts    # Sandbox delegation logic
+│   ├── sessions/               # Session snapshot storage and slash-command handlers
 │   ├── cli/
 │   │   └── args.ts             # CLI argument parsing
 │   ├── providers/
@@ -315,11 +330,11 @@ propio-agent/
 │   │   ├── fileSystem.ts       # Filesystem tools
 │   │   ├── search.ts           # Search tools
 │   │   ├── bash.ts             # Bash execution tool
-│   │   ├── sessionContext.ts   # Session context tool
 │   │   └── __tests__/
 │   └── ui/
 │       ├── banner.ts           # Startup banner
 │       ├── colors.ts           # Color helpers
+│       ├── contextInspector.ts # Structured context and prompt-plan views
 │       ├── formatting.ts       # Output formatting
 │       ├── markdownRenderer.ts # Terminal markdown rendering
 │       ├── spinner.ts          # Ora spinner wrapper
@@ -355,9 +370,21 @@ The `Agent` class (`src/agent.ts`) drives a tool-calling loop:
 3. Append tool results to the conversation and repeat.
 4. Return the final text response to the caller.
 
+### Context management
+
+Structured session state is managed under `src/context/`.
+
+- `ContextManager` owns turn-based conversation state
+- `PromptBuilder` assembles provider payloads with budgeting and retry levels
+- raw tool outputs are stored as artifacts and only inlined when needed
+- older conversation can be represented by a rolling summary plus pinned memory
+- session state can be serialized and restored structurally
+
+The CLI exposes this state through `/context`, `/context prompt`, `/context memory`, `--show-context-stats`, and `--show-prompt-plan`.
+
 ### Tool registry
 
-`src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.toolRegistry` API.
+`src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.
 
 ---
 

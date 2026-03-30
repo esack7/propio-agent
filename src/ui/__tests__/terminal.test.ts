@@ -169,4 +169,66 @@ describe("TerminalUi", () => {
 
     expect(stripped).toEqual(["red blue", "green"]);
   });
+
+  it("emits a newline before subtle output that follows a partial writeAssistant", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.writeAssistant("Assistant: ");
+    ui.newline();
+    ui.subtle("Prompt plan: mock/model iter=1 | ~500 prompt tokens (est.)");
+    ui.writeAssistant("Here is ");
+    ui.writeAssistant("the answer.");
+
+    const output = stderr.chunks.join("");
+    const lines = output.split("\n");
+
+    expect(lines[0]).toBe("Assistant: ");
+    expect(lines[1]).toContain("Prompt plan:");
+    expect(lines[2]).toContain("Here is the answer.");
+  });
+
+  it("subtle output on its own line when no prior partial write exists", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.newline();
+    ui.subtle("Prompt plan: standalone");
+
+    const output = stderr.chunks.join("");
+    expect(output).toBe("Prompt plan: standalone\n");
+  });
+
+  it("suppresses prompt plan output in JSON mode", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: true,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.writeAssistant("ignored");
+    ui.newline();
+    ui.subtle("Prompt plan: should not appear");
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
+  });
 });

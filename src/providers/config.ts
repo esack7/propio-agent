@@ -1,9 +1,12 @@
 /**
- * A model entry containing both human-readable name and technical key
+ * A model entry containing both human-readable name and technical key.
+ * Optional contextWindowTokens overrides the provider's built-in lookup
+ * for testing or cost-control purposes.
  */
 export interface Model {
   name: string;
   key: string;
+  contextWindowTokens?: number;
 }
 
 /**

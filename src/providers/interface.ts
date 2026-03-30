@@ -1,6 +1,13 @@
 import { ChatRequest, ChatStreamEvent } from "./types.js";
 
 /**
+ * Provider capability information for the currently configured model.
+ */
+export interface ProviderCapabilities {
+  readonly contextWindowTokens: number;
+}
+
+/**
  * LLMProvider interface defining the contract for all LLM provider implementations
  */
 export interface LLMProvider {
@@ -8,6 +15,12 @@ export interface LLMProvider {
    * Provider identifier
    */
   readonly name: string;
+
+  /**
+   * Return capability info for the active model. Implementations may use
+   * internal lookup tables; callers can override via per-model config.
+   */
+  getCapabilities(): ProviderCapabilities;
 
   /**
    * Streaming chat completion

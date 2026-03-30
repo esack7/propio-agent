@@ -7,8 +7,6 @@ import {
   ChatStreamEvent,
 } from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
-import * as fs from "fs";
-import * as path from "path";
 
 // Test providers config using new format
 const defaultTestProvidersConfig: ProvidersConfig = {
@@ -34,6 +32,10 @@ class MockIntegrationProvider implements LLMProvider {
     this.name = name;
   }
 
+  getCapabilities() {
+    return { contextWindowTokens: 128000 };
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
     const chunks = `Response from ${this.name}`.split(" ");
     for (const chunk of chunks) {
@@ -50,7 +52,6 @@ describe("Agent Integration Tests", () => {
       expect(typeof agent.streamChat).toBe("function");
       expect(typeof agent.getContext).toBe("function");
       expect(typeof agent.getTools).toBe("function");
-      expect(typeof agent.saveContext).toBe("function");
     });
   });
 
@@ -154,29 +155,6 @@ describe("Agent Integration Tests", () => {
   });
 
   describe("Tool execution", () => {
-    let tempDir: string;
-
-    beforeEach(() => {
-      tempDir = path.join(process.cwd(), `.test-${Date.now()}`);
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-    });
-
-    afterEach(() => {
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true });
-      }
-    });
-
-    it("should execute file write tool correctly", async () => {
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-
-      const result = await agent.saveContext("integration test");
-
-      expect(result).toContain("Successfully saved");
-    });
-
     it("should handle tool execution errors gracefully", async () => {
       const mockProvider = new MockIntegrationProvider("test");
       mockProvider.streamChat = async function* () {
@@ -220,8 +198,8 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "save_session_context",
-                  arguments: {},
+                  name: "list_dir",
+                  arguments: { path: "." },
                 },
               },
             ],
@@ -266,8 +244,8 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "save_session_context",
-                  arguments: { reason: "test1" },
+                  name: "list_dir",
+                  arguments: { path: "." },
                 },
               },
             ],
@@ -278,8 +256,8 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "save_session_context",
-                  arguments: { reason: "test2" },
+                  name: "list_dir",
+                  arguments: { path: "." },
                 },
               },
             ],
@@ -343,8 +321,8 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "save_session_context",
-                  arguments: {},
+                  name: "list_dir",
+                  arguments: { path: "." },
                 },
               },
             ],
@@ -532,7 +510,6 @@ describe("Agent Integration Tests", () => {
       const tools = agent.getTools();
 
       const toolNames = tools.map((t) => t.function.name);
-      expect(toolNames).toContain("save_session_context");
       expect(toolNames).toContain("read_file");
       expect(toolNames).toContain("write_file");
     });
@@ -554,9 +531,9 @@ describe("Agent Integration Tests", () => {
       await agent.streamChat("Test with tools", () => {});
 
       expect(toolsReceived.length).toBeGreaterThan(0);
-      expect(
-        toolsReceived.some((t) => t.function.name === "save_session_context"),
-      ).toBe(true);
+      expect(toolsReceived.some((t) => t.function.name === "read_file")).toBe(
+        true,
+      );
     });
   });
 });

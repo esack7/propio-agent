@@ -7,6 +7,10 @@ import { ChatRequest, ChatResponse, ChatChunk } from "../types.js";
 class MockProvider implements LLMProvider {
   name: string = "mock";
 
+  getCapabilities() {
+    return { contextWindowTokens: 128000 };
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     return {
       message: {
@@ -136,6 +140,10 @@ describe("LLMProvider Interface", () => {
     it("should optionally yield toolCalls in final chunk", async () => {
       class ToolCallProvider implements LLMProvider {
         name = "tool-provider";
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
 
         async chat(request: ChatRequest): Promise<ChatResponse> {
           throw new Error("Not implemented");

@@ -1,4 +1,4 @@
-import { LLMProvider } from "./interface.js";
+import { LLMProvider, ProviderCapabilities } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -9,9 +9,14 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
 } from "./types.js";
 
-const XAI_API_URL = "https://api.x.ai/v1/chat/completions";
+const XAI_API_URLS = [
+  "https://api.x.ai/v1/chat/completions",
+  "https://us-east-1.api.x.ai/v1/chat/completions",
+  "https://eu-west-1.api.x.ai/v1/chat/completions",
+] as const;
 
 /** OpenAI-compatible message format for API request */
 interface OpenAIMessage {
@@ -43,6 +48,16 @@ export class XaiProvider implements LLMProvider {
   private readonly model: string;
   private readonly apiKey: string;
 
+  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
+    "grok-4.20-0309-reasoning": 2_000_000,
+    "grok-4.20-0309-non-reasoning": 2_000_000,
+    "grok-4.20-multi-agent-0309": 2_000_000,
+    "grok-4-1-fast-reasoning": 2_000_000,
+    "grok-4-1-fast-non-reasoning": 2_000_000,
+  };
+
+  private static readonly DEFAULT_CONTEXT_WINDOW = 2_000_000;
+
   constructor(options: { model: string; apiKey?: string }) {
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
@@ -52,6 +67,14 @@ export class XaiProvider implements LLMProvider {
     }
     this.model = options.model;
     this.apiKey = apiKey;
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    return {
+      contextWindowTokens:
+        XaiProvider.CONTEXT_WINDOWS[this.model] ??
+        XaiProvider.DEFAULT_CONTEXT_WINDOW,
+    };
   }
 
   private expandToolResults(messages: ChatMessage[]): ChatMessage[] {
@@ -112,6 +135,95 @@ export class XaiProvider implements LLMProvider {
     };
   }
 
+  private normalizeErrorMessage(message: string): string {
+    const trimmed = message.trim();
+    if (!trimmed) {
+      return "";
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        error?: { message?: string };
+        message?: string;
+      };
+      if (typeof parsed.error?.message === "string") {
+        return parsed.error.message;
+      }
+      if (typeof parsed.message === "string") {
+        return parsed.message;
+      }
+    } catch {
+      // Fall through to the raw response body when it is not JSON.
+    }
+
+    return trimmed.replace(/\s+/g, " ");
+  }
+
+  private shouldRetryEndpoint(status?: number): boolean {
+    return status !== undefined && status >= 500 && status < 600;
+  }
+
+  private async createChatCompletionResponse(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    let lastError: ProviderError | null = null;
+
+    for (const apiUrl of XAI_API_URLS) {
+      try {
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal,
+        });
+
+        if (response.ok) {
+          return response;
+        }
+
+        let errorBody = "";
+        try {
+          errorBody = await response.text();
+        } catch {
+          // ignore read failures
+        }
+
+        const translated = this.translateError(
+          new Error(errorBody || `HTTP ${response.status}`),
+          response,
+        );
+
+        if (this.shouldRetryEndpoint(response.status)) {
+          lastError = translated;
+          continue;
+        }
+
+        throw translated;
+      } catch (error) {
+        if (error instanceof ProviderError) {
+          throw error;
+        }
+
+        const translated = this.translateError(error);
+        const isAbort =
+          translated.message === "Request cancelled" ||
+          translated.originalError?.name === "AbortError";
+        if (!isAbort) {
+          lastError = translated;
+          continue;
+        }
+
+        throw translated;
+      }
+    }
+
+    throw lastError ?? new ProviderError("xAI request failed");
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const expandedMessages = this.expandToolResults(request.messages);
@@ -126,24 +238,10 @@ export class XaiProvider implements LLMProvider {
       if (request.tools && request.tools.length > 0) {
         body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
       }
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      };
-
-      const response = await fetch(XAI_API_URL, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: request.signal,
-      });
-
-      if (!response.ok) {
-        throw this.translateError(
-          new Error(`HTTP ${response.status}`),
-          response,
-        );
-      }
+      const response = await this.createChatCompletionResponse(
+        body,
+        request.signal,
+      );
 
       const reader = response.body?.getReader();
       if (!reader) {
@@ -240,10 +338,36 @@ export class XaiProvider implements LLMProvider {
     }
   }
 
+  private isContextLengthError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("context length") ||
+      lower.includes("context window") ||
+      lower.includes("maximum context") ||
+      lower.includes("token limit") ||
+      lower.includes("too many tokens") ||
+      lower.includes("input is too long") ||
+      lower.includes("prompt is too long") ||
+      lower.includes("exceeds the model") ||
+      lower.includes("reduce your prompt")
+    );
+  }
+
   private translateError(error: unknown, response?: Response): ProviderError {
     const originalError =
       error instanceof Error ? error : new Error(String(error));
+    const normalizedMessage = this.normalizeErrorMessage(originalError.message);
+
     if (response) {
+      if (
+        response.status === 400 &&
+        this.isContextLengthError(normalizedMessage)
+      ) {
+        return new ProviderContextLengthError(
+          `Context length exceeded: ${normalizedMessage}`,
+          originalError,
+        );
+      }
       if (response.status === 401) {
         return new ProviderAuthenticationError(
           "Invalid xAI API key",
@@ -269,10 +393,23 @@ export class XaiProvider implements LLMProvider {
         );
       }
       if (response.status >= 500 && response.status < 600) {
-        return new ProviderError("xAI service error", originalError);
+        return new ProviderError(
+          normalizedMessage
+            ? `xAI service error: ${normalizedMessage}`
+            : "xAI service error",
+          originalError,
+        );
       }
     }
-    const msg = originalError.message;
+    const msg = normalizedMessage || originalError.message;
+
+    if (this.isContextLengthError(msg)) {
+      return new ProviderContextLengthError(
+        `Context length exceeded: ${msg}`,
+        originalError,
+      );
+    }
+
     if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
       return new ProviderError("Request cancelled", originalError);
     }

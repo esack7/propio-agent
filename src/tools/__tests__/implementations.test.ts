@@ -9,11 +9,7 @@ import {
   afterEach,
 } from "@jest/globals";
 
-// Mock fs modules BEFORE any imports
-jest.unstable_mockModule("fs", () => ({
-  writeFileSync: jest.fn(),
-}));
-
+// Mock fs/promises BEFORE any imports
 jest.unstable_mockModule("fs/promises", () => ({
   readFile: jest.fn(),
   writeFile: jest.fn(),
@@ -25,38 +21,19 @@ jest.unstable_mockModule("fs/promises", () => ({
 
 // All imports must be dynamic to ensure mocks are in place
 let createDefaultToolRegistry: any;
-let ToolContext: any;
-let ChatMessage: any;
 let ReadFileTool: any;
 let WriteFileTool: any;
-let SaveSessionContextTool: any;
-let mockFs: any;
 let mockFsPromises: any;
 
 beforeAll(async () => {
-  // Get references to the mocked fs modules
-  const fsModule = await import("fs");
-  const fsPromisesModule = await import("fs/promises");
+  mockFsPromises = await import("fs/promises");
 
-  mockFs = fsModule;
-  mockFsPromises = fsPromisesModule;
-
-  // Now import modules that depend on fs
   const { createDefaultToolRegistry: factory } = await import("../factory.js");
   createDefaultToolRegistry = factory;
-
-  const { ToolContext: TC } = await import("../types.js");
-  ToolContext = TC;
-
-  const { ChatMessage: CM } = await import("../../providers/types.js");
-  ChatMessage = CM;
 
   const fileSystemModule = await import("../fileSystem.js");
   ReadFileTool = fileSystemModule.ReadFileTool;
   WriteFileTool = fileSystemModule.WriteFileTool;
-
-  const sessionContextModule = await import("../sessionContext.js");
-  SaveSessionContextTool = sessionContextModule.SaveSessionContextTool;
 });
 
 describe("Tool Implementations", () => {
@@ -219,128 +196,14 @@ describe("Tool Implementations", () => {
     });
   });
 
-  describe("SaveSessionContextTool", () => {
-    it("should write context to file using ToolContext", async () => {
-      const mockContext: any = {
-        systemPrompt: "Test system prompt",
-        sessionContext: [
-          { role: "user", content: "Hello" },
-          { role: "assistant", content: "Hi there" },
-        ],
-        sessionContextFilePath: "/path/to/session.txt",
-      };
-
-      const tool = new SaveSessionContextTool(mockContext);
-      jest.mocked(mockFs.writeFileSync).mockImplementation(() => {});
-
-      const result = await tool.execute({ reason: "test save" });
-
-      expect(result).toContain(
-        "Successfully saved session context to /path/to/session.txt",
-      );
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        "/path/to/session.txt",
-        expect.stringContaining("Test system prompt"),
-        "utf-8",
-      );
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        "/path/to/session.txt",
-        expect.stringContaining("Hello"),
-        "utf-8",
-      );
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        "/path/to/session.txt",
-        expect.stringContaining("Hi there"),
-        "utf-8",
-      );
-      expect(mockFs.writeFileSync).toHaveBeenCalledWith(
-        "/path/to/session.txt",
-        expect.stringContaining("Reason: test save"),
-        "utf-8",
-      );
-    });
-
-    it("should read live context values via property getters", async () => {
-      let currentSystemPrompt = "Initial prompt";
-      let currentSessionContext: any[] = [
-        { role: "user", content: "First message" },
-      ];
-
-      const mockContext: any = {
-        get systemPrompt() {
-          return currentSystemPrompt;
-        },
-        get sessionContext() {
-          return currentSessionContext;
-        },
-        sessionContextFilePath: "/path/to/session.txt",
-      };
-
-      const tool = new SaveSessionContextTool(mockContext);
-      jest.mocked(mockFs.writeFileSync).mockImplementation(() => {});
-
-      await tool.execute({ reason: "first save" });
-      const firstCall = jest.mocked(mockFs.writeFileSync).mock
-        .calls[0][1] as string;
-      expect(firstCall).toContain("Initial prompt");
-      expect(firstCall).toContain("First message");
-
-      currentSystemPrompt = "Updated prompt";
-      currentSessionContext = [
-        { role: "user", content: "First message" },
-        { role: "assistant", content: "Response" },
-        { role: "user", content: "Second message" },
-      ];
-
-      await tool.execute({ reason: "second save" });
-      const secondCall = jest.mocked(mockFs.writeFileSync).mock
-        .calls[1][1] as string;
-      expect(secondCall).toContain("Updated prompt");
-      expect(secondCall).toContain("Second message");
-      expect(secondCall).not.toContain("Initial prompt");
-    });
-
-    it("should have correct schema", () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-      const tool = new SaveSessionContextTool(mockContext);
-      const schema = tool.getSchema();
-
-      expect(schema.function.name).toBe("save_session_context");
-      expect(schema.function.parameters.properties).toHaveProperty("reason");
-    });
-
-    it("should have name matching schema", () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-      const tool = new SaveSessionContextTool(mockContext);
-      const schema = tool.getSchema();
-
-      expect(tool.name).toBe(schema.function.name);
-    });
-  });
-
   describe("createDefaultToolRegistry", () => {
-    it("should register all 10 built-in tools", () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-
-      const registry = createDefaultToolRegistry(mockContext);
+    it("should register all 9 built-in tools", () => {
+      const registry = createDefaultToolRegistry();
       const allTools = registry.getToolNames();
 
-      expect(allTools).toHaveLength(10);
+      expect(allTools).toHaveLength(9);
       expect(allTools).toContain("read_file");
       expect(allTools).toContain("write_file");
-      expect(allTools).toContain("save_session_context");
       expect(allTools).toContain("list_dir");
       expect(allTools).toContain("mkdir");
       expect(allTools).toContain("remove");
@@ -350,22 +213,15 @@ describe("Tool Implementations", () => {
       expect(allTools).toContain("run_bash");
     });
 
-    it("should enable 8 tools by default", () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-
-      const registry = createDefaultToolRegistry(mockContext);
+    it("should enable 7 tools by default", () => {
+      const registry = createDefaultToolRegistry();
       const schemas = registry.getEnabledSchemas();
 
-      expect(schemas).toHaveLength(8);
+      expect(schemas).toHaveLength(7);
 
       const enabledNames = schemas.map((schema: any) => schema.function.name);
       expect(enabledNames).toContain("read_file");
       expect(enabledNames).toContain("write_file");
-      expect(enabledNames).toContain("save_session_context");
       expect(enabledNames).toContain("list_dir");
       expect(enabledNames).toContain("mkdir");
       expect(enabledNames).toContain("move");
@@ -374,13 +230,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should disable remove and run_bash by default", () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-
-      const registry = createDefaultToolRegistry(mockContext);
+      const registry = createDefaultToolRegistry();
 
       expect(registry.hasTool("remove")).toBe(true);
       expect(registry.hasTool("run_bash")).toBe(true);
@@ -390,13 +240,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should allow enabling disabled tools", () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-
-      const registry = createDefaultToolRegistry(mockContext);
+      const registry = createDefaultToolRegistry();
 
       registry.enable("remove");
       expect(registry.isToolEnabled("remove")).toBe(true);
@@ -404,18 +248,13 @@ describe("Tool Implementations", () => {
       registry.enable("run_bash");
       expect(registry.isToolEnabled("run_bash")).toBe(true);
 
-      expect(registry.getEnabledSchemas()).toHaveLength(10);
+      expect(registry.getEnabledSchemas()).toHaveLength(9);
     });
 
     it("should register tools that are executable", async () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
       jest.mocked(mockFsPromises.readFile).mockResolvedValue("test content");
 
-      const registry = createDefaultToolRegistry(mockContext);
+      const registry = createDefaultToolRegistry();
 
       const result = await registry.execute("read_file", {
         file_path: "/test/file.txt",
@@ -426,13 +265,7 @@ describe("Tool Implementations", () => {
     });
 
     it("should reject execution of disabled tools", async () => {
-      const mockContext: any = {
-        systemPrompt: "Test",
-        sessionContext: [],
-        sessionContextFilePath: "/test",
-      };
-
-      const registry = createDefaultToolRegistry(mockContext);
+      const registry = createDefaultToolRegistry();
 
       const result = await registry.execute("remove", {
         path: "/test/file.txt",

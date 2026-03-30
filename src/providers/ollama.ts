@@ -1,5 +1,5 @@
 import { Ollama, Message, Tool, ToolCall } from "ollama";
-import { LLMProvider } from "./interface.js";
+import { LLMProvider, ProviderCapabilities } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -9,6 +9,7 @@ import {
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
 } from "./types.js";
 
 /**
@@ -19,6 +20,8 @@ export class OllamaProvider implements LLMProvider {
   private ollama: Ollama;
   private model: string;
 
+  private static readonly DEFAULT_CONTEXT_WINDOW = 8192;
+
   constructor(options: { model: string; host?: string }) {
     const isSandbox = process.env.IS_SANDBOX === "true";
 
@@ -28,6 +31,12 @@ export class OllamaProvider implements LLMProvider {
 
     this.ollama = new Ollama({ host });
     this.model = options.model;
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    return {
+      contextWindowTokens: OllamaProvider.DEFAULT_CONTEXT_WINDOW,
+    };
   }
 
   /**
@@ -234,6 +243,18 @@ export class OllamaProvider implements LLMProvider {
    */
   private translateError(error: any): ProviderError {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const lower = errorMessage.toLowerCase();
+
+    if (
+      lower.includes("context length") ||
+      lower.includes("too many tokens") ||
+      lower.includes("input is too long")
+    ) {
+      return new ProviderContextLengthError(
+        `Context length exceeded: ${errorMessage}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
 
     // Connection errors
     if (

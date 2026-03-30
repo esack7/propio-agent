@@ -3,6 +3,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
   ProviderError,
 } from "../types.js";
 import { ChatRequest, ChatMessage } from "../types.js";
@@ -45,6 +46,24 @@ describe("XaiProvider", () => {
       expect(() => {
         new XaiProvider({ model: "grok-4-1-fast-reasoning" });
       }).toThrow(/API key|xAI/);
+    });
+
+    it("should report the updated 2M token context window for current Grok models", () => {
+      const provider = new XaiProvider({
+        model: "grok-4-1-fast-reasoning",
+        apiKey: "xai-test-key",
+      });
+
+      expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
+    });
+
+    it("should default unknown xAI models to the updated 2M token context window", () => {
+      const provider = new XaiProvider({
+        model: "grok-future-model",
+        apiKey: "xai-test-key",
+      });
+
+      expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
     });
   });
 
@@ -245,6 +264,7 @@ describe("XaiProvider", () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: false,
         status: 503,
+        text: () => Promise.resolve("upstream connect error"),
       });
 
       const provider = new XaiProvider({
@@ -259,6 +279,14 @@ describe("XaiProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "grok-4-1-fast-reasoning",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(/upstream connect error/);
     });
 
     it("should throw ProviderError on network failure", async () => {
@@ -276,6 +304,119 @@ describe("XaiProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+    });
+
+    it("should throw ProviderContextLengthError on 400 with context length message in body", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: {
+                message:
+                  "This model's maximum context length is 131072 tokens. However, your messages resulted in 200000 tokens.",
+              },
+            }),
+          ),
+      });
+
+      const provider = new XaiProvider({
+        model: "grok-4-1-fast-reasoning",
+        apiKey: "xai-test",
+      });
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "grok-4-1-fast-reasoning",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderContextLengthError);
+    });
+
+    it("should throw generic ProviderError on 400 without context length message", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ error: { message: "Invalid request format" } }),
+          ),
+      });
+
+      const provider = new XaiProvider({
+        model: "grok-4-1-fast-reasoning",
+        apiKey: "xai-test",
+      });
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "grok-4-1-fast-reasoning",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderError);
+      await expect(async () => {
+        for await (const chunk of provider.streamChat({
+          model: "grok-4-1-fast-reasoning",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      }).rejects.not.toThrow(ProviderContextLengthError);
+    });
+
+    it("should fall back to a regional endpoint when the global endpoint returns 503", async () => {
+      const successChunks = [
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      const successStream = new ReadableStream({
+        start(controller) {
+          successChunks.forEach((c) =>
+            controller.enqueue(new TextEncoder().encode(c)),
+          );
+          controller.close();
+        },
+      });
+
+      globalThis.fetch = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          text: () => Promise.resolve("upstream connect error"),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: successStream,
+        });
+
+      const provider = new XaiProvider({
+        model: "grok-4-1-fast-reasoning",
+        apiKey: "xai-test",
+      });
+
+      const deltas: string[] = [];
+      for await (const chunk of provider.streamChat({
+        model: "grok-4-1-fast-reasoning",
+        messages: [{ role: "user", content: "Hi" }],
+      })) {
+        deltas.push(chunk.delta);
+      }
+
+      expect(deltas).toEqual(["Hello"]);
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "https://api.x.ai/v1/chat/completions",
+        expect.any(Object),
+      );
+      expect(fetch).toHaveBeenNthCalledWith(
+        2,
+        "https://us-east-1.api.x.ai/v1/chat/completions",
+        expect.any(Object),
+      );
     });
   });
 });

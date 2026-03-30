@@ -3,7 +3,7 @@ import {
   ConverseCommand,
   ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
-import { LLMProvider } from "./interface.js";
+import { LLMProvider, ProviderCapabilities } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -14,6 +14,7 @@ import {
   ProviderAuthenticationError,
   ProviderRateLimitError,
   ProviderModelNotFoundError,
+  ProviderContextLengthError,
 } from "./types.js";
 
 /**
@@ -24,10 +25,30 @@ export class BedrockProvider implements LLMProvider {
   private client: BedrockRuntimeClient;
   private model: string;
 
+  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
+    "anthropic.claude-sonnet-4-20250514-v1:0": 200000,
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": 200000,
+    "anthropic.claude-3-5-haiku-20241022-v1:0": 200000,
+    "anthropic.claude-3-opus-20240229-v1:0": 200000,
+    "anthropic.claude-3-haiku-20240307-v1:0": 200000,
+    "amazon.nova-pro-v1:0": 300000,
+    "amazon.nova-lite-v1:0": 300000,
+  };
+
+  private static readonly DEFAULT_CONTEXT_WINDOW = 200000;
+
   constructor(options: { model: string; region?: string }) {
     const region = options.region || "us-east-1";
     this.client = new BedrockRuntimeClient({ region });
     this.model = options.model;
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    return {
+      contextWindowTokens:
+        BedrockProvider.CONTEXT_WINDOWS[this.model] ??
+        BedrockProvider.DEFAULT_CONTEXT_WINDOW,
+    };
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
@@ -363,9 +384,29 @@ export class BedrockProvider implements LLMProvider {
   /**
    * Translate errors to ProviderError types
    */
+  private isContextLengthError(message: string, name: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+      name.includes("ModelInputLimitExceededException") ||
+      lower.includes("too many input tokens") ||
+      lower.includes("context length") ||
+      lower.includes("input is too long") ||
+      lower.includes("prompt is too long") ||
+      lower.includes("maximum number of tokens") ||
+      lower.includes("exceeds the model")
+    );
+  }
+
   private translateError(error: any): ProviderError {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorName = (error as any).name || "";
+
+    if (this.isContextLengthError(errorMessage, errorName)) {
+      return new ProviderContextLengthError(
+        `Context length exceeded: ${errorMessage}`,
+        error instanceof Error ? error : undefined,
+      );
+    }
 
     // Authentication/authorization errors
     if (
