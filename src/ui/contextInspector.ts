@@ -233,9 +233,7 @@ export function formatContextStats(state: ConversationState): string {
   ).length;
 
   const preambleLabel =
-    state.preamble.length > 0
-      ? `${state.preamble.length} preamble + `
-      : "";
+    state.preamble.length > 0 ? `${state.preamble.length} preamble + ` : "";
 
   return `Context: ${preambleLabel}${turnCount} ${plural(turnCount, "turn")} | ~${totalTokens} conversation tokens (est.) | ${artifactCount} ${plural(artifactCount, "artifact")} | summary ~${summaryTokens} tokens | ${pinnedCount} pinned`;
 }

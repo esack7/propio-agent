@@ -54,12 +54,21 @@ export interface XaiProviderConfig extends BaseProviderConfig {
 }
 
 /**
+ * Gemini provider configuration using Google's OpenAI-compatible API.
+ */
+export interface GeminiProviderConfig extends BaseProviderConfig {
+  type: "gemini";
+  apiKey?: string;
+}
+
+/**
  * Configuration for a single LLM provider (discriminated union)
  */
 export type ProviderConfig =
   | OllamaProviderConfig
   | BedrockProviderConfig
   | OpenRouterProviderConfig
+  | GeminiProviderConfig
   | XaiProviderConfig;
 
 /**

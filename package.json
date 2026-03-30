@@ -1,7 +1,7 @@
 {
   "name": "propio-agent",
   "version": "1.0.0",
-  "description": "Multi-provider AI agent framework supporting Ollama, Bedrock, and OpenRouter",
+  "description": "Multi-provider AI agent framework supporting Ollama, Bedrock, OpenRouter, Gemini, and xAI",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

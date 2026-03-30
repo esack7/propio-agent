@@ -98,6 +98,25 @@ describe("Agent Integration Tests", () => {
       const agent = new Agent({ providersConfig: config });
       expect(agent).toBeDefined();
     });
+
+    it("should support Gemini configuration", () => {
+      const config: ProvidersConfig = {
+        default: "gemini",
+        providers: [
+          {
+            name: "gemini",
+            type: "gemini",
+            models: [
+              { name: "Gemini 3.1 Pro Preview", key: "gemini-3.1-pro-preview" },
+            ],
+            defaultModel: "gemini-3.1-pro-preview",
+            apiKey: "gemini-test-key",
+          },
+        ],
+      };
+      const agent = new Agent({ providersConfig: config });
+      expect(agent).toBeDefined();
+    });
   });
 
   describe("Session context management", () => {

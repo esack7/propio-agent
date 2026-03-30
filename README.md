@@ -1,6 +1,6 @@
 # propio-agent
 
-A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation.
+A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation.
 
 ## Table of Contents
 
@@ -109,10 +109,10 @@ docker compose build
 
 Agent configuration lives in `~/.propio/providers.json` and is shared across all projects.
 
-| Platform    | Path                                               |
-| ----------- | -------------------------------------------------- |
-| Unix/macOS  | `~/.propio/providers.json`                         |
-| Windows     | `%USERPROFILE%\.propio\providers.json`             |
+| Platform   | Path                                   |
+| ---------- | -------------------------------------- |
+| Unix/macOS | `~/.propio/providers.json`             |
+| Windows    | `%USERPROFILE%\.propio\providers.json` |
 
 ### Schema
 
@@ -122,7 +122,7 @@ Agent configuration lives in `~/.propio/providers.json` and is shared across all
   "providers": [
     {
       "name": "string — unique identifier for this entry",
-      "type": "ollama | bedrock | openrouter | xai",
+      "type": "ollama | bedrock | openrouter | gemini | xai",
       "models": [{ "name": "Human label", "key": "provider-model-id" }],
       "defaultModel": "provider-model-id"
     }
@@ -198,6 +198,27 @@ Provides access to 300+ models through a single API key.
 
 The `apiKey` can also be set via the `OPENROUTER_API_KEY` environment variable. `httpReferer` and `xTitle` are optional and used for OpenRouter leaderboard tracking.
 
+### Gemini
+
+```json
+{
+  "name": "gemini",
+  "type": "gemini",
+  "models": [
+    { "name": "Gemini 3.1 Pro Preview", "key": "gemini-3.1-pro-preview" },
+    { "name": "Gemini 3 Flash Preview", "key": "gemini-3-flash-preview" },
+    {
+      "name": "Gemini 3.1 Flash-Lite Preview",
+      "key": "gemini-3.1-flash-lite-preview"
+    }
+  ],
+  "defaultModel": "gemini-3.1-pro-preview",
+  "apiKey": "AIza..."
+}
+```
+
+The `apiKey` can also be set via the `GEMINI_API_KEY` environment variable, with `GOOGLE_API_KEY` as a fallback. These models use Gemini's OpenAI-compatible chat-completions endpoint and support multimodal input.
+
 ### xAI
 
 ```json
@@ -220,21 +241,21 @@ Start the agent and type messages at the prompt. Session context is maintained a
 
 ### CLI flags
 
-| Flag                        | Description                                              |
-| --------------------------- | -------------------------------------------------------- |
-| `--help`, `-h`              | Show CLI help                                            |
-| `--sandbox`                 | Run in Docker sandbox mode                               |
-| `--json`                    | Read one prompt from stdin, print JSON to stdout         |
-| `--plain`                   | Disable ANSI colors and spinner                          |
-| `--no-interactive`          | Disable prompts/spinners, read one prompt from stdin     |
-| `--show-activity`           | Show tool start/finish/failure activity events           |
-| `--show-status`             | Show high-level agent status updates                     |
-| `--show-reasoning-summary`  | Show the turn reasoning summary after each response      |
-| `--show-trace`              | Enable activity, status, and reasoning summary output    |
-| `--show-context-stats`      | Print compact context stats after each turn              |
-| `--show-prompt-plan`        | Print a compact prompt-plan summary for each request     |
-| `--debug-llm`               | Emit provider diagnostics to stderr                      |
-| `--debug-llm-file <path>`   | Append provider diagnostics to a file                    |
+| Flag                       | Description                                           |
+| -------------------------- | ----------------------------------------------------- |
+| `--help`, `-h`             | Show CLI help                                         |
+| `--sandbox`                | Run in Docker sandbox mode                            |
+| `--json`                   | Read one prompt from stdin, print JSON to stdout      |
+| `--plain`                  | Disable ANSI colors and spinner                       |
+| `--no-interactive`         | Disable prompts/spinners, read one prompt from stdin  |
+| `--show-activity`          | Show tool start/finish/failure activity events        |
+| `--show-status`            | Show high-level agent status updates                  |
+| `--show-reasoning-summary` | Show the turn reasoning summary after each response   |
+| `--show-trace`             | Enable activity, status, and reasoning summary output |
+| `--show-context-stats`     | Print compact context stats after each turn           |
+| `--show-prompt-plan`       | Print a compact prompt-plan summary for each request  |
+| `--debug-llm`              | Emit provider diagnostics to stderr                   |
+| `--debug-llm-file <path>`  | Append provider diagnostics to a file                 |
 
 ```bash
 # One-shot non-interactive
@@ -249,18 +270,18 @@ npm start -- --debug-llm-file /tmp/propio-debug.log
 
 ### Session commands
 
-| Command              | Description                                           |
-| -------------------- | ----------------------------------------------------- |
-| `/help`              | Show slash-command help                               |
-| `/clear`             | Clear session context                                 |
-| `/context`           | Show structured context overview                      |
-| `/context prompt`    | Show the latest prompt plan                           |
-| `/context memory`    | Show rolling summary and pinned memory                |
-| `/tools`             | Enable or disable tools at runtime                    |
+| Command              | Description                                            |
+| -------------------- | ------------------------------------------------------ |
+| `/help`              | Show slash-command help                                |
+| `/clear`             | Clear session context                                  |
+| `/context`           | Show structured context overview                       |
+| `/context prompt`    | Show the latest prompt plan                            |
+| `/context memory`    | Show rolling summary and pinned memory                 |
+| `/tools`             | Enable or disable tools at runtime                     |
 | `/session list`      | List saved session snapshots for the current workspace |
-| `/session load`      | Load the latest saved session snapshot                |
-| `/session load <id>` | Load a specific saved session snapshot                |
-| `/exit`              | Save a session snapshot and quit                      |
+| `/session load`      | Load the latest saved session snapshot                 |
+| `/session load <id>` | Load a specific saved session snapshot                 |
+| `/exit`              | Save a session snapshot and quit                       |
 
 Session snapshots are stored under `~/.propio/sessions/` and are scoped by workspace, so different repositories keep separate histories automatically.
 
@@ -272,17 +293,17 @@ The agent has a built-in tool registry and an agentic loop: it calls tools, proc
 
 ### Built-in tools
 
-| Tool                   | Category   | Default  | Description                                        |
-| ---------------------- | ---------- | -------- | -------------------------------------------------- |
-| `read_file`            | Filesystem | enabled  | Read file contents                                 |
-| `write_file`           | Filesystem | enabled  | Write content to a file                            |
-| `list_dir`             | Filesystem | enabled  | List directory contents                            |
-| `mkdir`                | Filesystem | enabled  | Create directories (recursive)                     |
-| `move`                 | Filesystem | enabled  | Move or rename files and directories               |
-| `remove`               | Filesystem | disabled | Delete files or directories ⚠️                     |
-| `search_text`          | Search     | enabled  | Search for regex patterns in files                 |
-| `search_files`         | Search     | enabled  | Find files by glob pattern                         |
-| `run_bash`             | Execution  | disabled | Execute shell commands ⚠️                          |
+| Tool           | Category   | Default  | Description                          |
+| -------------- | ---------- | -------- | ------------------------------------ |
+| `read_file`    | Filesystem | enabled  | Read file contents                   |
+| `write_file`   | Filesystem | enabled  | Write content to a file              |
+| `list_dir`     | Filesystem | enabled  | List directory contents              |
+| `mkdir`        | Filesystem | enabled  | Create directories (recursive)       |
+| `move`         | Filesystem | enabled  | Move or rename files and directories |
+| `remove`       | Filesystem | disabled | Delete files or directories ⚠️       |
+| `search_text`  | Search     | enabled  | Search for regex patterns in files   |
+| `search_files` | Search     | enabled  | Find files by glob pattern           |
+| `run_bash`     | Execution  | disabled | Execute shell commands ⚠️            |
 
 `remove` and `run_bash` are **disabled by default** because they are destructive or execute arbitrary code. Enable them at runtime with `/tools`, or programmatically:
 
@@ -320,6 +341,7 @@ propio-agent/
 │   │   ├── ollama.ts           # Ollama provider
 │   │   ├── bedrock.ts          # Amazon Bedrock provider
 │   │   ├── openrouter.ts       # OpenRouter provider
+│   │   ├── gemini.ts           # Gemini provider
 │   │   ├── xai.ts              # xAI provider
 │   │   └── __tests__/
 │   ├── tools/
@@ -400,13 +422,14 @@ The sandbox runs the agent in Docker with filesystem isolation:
 
 `bin/propio-sandbox` automatically forwards these variables when set in your shell:
 
-| Variable                                            | Provider       |
-| --------------------------------------------------- | -------------- |
-| `OLLAMA_HOST`                                       | Ollama         |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Bedrock |
-| `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`  | Bedrock        |
-| `OPENROUTER_API_KEY`                                | OpenRouter     |
-| `XAI_API_KEY`                                       | xAI            |
+| Variable                                                          | Provider   |
+| ----------------------------------------------------------------- | ---------- |
+| `OLLAMA_HOST`                                                     | Ollama     |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | Bedrock    |
+| `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`                 | Bedrock    |
+| `GEMINI_API_KEY`, `GOOGLE_API_KEY`                                | Gemini     |
+| `OPENROUTER_API_KEY`                                              | OpenRouter |
+| `XAI_API_KEY`                                                     | xAI        |
 
 > **Note:** When using `docker compose run --rm agent` directly, variables are not forwarded automatically — pass them with `-e VAR_NAME`.
 
@@ -436,12 +459,12 @@ Models with confirmed good tool calling: `llama3.1:8b`, `llama3.1:70b`, `mistral
 
 ### Docker errors
 
-| Error                                      | Fix                                                    |
-| ------------------------------------------ | ------------------------------------------------------ |
-| `docker: command not found`                | Install [Docker Desktop](https://docs.docker.com/get-docker/) |
-| `Cannot connect to Docker daemon`          | Start Docker Desktop or the Docker service             |
-| `no such file or directory: ./docker-compose.yml` | Run from the agent project directory           |
-| `image not found`                          | Run `docker compose build`                             |
+| Error                                             | Fix                                                           |
+| ------------------------------------------------- | ------------------------------------------------------------- |
+| `docker: command not found`                       | Install [Docker Desktop](https://docs.docker.com/get-docker/) |
+| `Cannot connect to Docker daemon`                 | Start Docker Desktop or the Docker service                    |
+| `no such file or directory: ./docker-compose.yml` | Run from the agent project directory                          |
+| `image not found`                                 | Run `docker compose build`                                    |
 
 ---
 

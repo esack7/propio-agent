@@ -2077,7 +2077,9 @@ describe("Agent with Multi-Provider Configuration", () => {
     function runWithLegacyCallbacks(
       agent: Agent,
       userMessage: string,
-    ): Promise<{ renders: Array<{ type: "success" | "error"; text: string }> }> {
+    ): Promise<{
+      renders: Array<{ type: "success" | "error"; text: string }>;
+    }> {
       const renders: Array<{ type: "success" | "error"; text: string }> = [];
       return agent
         .streamChat(userMessage, () => {}, {

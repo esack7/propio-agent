@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import * as fs from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import type { ChildProcess } from "child_process";
@@ -143,5 +144,12 @@ describe("sandbox delegation", () => {
 
     expect(result).toBe(1);
     expect(logError).toHaveBeenCalledWith(expect.stringContaining("SIGTERM"));
+  });
+
+  it("forwards Gemini API keys in the sandbox wrapper env list", () => {
+    const wrapperPath = path.resolve(process.cwd(), "bin", "propio-sandbox");
+    const script = fs.readFileSync(wrapperPath, "utf-8");
+    expect(script).toContain("GEMINI_API_KEY");
+    expect(script).toContain("GOOGLE_API_KEY");
   });
 });

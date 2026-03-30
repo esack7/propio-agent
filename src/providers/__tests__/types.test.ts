@@ -139,6 +139,7 @@ describe("Provider Types", () => {
   describe("ChatToolCall", () => {
     it("should represent a function tool call", () => {
       const toolCall: ChatToolCall = {
+        thoughtSignature: "sig-123",
         function: {
           name: "get_weather",
           arguments: { location: "New York" },
@@ -146,6 +147,7 @@ describe("Provider Types", () => {
       };
       expect(toolCall.function.name).toBe("get_weather");
       expect(toolCall.function.arguments.location).toBe("New York");
+      expect(toolCall.thoughtSignature).toBe("sig-123");
     });
 
     it("should support complex arguments", () => {

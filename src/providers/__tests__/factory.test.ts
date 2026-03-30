@@ -5,11 +5,13 @@ import {
   OllamaProviderConfig,
   BedrockProviderConfig,
   OpenRouterProviderConfig,
+  GeminiProviderConfig,
   XaiProviderConfig,
 } from "../config.js";
 import { OllamaProvider } from "../ollama.js";
 import { BedrockProvider } from "../bedrock.js";
 import { OpenRouterProvider } from "../openrouter.js";
+import { GeminiProvider } from "../gemini.js";
 import { XaiProvider } from "../xai.js";
 
 describe("Provider Factory", () => {
@@ -59,6 +61,21 @@ describe("Provider Factory", () => {
 
       expect(provider).toBeInstanceOf(OpenRouterProvider);
       expect(provider.name).toBe("openrouter");
+    });
+
+    it("should create GeminiProvider from Gemini config", () => {
+      const config: GeminiProviderConfig = {
+        name: "gemini",
+        type: "gemini",
+        models: [{ name: "Gemini 3 Flash", key: "gemini-3-flash-preview" }],
+        defaultModel: "gemini-3-flash-preview",
+        apiKey: "gemini-test-key",
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(GeminiProvider);
+      expect(provider.name).toBe("gemini");
     });
 
     it("should accept modelKey parameter and use it instead of defaultModel", () => {
@@ -113,7 +130,7 @@ describe("Provider Factory", () => {
       };
 
       expect(() => createProvider(config)).toThrow(
-        /ollama.*bedrock|bedrock.*ollama|openrouter|xai/,
+        /ollama.*bedrock|bedrock.*ollama|openrouter|gemini|xai/,
       );
     });
 

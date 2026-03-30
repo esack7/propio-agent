@@ -761,7 +761,9 @@ describe("PromptBuilder", () => {
     });
 
     it("at level 3 should report only rehydrated artifacts in includedArtifactIds (not completed-turn summaries)", () => {
-      const oldArtifact = makeArtifact("art-old", "completed turn raw", ["done"]);
+      const oldArtifact = makeArtifact("art-old", "completed turn raw", [
+        "done",
+      ]);
       const oldTool = makeToolEntry([
         {
           toolCallId: "tc-old",
@@ -774,11 +776,7 @@ describe("PromptBuilder", () => {
         id: "done",
         userMessage: "Past task",
         completedAt: "2026-01-01T00:01:00Z",
-        entries: [
-          makeAssistantEntry("a"),
-          oldTool,
-          makeAssistantEntry("b"),
-        ],
+        entries: [makeAssistantEntry("a"), oldTool, makeAssistantEntry("b")],
       });
       const newRaw = "current unresolved raw output";
       const newArtifact = makeArtifact("art-new", newRaw, ["current"]);
