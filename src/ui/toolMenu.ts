@@ -2,9 +2,6 @@ import * as readline from "readline";
 import { Agent } from "../agent.js";
 import type { TerminalUi } from "./terminal.js";
 
-// Tools that require explicit confirmation before enabling
-const DANGEROUS_TOOLS = new Set(["run_bash", "remove"]);
-
 /**
  * Show an interactive tool management menu.
  *
@@ -72,33 +69,10 @@ export function showToolMenu(
           displayMenu();
           promptUser();
         } else {
-          // Enable - check if dangerous
-          if (DANGEROUS_TOOLS.has(toolName)) {
-            // Show warning and require confirmation
-            ui.error(
-              `\nWARNING: '${toolName}' is a potentially dangerous tool that can modify or delete files.`,
-            );
-            rl.question(
-              ui.prompt("Are you sure you want to enable it? (y/n): "),
-              (confirmation) => {
-                const confirmTrimmed = confirmation.trim().toLowerCase();
-                if (confirmTrimmed === "y") {
-                  agent.enableTool(toolName);
-                  ui.success(`\nEnabled tool: ${toolName}\n`);
-                } else {
-                  ui.info(`\nTool '${toolName}' remains disabled.\n`);
-                }
-                displayMenu();
-                promptUser();
-              },
-            );
-          } else {
-            // Non-dangerous tool - enable immediately
-            agent.enableTool(toolName);
-            ui.success(`\nEnabled tool: ${toolName}\n`);
-            displayMenu();
-            promptUser();
-          }
+          agent.enableTool(toolName);
+          ui.success(`\nEnabled tool: ${toolName}\n`);
+          displayMenu();
+          promptUser();
         }
       },
     );

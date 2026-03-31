@@ -128,12 +128,12 @@ describe("BedrockProvider", () => {
         toolResults: [
           {
             toolCallId: "tool-123",
-            toolName: "read_file",
+            toolName: "read",
             content: "Tool result 1",
           },
           {
             toolCallId: "tool-456",
-            toolName: "write_file",
+            toolName: "write",
             content: "Tool result 2",
           },
         ],

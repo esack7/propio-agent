@@ -182,8 +182,8 @@ describe("Agent Integration Tests", () => {
           toolCalls: [
             {
               function: {
-                name: "read_file",
-                arguments: { file_path: "/nonexistent/file.txt" },
+                name: "read",
+                arguments: { path: "/nonexistent/file.txt" },
               },
             },
           ],
@@ -217,7 +217,7 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "list_dir",
+                  name: "ls",
                   arguments: { path: "." },
                 },
               },
@@ -263,7 +263,7 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "list_dir",
+                  name: "ls",
                   arguments: { path: "." },
                 },
               },
@@ -275,7 +275,7 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "list_dir",
+                  name: "ls",
                   arguments: { path: "." },
                 },
               },
@@ -340,7 +340,7 @@ describe("Agent Integration Tests", () => {
             toolCalls: [
               {
                 function: {
-                  name: "list_dir",
+                  name: "ls",
                   arguments: { path: "." },
                 },
               },
@@ -529,8 +529,8 @@ describe("Agent Integration Tests", () => {
       const tools = agent.getTools();
 
       const toolNames = tools.map((t) => t.function.name);
-      expect(toolNames).toContain("read_file");
-      expect(toolNames).toContain("write_file");
+      expect(toolNames).toContain("read");
+      expect(toolNames).toContain("write");
     });
 
     it("should pass tools to provider", async () => {
@@ -550,9 +550,7 @@ describe("Agent Integration Tests", () => {
       await agent.streamChat("Test with tools", () => {});
 
       expect(toolsReceived.length).toBeGreaterThan(0);
-      expect(toolsReceived.some((t) => t.function.name === "read_file")).toBe(
-        true,
-      );
+      expect(toolsReceived.some((t) => t.function.name === "read")).toBe(true);
     });
   });
 });

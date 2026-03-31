@@ -48,7 +48,7 @@ function toolInvocation(
 ): ToolInvocationRecord {
   return {
     toolCallId: "call-1",
-    toolName: "read_file",
+    toolName: "read",
     status: "success",
     resultSummary: "read ok",
     artifactId: "art-tool-1",

@@ -1,43 +1,15 @@
 import { ToolRegistry } from "./registry.js";
-import {
-  ReadFileTool,
-  WriteFileTool,
-  ListDirTool,
-  MkdirTool,
-  RemoveTool,
-  MoveTool,
-} from "./fileSystem.js";
-import { SearchTextTool, SearchFilesTool } from "./search.js";
-import { RunBashTool } from "./bash.js";
+import { BUILTIN_TOOL_MANIFEST } from "./manifest.js";
 
 /**
- * Creates a ToolRegistry pre-loaded with all built-in tools.
- *
- * The factory encapsulates the default tool setup, making it ergonomic for
- * Agent to initialize with standard tools while still allowing advanced users
- * to create custom registries.
- *
- * All tools are registered and enabled by default except for `remove` and `run_bash`,
- * which are disabled due to their destructive potential. Users must explicitly
- * enable these tools via `registry.enable("remove")` or `registry.enable("run_bash")`.
- *
- * @returns ToolRegistry with 9 built-in tools registered (7 enabled, 2 disabled)
+ * Creates a ToolRegistry pre-loaded with the built-in 7-tool surface.
  */
 export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
 
-  registry.register(new ReadFileTool());
-  registry.register(new WriteFileTool());
-  registry.register(new ListDirTool());
-  registry.register(new MkdirTool());
-  registry.register(new RemoveTool());
-  registry.register(new MoveTool());
-  registry.register(new SearchTextTool());
-  registry.register(new SearchFilesTool());
-  registry.register(new RunBashTool());
-
-  registry.disable("remove");
-  registry.disable("run_bash");
+  for (const definition of BUILTIN_TOOL_MANIFEST) {
+    registry.register(definition.tool, definition.enabledByDefault);
+  }
 
   return registry;
 }

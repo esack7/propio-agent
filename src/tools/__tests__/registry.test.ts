@@ -10,278 +10,144 @@ describe("ToolRegistry", () => {
   });
 
   describe("register", () => {
-    it("should register a tool and make it available", () => {
+    it("registers tools without enabling them by default", async () => {
       const mockTool = createMockTool("test_tool");
 
       registry.register(mockTool);
-      const schemas = registry.getEnabledSchemas();
 
-      expect(schemas).toHaveLength(1);
-      expect(schemas[0].function.name).toBe("test_tool");
+      expect(registry.getToolNames()).toEqual(["test_tool"]);
+      expect(registry.getEnabledSchemas()).toHaveLength(0);
+      await expect(registry.execute("test_tool", {})).resolves.toBe(
+        "Tool not available: test_tool",
+      );
     });
 
-    it("should enable tool by default when registering", async () => {
+    it("enables a tool when explicitly requested during registration", async () => {
       const mockTool = createMockTool("test_tool");
 
-      registry.register(mockTool);
+      registry.register(mockTool, true);
 
-      const result = await registry.execute("test_tool", {});
-      expect(result).toBe("success");
+      expect(registry.getEnabledSchemas()).toHaveLength(1);
+      await expect(registry.execute("test_tool", {})).resolves.toBe("success");
     });
   });
 
   describe("unregister", () => {
-    it("should unregister a tool and remove it from schemas", () => {
+    it("removes a tool from the registry", () => {
       const mockTool = createMockTool("test_tool");
-      registry.register(mockTool);
+      registry.register(mockTool, true);
 
       registry.unregister("test_tool");
 
-      const schemas = registry.getEnabledSchemas();
-      expect(schemas).toHaveLength(0);
+      expect(registry.getToolNames()).toEqual([]);
+      expect(registry.getEnabledSchemas()).toHaveLength(0);
     });
 
-    it("should be idempotent when unregistering nonexistent tool", () => {
-      expect(() => {
-        registry.unregister("nonexistent");
-      }).not.toThrow();
+    it("is idempotent when unregistering a missing tool", () => {
+      expect(() => registry.unregister("missing")).not.toThrow();
     });
   });
 
   describe("enable and disable", () => {
-    it("should include tool in schemas when enabled", () => {
+    it("toggles schema visibility", () => {
       const mockTool = createMockTool("test_tool");
       registry.register(mockTool);
-      registry.disable("test_tool");
 
       registry.enable("test_tool");
-
-      const schemas = registry.getEnabledSchemas();
-      expect(schemas).toHaveLength(1);
-      expect(schemas[0].function.name).toBe("test_tool");
-    });
-
-    it("should exclude tool from schemas when disabled", () => {
-      const mockTool = createMockTool("test_tool");
-      registry.register(mockTool);
+      expect(registry.getEnabledSchemas()).toHaveLength(1);
 
       registry.disable("test_tool");
-
-      const schemas = registry.getEnabledSchemas();
-      expect(schemas).toHaveLength(0);
+      expect(registry.getEnabledSchemas()).toHaveLength(0);
     });
   });
 
   describe("execute", () => {
-    it("should execute disabled tool and return error", async () => {
-      const mockTool = createMockTool("test_tool");
-      registry.register(mockTool);
-      registry.disable("test_tool");
-
-      const result = await registry.execute("test_tool", {});
-
-      expect(result).toBe("Tool not available: test_tool");
+    it("returns tool_not_found for missing tools", async () => {
+      expect(await registry.execute("missing", {})).toBe(
+        "Tool not found: missing",
+      );
     });
 
-    it("should execute nonexistent tool and return error", async () => {
-      const result = await registry.execute("nonexistent", {});
-
-      expect(result).toBe("Tool not found: nonexistent");
-    });
-
-    it("should execute successful tool and return result", async () => {
-      const mockTool = createMockTool("test_tool", "expected_result");
-      registry.register(mockTool);
-
-      const result = await registry.execute("test_tool", { arg: "value" });
-
-      expect(result).toBe("expected_result");
-    });
-
-    it("should execute throwing tool and return error string", async () => {
+    it("returns an error string for throwing tools", async () => {
       const throwingTool = createMockTool("throwing_tool");
       throwingTool.execute = jest.fn(async () => {
         throw new Error("Test error");
       });
-      registry.register(throwingTool);
 
-      const result = await registry.execute("throwing_tool", {});
+      registry.register(throwingTool, true);
 
-      expect(result).toBe("Error executing throwing_tool: Test error");
+      expect(await registry.execute("throwing_tool", {})).toBe(
+        "Error executing throwing_tool: Test error",
+      );
     });
   });
 
   describe("executeWithStatus", () => {
-    it("should return success status for successful execution", async () => {
+    it("returns structured status values", async () => {
       const mockTool = createMockTool("test_tool", "expected_result");
-      registry.register(mockTool);
+      registry.register(mockTool, true);
 
-      const result = await registry.executeWithStatus("test_tool", {
-        arg: "value",
+      const success = await registry.executeWithStatus("test_tool", {});
+      expect(success).toEqual({
+        status: "success",
+        content: "expected_result",
       });
 
-      expect(result.status).toBe("success");
-      expect(result.content).toBe("expected_result");
-    });
+      const missing = await registry.executeWithStatus("missing", {});
+      expect(missing).toEqual({
+        status: "tool_not_found",
+        content: "Tool not found: missing",
+      });
 
-    it("should return tool_not_found status for nonexistent tool", async () => {
-      const result = await registry.executeWithStatus("nonexistent", {});
-
-      expect(result.status).toBe("tool_not_found");
-      expect(result.content).toBe("Tool not found: nonexistent");
-    });
-
-    it("should return tool_disabled status for disabled tool", async () => {
-      const mockTool = createMockTool("test_tool");
-      registry.register(mockTool);
       registry.disable("test_tool");
-
-      const result = await registry.executeWithStatus("test_tool", {});
-
-      expect(result.status).toBe("tool_disabled");
-      expect(result.content).toBe("Tool not available: test_tool");
-    });
-
-    it("should return error status for throwing tool", async () => {
-      const throwingTool = createMockTool("throwing_tool");
-      throwingTool.execute = jest.fn(async () => {
-        throw new Error("Test error");
+      const disabled = await registry.executeWithStatus("test_tool", {});
+      expect(disabled).toEqual({
+        status: "tool_disabled",
+        content: "Tool not available: test_tool",
       });
-      registry.register(throwingTool);
-
-      const result = await registry.executeWithStatus("throwing_tool", {});
-
-      expect(result.status).toBe("error");
-      expect(result.content).toBe("Error executing throwing_tool: Test error");
     });
-  });
 
-  describe("getEnabledSchemas", () => {
-    it("should return only enabled tool schemas", () => {
-      const tool1 = createMockTool("tool1");
-      const tool2 = createMockTool("tool2");
-      const tool3 = createMockTool("tool3");
-
-      registry.register(tool1);
-      registry.register(tool2);
-      registry.register(tool3);
-      registry.disable("tool2");
-
-      const schemas = registry.getEnabledSchemas();
-
-      expect(schemas).toHaveLength(2);
-      expect(schemas.map((s: ChatTool) => s.function.name)).toEqual([
-        "tool1",
-        "tool3",
-      ]);
+    it("returns tool_not_found for legacy tool names", async () => {
+      for (const legacyName of [
+        "read_file",
+        "write_file",
+        "list_dir",
+        "mkdir",
+        "move",
+        "remove",
+        "search_text",
+        "search_files",
+        "run_bash",
+      ]) {
+        await expect(
+          registry.executeWithStatus(legacyName, {}),
+        ).resolves.toEqual({
+          status: "tool_not_found",
+          content: `Tool not found: ${legacyName}`,
+        });
+      }
     });
   });
 
   describe("introspection", () => {
-    describe("getToolNames", () => {
-      it("should return all registered tool names in registration order", () => {
-        const tool1 = createMockTool("tool1");
-        const tool2 = createMockTool("tool2");
-        const tool3 = createMockTool("tool3");
+    it("preserves registration order", () => {
+      registry.register(createMockTool("tool1"), true);
+      registry.register(createMockTool("tool2"));
+      registry.register(createMockTool("tool3"), true);
 
-        registry.register(tool1);
-        registry.register(tool2);
-        registry.register(tool3);
-
-        const names = registry.getToolNames();
-
-        expect(names).toEqual(["tool1", "tool2", "tool3"]);
-      });
-
-      it("should return empty array for empty registry", () => {
-        const names = registry.getToolNames();
-
-        expect(names).toEqual([]);
-      });
-
-      it("should return all tool names including disabled tools", () => {
-        const tool1 = createMockTool("tool1");
-        const tool2 = createMockTool("tool2");
-
-        registry.register(tool1);
-        registry.register(tool2);
-        registry.disable("tool2");
-
-        const names = registry.getToolNames();
-
-        expect(names).toEqual(["tool1", "tool2"]);
-      });
+      expect(registry.getToolNames()).toEqual(["tool1", "tool2", "tool3"]);
+      expect(
+        registry.getEnabledSchemas().map((s: ChatTool) => s.function.name),
+      ).toEqual(["tool1", "tool3"]);
     });
 
-    describe("hasTool", () => {
-      it("should return true for registered tool", () => {
-        const tool = createMockTool("test_tool");
-        registry.register(tool);
+    it("reports enabled state accurately", () => {
+      registry.register(createMockTool("test_tool"));
+      expect(registry.hasTool("test_tool")).toBe(true);
+      expect(registry.isToolEnabled("test_tool")).toBe(false);
 
-        expect(registry.hasTool("test_tool")).toBe(true);
-      });
-
-      it("should return false for unregistered tool", () => {
-        expect(registry.hasTool("nonexistent")).toBe(false);
-      });
-
-      it("should return true for registered but disabled tool", () => {
-        const tool = createMockTool("test_tool");
-        registry.register(tool);
-        registry.disable("test_tool");
-
-        expect(registry.hasTool("test_tool")).toBe(true);
-      });
-    });
-
-    describe("isToolEnabled", () => {
-      it("should return true for registered and enabled tool", () => {
-        const tool = createMockTool("test_tool");
-        registry.register(tool);
-
-        expect(registry.isToolEnabled("test_tool")).toBe(true);
-      });
-
-      it("should return false for registered but disabled tool", () => {
-        const tool = createMockTool("test_tool");
-        registry.register(tool);
-        registry.disable("test_tool");
-
-        expect(registry.isToolEnabled("test_tool")).toBe(false);
-      });
-
-      it("should return false for unregistered tool", () => {
-        expect(registry.isToolEnabled("nonexistent")).toBe(false);
-      });
-
-      it("should return true after re-enabling disabled tool", () => {
-        const tool = createMockTool("test_tool");
-        registry.register(tool);
-        registry.disable("test_tool");
-        registry.enable("test_tool");
-
-        expect(registry.isToolEnabled("test_tool")).toBe(true);
-      });
-    });
-  });
-
-  describe("multiple tools", () => {
-    it("should manage multiple tools independently", async () => {
-      const tool1 = createMockTool("tool1", "result1");
-      const tool2 = createMockTool("tool2", "result2");
-
-      registry.register(tool1);
-      registry.register(tool2);
-
-      expect(await registry.execute("tool1", {})).toBe("result1");
-      expect(await registry.execute("tool2", {})).toBe("result2");
-
-      registry.disable("tool1");
-
-      expect(await registry.execute("tool1", {})).toBe(
-        "Tool not available: tool1",
-      );
-      expect(await registry.execute("tool2", {})).toBe("result2");
+      registry.enable("test_tool");
+      expect(registry.isToolEnabled("test_tool")).toBe(true);
     });
   });
 });

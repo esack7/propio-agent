@@ -48,23 +48,23 @@ function buildPopulatedManager(): ContextManager {
   manager.commitAssistantResponse("Sure, reading now", [
     {
       id: "tc-1",
-      function: { name: "read_file", arguments: { path: "config.json" } },
+      function: { name: "read", arguments: { path: "config.json" } },
     },
   ]);
   manager.recordToolResults([
-    toolResult("tc-1", "read_file", '{"key": "value", "port": 3000}'),
+    toolResult("tc-1", "read", '{"key": "value", "port": 3000}'),
   ]);
   manager.commitAssistantResponse("The config has key=value and port=3000.");
 
   // Turn 2: completed with multiple tool calls
   manager.beginUserTurn("List the project files");
   manager.commitAssistantResponse("Listing...", [
-    { id: "tc-2", function: { name: "list_dir", arguments: { path: "." } } },
-    { id: "tc-3", function: { name: "list_dir", arguments: { path: "src" } } },
+    { id: "tc-2", function: { name: "ls", arguments: { path: "." } } },
+    { id: "tc-3", function: { name: "ls", arguments: { path: "src" } } },
   ]);
   manager.recordToolResults([
-    toolResult("tc-2", "list_dir", "package.json\nsrc/\ntsconfig.json"),
-    toolResult("tc-3", "list_dir", "index.ts\nagent.ts"),
+    toolResult("tc-2", "ls", "package.json\nsrc/\ntsconfig.json"),
+    toolResult("tc-3", "ls", "index.ts\nagent.ts"),
   ]);
   manager.commitAssistantResponse("Found 5 files across root and src.");
 
@@ -1159,7 +1159,7 @@ User: Hello there
 Assistant: Hi! How can I help you today?
 User: Can you read my package.json?
 Assistant: Sure, let me read that file for you.
-[Tool: read_file] Reading package.json...
+[Tool: read] Reading package.json...
 Result: { "name": "my-project", "version": "1.0.0" }
 Assistant: Your project is called my-project version 1.0.0.`;
 
@@ -1261,11 +1261,11 @@ Assistant: Your project is called my-project version 1.0.0.`;
       source.commitAssistantResponse("", [
         {
           id: "tc-1",
-          function: { name: "read_file", arguments: { path: "cfg" } },
+          function: { name: "read", arguments: { path: "cfg" } },
         },
       ]);
       source.recordToolResults([
-        toolResult("tc-1", "read_file", "config_data=true"),
+        toolResult("tc-1", "read", "config_data=true"),
       ]);
       source.commitAssistantResponse("Config loaded.");
 
