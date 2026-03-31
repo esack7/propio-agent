@@ -19,13 +19,15 @@ export class ToolRegistry {
   private enabledTools: Set<string> = new Set();
 
   /**
-   * Register a tool and enable it by default.
+   * Register a tool and optionally enable it by default.
    *
    * @param tool - The ExecutableTool to register
    */
-  register(tool: ExecutableTool): void {
+  register(tool: ExecutableTool, enabledByDefault = false): void {
     this.tools.set(tool.name, tool);
-    this.enabledTools.add(tool.name);
+    if (enabledByDefault) {
+      this.enabledTools.add(tool.name);
+    }
   }
 
   /**

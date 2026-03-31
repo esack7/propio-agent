@@ -230,13 +230,13 @@ describe("serializeTurnForSummary", () => {
       userMessage: "Read the file",
       entries: [
         makeAssistantEntry(""),
-        makeToolEntry("read_file", "Contents of foo.txt: hello world"),
+        makeToolEntry("read", "Contents of foo.txt: hello world"),
         makeAssistantEntry("The file contains hello world"),
       ],
     });
 
     const text = serializeTurnForSummary(turn);
-    expect(text).toContain("[read_file success]: Contents of foo.txt");
+    expect(text).toContain("[read success]: Contents of foo.txt");
     expect(text).not.toContain("artifactId");
   });
 
@@ -477,7 +477,7 @@ describe("SummaryManager", () => {
       userMessage: "Read file",
       entries: [
         makeAssistantEntry(""),
-        makeToolEntry("read_file", "short summary of file contents"),
+        makeToolEntry("read", "short summary of file contents"),
         makeAssistantEntry("Done"),
       ],
     });

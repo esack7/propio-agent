@@ -89,7 +89,7 @@ describe("TerminalUi", () => {
     const succeed = jest.fn();
     (ui as any).spinner = { succeed };
 
-    ui.success("list_dir completed");
+    ui.success("ls completed");
 
     expect(succeed).toHaveBeenCalledTimes(1);
     expect(succeed.mock.calls[0][0]).not.toContain("✔");
@@ -105,7 +105,7 @@ describe("TerminalUi", () => {
     const fail = jest.fn();
     (ui as any).spinner = { fail };
 
-    ui.error("list_dir failed");
+    ui.error("ls failed");
 
     expect(fail).toHaveBeenCalledTimes(1);
     expect(fail.mock.calls[0][0]).not.toContain("✖");

@@ -396,22 +396,23 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(Array.isArray(toolNames)).toBe(true);
       expect(toolNames.length).toBeGreaterThan(0);
       // Should contain known built-in tools
-      expect(toolNames).toContain("read_file");
-      expect(toolNames).toContain("write_file");
+      expect(toolNames).toContain("read");
+      expect(toolNames).toContain("write");
     });
 
     it("should return true for enabled tools via isToolEnabled()", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
-      // read_file is enabled by default
-      expect(agent.isToolEnabled("read_file")).toBe(true);
-      expect(agent.isToolEnabled("write_file")).toBe(true);
+      // read and write are enabled by default
+      expect(agent.isToolEnabled("read")).toBe(true);
+      expect(agent.isToolEnabled("write")).toBe(true);
     });
 
     it("should return false for disabled tools via isToolEnabled()", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
-      // run_bash and remove are disabled by default
-      expect(agent.isToolEnabled("run_bash")).toBe(false);
-      expect(agent.isToolEnabled("remove")).toBe(false);
+      // grep/find/ls are disabled by default
+      expect(agent.isToolEnabled("grep")).toBe(false);
+      expect(agent.isToolEnabled("find")).toBe(false);
+      expect(agent.isToolEnabled("ls")).toBe(false);
     });
 
     it("should return false for nonexistent tools via isToolEnabled()", () => {
@@ -423,16 +424,16 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
 
       // Enable a disabled tool
-      agent.enableTool("run_bash");
-      expect(agent.isToolEnabled("run_bash")).toBe(true);
+      agent.enableTool("bash");
+      expect(agent.isToolEnabled("bash")).toBe(true);
 
       // Disable an enabled tool
-      agent.disableTool("read_file");
-      expect(agent.isToolEnabled("read_file")).toBe(false);
+      agent.disableTool("read");
+      expect(agent.isToolEnabled("read")).toBe(false);
 
       // Re-enable
-      agent.enableTool("read_file");
-      expect(agent.isToolEnabled("read_file")).toBe(true);
+      agent.enableTool("read");
+      expect(agent.isToolEnabled("read")).toBe(true);
     });
   });
 
@@ -466,8 +467,8 @@ describe("Agent with Multi-Provider Configuration", () => {
               {
                 id: "call-1",
                 function: {
-                  name: "list_dir",
-                  arguments: { path: "." },
+                  name: "read",
+                  arguments: { path: "package.json" },
                 },
               },
             ],
@@ -489,7 +490,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       await agent.streamChat("Test", onToken, { onToolStart });
 
-      expect(onToolStart).toHaveBeenCalledWith("list_dir");
+      expect(onToolStart).toHaveBeenCalledWith("read");
       expect(onToolStart).toHaveBeenCalledTimes(1);
     });
 
@@ -505,7 +506,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       expect(onToolEnd).toHaveBeenCalled();
       expect(onToolEnd).toHaveBeenCalledWith(
-        "list_dir",
+        "read",
         expect.any(String),
         "success",
       );
@@ -526,10 +527,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         onToolEnd,
       });
 
-      expect(onToolStart).toHaveBeenCalledWith("list_dir");
+      expect(onToolStart).toHaveBeenCalledWith("read");
       expect(onToolStart).toHaveBeenCalledTimes(1);
       expect(onToolEnd).toHaveBeenCalledWith(
-        "list_dir",
+        "read",
         expect.any(String),
         "success",
       );
@@ -729,10 +730,35 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should pass 'tool_disabled' status in onToolEnd when tool is disabled", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
+      class DisabledToolProvider extends MockProviderWithToolCalls {
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          this.callCount++;
+
+          if (this.callCount === 1) {
+            yield { delta: "Testing disabled tool" };
+            yield {
+              delta: "",
+              toolCalls: [
+                {
+                  id: "call-1",
+                  function: {
+                    name: "grep",
+                    arguments: { path: ".", pattern: "needle" },
+                  },
+                },
+              ],
+            };
+          } else {
+            yield { delta: "Done" };
+          }
+        }
+      }
+
+      const mockProvider = new DisabledToolProvider();
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = mockProvider;
-      agent.disableTool("list_dir");
+      agent.disableTool("grep");
 
       const onToolEnd = jest.fn();
       const onToken = jest.fn();
@@ -741,7 +767,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       expect(onToolEnd).toHaveBeenCalledTimes(1);
       expect(onToolEnd).toHaveBeenCalledWith(
-        "list_dir",
+        "grep",
         expect.stringContaining("not available"),
         "tool_disabled",
       );
@@ -1223,7 +1249,10 @@ describe("Agent with Multi-Provider Configuration", () => {
               toolCalls: [
                 {
                   id: "c1",
-                  function: { name: "list_dir", arguments: { path: "." } },
+                  function: {
+                    name: "read",
+                    arguments: { path: "package.json" },
+                  },
                 },
               ],
             };
@@ -1392,8 +1421,8 @@ describe("Agent with Multi-Provider Configuration", () => {
                 {
                   id: "tool-1",
                   function: {
-                    name: "list_directory",
-                    arguments: {},
+                    name: "read",
+                    arguments: { path: "package.json" },
                   },
                 },
               ],
@@ -1932,7 +1961,10 @@ describe("Agent with Multi-Provider Configuration", () => {
               toolCalls: [
                 {
                   id: `tc-${callCount}`,
-                  function: { name: "list_directory", arguments: {} },
+                  function: {
+                    name: "read",
+                    arguments: { path: "package.json" },
+                  },
                 },
               ],
             };
@@ -2011,7 +2043,10 @@ describe("Agent with Multi-Provider Configuration", () => {
               toolCalls: [
                 {
                   id: "tc-1",
-                  function: { name: "list_directory", arguments: {} },
+                  function: {
+                    name: "read",
+                    arguments: { path: "package.json" },
+                  },
                 },
               ],
             };
@@ -2047,9 +2082,11 @@ describe("Agent with Multi-Provider Configuration", () => {
       name = "ui-path-mock";
       private callCount = 0;
       readonly toolName: string;
+      readonly toolArguments: Record<string, unknown>;
 
-      constructor(toolName: string) {
+      constructor(toolName: string, toolArguments: Record<string, unknown>) {
         this.toolName = toolName;
+        this.toolArguments = toolArguments;
       }
 
       getCapabilities() {
@@ -2064,7 +2101,10 @@ describe("Agent with Multi-Provider Configuration", () => {
             toolCalls: [
               {
                 id: "tc-1",
-                function: { name: this.toolName, arguments: { path: "." } },
+                function: {
+                  name: this.toolName,
+                  arguments: this.toolArguments,
+                },
               },
             ],
           };
@@ -2097,25 +2137,30 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should render success for a working tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = new SingleToolCallProvider("list_dir");
+      (agent as any).provider = new SingleToolCallProvider("read", {
+        path: "package.json",
+      });
 
       const { renders } = await runWithLegacyCallbacks(agent, "list files");
 
       expect(renders).toHaveLength(1);
       expect(renders[0].type).toBe("success");
-      expect(renders[0].text).toContain("list_dir");
+      expect(renders[0].text).toContain("read");
     });
 
     it("should render failure for a disabled tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
-      agent.disableTool("list_dir");
-      (agent as any).provider = new SingleToolCallProvider("list_dir");
+      agent.disableTool("grep");
+      (agent as any).provider = new SingleToolCallProvider("grep", {
+        path: ".",
+        pattern: "needle",
+      });
 
       const { renders } = await runWithLegacyCallbacks(agent, "list files");
 
       expect(renders).toHaveLength(1);
       expect(renders[0].type).toBe("error");
-      expect(renders[0].text).toContain("list_dir");
+      expect(renders[0].text).toContain("grep");
     });
 
     it("should render failure for a missing tool", async () => {

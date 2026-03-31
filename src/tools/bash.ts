@@ -2,43 +2,22 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { ExecutableTool } from "./interface.js";
 import { ChatTool } from "../providers/types.js";
+import { truncateText } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * RunBashTool executes shell commands and returns structured output.
- *
- * SECURITY WARNING: This tool can execute arbitrary commands with full access
- * to the system (subject to the agent's user permissions). It is disabled by
- * default and must be explicitly enabled via registry.enable("run_bash").
- *
- * Security Considerations:
- * - Uses /bin/sh -c which can be vulnerable to command injection if LLM outputs
- *   are not carefully managed
- * - Commands execute with the permissions of the agent process
- * - In sandbox mode, commands are restricted to the mounted /workspace directory
- * - Consider using in conjunction with Docker sandbox for isolation
- *
- * Best Practices:
- * - Only enable in trusted environments or with proper sandboxing
- * - Review LLM prompts to avoid inadvertent command execution
- * - Use read-only mounts for sensitive directories when using Docker
- * - Monitor command execution logs for unexpected behavior
- *
- * To enable: registry.enable("run_bash")
- */
-export class RunBashTool implements ExecutableTool {
-  readonly name = "run_bash";
-  private readonly DEFAULT_TIMEOUT = 30000; // 30 seconds
-  private readonly MAX_OUTPUT_SIZE = 50 * 1024; // 50KB
+export class BashTool implements ExecutableTool {
+  readonly name = "bash";
+  private readonly DEFAULT_TIMEOUT = 30000;
+  private readonly MAX_OUTPUT_SIZE = 50 * 1024;
 
   getSchema(): ChatTool {
     return {
       type: "function",
       function: {
-        name: "run_bash",
+        name: "bash",
         description:
-          "Executes a shell command and returns its output. WARNING: This tool can execute arbitrary commands. Disabled by default and must be explicitly enabled.",
+          "Executes a shell command and returns structured stdout, stderr, and exit code output.",
         parameters: {
           type: "object",
           properties: {
@@ -78,8 +57,6 @@ export class RunBashTool implements ExecutableTool {
       args.timeout !== undefined
         ? (args.timeout as number)
         : this.DEFAULT_TIMEOUT;
-
-    // Merge environment variables
     const env = { ...process.env, ...envOverrides };
 
     try {
@@ -90,27 +67,23 @@ export class RunBashTool implements ExecutableTool {
           cwd,
           env,
           timeout,
-          maxBuffer: this.MAX_OUTPUT_SIZE * 2, // Allow some headroom before internal truncation
+          maxBuffer: this.MAX_OUTPUT_SIZE * 2,
         },
       );
 
-      // Truncate outputs if needed
-      const truncatedStdout = this.truncateOutput(stdout);
-      const truncatedStderr = this.truncateOutput(stderr);
+      const truncatedStdout = truncateText(stdout, this.MAX_OUTPUT_SIZE);
+      const truncatedStderr = truncateText(stderr, this.MAX_OUTPUT_SIZE);
 
       return JSON.stringify(
         {
           stdout: truncatedStdout.value,
-          stderr:
-            truncatedStderr.value +
-            (truncatedStderr.truncated ? "\n[stderr truncated]" : ""),
+          stderr: truncatedStderr.value,
           exit_code: 0,
         },
         null,
         2,
       );
     } catch (error: unknown) {
-      // Handle timeout and non-zero exit codes
       if (error && typeof error === "object") {
         const execError = error as {
           killed?: boolean;
@@ -119,36 +92,19 @@ export class RunBashTool implements ExecutableTool {
           stderr?: string;
         };
 
-        let exitCode = -1;
-        let stderr = "";
-        let stdout = "";
+        const exitCode = execError.killed ? -1 : (execError.code ?? -1);
+        const stdout = execError.stdout ?? "";
+        const stderr = execError.killed
+          ? "Command timed out and was killed"
+          : (execError.stderr ?? "");
 
-        if (execError.killed) {
-          // Timeout case
-          stderr = "Command timed out and was killed";
-          exitCode = -1;
-        } else if (execError.code !== undefined) {
-          // Non-zero exit code
-          exitCode = execError.code;
-        }
-
-        // Capture any output that was produced before error
-        stdout = execError.stdout !== undefined ? execError.stdout : "";
-        stderr =
-          stderr || (execError.stderr !== undefined ? execError.stderr : "");
-
-        // Truncate outputs
-        const truncatedStdout = this.truncateOutput(stdout);
-        const truncatedStderr = this.truncateOutput(stderr);
+        const truncatedStdout = truncateText(stdout, this.MAX_OUTPUT_SIZE);
+        const truncatedStderr = truncateText(stderr, this.MAX_OUTPUT_SIZE);
 
         return JSON.stringify(
           {
-            stdout:
-              truncatedStdout.value +
-              (truncatedStdout.truncated ? "\n[stdout truncated]" : ""),
-            stderr:
-              truncatedStderr.value +
-              (truncatedStderr.truncated ? "\n[stderr truncated]" : ""),
+            stdout: truncatedStdout.value,
+            stderr: truncatedStderr.value,
             exit_code: exitCode,
           },
           null,
@@ -156,22 +112,7 @@ export class RunBashTool implements ExecutableTool {
         );
       }
 
-      // Unexpected error type
       throw new Error(`Unexpected error executing command: ${String(error)}`);
     }
-  }
-
-  private truncateOutput(output: string): {
-    value: string;
-    truncated: boolean;
-  } {
-    if (output.length <= this.MAX_OUTPUT_SIZE) {
-      return { value: output, truncated: false };
-    }
-
-    return {
-      value: output.substring(0, this.MAX_OUTPUT_SIZE),
-      truncated: true,
-    };
   }
 }

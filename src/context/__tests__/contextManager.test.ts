@@ -83,7 +83,7 @@ describe("ContextManager", () => {
         {
           id: "tc-1",
           function: {
-            name: "write_file",
+            name: "write",
             arguments: {
               path: "/tmp/f.txt",
               options: { recursive: true, metadata: { owner: "alice" } },
@@ -126,7 +126,7 @@ describe("ContextManager", () => {
       const toolCalls = [
         {
           id: "tc-1",
-          function: { name: "read_file", arguments: { path: "foo.txt" } },
+          function: { name: "read", arguments: { path: "foo.txt" } },
         },
       ];
       manager.commitAssistantResponse("Sure", toolCalls);
@@ -140,13 +140,13 @@ describe("ContextManager", () => {
     it("should append a tool message with batched results", () => {
       manager.beginUserTurn("Do something");
       manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "read_file", arguments: {} } },
-        { id: "tc-2", function: { name: "write_file", arguments: {} } },
+        { id: "tc-1", function: { name: "read", arguments: {} } },
+        { id: "tc-2", function: { name: "write", arguments: {} } },
       ]);
 
       manager.recordToolResults([
-        toolResult("tc-1", "read_file", "file content"),
-        toolResult("tc-2", "write_file", "ok"),
+        toolResult("tc-1", "read", "file content"),
+        toolResult("tc-2", "write", "ok"),
       ]);
 
       const snapshot = manager.getSnapshot();
@@ -889,9 +889,9 @@ describe("ContextManager", () => {
     it("should attach toolInvocations to tool entries", () => {
       manager.beginUserTurn("Task");
       manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "read_file", arguments: {} } },
+        { id: "tc-1", function: { name: "read", arguments: {} } },
       ]);
-      manager.recordToolResults([toolResult("tc-1", "read_file", "file data")]);
+      manager.recordToolResults([toolResult("tc-1", "read", "file data")]);
 
       const state = manager.getConversationState();
       const toolEntry = state.turns[0].entries[1];
@@ -899,7 +899,7 @@ describe("ContextManager", () => {
       if (toolEntry.kind === "tool") {
         expect(toolEntry.toolInvocations).toHaveLength(1);
         expect(toolEntry.toolInvocations[0].toolCallId).toBe("tc-1");
-        expect(toolEntry.toolInvocations[0].toolName).toBe("read_file");
+        expect(toolEntry.toolInvocations[0].toolName).toBe("read");
         expect(toolEntry.toolInvocations[0].status).toBe("success");
         expect(toolEntry.toolInvocations[0].artifactId).toBeDefined();
         expect(toolEntry.toolInvocations[0].mediaType).toBe("text/plain");
@@ -909,10 +909,10 @@ describe("ContextManager", () => {
     it("should record error status in tool invocations", () => {
       manager.beginUserTurn("Task");
       manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "read_file", arguments: {} } },
+        { id: "tc-1", function: { name: "read", arguments: {} } },
       ]);
       manager.recordToolResults([
-        toolResult("tc-1", "read_file", "Error: file not found", "error"),
+        toolResult("tc-1", "read", "Error: file not found", "error"),
       ]);
 
       const state = manager.getConversationState();
@@ -1145,19 +1145,17 @@ describe("ContextManager", () => {
 
       // Iteration 1: assistant calls a tool, results come back
       manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "read_file", arguments: {} } },
+        { id: "tc-1", function: { name: "read", arguments: {} } },
       ]);
       manager.recordToolResults([
-        toolResult("tc-1", "read_file", iterationOneResult),
+        toolResult("tc-1", "read", iterationOneResult),
       ]);
 
       // Iteration 2: assistant calls another tool (model already saw iteration 1 results)
       manager.commitAssistantResponse("", [
-        { id: "tc-2", function: { name: "list_dir", arguments: {} } },
+        { id: "tc-2", function: { name: "ls", arguments: { path: "." } } },
       ]);
-      manager.recordToolResults([
-        toolResult("tc-2", "list_dir", iterationTwoResult),
-      ]);
+      manager.recordToolResults([toolResult("tc-2", "ls", iterationTwoResult)]);
 
       const plan = manager.buildPromptPlan("system");
       const toolMsgs = plan.messages.filter(

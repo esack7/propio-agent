@@ -293,26 +293,25 @@ The agent has a built-in tool registry and an agentic loop: it calls tools, proc
 
 ### Built-in tools
 
-| Tool           | Category   | Default  | Description                          |
-| -------------- | ---------- | -------- | ------------------------------------ |
-| `read_file`    | Filesystem | enabled  | Read file contents                   |
-| `write_file`   | Filesystem | enabled  | Write content to a file              |
-| `list_dir`     | Filesystem | enabled  | List directory contents              |
-| `mkdir`        | Filesystem | enabled  | Create directories (recursive)       |
-| `move`         | Filesystem | enabled  | Move or rename files and directories |
-| `remove`       | Filesystem | disabled | Delete files or directories ⚠️       |
-| `search_text`  | Search     | enabled  | Search for regex patterns in files   |
-| `search_files` | Search     | enabled  | Find files by glob pattern           |
-| `run_bash`     | Execution  | disabled | Execute shell commands ⚠️            |
+| Tool    | Category   | Default  | Description                     |
+| ------- | ---------- | -------- | ------------------------------- |
+| `read`  | Filesystem | enabled  | Read file contents              |
+| `write` | Filesystem | enabled  | Write content to a file         |
+| `edit`  | Filesystem | enabled  | Replace exact strings in a file |
+| `bash`  | Execution  | enabled  | Execute shell commands ⚠️       |
+| `grep`  | Search     | disabled | Search file contents            |
+| `find`  | Search     | disabled | Find files by glob pattern      |
+| `ls`    | Filesystem | disabled | List directory contents         |
 
-`remove` and `run_bash` are **disabled by default** because they are destructive or execute arbitrary code. Enable them at runtime with `/tools`, or programmatically:
+`grep`, `find`, and `ls` are **disabled by default**. `bash` is enabled by default because it is part of the core tool surface, but it can execute arbitrary commands, so use it carefully. Enable or disable tools at runtime with `/tools`, or programmatically:
 
 ```typescript
-agent.enableTool("remove");
-agent.enableTool("run_bash");
+agent.enableTool("grep");
+agent.enableTool("find");
+agent.enableTool("ls");
 ```
 
-All filesystem tools validate paths to prevent traversal outside the working directory.
+The filesystem tools validate paths by rejecting malformed input and resolving relative paths from the current working directory. To confine filesystem access to the workspace, run the agent in sandbox mode.
 
 ---
 
@@ -442,8 +441,8 @@ The sandbox runs the agent in Docker with filesystem isolation:
 **Symptom:**
 
 ```
-<function=search_text>
-<parameter=query>some query</parameter>
+<function=grep>
+<parameter=pattern>some query</parameter>
 ```
 
 **Fix:** Switch to a model with better tool calling support:

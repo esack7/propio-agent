@@ -1121,7 +1121,7 @@ export class Agent {
   }
 
   addTool(tool: ExecutableTool): void {
-    this.toolRegistry.register(tool);
+    this.toolRegistry.register(tool, true);
   }
 
   removeTool(name: string): void {
