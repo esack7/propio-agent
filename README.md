@@ -1,6 +1,6 @@
-# propio
+# propio-agent
 
-A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation.
+A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `propio-agent`, then run the `propio` command.
 
 ## Table of Contents
 
@@ -29,16 +29,16 @@ A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedr
 
 ### Install
 
-Install the published CLI:
+Install the published CLI package:
 
 ```bash
-npm install -g propio
+npm install -g propio-agent
 ```
 
 Or run it ad hoc with npm:
 
 ```bash
-npx propio --help
+npx propio-agent --help
 ```
 
 For local development in this repository:
@@ -47,7 +47,7 @@ For local development in this repository:
 npm install
 ```
 
-Run `propio` from the directory you want to use as the workspace root; it reads provider settings from `~/.propio/providers.json`.
+Run `npm start` from the directory you want to use as the workspace root. After a global install, run the `propio` command from any directory; it reads provider settings from `~/.propio/providers.json`.
 
 ### Configure providers
 
