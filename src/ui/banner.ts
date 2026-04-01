@@ -1,6 +1,6 @@
 import type { TerminalUi } from "./terminal.js";
 
-/** Unicode block-letter "PROPIO" with "A G E N T" below. */
+/** Unicode block-letter "PROPIO" banner. */
 export const STARTUP_BANNER = `
 ██████╗ ██████╗  ██████╗ ██████╗ ██╗ ██████╗
 ██╔══██╗██╔══██╗██╔═══██╗██╔══██╗██║██╔═══██╗
@@ -13,7 +13,7 @@ export const STARTUP_BANNER = `
 `.trim();
 
 /**
- * Writes the Propio Agent startup banner.
+ * Writes the Propio startup banner.
  * Use once at CLI launch, after sandbox delegation when not delegating.
  */
 export function printStartupBanner(ui: Pick<TerminalUi, "info">): void {

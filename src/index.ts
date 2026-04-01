@@ -1,8 +1,13 @@
+#!/usr/bin/env node
 import * as fs from "fs";
 import * as path from "path";
 import * as readline from "readline";
 import { fileURLToPath } from "url";
-import { Agent, AgentVisibilityEvent, PromptPlanSnapshot } from "./agent.js";
+import type {
+  Agent as AgentType,
+  AgentVisibilityEvent,
+  PromptPlanSnapshot,
+} from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
@@ -10,7 +15,6 @@ import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { printStartupBanner } from "./ui/banner.js";
-import { TerminalUi } from "./ui/terminal.js";
 import { AgentDiagnosticEvent } from "./diagnostics.js";
 import {
   formatContextOverview,
@@ -28,6 +32,7 @@ import {
   handleSessionCommand as handleSessionCmd,
   hasSessionContent,
 } from "./sessions/sessionCommands.js";
+import type { TerminalUi } from "./ui/terminal.js";
 
 type AppMode =
   | "idle"
@@ -44,7 +49,7 @@ interface VisibilityOptions {
   showPromptPlan: boolean;
 }
 
-const HELP_TEXT = `Usage: propio-agent [options]
+const HELP_TEXT = `Usage: propio [options]
 
 Options:
   --sandbox           Run inside the Docker sandbox wrapper
@@ -212,7 +217,7 @@ function renderStyledLines(
 }
 
 async function streamAssistantResponse(
-  agent: Agent,
+  agent: AgentType,
   userInput: string,
   ui: TerminalUi,
   abortSignal: AbortSignal,
@@ -329,7 +334,7 @@ async function streamAssistantResponse(
 }
 
 async function runNonInteractiveSession(
-  agent: Agent,
+  agent: AgentType,
   ui: TerminalUi,
   setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
@@ -391,13 +396,13 @@ async function runNonInteractiveSession(
   }
 }
 
-function saveSessionSnapshot(agent: Agent, ui: TerminalUi): void {
+function saveSessionSnapshot(agent: AgentType, ui: TerminalUi): void {
   saveSessionOnExit(agent, getDefaultSessionsDir(), ui);
 }
 
 async function handleSessionCommand(
   input: string,
-  agent: Agent,
+  agent: AgentType,
   rl: readline.Interface,
   ui: TerminalUi,
 ): Promise<void> {
@@ -414,7 +419,7 @@ async function handleSessionCommand(
 }
 
 async function runInteractiveSession(
-  agent: Agent,
+  agent: AgentType,
   ui: TerminalUi,
   setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
@@ -568,6 +573,18 @@ async function main(): Promise<number> {
     return sandboxExitCode;
   }
 
+  if (parsedArgs.flags.help) {
+    process.stdout.write(`${HELP_TEXT.trimEnd()}\n`);
+    return 0;
+  }
+
+  if (parsedArgs.parseErrors.length > 0) {
+    for (const error of parsedArgs.parseErrors) {
+      process.stderr.write(`${error}\n`);
+    }
+    return 1;
+  }
+
   const ci = isCiEnvironment();
   const interactive =
     Boolean(process.stdin.isTTY) &&
@@ -592,25 +609,12 @@ async function main(): Promise<number> {
 
   setColorEnabled(colorEnabled);
 
+  const { TerminalUi } = await import("./ui/terminal.js");
   const ui = new TerminalUi({
     interactive,
-    plain: plain || parsedArgs.flags.help,
+    plain,
     json: jsonMode,
   });
-
-  if (parsedArgs.flags.help) {
-    ui.command(HELP_TEXT.trimEnd());
-    ui.cleanup();
-    return 0;
-  }
-
-  if (parsedArgs.parseErrors.length > 0) {
-    for (const error of parsedArgs.parseErrors) {
-      ui.error(error);
-    }
-    ui.cleanup();
-    return 1;
-  }
 
   let mode: AppMode = "idle";
   const setMode = (nextMode: AppMode) => {
@@ -653,6 +657,7 @@ async function main(): Promise<number> {
       ui.command("");
     }
 
+    const { Agent: AgentCtor } = await import("./agent.js");
     const configPath = getConfigPath();
     const agentsMdFiles = discoverAgentsMdFiles();
     const agentsMdContent = loadAgentsMdContent(agentsMdFiles);
@@ -663,7 +668,7 @@ When you need to perform actions like reading files, searching code, or executin
 
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
-    const agent = new Agent({
+    const agent = new AgentCtor({
       providersConfig: configPath,
       systemPrompt: defaultSystemPrompt,
       agentsMdContent,

@@ -1,4 +1,4 @@
-# propio-agent
+# propio
 
 A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation.
 
@@ -27,13 +27,29 @@ A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedr
 
 ## Setup
 
-### 1. Install dependencies
+### Install
+
+Install the published CLI:
+
+```bash
+npm install -g propio
+```
+
+Or run it ad hoc with npm:
+
+```bash
+npx propio --help
+```
+
+For local development in this repository:
 
 ```bash
 npm install
 ```
 
-### 2. Configure providers
+Run `propio` from the directory you want to use as the workspace root; it reads provider settings from `~/.propio/providers.json`.
+
+### Configure providers
 
 Create the config directory and provider file:
 
@@ -80,15 +96,14 @@ Runs the agent inside Docker, restricting filesystem access to the current worki
 # From the agent project directory
 bin/propio-sandbox
 
-# Or via npm start
-npm start -- --sandbox
-node dist/index.js --sandbox
+# Or, after a global install, via the installed command
+propio --sandbox
 ```
 
 For system-wide access from any directory, create a symlink:
 
 ```bash
-ln -s /path/to/propio-agent/bin/propio-sandbox ~/bin/propio-sandbox
+ln -s /path/to/propio/bin/propio-sandbox ~/bin/propio-sandbox
 ```
 
 Rebuild the Docker image after code changes:
@@ -259,13 +274,13 @@ Start the agent and type messages at the prompt. Session context is maintained a
 
 ```bash
 # One-shot non-interactive
-echo "Summarize this repository." | npm start -- --no-interactive
+echo "Summarize this repository." | propio --no-interactive
 
 # Machine-readable JSON output
-echo "List top-level files." | npm start -- --json
+echo "List top-level files." | propio --json
 
 # Persist diagnostics
-npm start -- --debug-llm-file /tmp/propio-debug.log
+propio --debug-llm-file /tmp/propio-debug.log
 ```
 
 ### Session commands
@@ -318,7 +333,7 @@ The filesystem tools validate paths by rejecting malformed input and resolving r
 ## Project Structure
 
 ```
-propio-agent/
+propio/
 ├── bin/
 │   └── propio-sandbox          # Shell wrapper for Docker sandbox mode
 ├── src/
