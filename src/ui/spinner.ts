@@ -1,4 +1,4 @@
-import ora from "ora";
+import yoctoSpinner, { type Spinner } from "yocto-spinner";
 
 interface OperationSpinnerOptions {
   enabled?: boolean;
@@ -9,9 +9,10 @@ interface OperationSpinnerOptions {
 }
 
 export class OperationSpinner {
-  private spinner: ReturnType<typeof ora>;
+  private spinner: Spinner;
   private baseText: string;
   private phase: string | null;
+  private readonly enabled: boolean;
   private readonly showElapsed: boolean;
   private readonly elapsedUpdateIntervalMs: number;
   private startedAtMs: number | null = null;
@@ -20,16 +21,20 @@ export class OperationSpinner {
   constructor(text: string, options: OperationSpinnerOptions = {}) {
     this.baseText = text;
     this.phase = options.phase ?? null;
+    this.enabled = options.enabled ?? true;
     this.showElapsed = options.showElapsed ?? true;
     this.elapsedUpdateIntervalMs = options.elapsedUpdateIntervalMs ?? 1000;
-    this.spinner = ora({
+    this.spinner = yoctoSpinner({
       text: this.composeText(),
       stream: options.stream ?? process.stderr,
-      isEnabled: options.enabled,
     });
   }
 
   start(): void {
+    if (!this.enabled) {
+      return;
+    }
+
     this.startedAtMs = Date.now();
     this.refreshText();
     this.startElapsedTicker();
@@ -48,16 +53,28 @@ export class OperationSpinner {
 
   succeed(message: string): void {
     this.stopElapsedTicker();
-    this.spinner.succeed(message);
+    if (!this.enabled) {
+      return;
+    }
+
+    this.spinner.success(message);
   }
 
   fail(message: string): void {
     this.stopElapsedTicker();
-    this.spinner.fail(message);
+    if (!this.enabled) {
+      return;
+    }
+
+    this.spinner.error(message);
   }
 
   stop(): void {
     this.stopElapsedTicker();
+    if (!this.enabled) {
+      return;
+    }
+
     this.spinner.stop();
   }
 
@@ -81,6 +98,10 @@ export class OperationSpinner {
   }
 
   private refreshText(): void {
+    if (!this.enabled) {
+      return;
+    }
+
     this.spinner.text = this.composeText();
   }
 

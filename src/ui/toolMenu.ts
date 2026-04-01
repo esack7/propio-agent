@@ -1,5 +1,5 @@
 import * as readline from "readline";
-import { Agent } from "../agent.js";
+import type { Agent } from "../agent.js";
 import type { TerminalUi } from "./terminal.js";
 
 /**

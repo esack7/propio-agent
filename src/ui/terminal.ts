@@ -168,7 +168,7 @@ export class TerminalUi {
     }
 
     if (this.spinner) {
-      // ora.succeed() already renders a success symbol, so only apply color here.
+      // Spinner success output already renders a symbol, so only apply color here.
       const spinnerFormatted = this.applyStyle(text, colorSuccess);
       this.spinner.succeed(spinnerFormatted);
       this.spinner = null;
@@ -181,7 +181,7 @@ export class TerminalUi {
 
   error(text: string): void {
     if (this.spinner) {
-      // ora.fail() already renders an error symbol, so only apply color here.
+      // Spinner error output already renders a symbol, so only apply color here.
       const spinnerFormatted = this.applyStyle(text, colorError);
       this.spinner.fail(spinnerFormatted);
       this.spinner = null;
