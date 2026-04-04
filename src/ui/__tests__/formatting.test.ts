@@ -27,6 +27,36 @@ describe("formatting module", () => {
       expect(typeof formattingModule.formatAssistantMessage).toBe("function");
     });
 
+    it("should export formatInputPrompt function", () => {
+      expect(formattingModule.formatInputPrompt).toBeDefined();
+      expect(typeof formattingModule.formatInputPrompt).toBe("function");
+    });
+
+    it("should export formatAssistantPrefix function", () => {
+      expect(formattingModule.formatAssistantPrefix).toBeDefined();
+      expect(typeof formattingModule.formatAssistantPrefix).toBe("function");
+    });
+
+    it("should export formatAssistantGutter function", () => {
+      expect(formattingModule.formatAssistantGutter).toBeDefined();
+      expect(typeof formattingModule.formatAssistantGutter).toBe("function");
+    });
+
+    it("should export formatInputBorder function", () => {
+      expect(formattingModule.formatInputBorder).toBeDefined();
+      expect(typeof formattingModule.formatInputBorder).toBe("function");
+    });
+
+    it("should export formatInputFill function", () => {
+      expect(formattingModule.formatInputFill).toBeDefined();
+      expect(typeof formattingModule.formatInputFill).toBe("function");
+    });
+
+    it("should export formatInputPlaceholder function", () => {
+      expect(formattingModule.formatInputPlaceholder).toBeDefined();
+      expect(typeof formattingModule.formatInputPlaceholder).toBe("function");
+    });
+
     it("should export formatToolExecution function", () => {
       expect(formattingModule.formatToolExecution).toBeDefined();
       expect(typeof formattingModule.formatToolExecution).toBe("function");
@@ -108,6 +138,60 @@ describe("formatting module", () => {
       const result = formattingModule.formatAssistantMessage(text);
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
+    });
+  });
+
+  describe("formatInputPrompt", () => {
+    it("should return styled text with inputPrompt color", () => {
+      const text = "prompt";
+      const result = formattingModule.formatInputPrompt(text);
+      const expected = colorsModule.inputPrompt(text);
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe("formatAssistantPrefix", () => {
+    it("should return styled text with assistantPrefix color", () => {
+      const text = "Assistant: ";
+      const result = formattingModule.formatAssistantPrefix(text);
+      const expected = colorsModule.assistantPrefix(text);
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe("formatAssistantGutter", () => {
+    it("should return styled text with assistantGutter color", () => {
+      const text = "│ ";
+      const result = formattingModule.formatAssistantGutter(text);
+      const expected = colorsModule.assistantGutter(text);
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe("formatInputBorder", () => {
+    it("should return styled text with inputBorder color", () => {
+      const text = "border";
+      const result = formattingModule.formatInputBorder(text);
+      const expected = colorsModule.inputBorder(text);
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe("formatInputFill", () => {
+    it("should return styled text with inputFill background", () => {
+      const text = "fill";
+      const result = formattingModule.formatInputFill(text);
+      const expected = colorsModule.inputFill(text);
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe("formatInputPlaceholder", () => {
+    it("should return styled text with inputPlaceholder color", () => {
+      const text = "placeholder";
+      const result = formattingModule.formatInputPlaceholder(text);
+      const expected = colorsModule.inputPlaceholder(text);
+      expect(result).toBe(expected);
     });
   });
 
@@ -337,6 +421,12 @@ describe("formatting module", () => {
       const colorOnlyFunctions = [
         formattingModule.formatUserMessage,
         formattingModule.formatAssistantMessage,
+        formattingModule.formatInputPrompt,
+        formattingModule.formatAssistantPrefix,
+        formattingModule.formatAssistantGutter,
+        formattingModule.formatInputBorder,
+        formattingModule.formatInputFill,
+        formattingModule.formatInputPlaceholder,
         formattingModule.formatCommand,
         formattingModule.formatInfo,
         formattingModule.formatSubtle,
@@ -414,6 +504,24 @@ describe("formatting module", () => {
       );
       expect(formattingModule.formatAssistantMessage(text)).toBe(
         colorsModule.assistant(text),
+      );
+      expect(formattingModule.formatInputPrompt(text)).toBe(
+        colorsModule.inputPrompt(text),
+      );
+      expect(formattingModule.formatAssistantPrefix(text)).toBe(
+        colorsModule.assistantPrefix(text),
+      );
+      expect(formattingModule.formatAssistantGutter(text)).toBe(
+        colorsModule.assistantGutter(text),
+      );
+      expect(formattingModule.formatInputBorder(text)).toBe(
+        colorsModule.inputBorder(text),
+      );
+      expect(formattingModule.formatInputFill(text)).toBe(
+        colorsModule.inputFill(text),
+      );
+      expect(formattingModule.formatInputPlaceholder(text)).toBe(
+        colorsModule.inputPlaceholder(text),
       );
       expect(formattingModule.formatCommand(text)).toBe(
         colorsModule.command(text),

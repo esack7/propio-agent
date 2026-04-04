@@ -29,6 +29,36 @@ describe("colors module", () => {
       expect(typeof colorsModule.assistant).toBe("function");
     });
 
+    it("should export inputPrompt function", async () => {
+      expect(colorsModule.inputPrompt).toBeDefined();
+      expect(typeof colorsModule.inputPrompt).toBe("function");
+    });
+
+    it("should export assistantPrefix function", async () => {
+      expect(colorsModule.assistantPrefix).toBeDefined();
+      expect(typeof colorsModule.assistantPrefix).toBe("function");
+    });
+
+    it("should export assistantGutter function", async () => {
+      expect(colorsModule.assistantGutter).toBeDefined();
+      expect(typeof colorsModule.assistantGutter).toBe("function");
+    });
+
+    it("should export inputBorder function", async () => {
+      expect(colorsModule.inputBorder).toBeDefined();
+      expect(typeof colorsModule.inputBorder).toBe("function");
+    });
+
+    it("should export inputFill function", async () => {
+      expect(colorsModule.inputFill).toBeDefined();
+      expect(typeof colorsModule.inputFill).toBe("function");
+    });
+
+    it("should export inputPlaceholder function", async () => {
+      expect(colorsModule.inputPlaceholder).toBeDefined();
+      expect(typeof colorsModule.inputPlaceholder).toBe("function");
+    });
+
     it("should export tool function", async () => {
       expect(colorsModule.tool).toBeDefined();
       expect(typeof colorsModule.tool).toBe("function");
@@ -81,6 +111,48 @@ describe("colors module", () => {
 
     it("assistant should return text styled with light gray (#ABB2BF)", async () => {
       const result = colorsModule.assistant("test");
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(result.length).toBeGreaterThan("test".length);
+    });
+
+    it("inputPrompt should return text styled with cyan (#56B6C2)", async () => {
+      const result = colorsModule.inputPrompt("test");
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(result.length).toBeGreaterThan("test".length);
+    });
+
+    it("assistantPrefix should return text styled with dark gray (#5C6370)", async () => {
+      const result = colorsModule.assistantPrefix("test");
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(result.length).toBeGreaterThan("test".length);
+    });
+
+    it("assistantGutter should return text styled with dark gray (#5C6370)", async () => {
+      const result = colorsModule.assistantGutter("test");
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(result.length).toBeGreaterThan("test".length);
+    });
+
+    it("inputBorder should return text styled with dark gray (#5C6370)", async () => {
+      const result = colorsModule.inputBorder("test");
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(result.length).toBeGreaterThan("test".length);
+    });
+
+    it("inputFill should return text styled with a background fill", async () => {
+      const result = colorsModule.inputFill("test");
+      expect(result).toBeDefined();
+      expect(typeof result).toBe("string");
+      expect(result.length).toBeGreaterThan("test".length);
+    });
+
+    it("inputPlaceholder should return text styled with dark gray (#5C6370)", async () => {
+      const result = colorsModule.inputPlaceholder("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
@@ -203,6 +275,42 @@ describe("colors module", () => {
     it("assistant uses hex #ABB2BF", () => {
       const expected = chalk.hex("#ABB2BF")("test");
       const actual = colorsModule.assistant("test");
+      expect(actual).toBe(expected);
+    });
+
+    it("inputPrompt uses hex #56B6C2", () => {
+      const expected = chalk.hex("#56B6C2")("test");
+      const actual = colorsModule.inputPrompt("test");
+      expect(actual).toBe(expected);
+    });
+
+    it("assistantPrefix uses hex #5C6370", () => {
+      const expected = chalk.hex("#5C6370")("test");
+      const actual = colorsModule.assistantPrefix("test");
+      expect(actual).toBe(expected);
+    });
+
+    it("assistantGutter uses hex #5C6370", () => {
+      const expected = chalk.hex("#5C6370")("test");
+      const actual = colorsModule.assistantGutter("test");
+      expect(actual).toBe(expected);
+    });
+
+    it("inputBorder uses hex #5C6370", () => {
+      const expected = chalk.hex("#5C6370")("test");
+      const actual = colorsModule.inputBorder("test");
+      expect(actual).toBe(expected);
+    });
+
+    it("inputFill uses a background hex #282C34", () => {
+      const expected = chalk.bgHex("#282C34")("test");
+      const actual = colorsModule.inputFill("test");
+      expect(actual).toBe(expected);
+    });
+
+    it("inputPlaceholder uses hex #5C6370", () => {
+      const expected = chalk.hex("#5C6370")("test");
+      const actual = colorsModule.inputPlaceholder("test");
       expect(actual).toBe(expected);
     });
 

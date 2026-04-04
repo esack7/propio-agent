@@ -1,5 +1,8 @@
 import {
+  formatAssistantGutter,
+  formatAssistantPrefix,
   formatAssistantMessage,
+  formatInputPrompt,
   formatCommand,
   formatError,
   formatInfo,
@@ -9,6 +12,7 @@ import {
   formatWarning,
 } from "./formatting.js";
 import { error as colorError, success as colorSuccess } from "./colors.js";
+import { symbols } from "./symbols.js";
 import { OperationSpinner } from "./spinner.js";
 import {
   MarkdownStreamer,
@@ -69,6 +73,28 @@ export class TerminalUi {
 
   prompt(text: string): string {
     return this.applyStyle(text, formatUserMessage);
+  }
+
+  chatPrompt(): string {
+    return this.applyStyle(`${symbols.prompt} `, formatInputPrompt);
+  }
+
+  beginAssistantResponse(): void {
+    if (this.json) {
+      return;
+    }
+
+    this.done();
+
+    if (this.interactive) {
+      this.writeStderrLine("");
+      const gutter = symbols.prompt === "❯" ? "│ " : "| ";
+      this.writeStderr(this.applyStyle(gutter[0] ?? "", formatAssistantPrefix));
+      this.writeStderr(this.applyStyle(gutter.slice(1), formatAssistantGutter));
+      return;
+    }
+
+    this.writeStderr(this.applyStyle("Assistant: ", formatAssistantMessage));
   }
 
   status(text: string, phase?: string): void {

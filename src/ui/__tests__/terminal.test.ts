@@ -1,4 +1,5 @@
 import { TerminalUi } from "../terminal.js";
+import { symbols } from "../symbols.js";
 
 function createMockStream(
   isTTY = true,
@@ -14,6 +15,10 @@ function createMockStream(
       return true;
     },
   } as unknown as NodeJS.WriteStream & { chunks: string[] };
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 describe("TerminalUi", () => {
@@ -52,14 +57,91 @@ describe("TerminalUi", () => {
     expect(stdout.chunks.join("")).toContain('"response": "ok"');
   });
 
-  it("returns plain prompt text in plain mode", () => {
+  it("returns the glyph chat prompt in plain interactive mode", () => {
     const ui = new TerminalUi({
       interactive: true,
       json: false,
       plain: true,
     });
 
-    expect(ui.prompt("You: ")).toBe("You: ");
+    expect(ui.chatPrompt()).toBe(`${symbols.prompt} `);
+  });
+
+  it("returns the glyph chat prompt with styling in interactive mode", () => {
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+    });
+
+    expect(stripAnsi(ui.chatPrompt())).toBe(`${symbols.prompt} `);
+  });
+
+  it("begins interactive assistant turns with a blank line and gutter", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+
+    const gutter = symbols.prompt === "❯" ? "│ " : "| ";
+    expect(stderr.chunks.join("")).toBe(`\n${gutter}`);
+  });
+
+  it("preserves the Assistant prefix in non-interactive human-readable mode", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+
+    expect(stderr.chunks.join("")).toBe("Assistant: ");
+  });
+
+  it("preserves the Assistant prefix in non-interactive rich mode", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+
+    expect(stripAnsi(stderr.chunks.join(""))).toBe("Assistant: ");
+  });
+
+  it("suppresses assistant turn framing in JSON mode", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: true,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+    ui.writeAssistant("ignored");
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
   });
 
   it("ensures trailing newline on cleanup after token writes", () => {
@@ -181,7 +263,7 @@ describe("TerminalUi", () => {
       stderr,
     });
 
-    ui.writeAssistant("Assistant: ");
+    ui.beginAssistantResponse();
     ui.newline();
     ui.subtle("Prompt plan: mock/model iter=1 | ~500 prompt tokens (est.)");
     ui.writeAssistant("Here is ");

@@ -224,7 +224,7 @@ async function streamAssistantResponse(
   const mdStream = ui.createMarkdownStream();
 
   if (!ui.isJsonMode()) {
-    ui.writeAssistant("Assistant: ");
+    ui.beginAssistantResponse();
   }
 
   const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
@@ -443,7 +443,7 @@ async function runInteractiveSession(
       ui.info("AI Agent started. Type your message and press Enter.");
       shownReadyPromptMessage = true;
     }
-    const input = await promptOnce(rl, ui.prompt("You: "));
+    const input = await promptOnce(rl, ui.chatPrompt());
     const trimmedInput = input.trim();
 
     if (shouldExit()) {
