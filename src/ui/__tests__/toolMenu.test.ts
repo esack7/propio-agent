@@ -1,5 +1,5 @@
-import * as readline from "readline";
 import { showToolMenu } from "../toolMenu.js";
+import type { InteractiveInput } from "../interactiveInput.js";
 
 class MockAgent {
   private tools = new Map([
@@ -33,15 +33,25 @@ class MockAgent {
   }
 }
 
-class MockReadlineInterface {
-  questionCallback: ((input: string) => void) | null = null;
+class MockInteractiveInput implements InteractiveInput {
+  readonly prompts: string[] = [];
 
-  question(_prompt: string, callback: (input: string) => void): void {
-    this.questionCallback = callback;
+  constructor(private readonly responses: Array<string | null>) {}
+
+  async readLine(promptText: string): Promise<string | null> {
+    this.prompts.push(promptText);
+    if (this.responses.length === 0) {
+      return null;
+    }
+    return this.responses.shift() ?? null;
   }
 
-  simulateInput(input: string): void {
-    this.questionCallback?.(input);
+  async confirm(): Promise<boolean> {
+    throw new Error("confirm() is not used by the tool menu");
+  }
+
+  getCloseReason(): "closed" | "interrupted" | null {
+    return null;
   }
 
   close(): void {}
@@ -49,7 +59,6 @@ class MockReadlineInterface {
 
 describe("showToolMenu", () => {
   let mockAgent: MockAgent;
-  let mockRl: MockReadlineInterface;
   let outputLines: string[];
   let mockUi: {
     command: (text: string) => void;
@@ -61,7 +70,6 @@ describe("showToolMenu", () => {
 
   beforeEach(() => {
     mockAgent = new MockAgent();
-    mockRl = new MockReadlineInterface();
     outputLines = [];
     mockUi = {
       command: (text: string) => outputLines.push(text),
@@ -72,8 +80,10 @@ describe("showToolMenu", () => {
     };
   });
 
-  it("shows the seven built-in tools in order", () => {
-    showToolMenu(mockRl as any, mockAgent as any, () => {}, mockUi as any);
+  it("shows the seven built-in tools in order", async () => {
+    const input = new MockInteractiveInput([null]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
 
     const output = outputLines.join("\n");
     expect(output).toContain("read");
@@ -85,54 +95,63 @@ describe("showToolMenu", () => {
     expect(output).toContain("ls");
   });
 
-  it("numbers tools from 1 to 7", () => {
-    showToolMenu(mockRl as any, mockAgent as any, () => {}, mockUi as any);
+  it("numbers tools from 1 to 7", async () => {
+    const input = new MockInteractiveInput([null]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
 
     const output = outputLines.join("\n");
     expect(output).toContain("1.");
     expect(output).toContain("7.");
   });
 
-  it("disables enabled tools without confirmation", () => {
-    let onDoneCalled = false;
-    showToolMenu(
-      mockRl as any,
-      mockAgent as any,
-      () => {
-        onDoneCalled = true;
-      },
-      mockUi as any,
-    );
+  it("disables enabled tools without confirmation", async () => {
+    const input = new MockInteractiveInput(["1", ""]);
 
-    outputLines = [];
-    mockRl.simulateInput("1");
+    await showToolMenu(input, mockAgent as any, mockUi as any);
 
     expect(mockAgent.isToolEnabled("read")).toBe(false);
     expect(outputLines.join("\n")).toContain("Disabled tool: read");
-    expect(onDoneCalled).toBe(false);
   });
 
-  it("enables disabled non-dangerous tools without confirmation", () => {
+  it("enables disabled non-dangerous tools without confirmation", async () => {
     const customAgent = new MockAgent();
     customAgent.disableTool("grep");
+    const input = new MockInteractiveInput(["5", ""]);
 
-    showToolMenu(mockRl as any, customAgent as any, () => {}, mockUi as any);
-
-    outputLines = [];
-    mockRl.simulateInput("5");
+    await showToolMenu(input, customAgent as any, mockUi as any);
 
     expect(customAgent.isToolEnabled("grep")).toBe(true);
     expect(outputLines.join("\n")).toContain("Enabled tool: grep");
   });
 
-  it("enables bash immediately when it is disabled", () => {
-    showToolMenu(mockRl as any, mockAgent as any, () => {}, mockUi as any);
+  it("enables bash immediately when it is disabled", async () => {
+    const input = new MockInteractiveInput(["4", ""]);
 
-    outputLines = [];
     mockAgent.disableTool("bash");
-    mockRl.simulateInput("4");
+    await showToolMenu(input, mockAgent as any, mockUi as any);
 
     expect(mockAgent.isToolEnabled("bash")).toBe(true);
     expect(outputLines.join("\n")).toContain("Enabled tool: bash");
+  });
+
+  it("reprompts after invalid input", async () => {
+    const input = new MockInteractiveInput(["abc", "q"]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
+
+    const output = outputLines.join("\n");
+    expect(output).toContain(
+      "Invalid input. Please enter a valid tool number.",
+    );
+    expect(input.prompts.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("exits on blank input", async () => {
+    const input = new MockInteractiveInput([""]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
+
+    expect(outputLines.join("\n")).not.toContain("Invalid input.");
   });
 });

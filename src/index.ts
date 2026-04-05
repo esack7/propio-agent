@@ -1,6 +1,5 @@
 import * as fs from "fs";
 import * as path from "path";
-import * as readline from "readline";
 import { fileURLToPath } from "url";
 import { Agent, AgentVisibilityEvent, PromptPlanSnapshot } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
@@ -9,6 +8,10 @@ import { getConfigPath } from "./providers/configLoader.js";
 import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
+import {
+  createInteractiveInput,
+  type InteractiveInput,
+} from "./ui/interactiveInput.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
 import { AgentDiagnosticEvent } from "./diagnostics.js";
@@ -171,23 +174,6 @@ async function readStdinInput(): Promise<string> {
     });
     process.stdin.on("error", (error) => {
       reject(error);
-    });
-  });
-}
-
-async function promptOnce(
-  rl: readline.Interface,
-  promptText: string,
-): Promise<string> {
-  return await new Promise<string>((resolve) => {
-    const handleClose = () => {
-      resolve("/exit");
-    };
-
-    rl.once("close", handleClose);
-    rl.question(promptText, (answer) => {
-      rl.off("close", handleClose);
-      resolve(answer);
     });
   });
 }
@@ -398,7 +384,7 @@ function saveSessionSnapshot(agent: Agent, ui: TerminalUi): void {
 async function handleSessionCommand(
   input: string,
   agent: Agent,
-  rl: readline.Interface,
+  interactiveInput: InteractiveInput,
   ui: TerminalUi,
 ): Promise<void> {
   await handleSessionCmd(input, agent, getDefaultSessionsDir(), {
@@ -407,8 +393,9 @@ async function handleSessionCommand(
     success: (msg) => ui.success(msg),
     command: (msg) => ui.command(msg),
     promptConfirm: async (msg) => {
-      const answer = await promptOnce(rl, ui.prompt(msg));
-      return answer.trim().toLowerCase() === "y";
+      return await interactiveInput.confirm(ui.prompt(msg), {
+        defaultValue: false,
+      });
     },
   });
 }
@@ -418,145 +405,153 @@ async function runInteractiveSession(
   ui: TerminalUi,
   setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
-  setActiveReadline: (rl: readline.Interface | null) => void,
+  setActiveInput: (input: InteractiveInput | null) => void,
   shouldExit: () => boolean,
   visibility: VisibilityOptions,
 ): Promise<number> {
-  const rl = readline.createInterface({
-    input: process.stdin,
+  const input = createInteractiveInput({
     output: ui.getPromptOutputStream(),
   });
-  setActiveReadline(rl);
+  setActiveInput(input);
 
-  rl.on("SIGINT", () => {
-    process.kill(process.pid, "SIGINT");
-  });
+  try {
+    ui.command("Type /help to view available slash commands.");
+    ui.command("Exit with /exit or Ctrl+C.");
+    ui.command("");
 
-  ui.command("Type /help to view available slash commands.");
-  ui.command("Exit with /exit or Ctrl+C.");
-  ui.command("");
-
-  let shownReadyPromptMessage = false;
-  while (!shouldExit()) {
-    setMode("awaitingInput");
-    if (!shownReadyPromptMessage) {
-      ui.info("AI Agent started. Type your message and press Enter.");
-      shownReadyPromptMessage = true;
-    }
-    const input = await promptOnce(rl, ui.chatPrompt());
-    const trimmedInput = input.trim();
-
-    if (shouldExit()) {
-      rl.close();
-      setActiveReadline(null);
-      return 130;
-    }
-
-    if (!trimmedInput) {
-      continue;
-    }
-
-    if (trimmedInput === "/exit") {
-      saveSessionSnapshot(agent, ui);
-      ui.success("Goodbye!");
-      rl.close();
-      setActiveReadline(null);
-      return 0;
-    }
-
-    if (trimmedInput === "/help") {
-      printSlashCommandHelp(ui);
-      continue;
-    }
-
-    if (trimmedInput === "/clear") {
-      agent.clearContext();
-      ui.success("Session context cleared.");
-      ui.command("");
-      continue;
-    }
-
-    if (trimmedInput === "/context" || trimmedInput.startsWith("/context ")) {
-      const subcommand = trimmedInput.slice("/context".length).trim();
-
-      if (subcommand === "") {
-        const state = agent.getConversationState();
-        const hasContent =
-          state.turns.length > 0 ||
-          state.preamble.length > 0 ||
-          state.artifacts.length > 0 ||
-          state.pinnedMemory.length > 0 ||
-          state.rollingSummary != null;
-        if (!hasContent) {
-          ui.info("No session context.");
-        } else {
-          renderStyledLines(ui, formatContextOverview(state));
-        }
-      } else if (subcommand === "prompt") {
-        const snapshot = agent.getLastPromptPlan();
-        if (!snapshot) {
-          ui.info("No prompt plan yet (no requests have been built).");
-        } else {
-          renderStyledLines(ui, formatPromptPlan(snapshot));
-        }
-      } else if (subcommand === "memory") {
-        const state = agent.getConversationState();
-        renderStyledLines(ui, formatMemoryView(state));
-      } else {
-        ui.error(`Unknown /context subcommand: "${subcommand}"`);
-        ui.command("Usage: /context [prompt | memory]");
+    let shownReadyPromptMessage = false;
+    while (!shouldExit()) {
+      setMode("awaitingInput");
+      if (!shownReadyPromptMessage) {
+        ui.info("AI Agent started. Type your message and press Enter.");
+        shownReadyPromptMessage = true;
       }
 
-      ui.command("");
-      continue;
-    }
+      const nextInput = await input.readLine(ui.chatPrompt());
 
-    if (trimmedInput === "/session" || trimmedInput.startsWith("/session ")) {
-      await handleSessionCommand(trimmedInput, agent, rl, ui);
-      continue;
-    }
+      if (nextInput === null) {
+        if (input.getCloseReason() === "interrupted") {
+          return 130;
+        }
 
-    if (trimmedInput === "/tools") {
-      await new Promise<void>((resolve) => {
-        showToolMenu(rl, agent, resolve, ui);
-      });
-      continue;
-    }
+        saveSessionSnapshot(agent, ui);
+        ui.success("Goodbye!");
+        return 0;
+      }
 
-    setMode("running");
-    const abortController = new AbortController();
-    setCurrentAbortController(abortController);
+      const trimmedInput = nextInput.trim();
 
-    try {
-      await streamAssistantResponse(
-        agent,
-        trimmedInput,
-        ui,
-        abortController.signal,
-        visibility,
-      );
-      setMode("showingResults");
-      ui.command("");
-    } catch (error) {
-      if (abortController.signal.aborted || isAbortError(error)) {
-        rl.close();
-        setActiveReadline(null);
+      if (shouldExit()) {
         return 130;
       }
 
-      setMode("error");
-      ui.error(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
-      ui.command("");
-    } finally {
-      setCurrentAbortController(null);
-    }
-  }
+      if (!trimmedInput) {
+        continue;
+      }
 
-  rl.close();
-  setActiveReadline(null);
-  return 130;
+      if (trimmedInput === "/exit") {
+        saveSessionSnapshot(agent, ui);
+        ui.success("Goodbye!");
+        return 0;
+      }
+
+      if (trimmedInput === "/help") {
+        printSlashCommandHelp(ui);
+        continue;
+      }
+
+      if (trimmedInput === "/clear") {
+        agent.clearContext();
+        ui.success("Session context cleared.");
+        ui.command("");
+        continue;
+      }
+
+      if (trimmedInput === "/context" || trimmedInput.startsWith("/context ")) {
+        const subcommand = trimmedInput.slice("/context".length).trim();
+
+        if (subcommand === "") {
+          const state = agent.getConversationState();
+          const hasContent =
+            state.turns.length > 0 ||
+            state.preamble.length > 0 ||
+            state.artifacts.length > 0 ||
+            state.pinnedMemory.length > 0 ||
+            state.rollingSummary != null;
+          if (!hasContent) {
+            ui.info("No session context.");
+          } else {
+            renderStyledLines(ui, formatContextOverview(state));
+          }
+        } else if (subcommand === "prompt") {
+          const snapshot = agent.getLastPromptPlan();
+          if (!snapshot) {
+            ui.info("No prompt plan yet (no requests have been built).");
+          } else {
+            renderStyledLines(ui, formatPromptPlan(snapshot));
+          }
+        } else if (subcommand === "memory") {
+          const state = agent.getConversationState();
+          renderStyledLines(ui, formatMemoryView(state));
+        } else {
+          ui.error(`Unknown /context subcommand: "${subcommand}"`);
+          ui.command("Usage: /context [prompt | memory]");
+        }
+
+        ui.command("");
+        continue;
+      }
+
+      if (trimmedInput === "/session" || trimmedInput.startsWith("/session ")) {
+        await handleSessionCommand(trimmedInput, agent, input, ui);
+        if (shouldExit()) {
+          return 130;
+        }
+        continue;
+      }
+
+      if (trimmedInput === "/tools") {
+        await showToolMenu(input, agent, ui);
+        if (shouldExit()) {
+          return 130;
+        }
+        continue;
+      }
+
+      setMode("running");
+      const abortController = new AbortController();
+      setCurrentAbortController(abortController);
+
+      try {
+        await streamAssistantResponse(
+          agent,
+          trimmedInput,
+          ui,
+          abortController.signal,
+          visibility,
+        );
+        setMode("showingResults");
+        ui.command("");
+      } catch (error) {
+        if (abortController.signal.aborted || isAbortError(error)) {
+          return 130;
+        }
+
+        setMode("error");
+        ui.error(
+          `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        );
+        ui.command("");
+      } finally {
+        setCurrentAbortController(null);
+      }
+    }
+
+    return 130;
+  } finally {
+    input.close();
+    setActiveInput(null);
+  }
 }
 
 async function main(): Promise<number> {
@@ -619,26 +614,24 @@ async function main(): Promise<number> {
 
   let shouldExit = false;
   let currentAbortController: AbortController | null = null;
-  let activeReadline: readline.Interface | null = null;
+  let activeInput: InteractiveInput | null = null;
   const setCurrentAbortController = (controller: AbortController | null) => {
     currentAbortController = controller;
   };
-  const setActiveReadline = (rl: readline.Interface | null) => {
-    activeReadline = rl;
+  const setActiveInput = (input: InteractiveInput | null) => {
+    activeInput = input;
   };
 
   const handleSigint = () => {
     shouldExit = true;
     setMode("error");
+    activeInput?.close();
     if (currentAbortController && !currentAbortController.signal.aborted) {
       currentAbortController.abort();
       ui.warn("Cancellation requested (SIGINT).");
       return;
     }
     ui.warn("Interrupted.");
-    if (activeReadline) {
-      activeReadline.close();
-    }
   };
 
   process.on("SIGINT", handleSigint);
@@ -677,7 +670,7 @@ Always provide clear, concise responses and summarize what you did after complet
         ui,
         setMode,
         setCurrentAbortController,
-        setActiveReadline,
+        setActiveInput,
         () => shouldExit,
         visibility,
       );

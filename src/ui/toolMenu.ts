@@ -1,5 +1,5 @@
-import * as readline from "readline";
 import { Agent } from "../agent.js";
+import type { InteractiveInput } from "./interactiveInput.js";
 import type { TerminalUi } from "./terminal.js";
 
 /**
@@ -7,19 +7,17 @@ import type { TerminalUi } from "./terminal.js";
  *
  * Displays all registered tools with their enabled/disabled status.
  * Users can toggle tools by entering their number, or exit with 'q' or empty input.
- * Dangerous tools require explicit confirmation before enabling.
  *
- * @param rl - readline.Interface for user interaction
+ * @param input - Shared interactive input service
  * @param agent - Agent instance to query and modify tool state
- * @param onDone - Callback to invoke when user exits the menu
+ * @param ui - Terminal UI renderer
  */
-export function showToolMenu(
-  rl: readline.Interface,
+export async function showToolMenu(
+  input: InteractiveInput,
   agent: Agent,
-  onDone: () => void,
   ui: Pick<TerminalUi, "command" | "error" | "info" | "prompt" | "success">,
-): void {
-  const displayMenu = () => {
+): Promise<void> {
+  const displayMenu = (): void => {
     const toolNames = agent.getToolNames();
 
     ui.info("\nTools:");
@@ -30,55 +28,47 @@ export function showToolMenu(
     ui.command("");
   };
 
-  const promptUser = () => {
-    rl.question(
-      ui.prompt("Enter tool number to toggle, or 'q' to quit: "),
-      (input) => {
-        const trimmed = input.trim();
-
-        // Exit on 'q' or empty input
-        if (trimmed === "" || trimmed.toLowerCase() === "q") {
-          onDone();
-          return;
-        }
-
-        // Parse number input
-        const toolNumber = parseInt(trimmed, 10);
-        const toolNames = agent.getToolNames();
-
-        // Validate input
-        if (
-          isNaN(toolNumber) ||
-          toolNumber < 1 ||
-          toolNumber > toolNames.length
-        ) {
-          ui.error("Invalid input. Please enter a valid tool number.\n");
-          displayMenu();
-          promptUser();
-          return;
-        }
-
-        const toolName = toolNames[toolNumber - 1];
-        const isEnabled = agent.isToolEnabled(toolName);
-
-        // Toggle logic
-        if (isEnabled) {
-          // Disable (no confirmation needed)
-          agent.disableTool(toolName);
-          ui.success(`\nDisabled tool: ${toolName}\n`);
-          displayMenu();
-          promptUser();
-        } else {
-          agent.enableTool(toolName);
-          ui.success(`\nEnabled tool: ${toolName}\n`);
-          displayMenu();
-          promptUser();
-        }
-      },
-    );
-  };
-
-  // Start the menu
   displayMenu();
-  promptUser();
+
+  while (true) {
+    const rawInput = await input.readLine(
+      ui.prompt("Enter tool number to toggle, or 'q' to quit: "),
+    );
+
+    if (rawInput === null) {
+      return;
+    }
+
+    const trimmed = rawInput.trim();
+
+    if (trimmed === "" || trimmed.toLowerCase() === "q") {
+      return;
+    }
+
+    const toolNumber = parseInt(trimmed, 10);
+    const toolNames = agent.getToolNames();
+
+    if (
+      Number.isNaN(toolNumber) ||
+      toolNumber < 1 ||
+      toolNumber > toolNames.length
+    ) {
+      ui.error("Invalid input. Please enter a valid tool number.\n");
+      displayMenu();
+      continue;
+    }
+
+    const toolName = toolNames[toolNumber - 1];
+    const isEnabled = agent.isToolEnabled(toolName);
+
+    if (isEnabled) {
+      agent.disableTool(toolName);
+      ui.success(`\nDisabled tool: ${toolName}\n`);
+    } else {
+      agent.enableTool(toolName);
+      ui.success(`\nEnabled tool: ${toolName}\n`);
+    }
+
+    displayMenu();
+  }
 }
