@@ -313,4 +313,61 @@ describe("TerminalUi", () => {
     expect(stderr.chunks.join("")).toBe("");
     expect(stdout.chunks.join("")).toBe("");
   });
+
+  it("renders idle footer and turn completion lines in subtle style", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.idleFooter("? help | /tools | /context | /session list | /exit");
+    ui.turnComplete(4200);
+
+    const output = stderr.chunks.join("");
+    expect(output).toContain(
+      "? help | /tools | /context | /session list | /exit",
+    );
+    expect(output).toContain("Turn complete in 4.2s");
+  });
+
+  it("suppresses idle footer and turn completion in JSON mode", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: true,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.idleFooter("ignored");
+    ui.turnComplete(1200);
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
+  });
+
+  it("suppresses idle footer and turn completion in non-interactive mode", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.idleFooter("ignored");
+    ui.turnComplete(1200);
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
+  });
 });

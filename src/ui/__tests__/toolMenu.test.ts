@@ -3,32 +3,112 @@ import type { InteractiveInput } from "../interactiveInput.js";
 
 class MockAgent {
   private tools = new Map([
-    ["read", true],
-    ["write", true],
-    ["edit", true],
-    ["bash", true],
-    ["grep", false],
-    ["find", false],
-    ["ls", false],
+    [
+      "read",
+      {
+        name: "read",
+        description: "Read a text file.",
+        enabled: true,
+        enabledByDefault: true,
+      },
+    ],
+    [
+      "write",
+      {
+        name: "write",
+        description: "Write a file atomically.",
+        enabled: true,
+        enabledByDefault: true,
+      },
+    ],
+    [
+      "edit",
+      {
+        name: "edit",
+        description: "Edit a file - replace text.",
+        enabled: true,
+        enabledByDefault: true,
+      },
+    ],
+    [
+      "bash",
+      {
+        name: "bash",
+        description: "Run a shell command.",
+        enabled: true,
+        enabledByDefault: true,
+      },
+    ],
+    [
+      "grep",
+      {
+        name: "grep",
+        description: "Search file contents recursively.",
+        enabled: false,
+        enabledByDefault: false,
+      },
+    ],
+    [
+      "find",
+      {
+        name: "find",
+        description: "Find files by name or glob.",
+        enabled: false,
+        enabledByDefault: false,
+      },
+    ],
+    [
+      "ls",
+      {
+        name: "ls",
+        description: "List directory contents.",
+        enabled: false,
+        enabledByDefault: false,
+      },
+    ],
   ]);
 
   getToolNames(): string[] {
     return Array.from(this.tools.keys());
   }
 
+  getToolSummaries() {
+    return Array.from(this.tools.values());
+  }
+
   isToolEnabled(name: string): boolean {
-    return this.tools.get(name) || false;
+    return this.tools.get(name)?.enabled || false;
   }
 
   enableTool(name: string): void {
     if (this.tools.has(name)) {
-      this.tools.set(name, true);
+      const tool = this.tools.get(name)!;
+      this.tools.set(name, { ...tool, enabled: true });
     }
   }
 
   disableTool(name: string): void {
     if (this.tools.has(name)) {
-      this.tools.set(name, false);
+      const tool = this.tools.get(name)!;
+      this.tools.set(name, { ...tool, enabled: false });
+    }
+  }
+
+  enableAllTools(): void {
+    for (const [name, tool] of this.tools) {
+      this.tools.set(name, { ...tool, enabled: true });
+    }
+  }
+
+  disableAllTools(): void {
+    for (const [name, tool] of this.tools) {
+      this.tools.set(name, { ...tool, enabled: false });
+    }
+  }
+
+  resetToolsToManifestDefaults(): void {
+    for (const [name, tool] of this.tools) {
+      this.tools.set(name, { ...tool, enabled: tool.enabledByDefault });
     }
   }
 }
@@ -105,6 +185,17 @@ describe("showToolMenu", () => {
     expect(output).toContain("7.");
   });
 
+  it("shows enabled tools before disabled tools with descriptions", async () => {
+    const input = new MockInteractiveInput([null]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
+
+    const output = outputLines.join("\n");
+    expect(output.indexOf("read")).toBeLessThan(output.indexOf("grep"));
+    expect(output).toContain("Read a text file.");
+    expect(output).toContain("Search file contents recursively.");
+  });
+
   it("disables enabled tools without confirmation", async () => {
     const input = new MockInteractiveInput(["1", ""]);
 
@@ -136,7 +227,7 @@ describe("showToolMenu", () => {
   });
 
   it("reprompts after invalid input", async () => {
-    const input = new MockInteractiveInput(["abc", "q"]);
+    const input = new MockInteractiveInput(["abc", ""]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -153,5 +244,23 @@ describe("showToolMenu", () => {
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
     expect(outputLines.join("\n")).not.toContain("Invalid input.");
+  });
+
+  it("supports bulk enable, disable, and defaults actions", async () => {
+    const input = new MockInteractiveInput([
+      "all off",
+      "all on",
+      "defaults",
+      "",
+    ]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
+
+    expect(mockAgent.isToolEnabled("read")).toBe(true);
+    expect(mockAgent.isToolEnabled("write")).toBe(true);
+    expect(mockAgent.isToolEnabled("grep")).toBe(false);
+    expect(outputLines.join("\n")).toContain("Disabled all tools.");
+    expect(outputLines.join("\n")).toContain("Enabled all tools.");
+    expect(outputLines.join("\n")).toContain("Restored manifest defaults.");
   });
 });

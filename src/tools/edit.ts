@@ -10,6 +10,14 @@ import {
 
 export class EditTool implements ExecutableTool {
   readonly name = "edit";
+  readonly description = "Edit a file - replace text.";
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const path = args.path;
+    return typeof path === "string" && path.length > 0
+      ? `Editing ${path}`
+      : "Editing file";
+  }
 
   getSchema(): ChatTool {
     return {

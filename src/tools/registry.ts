@@ -2,6 +2,13 @@ import { ExecutableTool } from "./interface.js";
 import { ChatTool } from "../providers/types.js";
 import { ToolExecutionResult } from "./types.js";
 
+export interface ToolSummary {
+  readonly name: string;
+  readonly description: string;
+  readonly enabled: boolean;
+  readonly enabledByDefault: boolean;
+}
+
 /**
  * ToolRegistry manages tool registration, lifecycle, and execution.
  *
@@ -18,6 +25,9 @@ export class ToolRegistry {
   /** Tracks which tools are currently enabled */
   private enabledTools: Set<string> = new Set();
 
+  /** Tracks built-in or registration-time default state for each tool. */
+  private enabledByDefault: Map<string, boolean> = new Map();
+
   /**
    * Register a tool and optionally enable it by default.
    *
@@ -25,8 +35,11 @@ export class ToolRegistry {
    */
   register(tool: ExecutableTool, enabledByDefault = false): void {
     this.tools.set(tool.name, tool);
+    this.enabledByDefault.set(tool.name, enabledByDefault);
     if (enabledByDefault) {
       this.enabledTools.add(tool.name);
+    } else {
+      this.enabledTools.delete(tool.name);
     }
   }
 
@@ -40,6 +53,7 @@ export class ToolRegistry {
   unregister(name: string): void {
     this.tools.delete(name);
     this.enabledTools.delete(name);
+    this.enabledByDefault.delete(name);
   }
 
   /**
@@ -60,6 +74,28 @@ export class ToolRegistry {
    */
   disable(name: string): void {
     this.enabledTools.delete(name);
+  }
+
+  /** Enable all registered tools. */
+  enableAll(): void {
+    for (const toolName of this.tools.keys()) {
+      this.enabledTools.add(toolName);
+    }
+  }
+
+  /** Disable all registered tools. */
+  disableAll(): void {
+    this.enabledTools.clear();
+  }
+
+  /** Restore the registered tools to their manifest-time defaults. */
+  resetToManifestDefaults(): void {
+    this.enabledTools.clear();
+    for (const [toolName, isEnabledByDefault] of this.enabledByDefault) {
+      if (isEnabledByDefault) {
+        this.enabledTools.add(toolName);
+      }
+    }
   }
 
   /**
@@ -92,6 +128,38 @@ export class ToolRegistry {
    */
   getToolNames(): string[] {
     return Array.from(this.tools.keys());
+  }
+
+  /**
+   * Return read-only summaries for the registered tools in registration order.
+   */
+  getToolSummaries(): ReadonlyArray<ToolSummary> {
+    const summaries: ToolSummary[] = [];
+
+    for (const [toolName, tool] of this.tools) {
+      summaries.push({
+        name: toolName,
+        description: tool.description,
+        enabled: this.enabledTools.has(toolName),
+        enabledByDefault: this.enabledByDefault.get(toolName) ?? false,
+      });
+    }
+
+    return summaries;
+  }
+
+  /**
+   * Build a human-readable label for a specific tool invocation.
+   */
+  describeToolInvocation(name: string, args: Record<string, unknown>): string {
+    const tool = this.tools.get(name);
+    const customLabel = tool?.getInvocationLabel?.(args);
+
+    if (customLabel && customLabel.trim().length > 0) {
+      return customLabel;
+    }
+
+    return name;
   }
 
   /**

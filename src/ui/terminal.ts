@@ -156,6 +156,27 @@ export class TerminalUi {
     );
   }
 
+  idleFooter(text: string): void {
+    if (this.json || !this.interactive) {
+      return;
+    }
+    this.done();
+    this.writeStderrLine(this.applyStyle(text, formatSubtle));
+  }
+
+  turnComplete(durationMs: number): void {
+    if (this.json || !this.interactive) {
+      return;
+    }
+    this.done();
+    this.writeStderrLine(
+      this.applyStyle(
+        `Turn complete in ${formatDurationSeconds(durationMs)}`,
+        formatSubtle,
+      ),
+    );
+  }
+
   info(text: string): void {
     if (this.json) {
       return;
@@ -360,4 +381,9 @@ export class TerminalUi {
   private visibleLength(value: string): number {
     return value.replace(/\x1b\[[0-9;]*m/g, "").length;
   }
+}
+
+function formatDurationSeconds(durationMs: number): string {
+  const safeDurationMs = Math.max(0, durationMs);
+  return `${(safeDurationMs / 1000).toFixed(1)}s`;
 }

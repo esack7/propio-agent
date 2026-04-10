@@ -149,6 +149,79 @@ describe("ToolRegistry", () => {
       registry.enable("test_tool");
       expect(registry.isToolEnabled("test_tool")).toBe(true);
     });
+
+    it("returns readable tool summaries and bulk state transitions", () => {
+      registry.register(createMockTool("tool1"), true);
+      registry.register(createMockTool("tool2"));
+
+      expect(registry.getToolSummaries()).toEqual([
+        {
+          name: "tool1",
+          description: "Mock tool tool1",
+          enabled: true,
+          enabledByDefault: true,
+        },
+        {
+          name: "tool2",
+          description: "Mock tool tool2",
+          enabled: false,
+          enabledByDefault: false,
+        },
+      ]);
+
+      registry.enableAll();
+      expect(registry.getToolSummaries().every((tool) => tool.enabled)).toBe(
+        true,
+      );
+
+      registry.disableAll();
+      expect(registry.getToolSummaries().every((tool) => !tool.enabled)).toBe(
+        true,
+      );
+
+      registry.resetToManifestDefaults();
+      expect(registry.getToolSummaries()).toEqual([
+        {
+          name: "tool1",
+          description: "Mock tool tool1",
+          enabled: true,
+          enabledByDefault: true,
+        },
+        {
+          name: "tool2",
+          description: "Mock tool tool2",
+          enabled: false,
+          enabledByDefault: false,
+        },
+      ]);
+    });
+
+    it("describes tool invocations with formatter fallback", () => {
+      registry.register(createMockTool("readable"), true);
+      registry.register({
+        name: "labeled_tool",
+        description: "A labeled mock tool",
+        getSchema(): ChatTool {
+          return {
+            type: "function",
+            function: {
+              name: "labeled_tool",
+              description: "A labeled mock tool",
+              parameters: { type: "object", properties: {} },
+            },
+          };
+        },
+        getInvocationLabel(): string {
+          return "Custom invocation label";
+        },
+        execute: jest.fn(async () => "success"),
+      });
+
+      expect(registry.describeToolInvocation("labeled_tool", {})).toBe(
+        "Custom invocation label",
+      );
+      expect(registry.describeToolInvocation("readable", {})).toBe("readable");
+    });
   });
 });
 
@@ -158,6 +231,7 @@ function createMockTool(
 ): ExecutableTool {
   return {
     name,
+    description: `Mock tool ${name}`,
     getSchema(): ChatTool {
       return {
         type: "function",

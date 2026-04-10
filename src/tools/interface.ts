@@ -17,10 +17,21 @@ export interface ExecutableTool {
   readonly name: string;
 
   /**
+   * Short human-readable summary used in menus and tool listings.
+   */
+  readonly description: string;
+
+  /**
    * Returns the ChatTool schema for LLM consumption.
    * The schema defines the tool's function signature, description, and parameters.
    */
   getSchema(): ChatTool;
+
+  /**
+   * Optional human-readable label for a specific invocation.
+   * Used by the interactive UI to render activity without parsing arguments.
+   */
+  getInvocationLabel?(args: Record<string, unknown>): string | undefined;
 
   /**
    * Executes the tool logic with the provided arguments.

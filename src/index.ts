@@ -14,6 +14,11 @@ import {
 } from "./ui/interactiveInput.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
+import {
+  buildSlashCommandHelpLines,
+  isHelpCommand,
+  getIdleFooterText,
+} from "./ui/slashCommands.js";
 import { AgentDiagnosticEvent } from "./diagnostics.js";
 import {
   formatContextOverview,
@@ -147,19 +152,31 @@ function previewToolResult(result: string, maxLength = 70): string {
   return `${compact.substring(0, maxLength)}...`;
 }
 
-function printSlashCommandHelp(ui: Pick<TerminalUi, "info" | "command">): void {
-  ui.info("Available slash commands:");
-  ui.command("/help              - show this help menu");
-  ui.command("/clear             - clear session context");
-  ui.command("/context           - show structured context overview");
-  ui.command("/context prompt    - show latest prompt plan details");
-  ui.command("/context memory    - show pinned memory and rolling summary");
-  ui.command("/tools             - manage enabled tools");
-  ui.command("/session list      - list saved session snapshots");
-  ui.command("/session load      - load the latest saved session");
-  ui.command("/session load <id> - load a specific saved session");
-  ui.command("/exit              - save session snapshot and exit");
+function printSlashCommandHelp(
+  ui: Pick<TerminalUi, "command" | "subtle" | "section">,
+): void {
+  for (const line of buildSlashCommandHelpLines()) {
+    switch (line.style) {
+      case "section":
+        ui.section(line.text);
+        break;
+      case "info":
+        ui.command(line.text);
+        break;
+      case "subtle":
+        if (line.text.length > 0) {
+          ui.subtle(line.text);
+        } else {
+          ui.command("");
+        }
+        break;
+    }
+  }
   ui.command("");
+}
+
+function renderIdleFooter(ui: TerminalUi): void {
+  ui.idleFooter(getIdleFooterText());
 }
 
 async function readStdinInput(): Promise<string> {
@@ -237,20 +254,20 @@ async function streamAssistantResponse(
 
     mdStream.flush();
     if (event.type === "tool_started") {
-      ui.traceActivity(
-        `${event.toolName} started (${event.argumentChars} arg chars)`,
-      );
+      ui.traceActivity(`Starting ${event.activityLabel}`);
       return;
     }
 
     if (event.type === "tool_finished") {
-      ui.traceActivity(`${event.toolName} finished: ${event.resultPreview}`);
+      ui.traceActivity(
+        `Finished ${event.activityLabel}: ${event.resultPreview}`,
+      );
       return;
     }
 
     if (event.type === "tool_failed") {
       ui.traceActivity(
-        `${event.toolName} failed: ${event.resultPreview}`,
+        `Failed ${event.activityLabel}: ${event.resultPreview}`,
         "error",
       );
     }
@@ -415,7 +432,7 @@ async function runInteractiveSession(
   setActiveInput(input);
 
   try {
-    ui.command("Type /help to view available slash commands.");
+    ui.command("Type /help or ? to view available slash commands.");
     ui.command("Exit with /exit or Ctrl+C.");
     ui.command("");
 
@@ -427,6 +444,7 @@ async function runInteractiveSession(
         shownReadyPromptMessage = true;
       }
 
+      renderIdleFooter(ui);
       const nextInput = await input.readLine(ui.chatPrompt());
 
       if (nextInput === null) {
@@ -455,7 +473,7 @@ async function runInteractiveSession(
         return 0;
       }
 
-      if (trimmedInput === "/help") {
+      if (isHelpCommand(trimmedInput)) {
         printSlashCommandHelp(ui);
         continue;
       }
@@ -521,6 +539,7 @@ async function runInteractiveSession(
       setMode("running");
       const abortController = new AbortController();
       setCurrentAbortController(abortController);
+      const turnStartedAtMs = Date.now();
 
       try {
         await streamAssistantResponse(
@@ -532,6 +551,7 @@ async function runInteractiveSession(
         );
         setMode("showingResults");
         ui.command("");
+        ui.turnComplete(Date.now() - turnStartedAtMs);
       } catch (error) {
         if (abortController.signal.aborted || isAbortError(error)) {
           return 130;
@@ -542,6 +562,7 @@ async function runInteractiveSession(
           `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         );
         ui.command("");
+        ui.turnComplete(Date.now() - turnStartedAtMs);
       } finally {
         setCurrentAbortController(null);
       }
