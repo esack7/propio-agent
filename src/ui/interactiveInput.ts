@@ -3,6 +3,7 @@ import {
   type PromptCloseReason,
   type PromptComposer,
 } from "./promptComposer.js";
+import type { PromptHistoryStore } from "./promptHistory.js";
 
 export type InteractiveInputCloseReason = PromptCloseReason;
 
@@ -19,6 +20,7 @@ export interface InteractiveInput {
 export interface InteractiveInputOptions {
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
+  historyStore?: PromptHistoryStore;
   createComposer?: (
     options: InteractiveInputOptions,
   ) => Pick<PromptComposer, "compose" | "confirm" | "getCloseReason" | "close">;

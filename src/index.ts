@@ -12,6 +12,7 @@ import {
   createPromptComposer,
   type PromptComposer,
 } from "./ui/promptComposer.js";
+import { createPromptHistoryStore } from "./ui/promptHistory.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
 import {
@@ -394,6 +395,12 @@ function saveSessionSnapshot(agent: Agent, ui: TerminalUi): void {
   saveSessionOnExit(agent, getDefaultSessionsDir(), ui);
 }
 
+function createWorkspacePromptHistoryStore() {
+  return createPromptHistoryStore({
+    filePath: path.join(getDefaultSessionsDir(), "prompt-history.json"),
+  });
+}
+
 async function handleSessionCommand(
   input: string,
   agent: Agent,
@@ -425,6 +432,7 @@ async function runInteractiveSession(
 ): Promise<number> {
   const composer = createPromptComposer({
     output: ui.getPromptOutputStream(),
+    historyStore: createWorkspacePromptHistoryStore(),
     renderFooter: (footer) => {
       ui.idleFooter(footer);
     },

@@ -5,6 +5,10 @@ import {
   type PromptRequest,
   type PromptState,
 } from "./promptState.js";
+import {
+  shouldRecordPromptHistoryEntry,
+  type PromptHistoryStore,
+} from "./promptHistory.js";
 
 export type { PromptMode, PromptState, PromptRequest } from "./promptState.js";
 
@@ -40,6 +44,35 @@ export interface PromptComposerOptions {
   output?: NodeJS.WriteStream;
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
+  historyStore?: PromptHistoryStore;
+}
+
+function shouldKeepLiveHistoryEntry(
+  request: PromptRequest,
+  submittedText: string,
+): boolean {
+  if (request.mode !== "chat") {
+    return false;
+  }
+
+  return shouldRecordPromptHistoryEntry(submittedText);
+}
+
+function snapshotLiveHistory(rl: readline.Interface): string[] | null {
+  const history = (rl as readline.Interface & { history?: string[] }).history;
+  return Array.isArray(history) ? [...history] : null;
+}
+
+function restoreLiveHistory(
+  rl: readline.Interface,
+  historySnapshot: string[] | null,
+): void {
+  if (!historySnapshot) {
+    return;
+  }
+
+  const history = rl as readline.Interface & { history?: string[] };
+  history.history = [...historySnapshot];
 }
 
 export function createPromptComposer(
@@ -48,10 +81,14 @@ export function createPromptComposer(
   const inputStream = options.input ?? process.stdin;
   const outputStream = options.output ?? process.stderr;
   const createInterface = options.createInterface ?? readline.createInterface;
+  const history = options.historyStore?.load() ?? [];
   const rl = createInterface({
     input: inputStream,
     output: outputStream,
     terminal: Boolean(outputStream.isTTY),
+    history: [...history],
+    historySize: 200,
+    removeHistoryDuplicates: true,
   });
 
   let closed = false;
@@ -96,6 +133,7 @@ export function createPromptComposer(
     }
 
     currentState = createPromptState(request);
+    const historySnapshot = snapshotLiveHistory(rl);
     if (request.footer && options.renderFooter) {
       options.renderFooter(request.footer);
     }
@@ -112,6 +150,22 @@ export function createPromptComposer(
 
         if (result.status === "submitted" && currentState) {
           currentState = applySubmittedText(currentState, result.text);
+          const shouldKeepHistory = shouldKeepLiveHistoryEntry(
+            request,
+            result.text,
+          );
+
+          if (!shouldKeepHistory) {
+            restoreLiveHistory(rl, historySnapshot);
+          }
+
+          if (shouldKeepHistory && options.historyStore) {
+            try {
+              options.historyStore.record(result.text);
+            } catch {
+              // Prompt history is best-effort and must not block submission.
+            }
+          }
         }
 
         resolve(result);
