@@ -9,9 +9,9 @@ import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import {
-  createInteractiveInput,
-  type InteractiveInput,
-} from "./ui/interactiveInput.js";
+  createPromptComposer,
+  type PromptComposer,
+} from "./ui/promptComposer.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
 import {
@@ -173,10 +173,6 @@ function printSlashCommandHelp(
     }
   }
   ui.command("");
-}
-
-function renderIdleFooter(ui: TerminalUi): void {
-  ui.idleFooter(getIdleFooterText());
 }
 
 async function readStdinInput(): Promise<string> {
@@ -401,7 +397,7 @@ function saveSessionSnapshot(agent: Agent, ui: TerminalUi): void {
 async function handleSessionCommand(
   input: string,
   agent: Agent,
-  interactiveInput: InteractiveInput,
+  composer: PromptComposer,
   ui: TerminalUi,
 ): Promise<void> {
   await handleSessionCmd(input, agent, getDefaultSessionsDir(), {
@@ -410,7 +406,8 @@ async function handleSessionCommand(
     success: (msg) => ui.success(msg),
     command: (msg) => ui.command(msg),
     promptConfirm: async (msg) => {
-      return await interactiveInput.confirm(ui.prompt(msg), {
+      return await composer.confirm({
+        promptText: ui.prompt(msg),
         defaultValue: false,
       });
     },
@@ -422,14 +419,17 @@ async function runInteractiveSession(
   ui: TerminalUi,
   setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
-  setActiveInput: (input: InteractiveInput | null) => void,
+  setActiveComposer: (composer: PromptComposer | null) => void,
   shouldExit: () => boolean,
   visibility: VisibilityOptions,
 ): Promise<number> {
-  const input = createInteractiveInput({
+  const composer = createPromptComposer({
     output: ui.getPromptOutputStream(),
+    renderFooter: (footer) => {
+      ui.idleFooter(footer);
+    },
   });
-  setActiveInput(input);
+  setActiveComposer(composer);
 
   try {
     ui.command("Type /help or ? to view available slash commands.");
@@ -444,11 +444,14 @@ async function runInteractiveSession(
         shownReadyPromptMessage = true;
       }
 
-      renderIdleFooter(ui);
-      const nextInput = await input.readLine(ui.chatPrompt());
+      const nextInput = await composer.compose({
+        mode: "chat",
+        promptText: ui.chatPrompt(),
+        footer: getIdleFooterText(),
+      });
 
-      if (nextInput === null) {
-        if (input.getCloseReason() === "interrupted") {
+      if (nextInput.status === "closed") {
+        if (composer.getCloseReason() === "interrupted") {
           return 130;
         }
 
@@ -457,7 +460,7 @@ async function runInteractiveSession(
         return 0;
       }
 
-      const trimmedInput = nextInput.trim();
+      const trimmedInput = nextInput.text.trim();
 
       if (shouldExit()) {
         return 130;
@@ -521,7 +524,7 @@ async function runInteractiveSession(
       }
 
       if (trimmedInput === "/session" || trimmedInput.startsWith("/session ")) {
-        await handleSessionCommand(trimmedInput, agent, input, ui);
+        await handleSessionCommand(trimmedInput, agent, composer, ui);
         if (shouldExit()) {
           return 130;
         }
@@ -529,7 +532,7 @@ async function runInteractiveSession(
       }
 
       if (trimmedInput === "/tools") {
-        await showToolMenu(input, agent, ui);
+        await showToolMenu(composer, agent, ui);
         if (shouldExit()) {
           return 130;
         }
@@ -570,8 +573,8 @@ async function runInteractiveSession(
 
     return 130;
   } finally {
-    input.close();
-    setActiveInput(null);
+    composer.close();
+    setActiveComposer(null);
   }
 }
 
@@ -635,18 +638,18 @@ async function main(): Promise<number> {
 
   let shouldExit = false;
   let currentAbortController: AbortController | null = null;
-  let activeInput: InteractiveInput | null = null;
+  let activeComposer: PromptComposer | null = null;
   const setCurrentAbortController = (controller: AbortController | null) => {
     currentAbortController = controller;
   };
-  const setActiveInput = (input: InteractiveInput | null) => {
-    activeInput = input;
+  const setActiveComposer = (composer: PromptComposer | null) => {
+    activeComposer = composer;
   };
 
   const handleSigint = () => {
     shouldExit = true;
     setMode("error");
-    activeInput?.close();
+    activeComposer?.close();
     if (currentAbortController && !currentAbortController.signal.aborted) {
       currentAbortController.abort();
       ui.warn("Cancellation requested (SIGINT).");
@@ -691,7 +694,7 @@ Always provide clear, concise responses and summarize what you did after complet
         ui,
         setMode,
         setCurrentAbortController,
-        setActiveInput,
+        setActiveComposer,
         () => shouldExit,
         visibility,
       );

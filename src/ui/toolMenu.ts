@@ -1,5 +1,5 @@
 import { Agent } from "../agent.js";
-import type { InteractiveInput } from "./interactiveInput.js";
+import type { PromptComposer } from "./promptComposer.js";
 import type { TerminalUi } from "./terminal.js";
 import type { ToolSummary } from "../tools/registry.js";
 
@@ -14,7 +14,7 @@ import type { ToolSummary } from "../tools/registry.js";
  * @param ui - Terminal UI renderer
  */
 export async function showToolMenu(
-  input: InteractiveInput,
+  composer: PromptComposer,
   agent: Agent,
   ui: Pick<TerminalUi, "command" | "error" | "info" | "prompt" | "success">,
 ): Promise<void> {
@@ -50,17 +50,18 @@ export async function showToolMenu(
   displayMenu();
 
   while (true) {
-    const rawInput = await input.readLine(
-      ui.prompt(
+    const result = await composer.compose({
+      mode: "menu",
+      promptText: ui.prompt(
         "Enter tool number, 'all on', 'all off', 'defaults', or blank to quit: ",
       ),
-    );
+    });
 
-    if (rawInput === null) {
+    if (result.status === "closed") {
       return;
     }
 
-    const trimmed = rawInput.trim();
+    const trimmed = result.text.trim();
 
     if (trimmed === "") {
       return;

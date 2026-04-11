@@ -1,5 +1,10 @@
 import { showToolMenu } from "../toolMenu.js";
-import type { InteractiveInput } from "../interactiveInput.js";
+import type {
+  PromptComposer,
+  PromptConfirmRequest,
+  PromptRequest,
+  PromptResult,
+} from "../promptComposer.js";
 
 class MockAgent {
   private tools = new Map([
@@ -113,24 +118,32 @@ class MockAgent {
   }
 }
 
-class MockInteractiveInput implements InteractiveInput {
+class MockPromptComposer implements PromptComposer {
   readonly prompts: string[] = [];
 
   constructor(private readonly responses: Array<string | null>) {}
 
-  async readLine(promptText: string): Promise<string | null> {
+  async compose({ promptText }: PromptRequest): Promise<PromptResult> {
     this.prompts.push(promptText);
     if (this.responses.length === 0) {
-      return null;
+      return { status: "closed" };
     }
-    return this.responses.shift() ?? null;
+    const next = this.responses.shift();
+    if (next === null || next === undefined) {
+      return { status: "closed" };
+    }
+    return { status: "submitted", text: next };
   }
 
-  async confirm(): Promise<boolean> {
+  async confirm(_request: PromptConfirmRequest): Promise<boolean> {
     throw new Error("confirm() is not used by the tool menu");
   }
 
   getCloseReason(): "closed" | "interrupted" | null {
+    return null;
+  }
+
+  getState() {
     return null;
   }
 
@@ -161,7 +174,7 @@ describe("showToolMenu", () => {
   });
 
   it("shows the seven built-in tools in order", async () => {
-    const input = new MockInteractiveInput([null]);
+    const input = new MockPromptComposer([null]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -176,7 +189,7 @@ describe("showToolMenu", () => {
   });
 
   it("numbers tools from 1 to 7", async () => {
-    const input = new MockInteractiveInput([null]);
+    const input = new MockPromptComposer([null]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -186,7 +199,7 @@ describe("showToolMenu", () => {
   });
 
   it("shows enabled tools before disabled tools with descriptions", async () => {
-    const input = new MockInteractiveInput([null]);
+    const input = new MockPromptComposer([null]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -197,7 +210,7 @@ describe("showToolMenu", () => {
   });
 
   it("disables enabled tools without confirmation", async () => {
-    const input = new MockInteractiveInput(["1", ""]);
+    const input = new MockPromptComposer(["1", ""]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -208,7 +221,7 @@ describe("showToolMenu", () => {
   it("enables disabled non-dangerous tools without confirmation", async () => {
     const customAgent = new MockAgent();
     customAgent.disableTool("grep");
-    const input = new MockInteractiveInput(["5", ""]);
+    const input = new MockPromptComposer(["5", ""]);
 
     await showToolMenu(input, customAgent as any, mockUi as any);
 
@@ -217,7 +230,7 @@ describe("showToolMenu", () => {
   });
 
   it("enables bash immediately when it is disabled", async () => {
-    const input = new MockInteractiveInput(["4", ""]);
+    const input = new MockPromptComposer(["4", ""]);
 
     mockAgent.disableTool("bash");
     await showToolMenu(input, mockAgent as any, mockUi as any);
@@ -227,7 +240,7 @@ describe("showToolMenu", () => {
   });
 
   it("reprompts after invalid input", async () => {
-    const input = new MockInteractiveInput(["abc", ""]);
+    const input = new MockPromptComposer(["abc", ""]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -239,7 +252,7 @@ describe("showToolMenu", () => {
   });
 
   it("exits on blank input", async () => {
-    const input = new MockInteractiveInput([""]);
+    const input = new MockPromptComposer([""]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
@@ -247,12 +260,7 @@ describe("showToolMenu", () => {
   });
 
   it("supports bulk enable, disable, and defaults actions", async () => {
-    const input = new MockInteractiveInput([
-      "all off",
-      "all on",
-      "defaults",
-      "",
-    ]);
+    const input = new MockPromptComposer(["all off", "all on", "defaults", ""]);
 
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
