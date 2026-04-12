@@ -1,5 +1,10 @@
 import * as readline from "readline";
 import {
+  createChatPromptSession,
+  type ChatPromptSession,
+  type ChatPromptSessionState,
+} from "./chatPromptSession.js";
+import {
   applySubmittedText,
   createPromptState,
   type PromptRequest,
@@ -45,17 +50,24 @@ export interface PromptComposerOptions {
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
   historyStore?: PromptHistoryStore;
+  enableReverseHistorySearch?: boolean;
+}
+
+const PROMPT_HISTORY_LIMIT = 200;
+
+interface ActivePromptContext {
+  request: PromptRequest;
+  historySnapshot: string[] | null;
+  isCustomChat: boolean;
 }
 
 function shouldKeepLiveHistoryEntry(
   request: PromptRequest,
   submittedText: string,
 ): boolean {
-  if (request.mode !== "chat") {
-    return false;
-  }
-
-  return shouldRecordPromptHistoryEntry(submittedText);
+  return (
+    request.mode === "chat" && shouldRecordPromptHistoryEntry(submittedText)
+  );
 }
 
 function snapshotLiveHistory(rl: readline.Interface): string[] | null {
@@ -75,19 +87,43 @@ function restoreLiveHistory(
   history.history = [...historySnapshot];
 }
 
+function updateLiveHistorySnapshot(
+  history: readonly string[],
+  text: string,
+): string[] {
+  const nextHistory = [text, ...history.filter((entry) => entry !== text)];
+  return nextHistory.slice(0, PROMPT_HISTORY_LIMIT);
+}
+
+function clonePromptState(state: PromptState): PromptState {
+  return {
+    ...state,
+    history: state.history ? [...state.history] : undefined,
+    historySearch: state.historySearch ? { ...state.historySearch } : undefined,
+  };
+}
+
+function isTerminalPrompt(options: PromptComposerOptions): boolean {
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stderr;
+  return Boolean(input.isTTY && output.isTTY);
+}
+
 export function createPromptComposer(
   options: PromptComposerOptions = {},
 ): PromptComposer {
   const inputStream = options.input ?? process.stdin;
   const outputStream = options.output ?? process.stderr;
   const createInterface = options.createInterface ?? readline.createInterface;
-  const history = options.historyStore?.load() ?? [];
+  const reverseHistorySearchEnabled =
+    options.enableReverseHistorySearch ?? isTerminalPrompt(options);
+  const liveHistory = [...(options.historyStore?.load() ?? [])];
   const rl = createInterface({
     input: inputStream,
     output: outputStream,
-    terminal: Boolean(outputStream.isTTY),
-    history: [...history],
-    historySize: 200,
+    terminal: Boolean(outputStream.isTTY) && !reverseHistorySearchEnabled,
+    history: [...liveHistory],
+    historySize: PROMPT_HISTORY_LIMIT,
     removeHistoryDuplicates: true,
   });
 
@@ -95,22 +131,10 @@ export function createPromptComposer(
   let closeReason: PromptCloseReason | null = null;
   let pendingResolve: ((result: PromptResult) => void) | null = null;
   let currentState: PromptState | null = null;
+  let activeChatSession: ChatPromptSession | null = null;
+  let activePrompt: ActivePromptContext | null = null;
 
-  const setCloseReason = (reason: PromptCloseReason): void => {
-    if (reason === "interrupted" || closeReason === null) {
-      closeReason = reason;
-    }
-  };
-
-  const settlePending = (result: PromptResult): void => {
-    if (!pendingResolve) {
-      return;
-    }
-
-    const resolve = pendingResolve;
-    pendingResolve = null;
-    resolve(result);
-  };
+  readline.emitKeypressEvents(inputStream);
 
   rl.once("close", () => {
     closed = true;
@@ -123,6 +147,78 @@ export function createPromptComposer(
     process.kill(process.pid, "SIGINT");
   });
 
+  const setCloseReason = (reason: PromptCloseReason): void => {
+    if (reason === "interrupted" || closeReason === null) {
+      closeReason = reason;
+    }
+  };
+
+  const syncChatState = (state: ChatPromptSessionState): void => {
+    if (!currentState) {
+      return;
+    }
+
+    currentState = {
+      ...currentState,
+      buffer: state.buffer,
+      cursor: state.cursor,
+      historySearch: state.historySearch
+        ? { ...state.historySearch }
+        : undefined,
+    };
+  };
+
+  const settlePending = (result: PromptResult): void => {
+    if (!pendingResolve) {
+      return;
+    }
+
+    const resolve = pendingResolve;
+    pendingResolve = null;
+
+    if (activeChatSession) {
+      activeChatSession.cleanup();
+      activeChatSession = null;
+    }
+
+    if (result.status === "submitted" && currentState && activePrompt) {
+      currentState = applySubmittedText(currentState, result.text);
+      const shouldKeepHistory = shouldKeepLiveHistoryEntry(
+        activePrompt.request,
+        result.text,
+      );
+
+      if (shouldKeepHistory) {
+        try {
+          options.historyStore?.record(result.text);
+        } catch {
+          // Prompt history is best-effort and must not block submission.
+        }
+
+        const updatedHistory = updateLiveHistorySnapshot(
+          liveHistory,
+          result.text,
+        );
+        liveHistory.splice(0, liveHistory.length, ...updatedHistory);
+      } else if (!activePrompt.isCustomChat) {
+        restoreLiveHistory(rl, activePrompt.historySnapshot);
+      }
+    }
+
+    activePrompt = null;
+    resolve(result);
+  };
+
+  const close = (): void => {
+    if (closed) {
+      return;
+    }
+
+    closed = true;
+    setCloseReason("closed");
+    rl.close();
+  };
+
   const compose = async (request: PromptRequest): Promise<PromptResult> => {
     if (closed) {
       return { status: "closed" };
@@ -133,46 +229,43 @@ export function createPromptComposer(
     }
 
     currentState = createPromptState(request);
-    const historySnapshot = snapshotLiveHistory(rl);
+    activePrompt = {
+      request,
+      historySnapshot: snapshotLiveHistory(rl),
+      isCustomChat:
+        request.mode === "chat" &&
+        reverseHistorySearchEnabled &&
+        isTerminalPrompt(options),
+    };
+
     if (request.footer && options.renderFooter) {
       options.renderFooter(request.footer);
     }
 
     return await new Promise<PromptResult>((resolve) => {
-      let settled = false;
-      pendingResolve = (result) => {
-        if (settled) {
-          return;
-        }
+      pendingResolve = resolve;
 
-        settled = true;
-        pendingResolve = null;
-
-        if (result.status === "submitted" && currentState) {
-          currentState = applySubmittedText(currentState, result.text);
-          const shouldKeepHistory = shouldKeepLiveHistoryEntry(
-            request,
-            result.text,
-          );
-
-          if (!shouldKeepHistory) {
-            restoreLiveHistory(rl, historySnapshot);
-          }
-
-          if (shouldKeepHistory && options.historyStore) {
-            try {
-              options.historyStore.record(result.text);
-            } catch {
-              // Prompt history is best-effort and must not block submission.
-            }
-          }
-        }
-
-        resolve(result);
-      };
+      if (activePrompt?.isCustomChat) {
+        activeChatSession = createChatPromptSession({
+          inputStream,
+          outputStream,
+          request,
+          historySnapshot: [...liveHistory],
+          callbacks: {
+            render: syncChatState,
+            submit: (text) => settlePending({ status: "submitted", text }),
+            interrupt: () => {
+              setCloseReason("interrupted");
+              process.kill(process.pid, "SIGINT");
+            },
+            close,
+          },
+        });
+        return;
+      }
 
       rl.question(request.promptText, (answer) => {
-        pendingResolve?.({ status: "submitted", text: answer });
+        settlePending({ status: "submitted", text: answer });
       });
     });
   };
@@ -209,28 +302,10 @@ export function createPromptComposer(
     }
   };
 
-  const close = (): void => {
-    if (closed) {
-      return;
-    }
-
-    closed = true;
-    setCloseReason("closed");
-    rl.close();
-  };
-
   return {
     compose,
     confirm,
-    getState: () =>
-      currentState
-        ? {
-            ...currentState,
-            history: currentState.history
-              ? [...currentState.history]
-              : undefined,
-          }
-        : null,
+    getState: () => (currentState ? clonePromptState(currentState) : null),
     getCloseReason: () => closeReason,
     close,
   };

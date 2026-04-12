@@ -13,6 +13,7 @@ describe("promptState", () => {
 
     expect(state.buffer).toBe("");
     expect(state.cursor).toBe(0);
+    expect(state.historySearch).toBeUndefined();
   });
 
   it("stores mode, placeholder, footer, and history", () => {

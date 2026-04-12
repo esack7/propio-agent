@@ -1,3 +1,5 @@
+import type { HistorySearchSummary } from "./historySearch.js";
+
 export type PromptMode = "chat" | "confirm" | "menu";
 
 export interface PromptState {
@@ -7,6 +9,7 @@ export interface PromptState {
   placeholder?: string;
   footer?: string;
   history?: readonly string[];
+  historySearch?: HistorySearchSummary;
 }
 
 export interface PromptRequest {

@@ -58,6 +58,8 @@ function createFakeReadlineHarness() {
       }
       return fakeRl;
     }),
+    pause: jest.fn(() => fakeRl as unknown as readline.Interface),
+    resume: jest.fn(() => fakeRl as unknown as readline.Interface),
     close: jest.fn(() => {
       closeHandler?.();
     }),
@@ -89,7 +91,74 @@ function createFakeReadlineHarness() {
   };
 }
 
+function createTtyHarness(options?: {
+  historyStore?: {
+    load(): readonly string[];
+    record(text: string): void;
+  };
+}) {
+  const inputStream = new PassThrough();
+  const outputStream = new PassThrough();
+  outputStream.setEncoding("utf8");
+  let output = "";
+  outputStream.on("data", (chunk) => {
+    output += chunk;
+  });
+  inputStream.setEncoding("utf8");
+
+  (
+    inputStream as PassThrough & { isTTY: boolean; setRawMode: jest.Mock }
+  ).isTTY = true;
+  (outputStream as PassThrough & { isTTY: boolean }).isTTY = true;
+  (
+    inputStream as PassThrough & {
+      setRawMode: jest.Mock;
+    }
+  ).setRawMode = jest.fn();
+
+  const readlineHarness = createFakeReadlineHarness();
+  const composer = createPromptComposer({
+    input: inputStream as unknown as NodeJS.ReadStream,
+    output: outputStream as unknown as NodeJS.WriteStream,
+    createInterface: readlineHarness.createInterface,
+    historyStore: options?.historyStore,
+  });
+
+  const emitKeypress = (
+    key: Partial<readline.Key> & { name: string },
+    str?: string,
+  ): void => {
+    inputStream.emit("keypress", str, {
+      sequence: str ?? "",
+      ctrl: false,
+      meta: false,
+      shift: false,
+      ...key,
+    } as readline.Key);
+  };
+
+  const typeText = (text: string): void => {
+    for (const character of text) {
+      emitKeypress({ name: character }, character);
+    }
+  };
+
+  return {
+    composer,
+    inputStream,
+    outputStream,
+    getOutput: () => output,
+    emitKeypress,
+    typeText,
+    readlineHarness,
+  };
+}
+
 describe("createPromptComposer", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it("exposes the current prompt state while composing", async () => {
     const harness = createHarness();
 
@@ -124,6 +193,31 @@ describe("createPromptComposer", () => {
       mode: "chat",
       placeholder: "type here",
       footer: "footer text",
+    });
+
+    harness.composer.close();
+  });
+
+  it("positions the cursor using visible prompt width when the prompt is styled", async () => {
+    const harness = createTtyHarness();
+    const styledPrompt = "\u001b[36m>\u001b[39m ";
+    const visiblePromptWidth = 2;
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: styledPrompt,
+    });
+    await flush();
+
+    expect(harness.getOutput()).toContain(`\u001b[${visiblePromptWidth + 1}G`);
+    expect(harness.getOutput()).not.toContain(
+      `\u001b[${styledPrompt.length + 1}G`,
+    );
+
+    harness.inputStream.write("a\n");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "a",
     });
 
     harness.composer.close();
@@ -375,5 +469,385 @@ describe("createPromptComposer", () => {
     expect(readlineHarness.getHistory()).toEqual(["y"]);
 
     composer.close();
+  });
+});
+
+describe("createPromptComposer reverse history search", () => {
+  it("starts reverse search only for chat prompts and records recalled submissions", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-search-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("older");
+    historyStore.record("newer");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "newer",
+      cursor: 5,
+      mode: "chat",
+      historySearch: {
+        active: true,
+        query: "",
+        match: "newer",
+        matchIndex: 0,
+        matchCount: 2,
+      },
+    });
+    expect(harness.getOutput()).toContain("history search:   match: newer");
+    expect(harness.getOutput()).not.toContain("reverse search:");
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "older",
+      cursor: 5,
+      historySearch: {
+        active: true,
+        query: "",
+        match: "older",
+        matchIndex: 1,
+        matchCount: 2,
+      },
+    });
+    expect(harness.getOutput()).toContain("history search:   match: older");
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "older",
+      cursor: 5,
+      historySearch: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "older",
+    });
+    expect(historyStore.load()).toEqual(["older", "newer"]);
+    expect(harness.getOutput()).toContain("\n");
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("handles raw bytes without readline echo during reverse search", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-bytes-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("hello world");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.inputStream.write("h");
+    harness.inputStream.write("e");
+    harness.inputStream.write("l");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hel",
+      historySearch: undefined,
+    });
+    expect(harness.getOutput().match(/hel/g)?.length).toBe(1);
+
+    harness.inputStream.write(String.fromCharCode(18));
+    harness.inputStream.write("l");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello world",
+      historySearch: {
+        active: true,
+        query: "l",
+        match: "hello world",
+        matchIndex: 0,
+        matchCount: 1,
+      },
+    });
+    expect(harness.getOutput()).toContain(
+      "history search: l  match: hello world",
+    );
+    expect(harness.getOutput()).not.toContain(
+      "hello world  reverse search: l -> hello world",
+    );
+
+    harness.inputStream.write("\r");
+    harness.inputStream.write("!");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello world!",
+      historySearch: undefined,
+    });
+
+    harness.inputStream.write("\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "hello world!",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("ignores reverse search for confirm prompts", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.confirm({
+      promptText: "Continue? ",
+      defaultValue: false,
+    });
+    await flush();
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    expect(harness.composer.getState()).toMatchObject({
+      mode: "confirm",
+      historySearch: undefined,
+    });
+
+    harness.readlineHarness.submit("y");
+    await expect(prompt).resolves.toBe(true);
+
+    harness.composer.close();
+  });
+
+  it("cancels reverse search and restores the draft", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-cancel-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("first");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("draft");
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    harness.typeText("fi");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "first",
+      historySearch: {
+        active: true,
+        query: "fi",
+        match: "first",
+        matchIndex: 0,
+        matchCount: 1,
+      },
+    });
+
+    harness.emitKeypress({ name: "escape" }, "\u001b");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "draft",
+      historySearch: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "draft",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("shows a no-match status without discarding the draft", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("draft");
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    harness.typeText("zzz");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "draft",
+      historySearch: {
+        active: true,
+        query: "zzz",
+        match: undefined,
+        matchIndex: -1,
+        matchCount: 0,
+      },
+    });
+    expect(harness.getOutput()).toContain("history search: zzz  no matches");
+
+    harness.emitKeypress({ name: "escape" }, "\u001b");
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "draft",
+    });
+
+    harness.composer.close();
+  });
+
+  it("cancels reverse search with Ctrl+G", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-ctrlg-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("first");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("draft");
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    harness.typeText("fi");
+    harness.emitKeypress({ name: "g", ctrl: true }, "\u0007");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "draft",
+      historySearch: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "draft",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("lets recalled search text be edited before submission", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-edit-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("hello world");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    harness.typeText("hello");
+    harness.emitKeypress({ name: "return" }, "\r");
+    harness.typeText("!");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello world!",
+      historySearch: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "hello world!",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("closes the custom prompt on Ctrl+D", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.emitKeypress({ name: "d", ctrl: true }, "\u0004");
+
+    await expect(prompt).resolves.toEqual({ status: "closed" });
+    expect(harness.composer.getCloseReason()).toBe("closed");
+
+    harness.composer.close();
+  });
+
+  it("preserves unsent drafts while navigating history", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-nav-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("newest");
+    historyStore.record("older");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("draft");
+    harness.emitKeypress({ name: "up" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "older",
+    });
+
+    harness.emitKeypress({ name: "down" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "draft",
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "draft",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("exposes active search summary without leaking mutable arrays", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-state-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("match");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    const state = harness.composer.getState();
+
+    expect(state).toMatchObject({
+      buffer: "match",
+      historySearch: {
+        active: true,
+        query: "",
+        match: "match",
+        matchIndex: 0,
+        matchCount: 1,
+      },
+    });
+    expect(state?.history).toBeUndefined();
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "match",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 });
