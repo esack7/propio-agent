@@ -1,4 +1,5 @@
 import * as readline from "readline";
+import * as path from "path";
 import {
   createChatPromptSession,
   type ChatPromptSession,
@@ -10,6 +11,10 @@ import {
   type PromptRequest,
   type PromptState,
 } from "./promptState.js";
+import {
+  createDefaultTypeaheadProviders,
+  type TypeaheadProvider,
+} from "./typeahead.js";
 import {
   shouldRecordPromptHistoryEntry,
   type PromptHistoryStore,
@@ -51,6 +56,9 @@ export interface PromptComposerOptions {
   renderFooter?: (footer: string) => void;
   historyStore?: PromptHistoryStore;
   enableReverseHistorySearch?: boolean;
+  enableTypeahead?: boolean;
+  workspaceRoot?: string;
+  typeaheadProviders?: readonly TypeaheadProvider[];
 }
 
 const PROMPT_HISTORY_LIMIT = 200;
@@ -100,6 +108,12 @@ function clonePromptState(state: PromptState): PromptState {
     ...state,
     history: state.history ? [...state.history] : undefined,
     historySearch: state.historySearch ? { ...state.historySearch } : undefined,
+    typeahead: state.typeahead
+      ? {
+          ...state.typeahead,
+          matches: [...state.typeahead.matches],
+        }
+      : undefined,
   };
 }
 
@@ -115,13 +129,21 @@ export function createPromptComposer(
   const inputStream = options.input ?? process.stdin;
   const outputStream = options.output ?? process.stderr;
   const createInterface = options.createInterface ?? readline.createInterface;
+  const workspaceRoot = path.resolve(options.workspaceRoot ?? process.cwd());
+  const typeaheadEnabled = options.enableTypeahead ?? isTerminalPrompt(options);
+  const typeaheadProviders =
+    options.typeaheadProviders ??
+    createDefaultTypeaheadProviders(workspaceRoot);
   const reverseHistorySearchEnabled =
     options.enableReverseHistorySearch ?? isTerminalPrompt(options);
+  const useCustomChatPrompt =
+    isTerminalPrompt(options) &&
+    (reverseHistorySearchEnabled || typeaheadEnabled);
   const liveHistory = [...(options.historyStore?.load() ?? [])];
   const rl = createInterface({
     input: inputStream,
     output: outputStream,
-    terminal: Boolean(outputStream.isTTY) && !reverseHistorySearchEnabled,
+    terminal: Boolean(outputStream.isTTY) && !useCustomChatPrompt,
     history: [...liveHistory],
     historySize: PROMPT_HISTORY_LIMIT,
     removeHistoryDuplicates: true,
@@ -164,6 +186,12 @@ export function createPromptComposer(
       cursor: state.cursor,
       historySearch: state.historySearch
         ? { ...state.historySearch }
+        : undefined,
+      typeahead: state.typeahead
+        ? {
+            ...state.typeahead,
+            matches: [...state.typeahead.matches],
+          }
         : undefined,
     };
   };
@@ -232,10 +260,7 @@ export function createPromptComposer(
     activePrompt = {
       request,
       historySnapshot: snapshotLiveHistory(rl),
-      isCustomChat:
-        request.mode === "chat" &&
-        reverseHistorySearchEnabled &&
-        isTerminalPrompt(options),
+      isCustomChat: request.mode === "chat" && useCustomChatPrompt,
     };
 
     if (request.footer && options.renderFooter) {
@@ -251,6 +276,10 @@ export function createPromptComposer(
           outputStream,
           request,
           historySnapshot: [...liveHistory],
+          enableTypeahead:
+            request.mode === "chat" && typeaheadEnabled && !closed,
+          workspaceRoot,
+          typeaheadProviders,
           callbacks: {
             render: syncChatState,
             submit: (text) => settlePending({ status: "submitted", text }),

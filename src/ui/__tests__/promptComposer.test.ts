@@ -96,6 +96,9 @@ function createTtyHarness(options?: {
     load(): readonly string[];
     record(text: string): void;
   };
+  workspaceRoot?: string;
+  enableReverseHistorySearch?: boolean;
+  enableTypeahead?: boolean;
 }) {
   const inputStream = new PassThrough();
   const outputStream = new PassThrough();
@@ -122,6 +125,9 @@ function createTtyHarness(options?: {
     output: outputStream as unknown as NodeJS.WriteStream,
     createInterface: readlineHarness.createInterface,
     historyStore: options?.historyStore,
+    workspaceRoot: options?.workspaceRoot,
+    enableReverseHistorySearch: options?.enableReverseHistorySearch,
+    enableTypeahead: options?.enableTypeahead,
   });
 
   const emitKeypress = (
@@ -265,6 +271,21 @@ describe("createPromptComposer", () => {
         removeHistoryDuplicates: true,
       }),
     );
+  });
+
+  it("disables readline terminal mode for typeahead-only custom prompts", () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: true,
+    });
+
+    expect(harness.readlineHarness.createInterface).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminal: false,
+      }),
+    );
+
+    harness.composer.close();
   });
 
   it("records submitted chat input", async () => {
@@ -849,5 +870,273 @@ describe("createPromptComposer reverse history search", () => {
 
     harness.composer.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+});
+
+describe("createPromptComposer typeahead", () => {
+  function makeWorkspaceRoot(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "propio-typeahead-"));
+  }
+
+  it("accepts a unique slash completion without submitting", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("/cle");
+    harness.emitKeypress({ name: "tab" }, "\t");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "/clear",
+      cursor: 6,
+      typeahead: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "/clear",
+    });
+
+    harness.composer.close();
+  });
+
+  it("cycles multiple slash-command matches and clones the summary state", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("/con");
+    harness.emitKeypress({ name: "tab" }, "\t");
+
+    const firstState = harness.composer.getState();
+    expect(firstState).toMatchObject({
+      buffer: "/context",
+      cursor: 8,
+      typeahead: {
+        active: true,
+        kind: "command",
+        query: "/con",
+        match: "/context",
+        matchIndex: 0,
+        matchCount: 3,
+        matches: ["/context", "/context prompt", "/context memory"],
+      },
+    });
+
+    expect(harness.getOutput()).toContain("tab: /context");
+
+    if (firstState?.typeahead) {
+      const clonedMatches = firstState.typeahead.matches as string[];
+      clonedMatches[0] = "mutated";
+    }
+
+    expect(harness.composer.getState()).toMatchObject({
+      typeahead: {
+        matches: ["/context", "/context prompt", "/context memory"],
+      },
+    });
+
+    harness.emitKeypress({ name: "tab" }, "\t");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "/context prompt",
+      typeahead: {
+        match: "/context prompt",
+        matchIndex: 1,
+        matchCount: 3,
+      },
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "/context prompt",
+    });
+
+    harness.composer.close();
+  });
+
+  it("completes workspace paths inside natural language prompts", async () => {
+    const workspaceRoot = makeWorkspaceRoot();
+    fs.mkdirSync(path.join(workspaceRoot, "docs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceRoot, "docs", "prompt-composer.md"),
+      "test",
+    );
+
+    const harness = createTtyHarness({ workspaceRoot });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("read docs/pro");
+    harness.emitKeypress({ name: "tab" }, "\t");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "read docs/prompt-composer.md",
+      cursor: "read docs/prompt-composer.md".length,
+      typeahead: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "read docs/prompt-composer.md",
+    });
+
+    harness.composer.close();
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it("cancels active typeahead on Escape and Ctrl+G", async () => {
+    const harness = createTtyHarness();
+
+    const firstPrompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("/con");
+    harness.emitKeypress({ name: "tab" }, "\t");
+    harness.emitKeypress({ name: "escape" }, "\u001b");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "/con",
+      typeahead: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(firstPrompt).resolves.toEqual({
+      status: "submitted",
+      text: "/con",
+    });
+
+    const secondPrompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("/con");
+    harness.emitKeypress({ name: "tab" }, "\t");
+    harness.emitKeypress({ name: "g", ctrl: true }, "\u0007");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "/con",
+      typeahead: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(secondPrompt).resolves.toEqual({
+      status: "submitted",
+      text: "/con",
+    });
+
+    harness.composer.close();
+  });
+
+  it("clears typeahead before reverse search and restores the draft on cancel", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-search-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("older");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("/con");
+    harness.emitKeypress({ name: "tab" }, "\t");
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+
+    expect(harness.composer.getState()).toMatchObject({
+      historySearch: {
+        active: true,
+        query: "",
+      },
+      typeahead: undefined,
+      buffer: "older",
+    });
+
+    harness.typeText("old");
+    harness.emitKeypress({ name: "escape" }, "\u001b");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "/con",
+      historySearch: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "/con",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("cancels a typeahead when the draft is edited", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("/con");
+    harness.emitKeypress({ name: "tab" }, "\t");
+    harness.typeText("!");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "/con!",
+      typeahead: undefined,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "/con!",
+    });
+
+    harness.composer.close();
+  });
+
+  it("keeps confirm prompts on the readline path and ignores Tab", async () => {
+    const harness = createTtyHarness();
+
+    const prompt = harness.composer.confirm({
+      promptText: "Continue? ",
+      defaultValue: false,
+    });
+    await flush();
+
+    harness.emitKeypress({ name: "tab" }, "\t");
+    expect(harness.composer.getState()).toMatchObject({
+      mode: "confirm",
+      typeahead: undefined,
+      historySearch: undefined,
+    });
+
+    harness.readlineHarness.submit("y");
+    await expect(prompt).resolves.toBe(true);
+
+    harness.composer.close();
   });
 });

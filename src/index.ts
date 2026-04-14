@@ -433,6 +433,7 @@ async function runInteractiveSession(
   const composer = createPromptComposer({
     output: ui.getPromptOutputStream(),
     historyStore: createWorkspacePromptHistoryStore(),
+    workspaceRoot: process.cwd(),
     renderFooter: (footer) => {
       ui.idleFooter(footer);
     },

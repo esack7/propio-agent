@@ -1,6 +1,7 @@
 import {
   buildSlashCommandHelpLines,
   getIdleFooterText,
+  getSlashCommandCompletionCommands,
   isHelpCommand,
   SLASH_COMMAND_GROUPS,
 } from "../slashCommands.js";
@@ -37,5 +38,17 @@ describe("slashCommands", () => {
     expect(isHelpCommand("?")).toBe(true);
     expect(isHelpCommand("/help")).toBe(true);
     expect(isHelpCommand("/tools")).toBe(false);
+  });
+
+  it("exposes completion commands without aliases or placeholders", () => {
+    const commands = getSlashCommandCompletionCommands().map(
+      (command) => command.command,
+    );
+
+    expect(commands).toContain("/context");
+    expect(commands).toContain("/context prompt");
+    expect(commands).toContain("/session load");
+    expect(commands).not.toContain("?");
+    expect(commands).not.toContain("/session load <id>");
   });
 });

@@ -65,6 +65,14 @@ const FEATURED_COMMANDS: ReadonlyArray<string> = [
   "/exit",
 ];
 
+export function getSlashCommandCompletionCommands(): SlashCommand[] {
+  return SLASH_COMMAND_GROUPS.flatMap((group) =>
+    group.commands.filter(
+      (command) => command.command !== "?" && !command.command.includes("<"),
+    ),
+  );
+}
+
 function findCommand(command: string): SlashCommand | undefined {
   for (const group of SLASH_COMMAND_GROUPS) {
     const match = group.commands.find((entry) => entry.command === command);

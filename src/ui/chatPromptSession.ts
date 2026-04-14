@@ -9,11 +9,22 @@ import {
   type HistorySearchState,
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
+import {
+  acceptTypeaheadState,
+  cancelTypeaheadState,
+  createTypeaheadState,
+  cycleTypeaheadState,
+  getTypeaheadSummary,
+  type TypeaheadProvider,
+  type TypeaheadState,
+  type TypeaheadSummary,
+} from "./typeahead.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
   cursor: number;
   historySearch?: ReturnType<typeof getHistorySearchSummary>;
+  typeahead?: TypeaheadSummary;
 }
 
 export interface ChatPromptSessionCallbacks {
@@ -28,6 +39,9 @@ export interface ChatPromptSessionOptions {
   outputStream: NodeJS.WriteStream;
   request: PromptRequest;
   historySnapshot: readonly string[];
+  enableTypeahead: boolean;
+  workspaceRoot: string;
+  typeaheadProviders: readonly TypeaheadProvider[];
   callbacks: ChatPromptSessionCallbacks;
 }
 
@@ -98,9 +112,13 @@ function renderPromptLine(
   buffer: string,
   cursor: number,
   searchState: HistorySearchState | null,
+  typeaheadState: TypeaheadState | null,
 ): void {
   const searchSummary = searchState
     ? getHistorySearchSummary(searchState)
+    : null;
+  const typeaheadSummary = typeaheadState
+    ? getTypeaheadSummary(typeaheadState)
     : null;
   const searchPrefix = searchState ? `${promptText}history search: ` : "";
   const searchSuffix = searchState
@@ -110,7 +128,9 @@ function renderPromptLine(
     : "";
   const line = searchState
     ? `${searchPrefix}${searchState.query}${searchSuffix}`
-    : `${promptText}${buffer}`;
+    : typeaheadSummary
+      ? `${promptText}${buffer}  ${formatTypeaheadSummary(typeaheadSummary)}`
+      : `${promptText}${buffer}`;
   const cursorPosition = searchState
     ? getDisplayWidth(searchPrefix) + getDisplayWidth(searchState.query)
     : getDisplayWidth(promptText) +
@@ -140,6 +160,18 @@ function renderPromptLine(
   }
 }
 
+function formatTypeaheadSummary(summary: TypeaheadSummary): string {
+  if (summary.matchCount === 0 || !summary.match) {
+    return "tab: no matches";
+  }
+
+  if (summary.matchCount === 1) {
+    return `tab: ${summary.match}`;
+  }
+
+  return `tab: ${summary.match} (${summary.matchIndex + 1}/${summary.matchCount})`;
+}
+
 function setRawMode(inputStream: NodeJS.ReadStream, enabled: boolean): void {
   const stream = inputStream as NodeJS.ReadStream & {
     setRawMode?: (mode: boolean) => void;
@@ -162,6 +194,7 @@ export function createChatPromptSession(
   let historyIndex: number | null = null;
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
   let searchState: HistorySearchState | null = null;
+  let typeaheadState: TypeaheadState | null = null;
   let rawModeEnabled = false;
   let active = true;
 
@@ -172,6 +205,9 @@ export function createChatPromptSession(
       historySearch: searchState
         ? getHistorySearchSummary(searchState)
         : undefined,
+      typeahead: typeaheadState
+        ? getTypeaheadSummary(typeaheadState)
+        : undefined,
     });
     renderPromptLine(
       outputStream,
@@ -179,6 +215,7 @@ export function createChatPromptSession(
       buffer,
       cursor,
       searchState,
+      typeaheadState,
     );
   };
 
@@ -195,6 +232,67 @@ export function createChatPromptSession(
     const selection = acceptHistorySearch(searchState);
     buffer = selection.buffer;
     cursor = selection.cursor;
+  };
+
+  const clearTypeahead = (): void => {
+    typeaheadState = null;
+  };
+
+  const cancelTypeahead = (shouldRender: boolean): void => {
+    if (!typeaheadState) {
+      return;
+    }
+
+    const selection = cancelTypeaheadState(typeaheadState);
+    buffer = selection.buffer;
+    cursor = selection.cursor;
+    clearTypeahead();
+    if (shouldRender) {
+      render();
+    }
+  };
+
+  const startTypeahead = (): void => {
+    if (!options.enableTypeahead) {
+      return;
+    }
+
+    const nextState = createTypeaheadState({
+      buffer,
+      cursor,
+      workspaceRoot: options.workspaceRoot,
+      typeaheadProviders: options.typeaheadProviders,
+    });
+
+    if (!nextState) {
+      return;
+    }
+
+    typeaheadState = nextState;
+    if (nextState.suggestions.length > 0) {
+      const selection = acceptTypeaheadState(nextState);
+      buffer = selection.buffer;
+      cursor = selection.cursor;
+      if (nextState.suggestions.length === 1) {
+        typeaheadState = null;
+      }
+    }
+
+    render();
+  };
+
+  const cycleTypeahead = (): void => {
+    if (!typeaheadState) {
+      return;
+    }
+
+    typeaheadState = cycleTypeaheadState(typeaheadState);
+    if (typeaheadState.suggestions.length > 0) {
+      const selection = acceptTypeaheadState(typeaheadState);
+      buffer = selection.buffer;
+      cursor = selection.cursor;
+    }
+    render();
   };
 
   const exitSearch = (
@@ -249,6 +347,10 @@ export function createChatPromptSession(
   };
 
   const moveHistory = (direction: "up" | "down"): void => {
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
     if (searchState || historySnapshot.length === 0) {
       return;
     }
@@ -291,6 +393,10 @@ export function createChatPromptSession(
   };
 
   const insertText = (text: string): void => {
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
     if (searchState) {
       updateSearchQuery(`${searchState.query}${text}`);
       return;
@@ -306,6 +412,10 @@ export function createChatPromptSession(
   };
 
   const deleteBeforeCursor = (): void => {
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
     if (searchState) {
       updateSearchQuery(searchState.query.slice(0, -1));
       return;
@@ -325,6 +435,10 @@ export function createChatPromptSession(
   };
 
   const deleteAtCursor = (): void => {
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
     if (searchState) {
       return;
     }
@@ -342,6 +456,10 @@ export function createChatPromptSession(
   };
 
   const moveCursor = (direction: "left" | "right" | "home" | "end"): void => {
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
     if (searchState) {
       return;
     }
@@ -360,6 +478,10 @@ export function createChatPromptSession(
   };
 
   const handleEnter = (): void => {
+    if (typeaheadState) {
+      clearTypeahead();
+    }
+
     if (searchState) {
       acceptSearch();
       return;
@@ -385,6 +507,7 @@ export function createChatPromptSession(
     }
 
     if (key.name === "r" && key.ctrl) {
+      cancelTypeahead(false);
       enterSearch();
       return;
     }
@@ -392,6 +515,8 @@ export function createChatPromptSession(
     if (key.name === "g" && key.ctrl) {
       if (searchState) {
         cancelSearch();
+      } else if (typeaheadState) {
+        cancelTypeahead(true);
       }
       return;
     }
@@ -399,6 +524,8 @@ export function createChatPromptSession(
     if (key.name === "escape") {
       if (searchState) {
         cancelSearch();
+      } else if (typeaheadState) {
+        cancelTypeahead(true);
       }
       return;
     }
@@ -409,6 +536,10 @@ export function createChatPromptSession(
     }
 
     if (searchState) {
+      if (key.name === "tab") {
+        return;
+      }
+
       if (key.name === "backspace" || key.name === "delete") {
         updateSearchQuery(searchState.query.slice(0, -1));
         return;
@@ -416,6 +547,15 @@ export function createChatPromptSession(
 
       if (isPrintableKey(str, key)) {
         insertText(str ?? "");
+      }
+      return;
+    }
+
+    if (key.name === "tab") {
+      if (typeaheadState) {
+        cycleTypeahead();
+      } else {
+        startTypeahead();
       }
       return;
     }
