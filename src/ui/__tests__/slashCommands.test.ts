@@ -21,6 +21,10 @@ describe("slashCommands", () => {
     const text = lines.map((line) => line.text).join("\n");
 
     expect(text).toContain("Most useful commands");
+    expect(text).toContain("Chat shortcuts");
+    expect(text).toContain("Ctrl+J");
+    expect(text).not.toContain("Alt+Enter");
+    expect(text).toContain("Ctrl+X Ctrl+E");
     expect(text).toContain("/help");
     expect(text).toContain("?");
     expect(text).toContain("/tools");
@@ -29,9 +33,7 @@ describe("slashCommands", () => {
   });
 
   it("keeps the idle footer concise", () => {
-    expect(getIdleFooterText()).toBe(
-      "? help | /tools | /context | /session list | /exit",
-    );
+    expect(getIdleFooterText()).toBe("Enter to send | ? help");
   });
 
   it("treats ? as a help alias", () => {

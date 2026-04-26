@@ -34,6 +34,17 @@ describe("promptState", () => {
     expect(state.history).not.toBe(history);
     expect(state.buffer).toBe("abc");
     expect(state.cursor).toBe(3);
+    expect(state.multiline).toBe(false);
+  });
+
+  it("marks multiline buffers in prompt state", () => {
+    const state = createPromptState({
+      promptText: "Name? ",
+      mode: "chat",
+      defaultValue: "hello\nworld",
+    });
+
+    expect(state.multiline).toBe(true);
   });
 
   it("applies submitted text and moves the cursor to the end", () => {
@@ -47,6 +58,7 @@ describe("promptState", () => {
 
     expect(next.buffer).toBe("world");
     expect(next.cursor).toBe(5);
+    expect(next.multiline).toBe(false);
   });
 
   it("clamps cursor values to the buffer bounds", () => {

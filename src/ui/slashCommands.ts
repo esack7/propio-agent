@@ -99,6 +99,16 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
     }
   }
 
+  lines.push({ text: "Chat shortcuts", style: "section" });
+  lines.push({
+    text: "  Ctrl+J          - insert a newline",
+    style: "info",
+  });
+  lines.push({
+    text: "  Ctrl+X Ctrl+E       - open the editor",
+    style: "info",
+  });
+
   for (const group of SLASH_COMMAND_GROUPS) {
     lines.push({ text: group.name, style: "section" });
 
@@ -111,7 +121,7 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
 }
 
 export function getIdleFooterText(): string {
-  return "? help | /tools | /context | /session list | /exit";
+  return "Enter to send | ? help";
 }
 
 export function isHelpCommand(input: string): boolean {

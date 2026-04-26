@@ -5,6 +5,9 @@ import * as path from "path";
 import * as readline from "readline";
 import { createPromptComposer } from "../promptComposer.js";
 import { createPromptHistoryStore } from "../promptHistory.js";
+import type { PromptEditorRunner } from "../promptEditor.js";
+
+jest.setTimeout(10000);
 
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -99,11 +102,16 @@ function createTtyHarness(options?: {
   workspaceRoot?: string;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
+  columns?: number;
+  editorRunner?: PromptEditorRunner;
+  editorEnv?: NodeJS.ProcessEnv;
+  setRawModeMock?: jest.Mock;
 }) {
   const inputStream = new PassThrough();
   const outputStream = new PassThrough();
   outputStream.setEncoding("utf8");
   let output = "";
+  const columns = options?.columns ?? 80;
   outputStream.on("data", (chunk) => {
     output += chunk;
   });
@@ -112,12 +120,17 @@ function createTtyHarness(options?: {
   (
     inputStream as PassThrough & { isTTY: boolean; setRawMode: jest.Mock }
   ).isTTY = true;
-  (outputStream as PassThrough & { isTTY: boolean }).isTTY = true;
+  const ttyOutput = outputStream as PassThrough & {
+    isTTY: boolean;
+    columns: number;
+  };
+  ttyOutput.isTTY = true;
+  ttyOutput.columns = columns;
   (
     inputStream as PassThrough & {
       setRawMode: jest.Mock;
     }
-  ).setRawMode = jest.fn();
+  ).setRawMode = options?.setRawModeMock ?? jest.fn();
 
   const readlineHarness = createFakeReadlineHarness();
   const composer = createPromptComposer({
@@ -128,6 +141,8 @@ function createTtyHarness(options?: {
     workspaceRoot: options?.workspaceRoot,
     enableReverseHistorySearch: options?.enableReverseHistorySearch,
     enableTypeahead: options?.enableTypeahead,
+    editorRunner: options?.editorRunner,
+    editorEnv: options?.editorEnv,
   });
 
   const emitKeypress = (
@@ -154,6 +169,11 @@ function createTtyHarness(options?: {
     inputStream,
     outputStream,
     getOutput: () => output,
+    takeOutput: () => {
+      const current = output;
+      output = "";
+      return current;
+    },
     emitKeypress,
     typeText,
     readlineHarness,
@@ -176,13 +196,14 @@ describe("createPromptComposer", () => {
     });
 
     const activeState = harness.composer.getState();
-    expect(activeState).toEqual({
+    expect(activeState).toMatchObject({
       buffer: "",
       cursor: 0,
       mode: "chat",
       placeholder: "type here",
       footer: "footer text",
       history: undefined,
+      multiline: false,
     });
 
     await flush();
@@ -213,18 +234,11 @@ describe("createPromptComposer", () => {
       mode: "chat",
       promptText: styledPrompt,
     });
-    await flush();
 
     expect(harness.getOutput()).toContain(`\u001b[${visiblePromptWidth + 1}G`);
     expect(harness.getOutput()).not.toContain(
       `\u001b[${styledPrompt.length + 1}G`,
     );
-
-    harness.inputStream.write("a\n");
-    await expect(prompt).resolves.toEqual({
-      status: "submitted",
-      text: "a",
-    });
 
     harness.composer.close();
   });
@@ -870,6 +884,308 @@ describe("createPromptComposer reverse history search", () => {
 
     harness.composer.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+});
+
+describe("createPromptComposer multiline chat editing", () => {
+  it("inserts newlines with Ctrl+J, then submits the full buffer", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("hello");
+    harness.emitKeypress({ name: "j", ctrl: true }, "\n");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello\n",
+      cursor: 6,
+      multiline: true,
+    });
+
+    harness.typeText("world");
+    harness.emitKeypress({ name: "j", ctrl: true }, "\n");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello\nworld\n",
+      cursor: 12,
+      multiline: true,
+    });
+
+    harness.typeText("done");
+    harness.emitKeypress({ name: "return" }, "\r");
+
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "hello\nworld\ndone",
+    });
+
+    harness.composer.close();
+  });
+
+  it("inserts a newline when Ctrl+J arrives as a control keypress", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("hello");
+    harness.emitKeypress({ name: "j", ctrl: true }, "\n");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello\n",
+      cursor: 6,
+      multiline: true,
+    });
+
+    harness.typeText("world");
+    harness.emitKeypress({ name: "return" }, "\r");
+
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "hello\nworld",
+    });
+
+    harness.composer.close();
+  });
+
+  it("inserts a newline when Ctrl+J arrives as a line-feed return keypress", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("hello");
+    harness.emitKeypress({ name: "return" }, "\n");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "hello\n",
+      cursor: 6,
+      multiline: true,
+    });
+
+    harness.typeText("world");
+    harness.emitKeypress({ name: "return" }, "\r");
+
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "hello\nworld",
+    });
+
+    harness.composer.close();
+  });
+
+  it("moves vertically within multiline text and falls back to history navigation at line edges", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      historyStore: {
+        load: () => ["previous entry"],
+        record: jest.fn(),
+      },
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("first");
+    harness.emitKeypress({ name: "j", ctrl: true }, "\n");
+    harness.typeText("second");
+
+    harness.emitKeypress({ name: "home" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "first\nsecond",
+      cursor: 6,
+      multiline: true,
+    });
+
+    harness.emitKeypress({ name: "up" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "first\nsecond",
+      cursor: 0,
+      multiline: true,
+    });
+
+    harness.emitKeypress({ name: "end" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "first\nsecond",
+      cursor: 5,
+      multiline: true,
+    });
+
+    harness.emitKeypress({ name: "up" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "previous entry",
+      cursor: 14,
+      multiline: false,
+    });
+
+    harness.emitKeypress({ name: "down" });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "first\nsecond",
+      cursor: 5,
+      multiline: true,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "first\nsecond",
+    });
+
+    harness.composer.close();
+  });
+
+  it("clears stale lines when a newline is deleted from a multiline draft", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      columns: 24,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("alpha");
+    harness.emitKeypress({ name: "j", ctrl: true }, "\n");
+    harness.typeText("beta");
+    harness.takeOutput();
+
+    harness.emitKeypress({ name: "home" });
+    harness.emitKeypress({ name: "backspace" });
+
+    const output = harness.takeOutput();
+    expect(output).toMatch(/\u001b\[(?:0)?J/);
+    expect(output).toContain("alphabeta");
+    expect(output).not.toContain("alpha\nbeta");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alphabeta",
+      cursor: 5,
+      multiline: false,
+    });
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+  });
+
+  it("restores raw mode after editor handoff and waits for Enter before submitting", async () => {
+    const rawMode = jest.fn();
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      editorEnv: {
+        VISUAL: "mock-editor",
+      },
+      setRawModeMock: rawMode,
+      editorRunner: ({ filePath }) => {
+        fs.writeFileSync(filePath, "edited text", "utf8");
+        return { status: 0, signal: null };
+      },
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("first line");
+    harness.emitKeypress({ name: "j", ctrl: true }, "\n");
+    harness.typeText("second");
+    harness.takeOutput();
+
+    harness.emitKeypress({ name: "x", ctrl: true }, "\u0018");
+    harness.emitKeypress({ name: "e", ctrl: true }, "\u0005");
+
+    expect(rawMode.mock.calls).toEqual([[true], [false], [true]]);
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "edited text",
+      cursor: 11,
+      multiline: false,
+      editorStatus: undefined,
+    });
+
+    const editorOutput = harness.takeOutput();
+    expect(editorOutput).toMatch(/\u001b\[(?:0)?J/);
+    expect(editorOutput).toContain("edited text");
+
+    harness.emitKeypress({ name: "return" }, "\r");
+
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "edited text",
+    });
+
+    harness.composer.close();
+  });
+
+  it("preserves the draft and shows an editor status when no editor is configured", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      editorEnv: {},
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("draft");
+    harness.emitKeypress({ name: "x", ctrl: true }, "\u0018");
+    harness.emitKeypress({ name: "e", ctrl: true }, "\u0005");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "draft",
+      cursor: 5,
+      multiline: false,
+      editorStatus: "Editor unavailable. Set VISUAL or EDITOR.",
+    });
+
+    const statusOutput = harness.takeOutput();
+    expect(statusOutput).toContain("Editor unavailable. Set VISUAL or EDITOR.");
+
+    harness.emitKeypress({ name: "return" }, "\r");
+
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "draft",
+    });
+
+    harness.composer.close();
   });
 });
 

@@ -12,6 +12,8 @@ export interface PromptState {
   history?: readonly string[];
   historySearch?: HistorySearchSummary;
   typeahead?: TypeaheadSummary;
+  multiline?: boolean;
+  editorStatus?: string;
 }
 
 export interface PromptRequest {
@@ -39,6 +41,7 @@ export function createPromptState(request: PromptRequest): PromptState {
     placeholder: request.placeholder,
     footer: request.footer,
     history: request.history ? [...request.history] : undefined,
+    multiline: buffer.includes("\n"),
   };
 }
 
@@ -53,5 +56,7 @@ export function applySubmittedText(
     cursor: clampPromptCursor(buffer.length, buffer.length),
     historySearch: undefined,
     typeahead: undefined,
+    multiline: buffer.includes("\n"),
+    editorStatus: undefined,
   };
 }

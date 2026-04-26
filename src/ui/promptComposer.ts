@@ -19,6 +19,7 @@ import {
   shouldRecordPromptHistoryEntry,
   type PromptHistoryStore,
 } from "./promptHistory.js";
+import type { PromptEditorRunner } from "./promptEditor.js";
 
 export type { PromptMode, PromptState, PromptRequest } from "./promptState.js";
 
@@ -59,6 +60,8 @@ export interface PromptComposerOptions {
   enableTypeahead?: boolean;
   workspaceRoot?: string;
   typeaheadProviders?: readonly TypeaheadProvider[];
+  editorRunner?: PromptEditorRunner;
+  editorEnv?: NodeJS.ProcessEnv;
 }
 
 const PROMPT_HISTORY_LIMIT = 200;
@@ -136,9 +139,7 @@ export function createPromptComposer(
     createDefaultTypeaheadProviders(workspaceRoot);
   const reverseHistorySearchEnabled =
     options.enableReverseHistorySearch ?? isTerminalPrompt(options);
-  const useCustomChatPrompt =
-    isTerminalPrompt(options) &&
-    (reverseHistorySearchEnabled || typeaheadEnabled);
+  const useCustomChatPrompt = isTerminalPrompt(options);
   const liveHistory = [...(options.historyStore?.load() ?? [])];
   const rl = createInterface({
     input: inputStream,
@@ -155,8 +156,6 @@ export function createPromptComposer(
   let currentState: PromptState | null = null;
   let activeChatSession: ChatPromptSession | null = null;
   let activePrompt: ActivePromptContext | null = null;
-
-  readline.emitKeypressEvents(inputStream);
 
   rl.once("close", () => {
     closed = true;
@@ -193,6 +192,8 @@ export function createPromptComposer(
             matches: [...state.typeahead.matches],
           }
         : undefined,
+      multiline: state.multiline,
+      editorStatus: state.editorStatus,
     };
   };
 
@@ -271,6 +272,7 @@ export function createPromptComposer(
       pendingResolve = resolve;
 
       if (activePrompt?.isCustomChat) {
+        readline.emitKeypressEvents(inputStream);
         activeChatSession = createChatPromptSession({
           inputStream,
           outputStream,
@@ -278,8 +280,11 @@ export function createPromptComposer(
           historySnapshot: [...liveHistory],
           enableTypeahead:
             request.mode === "chat" && typeaheadEnabled && !closed,
+          enableReverseHistorySearch: reverseHistorySearchEnabled,
           workspaceRoot,
           typeaheadProviders,
+          editorRunner: options.editorRunner,
+          editorEnv: options.editorEnv,
           callbacks: {
             render: syncChatState,
             submit: (text) => settlePending({ status: "submitted", text }),
@@ -293,6 +298,7 @@ export function createPromptComposer(
         return;
       }
 
+      inputStream.resume();
       rl.question(request.promptText, (answer) => {
         settlePending({ status: "submitted", text: answer });
       });

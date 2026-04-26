@@ -19,12 +19,15 @@ import {
   type TypeaheadState,
   type TypeaheadSummary,
 } from "./typeahead.js";
+import { openPromptEditor, type PromptEditorRunner } from "./promptEditor.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
   cursor: number;
   historySearch?: ReturnType<typeof getHistorySearchSummary>;
   typeahead?: TypeaheadSummary;
+  multiline?: boolean;
+  editorStatus?: string;
 }
 
 export interface ChatPromptSessionCallbacks {
@@ -40,8 +43,11 @@ export interface ChatPromptSessionOptions {
   request: PromptRequest;
   historySnapshot: readonly string[];
   enableTypeahead: boolean;
+  enableReverseHistorySearch: boolean;
   workspaceRoot: string;
   typeaheadProviders: readonly TypeaheadProvider[];
+  editorRunner?: PromptEditorRunner;
+  editorEnv?: NodeJS.ProcessEnv;
   callbacks: ChatPromptSessionCallbacks;
 }
 
@@ -106,58 +112,181 @@ function getDisplayWidth(text: string): number {
   return width;
 }
 
-function renderPromptLine(
+function sanitizePromptPreview(text: string): string {
+  return text.replace(/\r?\n/g, " ⏎ ");
+}
+
+function getLineStartIndex(buffer: string, cursor: number): number {
+  const clampedCursor = clampPromptCursor(cursor, buffer.length);
+  const previousNewline = buffer.lastIndexOf("\n", clampedCursor - 1);
+  return previousNewline >= 0 ? previousNewline + 1 : 0;
+}
+
+function getLineEndIndex(buffer: string, cursor: number): number {
+  const clampedCursor = clampPromptCursor(cursor, buffer.length);
+  const nextNewline = buffer.indexOf("\n", clampedCursor);
+  return nextNewline >= 0 ? nextNewline : buffer.length;
+}
+
+function getLineColumn(buffer: string, cursor: number): number {
+  return (
+    clampPromptCursor(cursor, buffer.length) - getLineStartIndex(buffer, cursor)
+  );
+}
+
+function wrapLineByWidth(line: string, width: number): string[] {
+  if (!Number.isFinite(width) || width <= 0) {
+    return [line];
+  }
+
+  const segments: string[] = [];
+  let current = "";
+  let currentWidth = 0;
+
+  for (const character of line) {
+    const characterWidth = getDisplayWidth(character);
+
+    if (current.length > 0 && currentWidth + characterWidth > width) {
+      segments.push(current);
+      current = character;
+      currentWidth = characterWidth;
+      continue;
+    }
+
+    if (current.length === 0 && characterWidth > width) {
+      segments.push(character);
+      continue;
+    }
+
+    current += character;
+    currentWidth += characterWidth;
+  }
+
+  if (current.length > 0 || line.length === 0) {
+    segments.push(current);
+  }
+
+  return segments;
+}
+
+interface PromptLayout {
+  lines: string[];
+  cursorRow: number;
+  cursorCol: number;
+  totalRows: number;
+}
+
+function buildPromptLayout(
+  promptText: string,
+  buffer: string,
+  cursor: number,
+  statusLine: string | null,
+  outputStream: NodeJS.WriteStream,
+): PromptLayout {
+  const promptWidth = getDisplayWidth(promptText);
+  const availableWidth = outputStream.isTTY
+    ? Math.max(1, (outputStream.columns ?? 80) - promptWidth)
+    : Number.POSITIVE_INFINITY;
+  const indent = " ".repeat(promptWidth);
+  const logicalLines = buffer.split("\n");
+  const lines: string[] = [];
+  let cursorRow = 0;
+  let cursorCol = promptWidth;
+  let consumedCharacters = 0;
+  let renderedRows = 0;
+
+  for (let lineIndex = 0; lineIndex < logicalLines.length; lineIndex += 1) {
+    const line = logicalLines[lineIndex];
+    const wrapped = wrapLineByWidth(line, availableWidth);
+
+    for (
+      let segmentIndex = 0;
+      segmentIndex < wrapped.length;
+      segmentIndex += 1
+    ) {
+      const prefix =
+        lineIndex === 0 && segmentIndex === 0 ? promptText : indent;
+      lines.push(`${prefix}${wrapped[segmentIndex]}`);
+    }
+
+    const lineLength = line.length;
+    const cursorLineEnd = consumedCharacters + lineLength;
+    const cursorLineStart = consumedCharacters;
+    const lineWrapWidth = Number.isFinite(availableWidth) ? availableWidth : 0;
+
+    if (cursor >= cursorLineStart && cursor <= cursorLineEnd) {
+      const lineCursorOffset = cursor - cursorLineStart;
+      const prefixWidth = getDisplayWidth(line.slice(0, lineCursorOffset));
+      const segmentIndex = Number.isFinite(availableWidth)
+        ? prefixWidth === 0
+          ? 0
+          : Math.floor((prefixWidth - 1) / lineWrapWidth)
+        : 0;
+      const columnInSegment = Number.isFinite(availableWidth)
+        ? prefixWidth === 0
+          ? 0
+          : ((prefixWidth - 1) % lineWrapWidth) + 1
+        : prefixWidth;
+      cursorRow = renderedRows + segmentIndex;
+      cursorCol = promptWidth + columnInSegment;
+    }
+
+    renderedRows += wrapped.length;
+    consumedCharacters += lineLength + 1;
+  }
+
+  if (statusLine) {
+    lines.push(statusLine);
+  }
+
+  return {
+    lines,
+    cursorRow,
+    cursorCol,
+    totalRows: renderedRows + (statusLine ? 1 : 0),
+  };
+}
+
+function renderPromptFrame(
   outputStream: NodeJS.WriteStream,
   promptText: string,
   buffer: string,
   cursor: number,
   searchState: HistorySearchState | null,
   typeaheadState: TypeaheadState | null,
-): void {
-  const searchSummary = searchState
-    ? getHistorySearchSummary(searchState)
-    : null;
-  const typeaheadSummary = typeaheadState
-    ? getTypeaheadSummary(typeaheadState)
-    : null;
-  const searchPrefix = searchState ? `${promptText}history search: ` : "";
-  const searchSuffix = searchState
-    ? searchSummary?.match
-      ? `  match: ${searchSummary.match}`
-      : "  no matches"
-    : "";
-  const line = searchState
-    ? `${searchPrefix}${searchState.query}${searchSuffix}`
-    : typeaheadSummary
-      ? `${promptText}${buffer}  ${formatTypeaheadSummary(typeaheadSummary)}`
-      : `${promptText}${buffer}`;
-  const cursorPosition = searchState
-    ? getDisplayWidth(searchPrefix) + getDisplayWidth(searchState.query)
-    : getDisplayWidth(promptText) +
-      getDisplayWidth(
-        buffer.slice(0, clampPromptCursor(cursor, buffer.length)),
-      );
+  editorStatus: string | undefined,
+): PromptLayout {
+  if (searchState) {
+    const searchSummary = getHistorySearchSummary(searchState);
+    const searchPrefix = `${promptText}history search: `;
+    const searchSuffix = searchSummary.match
+      ? `  match: ${sanitizePromptPreview(searchSummary.match)}`
+      : "  no matches";
+    const line = `${searchPrefix}${sanitizePromptPreview(searchState.query)}${searchSuffix}`;
+    const cursorPosition =
+      getDisplayWidth(searchPrefix) + getDisplayWidth(searchState.query);
 
-  if (outputStream.isTTY) {
-    try {
-      readline.cursorTo(outputStream, 0);
-      readline.clearLine(outputStream, 0);
-    } catch {
-      // best effort only
-    }
-  } else {
-    outputStream.write("\r");
+    return {
+      lines: [line],
+      cursorRow: 0,
+      cursorCol: cursorPosition,
+      totalRows: 1,
+    };
   }
 
-  outputStream.write(line);
+  const statusLine = editorStatus
+    ? editorStatus
+    : typeaheadState
+      ? formatTypeaheadSummary(getTypeaheadSummary(typeaheadState))
+      : null;
 
-  if (outputStream.isTTY) {
-    try {
-      readline.cursorTo(outputStream, cursorPosition);
-    } catch {
-      // best effort only
-    }
-  }
+  return buildPromptLayout(
+    promptText,
+    buffer,
+    cursor,
+    statusLine,
+    outputStream,
+  );
 }
 
 function formatTypeaheadSummary(summary: TypeaheadSummary): string {
@@ -183,6 +312,10 @@ function isPrintableKey(str: string | undefined, key: readline.Key): boolean {
   return Boolean(str && !key.ctrl && !key.meta);
 }
 
+function isLineFeedKeypress(str: string | undefined): boolean {
+  return str === "\n";
+}
+
 export function createChatPromptSession(
   options: ChatPromptSessionOptions,
 ): ChatPromptSession {
@@ -195,10 +328,23 @@ export function createChatPromptSession(
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
   let searchState: HistorySearchState | null = null;
   let typeaheadState: TypeaheadState | null = null;
+  let editorStatus: string | undefined;
+  let pendingEditorHandoff = false;
   let rawModeEnabled = false;
   let active = true;
+  let lastLayout: PromptLayout | null = null;
 
   const render = (): void => {
+    const layout = renderPromptFrame(
+      outputStream,
+      request.promptText,
+      buffer,
+      cursor,
+      searchState,
+      typeaheadState,
+      editorStatus,
+    );
+
     callbacks.render({
       buffer,
       cursor,
@@ -208,15 +354,44 @@ export function createChatPromptSession(
       typeahead: typeaheadState
         ? getTypeaheadSummary(typeaheadState)
         : undefined,
+      multiline: buffer.includes("\n"),
+      editorStatus,
     });
-    renderPromptLine(
-      outputStream,
-      request.promptText,
-      buffer,
-      cursor,
-      searchState,
-      typeaheadState,
-    );
+
+    if (outputStream.isTTY) {
+      if (lastLayout) {
+        try {
+          readline.moveCursor(
+            outputStream,
+            -lastLayout.cursorCol,
+            -lastLayout.cursorRow,
+          );
+          readline.cursorTo(outputStream, 0);
+          readline.clearScreenDown(outputStream);
+        } catch {
+          // best effort only
+        }
+      }
+    } else if (lastLayout) {
+      outputStream.write("\r");
+    }
+
+    outputStream.write(layout.lines.join("\n"));
+
+    if (outputStream.isTTY) {
+      try {
+        readline.moveCursor(
+          outputStream,
+          0,
+          layout.cursorRow - layout.totalRows + 1,
+        );
+        readline.cursorTo(outputStream, layout.cursorCol);
+      } catch {
+        // best effort only
+      }
+    }
+
+    lastLayout = layout;
   };
 
   const clearHistoryNavigation = (): void => {
@@ -238,6 +413,10 @@ export function createChatPromptSession(
     typeaheadState = null;
   };
 
+  const clearTransientStatus = (): void => {
+    editorStatus = undefined;
+  };
+
   const cancelTypeahead = (shouldRender: boolean): void => {
     if (!typeaheadState) {
       return;
@@ -253,6 +432,7 @@ export function createChatPromptSession(
   };
 
   const startTypeahead = (): void => {
+    clearTransientStatus();
     if (!options.enableTypeahead) {
       return;
     }
@@ -282,6 +462,7 @@ export function createChatPromptSession(
   };
 
   const cycleTypeahead = (): void => {
+    clearTransientStatus();
     if (!typeaheadState) {
       return;
     }
@@ -307,6 +488,7 @@ export function createChatPromptSession(
   };
 
   const enterSearch = (): void => {
+    clearTransientStatus();
     if (searchState) {
       searchState = cycleHistorySearchMatch(searchState);
       syncFromSearchState();
@@ -321,6 +503,7 @@ export function createChatPromptSession(
   };
 
   const updateSearchQuery = (nextQuery: string): void => {
+    clearTransientStatus();
     if (!searchState) {
       return;
     }
@@ -331,6 +514,7 @@ export function createChatPromptSession(
   };
 
   const cancelSearch = (): void => {
+    clearTransientStatus();
     if (!searchState) {
       return;
     }
@@ -339,6 +523,7 @@ export function createChatPromptSession(
   };
 
   const acceptSearch = (): void => {
+    clearTransientStatus();
     if (!searchState) {
       return;
     }
@@ -347,16 +532,38 @@ export function createChatPromptSession(
   };
 
   const moveHistory = (direction: "up" | "down"): void => {
+    clearTransientStatus();
     if (typeaheadState) {
       cancelTypeahead(false);
     }
 
-    if (searchState || historySnapshot.length === 0) {
+    if (searchState) {
+      return;
+    }
+
+    const currentLineStart = getLineStartIndex(buffer, cursor);
+    const currentLineEnd = getLineEndIndex(buffer, cursor);
+    const lineIndex = buffer.slice(0, currentLineStart).split("\n").length - 1;
+    const totalLines = buffer.length === 0 ? 1 : buffer.split("\n").length;
+
+    if (direction === "up" && lineIndex > 0) {
+      clearTransientStatus();
+      const previousLineStart = buffer.lastIndexOf("\n", currentLineStart - 2);
+      const previousLineEnd = currentLineStart - 1;
+      const targetColumn = getLineColumn(buffer, cursor);
+      const targetStart = previousLineStart >= 0 ? previousLineStart + 1 : 0;
+      cursor = Math.min(targetStart + targetColumn, previousLineEnd);
+      render();
       return;
     }
 
     if (direction === "up") {
+      if (historySnapshot.length === 0) {
+        return;
+      }
+
       if (historyIndex === null) {
+        clearTransientStatus();
         draftSnapshot = { buffer, cursor };
         historyIndex = 0;
       } else if (historyIndex < historySnapshot.length - 1) {
@@ -369,6 +576,23 @@ export function createChatPromptSession(
       buffer = selected;
       cursor = selected.length;
       render();
+      return;
+    }
+
+    if (direction === "down" && lineIndex < totalLines - 1) {
+      clearTransientStatus();
+      const targetColumn = getLineColumn(buffer, cursor);
+      const nextLineStart = currentLineEnd + 1;
+      const nextLineEnd = buffer.indexOf("\n", nextLineStart);
+      cursor = Math.min(
+        nextLineStart + targetColumn,
+        nextLineEnd >= 0 ? nextLineEnd : buffer.length,
+      );
+      render();
+      return;
+    }
+
+    if (historySnapshot.length === 0) {
       return;
     }
 
@@ -393,6 +617,7 @@ export function createChatPromptSession(
   };
 
   const insertText = (text: string): void => {
+    clearTransientStatus();
     if (typeaheadState) {
       cancelTypeahead(false);
     }
@@ -412,6 +637,7 @@ export function createChatPromptSession(
   };
 
   const deleteBeforeCursor = (): void => {
+    clearTransientStatus();
     if (typeaheadState) {
       cancelTypeahead(false);
     }
@@ -435,6 +661,7 @@ export function createChatPromptSession(
   };
 
   const deleteAtCursor = (): void => {
+    clearTransientStatus();
     if (typeaheadState) {
       cancelTypeahead(false);
     }
@@ -456,6 +683,7 @@ export function createChatPromptSession(
   };
 
   const moveCursor = (direction: "left" | "right" | "home" | "end"): void => {
+    clearTransientStatus();
     if (typeaheadState) {
       cancelTypeahead(false);
     }
@@ -469,9 +697,57 @@ export function createChatPromptSession(
     } else if (direction === "right") {
       cursor = Math.min(buffer.length, cursor + 1);
     } else if (direction === "home") {
-      cursor = 0;
+      cursor = getLineStartIndex(buffer, cursor);
     } else {
-      cursor = buffer.length;
+      cursor = getLineEndIndex(buffer, cursor);
+    }
+
+    render();
+  };
+
+  const openEditor = (): void => {
+    if (searchState) {
+      return;
+    }
+
+    pendingEditorHandoff = false;
+    clearTransientStatus();
+
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
+    clearHistoryNavigation();
+
+    const wasRawModeEnabled = rawModeEnabled;
+    if (wasRawModeEnabled) {
+      setRawMode(inputStream, false);
+      rawModeEnabled = false;
+    }
+
+    inputStream.pause();
+
+    try {
+      const result = openPromptEditor({
+        buffer,
+        workspaceRoot: options.workspaceRoot,
+        env: options.editorEnv,
+        runEditor: options.editorRunner,
+      });
+
+      if (result.status === "edited") {
+        buffer = result.buffer;
+        cursor = buffer.length;
+        editorStatus = undefined;
+      } else {
+        editorStatus = result.message;
+      }
+    } finally {
+      inputStream.resume();
+      if (wasRawModeEnabled) {
+        setRawMode(inputStream, true);
+        rawModeEnabled = true;
+      }
     }
 
     render();
@@ -507,8 +783,26 @@ export function createChatPromptSession(
     }
 
     if (key.name === "r" && key.ctrl) {
+      if (!options.enableReverseHistorySearch) {
+        return;
+      }
       cancelTypeahead(false);
       enterSearch();
+      return;
+    }
+
+    if (pendingEditorHandoff) {
+      pendingEditorHandoff = false;
+      if (key.name === "e" && key.ctrl) {
+        openEditor();
+        return;
+      }
+    }
+
+    if (key.name === "x" && key.ctrl) {
+      if (!searchState) {
+        pendingEditorHandoff = true;
+      }
       return;
     }
 
@@ -527,6 +821,14 @@ export function createChatPromptSession(
       } else if (typeaheadState) {
         cancelTypeahead(true);
       }
+      return;
+    }
+
+    if (
+      !searchState &&
+      ((key.name === "j" && key.ctrl) || isLineFeedKeypress(str))
+    ) {
+      insertText("\n");
       return;
     }
 
