@@ -16,6 +16,10 @@ import { createPromptHistoryStore } from "./ui/promptHistory.js";
 import { printStartupBanner } from "./ui/banner.js";
 import { TerminalUi } from "./ui/terminal.js";
 import {
+  streamAssistantTurn,
+  type AssistantTurnVisibilityOptions,
+} from "./ui/assistantTurnRenderer.js";
+import {
   buildSlashCommandHelpLines,
   isHelpCommand,
   getIdleFooterText,
@@ -23,9 +27,7 @@ import {
 import { AgentDiagnosticEvent } from "./diagnostics.js";
 import {
   formatContextOverview,
-  formatContextStats,
   formatPromptPlan,
-  formatPromptPlanCompact,
   formatMemoryView,
   type ContextOverviewLine,
   type PromptPlanLine,
@@ -45,13 +47,7 @@ type AppMode =
   | "showingResults"
   | "error";
 
-interface VisibilityOptions {
-  showActivity: boolean;
-  showStatus: boolean;
-  showReasoningSummary: boolean;
-  showContextStats: boolean;
-  showPromptPlan: boolean;
-}
+type VisibilityOptions = AssistantTurnVisibilityOptions;
 
 const HELP_TEXT = `Usage: propio-agent [options]
 
@@ -145,14 +141,6 @@ function isAbortError(error: unknown): boolean {
   return message.includes("abort") || message.includes("cancel");
 }
 
-function previewToolResult(result: string, maxLength = 70): string {
-  const compact = result.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxLength) {
-    return compact;
-  }
-  return `${compact.substring(0, maxLength)}...`;
-}
-
 function printSlashCommandHelp(
   ui: Pick<TerminalUi, "command" | "subtle" | "section">,
 ): void {
@@ -211,123 +199,6 @@ function renderStyledLines(
   }
 }
 
-async function streamAssistantResponse(
-  agent: Agent,
-  userInput: string,
-  ui: TerminalUi,
-  abortSignal: AbortSignal,
-  visibility: VisibilityOptions,
-): Promise<{
-  response: string;
-  reasoningSummary?: { summary: string; source: "agent" | "provider" };
-}> {
-  const mdStream = ui.createMarkdownStream();
-
-  if (!ui.isJsonMode()) {
-    ui.beginAssistantResponse();
-  }
-
-  const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
-    if (event.type === "status") {
-      if (visibility.showStatus) {
-        mdStream.flush();
-        ui.traceStatus(event.status);
-      }
-      return;
-    }
-
-    if (event.type === "prompt_plan_built") {
-      if (visibility.showPromptPlan) {
-        mdStream.flush();
-        ui.newline();
-        ui.subtle(formatPromptPlanCompact(event.snapshot));
-      }
-      return;
-    }
-
-    if (!visibility.showActivity) {
-      return;
-    }
-
-    mdStream.flush();
-    if (event.type === "tool_started") {
-      ui.traceActivity(`Starting ${event.activityLabel}`);
-      return;
-    }
-
-    if (event.type === "tool_finished") {
-      ui.traceActivity(
-        `Finished ${event.activityLabel}: ${event.resultPreview}`,
-      );
-      return;
-    }
-
-    if (event.type === "tool_failed") {
-      ui.traceActivity(
-        `Failed ${event.activityLabel}: ${event.resultPreview}`,
-        "error",
-      );
-    }
-  };
-
-  const useLegacyToolCallbacks = !visibility.showActivity;
-
-  const response = await agent.streamChat(
-    userInput,
-    (token) => {
-      if (!ui.isJsonMode()) {
-        mdStream.push(token);
-      }
-    },
-    {
-      abortSignal,
-      onEvent: renderVisibilityEvent,
-      ...(useLegacyToolCallbacks
-        ? {
-            onToolStart: (toolName) => {
-              mdStream.flush();
-              // Prefer a persistent line over spinner-only feedback so long-running
-              // tools provide visible progress in all terminals/renderers.
-              ui.info(`Starting ${toolName}...`);
-              ui.status(`Executing ${toolName}...`, "tool call");
-            },
-            onToolEnd: (toolName, result, status) => {
-              const summary = previewToolResult(result);
-              if (status !== "success") {
-                ui.error(`${toolName} failed: ${summary}`);
-                return;
-              }
-              ui.success(`${toolName} completed: ${summary}`);
-            },
-          }
-        : {}),
-    },
-  );
-
-  mdStream.finish();
-
-  if (!ui.isJsonMode()) {
-    if (response.trim().length === 0) {
-      ui.warn(
-        "Assistant returned an empty response. Re-run with --debug-llm or --debug-llm-file <path> to inspect provider events.",
-      );
-    }
-    ui.newline();
-  }
-
-  const reasoningSummary = agent.getLastTurnReasoningSummary() ?? undefined;
-  if (visibility.showReasoningSummary && reasoningSummary && !ui.isJsonMode()) {
-    ui.reasoningSummary(reasoningSummary.summary, reasoningSummary.source);
-  }
-
-  if (!ui.isJsonMode() && visibility.showContextStats) {
-    const state = agent.getConversationState();
-    ui.subtle(formatContextStats(state));
-  }
-
-  return { response, reasoningSummary };
-}
-
 async function runNonInteractiveSession(
   agent: Agent,
   ui: TerminalUi,
@@ -353,7 +224,7 @@ async function runNonInteractiveSession(
   setMode("running");
 
   try {
-    const result = await streamAssistantResponse(
+    const result = await streamAssistantTurn(
       agent,
       stdinInput,
       ui,
@@ -554,7 +425,7 @@ async function runInteractiveSession(
       const turnStartedAtMs = Date.now();
 
       try {
-        await streamAssistantResponse(
+        await streamAssistantTurn(
           agent,
           trimmedInput,
           ui,
