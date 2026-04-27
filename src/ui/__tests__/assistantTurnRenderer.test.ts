@@ -253,9 +253,65 @@ describe("streamAssistantTurn", () => {
     expect(output).toContain(
       'Activity: Failed Searching src for "missing": no matches',
     );
+    expect(output).not.toContain("Starting read...");
+    expect(output).not.toContain("read completed:");
   });
 
-  it("renders legacy tool callback output when activity traces are disabled", async () => {
+  it("renders rich tool labels in legacy callback output when visibility events are available", async () => {
+    const { ui, stderr } = createUi();
+    const agent = new ScriptedAssistantTurnAgent([
+      { type: "token", value: "Using a tool." },
+      {
+        type: "event",
+        value: {
+          type: "tool_started",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          argumentChars: 12,
+          argumentPreview: '{"path":"package.json"}',
+        },
+      },
+      { type: "tool_start", toolName: "read" },
+      {
+        type: "event",
+        value: {
+          type: "tool_finished",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          resultPreview: "package content",
+        },
+      },
+      {
+        type: "tool_end",
+        toolName: "read",
+        result:
+          "This is a long result payload that will be summarized in output.",
+        status: "success",
+      },
+    ]);
+
+    await streamAssistantTurn(
+      agent,
+      "legacy tool test",
+      ui,
+      new AbortController().signal,
+      defaultVisibility,
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(output).toContain("Starting Reading package.json...");
+    expect(output).toContain("Executing Reading package.json...");
+    expect(output).toContain(
+      "Reading package.json completed: This is a long result payload",
+    );
+    expect(output).not.toContain("Starting read...");
+    expect(output).not.toContain("read completed:");
+  });
+
+  it("falls back to raw tool names when visibility events are missing", async () => {
     const { ui, stderr } = createUi();
     const agent = new ScriptedAssistantTurnAgent([
       { type: "token", value: "Using a tool." },
@@ -280,7 +336,59 @@ describe("streamAssistantTurn", () => {
     const output = normalizeOutput(stderr.chunks);
 
     expect(output).toContain("Starting read...");
+    expect(output).toContain("Executing read...");
     expect(output).toContain("read completed: This is a long result payload");
+  });
+
+  it("uses the rich label for failed tools in legacy callback output", async () => {
+    const { ui, stderr } = createUi();
+    const agent = new ScriptedAssistantTurnAgent([
+      { type: "token", value: "Using a tool." },
+      {
+        type: "event",
+        value: {
+          type: "tool_started",
+          toolName: "grep",
+          toolCallId: "tool_9",
+          activityLabel: 'Searching src for "missing"',
+          argumentChars: 16,
+          argumentPreview: '{"pattern":"missing"}',
+        },
+      },
+      { type: "tool_start", toolName: "grep" },
+      {
+        type: "event",
+        value: {
+          type: "tool_failed",
+          toolName: "grep",
+          toolCallId: "tool_9",
+          activityLabel: 'Searching src for "missing"',
+          resultPreview: "No matches found.",
+        },
+      },
+      {
+        type: "tool_end",
+        toolName: "grep",
+        result: "No matches found.",
+        status: "error",
+      },
+    ]);
+
+    await streamAssistantTurn(
+      agent,
+      "failure test",
+      ui,
+      new AbortController().signal,
+      defaultVisibility,
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(output).toContain('Starting Searching src for "missing"...');
+    expect(output).toContain('Executing Searching src for "missing"...');
+    expect(output).toContain(
+      'Searching src for "missing" failed: No matches found.',
+    );
   });
 
   it("renders prompt-plan output on its own line after flushing assistant content", async () => {

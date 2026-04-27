@@ -43,10 +43,14 @@ export async function streamAssistantTurn(
   visibility: AssistantTurnVisibilityOptions,
 ): Promise<AssistantTurnResult> {
   const mdStream = ui.createMarkdownStream();
+  const latestActivityLabelByToolName = new Map<string, string>();
 
   if (!ui.isJsonMode()) {
     ui.beginAssistantResponse();
   }
+
+  const resolveActivityLabel = (toolName: string): string =>
+    latestActivityLabelByToolName.get(toolName) ?? toolName;
 
   const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
     if (event.type === "status") {
@@ -57,6 +61,37 @@ export async function streamAssistantTurn(
       return;
     }
 
+    if (
+      event.type === "tool_started" ||
+      event.type === "tool_finished" ||
+      event.type === "tool_failed"
+    ) {
+      latestActivityLabelByToolName.set(event.toolName, event.activityLabel);
+
+      if (!visibility.showActivity) {
+        return;
+      }
+
+      mdStream.flush();
+      if (event.type === "tool_started") {
+        ui.traceActivity(`Starting ${event.activityLabel}`);
+        return;
+      }
+
+      if (event.type === "tool_finished") {
+        ui.traceActivity(
+          `Finished ${event.activityLabel}: ${event.resultPreview}`,
+        );
+        return;
+      }
+
+      ui.traceActivity(
+        `Failed ${event.activityLabel}: ${event.resultPreview}`,
+        "error",
+      );
+      return;
+    }
+
     if (event.type === "prompt_plan_built") {
       if (visibility.showPromptPlan) {
         mdStream.flush();
@@ -64,30 +99,6 @@ export async function streamAssistantTurn(
         ui.subtle(formatPromptPlanCompact(event.snapshot));
       }
       return;
-    }
-
-    if (!visibility.showActivity) {
-      return;
-    }
-
-    mdStream.flush();
-    if (event.type === "tool_started") {
-      ui.traceActivity(`Starting ${event.activityLabel}`);
-      return;
-    }
-
-    if (event.type === "tool_finished") {
-      ui.traceActivity(
-        `Finished ${event.activityLabel}: ${event.resultPreview}`,
-      );
-      return;
-    }
-
-    if (event.type === "tool_failed") {
-      ui.traceActivity(
-        `Failed ${event.activityLabel}: ${event.resultPreview}`,
-        "error",
-      );
     }
   };
 
@@ -109,16 +120,18 @@ export async function streamAssistantTurn(
               mdStream.flush();
               // Keep a durable transcript line so tool progress is visible
               // even when spinner frames are transient.
-              ui.info(`Starting ${toolName}...`);
-              ui.status(`Executing ${toolName}...`, "tool call");
+              const activityLabel = resolveActivityLabel(toolName);
+              ui.info(`Starting ${activityLabel}...`);
+              ui.status(`Executing ${activityLabel}...`, "tool call");
             },
             onToolEnd: (toolName: string, result: string, status) => {
               const summary = previewToolResult(result);
+              const activityLabel = resolveActivityLabel(toolName);
               if (status !== "success") {
-                ui.error(`${toolName} failed: ${summary}`);
+                ui.error(`${activityLabel} failed: ${summary}`);
                 return;
               }
-              ui.success(`${toolName} completed: ${summary}`);
+              ui.success(`${activityLabel} completed: ${summary}`);
             },
           }
         : {}),
