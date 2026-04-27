@@ -16,10 +16,7 @@ import type { ToolSummary } from "../tools/registry.js";
 export async function showToolMenu(
   composer: PromptComposer,
   agent: Agent,
-  ui: Pick<
-    TerminalUi,
-    "closeOverlay" | "command" | "error" | "openOverlay" | "prompt" | "success"
-  >,
+  ui: Pick<TerminalUi, "command" | "error" | "prompt" | "section" | "success">,
 ): Promise<void> {
   const getOrderedTools = (): ToolSummary[] => {
     const registrationOrder = new Map(
@@ -39,21 +36,18 @@ export async function showToolMenu(
 
   const displayMenu = (): void => {
     const toolSummaries = getOrderedTools();
+    const labelWidth = Math.max(
+      8,
+      ...toolSummaries.map((summary) => summary.name.length),
+    );
 
-    ui.openOverlay({
-      kind: "tools",
-      entries: [
-        { kind: "info", text: "\nTools:" },
-        ...toolSummaries.map((summary, index) => {
-          const status = summary.enabled ? "[enabled]" : "[disabled]";
-          return {
-            kind: "command",
-            text: `  ${index + 1}. ${summary.name.padEnd(20)} ${status} - ${summary.description}`,
-          } as const;
-        }),
-      ],
-    });
-    ui.command("");
+    ui.section("Tools");
+    for (const [index, summary] of toolSummaries.entries()) {
+      const status = summary.enabled ? "[enabled]" : "[disabled]";
+      ui.command(
+        `  ${index + 1}. ${summary.name.padEnd(labelWidth)} ${status} - ${summary.description}`,
+      );
+    }
   };
 
   displayMenu();
@@ -67,14 +61,12 @@ export async function showToolMenu(
     });
 
     if (result.status === "closed") {
-      ui.closeOverlay();
       return;
     }
 
     const trimmed = result.text.trim();
 
     if (trimmed === "") {
-      ui.closeOverlay();
       return;
     }
 
@@ -127,6 +119,4 @@ export async function showToolMenu(
 
     displayMenu();
   }
-
-  ui.closeOverlay();
 }

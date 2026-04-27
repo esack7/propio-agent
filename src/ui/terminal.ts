@@ -82,9 +82,7 @@ export class TerminalUi {
       !this.json &&
       this.writer.getStderrStream().isTTY;
 
-    this.retainedPromptOutputStream = useRetainedRenderer
-      ? createSilentPromptOutputStream(this.writer.getStderrStream())
-      : this.writer.getStderrStream();
+    this.retainedPromptOutputStream = this.writer.getStderrStream();
 
     if (useRetainedRenderer) {
       this.retainedStore = new ReplUiStore();
@@ -163,7 +161,8 @@ export class TerminalUi {
       return;
     }
 
-    this.appendTranscriptEntry({ kind: "user_message", text });
+    // The live prompt already leaves the submitted input visible in retained TTY mode.
+    // Avoid writing a second transcript copy and duplicating the user's message.
   }
 
   status(text: string, phase?: string): void {
@@ -467,22 +466,4 @@ export class TerminalUi {
     }
     return formatter(text);
   }
-}
-
-function createSilentPromptOutputStream(
-  backingStream: NodeJS.WriteStream,
-): NodeJS.WriteStream {
-  const silentStream = Object.create(backingStream) as NodeJS.WriteStream;
-  Object.defineProperty(silentStream, "isTTY", {
-    value: true,
-    enumerable: true,
-    configurable: true,
-  });
-  Object.defineProperty(silentStream, "columns", {
-    get: () => backingStream.columns,
-    enumerable: true,
-    configurable: true,
-  });
-  silentStream.write = () => true;
-  return silentStream;
 }

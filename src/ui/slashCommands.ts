@@ -85,7 +85,11 @@ function findCommand(command: string): SlashCommand | undefined {
 }
 
 function formatCommandLine(command: SlashCommand): string {
-  return `  ${command.command.padEnd(16)} - ${command.description}`;
+  return formatLabelLine(command.command, command.description);
+}
+
+function formatLabelLine(label: string, description: string): string {
+  return `  ${label.padEnd(16)} - ${description}`;
 }
 
 export function buildSlashCommandHelpLines(): SlashCommandLine[] {
@@ -101,11 +105,11 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
 
   lines.push({ text: "Chat shortcuts", style: "section" });
   lines.push({
-    text: "  Ctrl+J          - insert a newline",
+    text: formatLabelLine("Ctrl+J", "insert a newline"),
     style: "info",
   });
   lines.push({
-    text: "  Ctrl+X Ctrl+E       - open the editor",
+    text: formatLabelLine("Ctrl+X Ctrl+E", "open the editor"),
     style: "info",
   });
 

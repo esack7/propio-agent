@@ -25,6 +25,7 @@ describe("slashCommands", () => {
     expect(text).toContain("Ctrl+J");
     expect(text).not.toContain("Alt+Enter");
     expect(text).toContain("Ctrl+X Ctrl+E");
+    expect(text).toContain("Ctrl+X Ctrl+E    - open the editor");
     expect(text).toContain("/help");
     expect(text).toContain("?");
     expect(text).toContain("/tools");

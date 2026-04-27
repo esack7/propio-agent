@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
-import { Agent, AgentVisibilityEvent, PromptPlanSnapshot } from "./agent.js";
+import { Agent } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
@@ -33,7 +33,6 @@ import {
   type PromptPlanLine,
   type MemoryLine,
 } from "./ui/contextInspector.js";
-import { type TranscriptEntry } from "./ui/replUi.js";
 import { getDefaultSessionsDir } from "./sessions/sessionHistory.js";
 import {
   saveSessionOnExit,
@@ -135,26 +134,10 @@ function isAbortError(error: unknown): boolean {
   return message.includes("abort") || message.includes("cancel");
 }
 
-function printSlashCommandHelp(ui: Pick<TerminalUi, "openOverlay">): void {
-  const entries: TranscriptEntry[] = buildSlashCommandHelpLines().map(
-    (line) => {
-      switch (line.style) {
-        case "section":
-          return { kind: "section", text: line.text };
-        case "info":
-          return { kind: "command", text: line.text };
-        case "subtle":
-          return line.text.length > 0
-            ? { kind: "subtle", text: line.text }
-            : { kind: "command", text: "" };
-      }
-    },
-  );
-
-  ui.openOverlay({
-    kind: "help",
-    entries,
-  });
+function printSlashCommandHelp(
+  ui: Pick<TerminalUi, "command" | "info" | "subtle" | "section">,
+): void {
+  renderStyledLines(ui, buildSlashCommandHelpLines());
 }
 
 async function readStdinInput(): Promise<string> {
@@ -174,7 +157,7 @@ async function readStdinInput(): Promise<string> {
 }
 
 function renderStyledLines(
-  ui: TerminalUi,
+  ui: Pick<TerminalUi, "command" | "info" | "subtle" | "section">,
   lines: ReadonlyArray<{ text: string; style: "info" | "subtle" | "section" }>,
 ): void {
   for (const line of lines) {

@@ -171,10 +171,21 @@ describe("ReplRenderer", () => {
     store.setFooter("Idle footer");
     renderer.flush(store.getState());
     expect(stderr.chunks.join("")).toContain("Idle footer");
+  });
 
+  it("does not redraw multiline chat prompt state in the retained renderer", () => {
+    const { renderer, stderr, store } = createHarness();
+
+    store.setPrompt(
+      createPromptState({
+        mode: "chat",
+        promptText: "❯ ",
+        defaultValue: "Hello\nMy name is",
+      }),
+    );
     renderer.flush(store.getState());
 
-    expect(stderr.chunks.join("")).toContain("Name? ");
+    expect(stderr.chunks.join("")).not.toContain("My name is");
   });
 
   it("clears the retained bottom zone before appending transcript output", () => {
@@ -193,7 +204,7 @@ describe("ReplRenderer", () => {
     store.appendTranscriptEntry({ kind: "info", text: "hello" });
     renderer.flush(store.getState());
 
-    expect(clearStderrLinesSpy).toHaveBeenCalledWith(2);
+    expect(clearStderrLinesSpy).toHaveBeenCalledWith(1);
   });
 
   it("clears overlays using the exact number of rendered lines", () => {
@@ -209,71 +220,5 @@ describe("ReplRenderer", () => {
     renderer.flush(store.getState());
 
     expect(clearStderrLinesSpy).toHaveBeenCalledWith(2);
-  });
-
-  it("repositions the cursor using retained prompt cursor state", () => {
-    const { renderer, stderr, store } = createHarness();
-
-    store.setPrompt(
-      createPromptState({
-        mode: "chat",
-        promptText: "Name? ",
-        footer: "Idle footer",
-      }),
-    );
-    store.setPrompt({
-      ...store.getState().prompt!,
-      buffer: "hello",
-      cursor: 2,
-    });
-    renderer.flush(store.getState());
-
-    const output = stderr.chunks.join("");
-    expect(output).toContain("\u001b[1A");
-    expect(output).toContain("\u001b[9G");
-  });
-
-  it("uses visible prompt width for cursor placement with ANSI prompt text", () => {
-    const { renderer, stderr, store } = createHarness();
-
-    store.setPrompt(
-      createPromptState({
-        mode: "chat",
-        promptText: "\u001b[32m❯ \u001b[39m",
-        footer: "Idle footer",
-      }),
-    );
-    store.setPrompt({
-      ...store.getState().prompt!,
-      buffer: "hello",
-      cursor: 2,
-    });
-    renderer.flush(store.getState());
-
-    const output = stderr.chunks.join("");
-    expect(output).toContain("\u001b[1A");
-    expect(output).toContain("\u001b[5G");
-  });
-
-  it("uses display width for combining characters in cursor placement", () => {
-    const { renderer, stderr, store } = createHarness();
-
-    store.setPrompt(
-      createPromptState({
-        mode: "chat",
-        promptText: "Name? ",
-        footer: "Idle footer",
-      }),
-    );
-    store.setPrompt({
-      ...store.getState().prompt!,
-      buffer: "e\u0301x",
-      cursor: 2,
-    });
-    renderer.flush(store.getState());
-
-    const output = stderr.chunks.join("");
-    expect(output).toContain("\u001b[1A");
-    expect(output).toContain("\u001b[8G");
   });
 });

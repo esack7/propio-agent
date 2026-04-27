@@ -71,11 +71,10 @@ describe("TerminalUi", () => {
 
     ui.beginAssistantResponse();
 
-    const gutter = symbols.prompt === "❯" ? "│ " : "| ";
-    expect(stderr.chunks.join("")).toBe(`\n${gutter}`);
+    expect(stderr.chunks.join("")).toBe("\n");
   });
 
-  it("persists submitted chat input in retained interactive TTY mode", () => {
+  it("does not duplicate submitted chat input in retained interactive TTY mode", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
     const ui = new TerminalUi({
@@ -88,9 +87,8 @@ describe("TerminalUi", () => {
 
     ui.persistSubmittedInput("hello");
 
-    expect(stripAnsi(stderr.chunks.join(""))).toContain(
-      `${symbols.prompt} hello`,
-    );
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stripAnsi(stdout.chunks.join(""))).toBe("");
   });
 
   it("preserves the Assistant prefix in non-interactive human-readable mode", () => {

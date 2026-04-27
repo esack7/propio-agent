@@ -1,7 +1,5 @@
 import {
-  formatAssistantGutter,
   formatAssistantMessage,
-  formatAssistantPrefix,
   formatCommand,
   formatError,
   formatInfo,
@@ -57,13 +55,6 @@ export class TranscriptRenderer {
 
     if (this.options.interactive) {
       this.options.writer.writeStderrLine("");
-      const gutter = symbols.prompt === "❯" ? "│ " : "| ";
-      this.options.writer.writeStderr(
-        this.options.style(gutter[0] ?? "", formatAssistantPrefix),
-      );
-      this.options.writer.writeStderr(
-        this.options.style(gutter.slice(1), formatAssistantGutter),
-      );
       return;
     }
 
