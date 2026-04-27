@@ -5,6 +5,14 @@ import { formatFileType, normalizeToolPath } from "./shared.js";
 
 export class LsTool implements ExecutableTool {
   readonly name = "ls";
+  readonly description = "List directory contents.";
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const path = args.path;
+    return typeof path === "string" && path.length > 0
+      ? `Listing ${path}`
+      : "Listing directory";
+  }
 
   getSchema(): ChatTool {
     return {

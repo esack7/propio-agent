@@ -11,6 +11,23 @@ const GREP_OUTPUT_LIMIT = 50 * 1024;
 
 export class GrepTool implements ExecutableTool {
   readonly name = "grep";
+  readonly description = "Search file contents recursively.";
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const path = args.path;
+    const pattern = args.pattern;
+    if (typeof path !== "string" || path.length === 0) {
+      return typeof pattern === "string" && pattern.length > 0
+        ? `Searching for ${JSON.stringify(pattern)}`
+        : "Searching files";
+    }
+
+    if (typeof pattern === "string" && pattern.length > 0) {
+      return `Searching ${path} for ${JSON.stringify(pattern)}`;
+    }
+
+    return `Searching ${path}`;
+  }
 
   getSchema(): ChatTool {
     return {

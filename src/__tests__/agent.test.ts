@@ -14,6 +14,7 @@ import { ProvidersConfig } from "../providers/config.js";
 import { ExecutableTool } from "../tools/interface.js";
 import type { ToolExecutionStatus } from "../tools/types.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
+import type { AgentVisibilityEvent } from "../agent.js";
 
 /**
  * Mock LLM Provider for testing
@@ -434,6 +435,30 @@ describe("Agent with Multi-Provider Configuration", () => {
       // Re-enable
       agent.enableTool("read");
       expect(agent.isToolEnabled("read")).toBe(true);
+    });
+
+    it("should expose read-only tool summaries and bulk state helpers", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const summaries = agent.getToolSummaries();
+
+      expect(summaries[0]).toMatchObject({
+        name: "read",
+        description: "Read a text file.",
+        enabled: true,
+        enabledByDefault: true,
+      });
+
+      agent.disableAllTools();
+      expect(agent.getToolSummaries().every((tool) => !tool.enabled)).toBe(
+        true,
+      );
+
+      agent.enableAllTools();
+      expect(agent.getToolSummaries().every((tool) => tool.enabled)).toBe(true);
+
+      agent.resetToolsToManifestDefaults();
+      expect(agent.isToolEnabled("read")).toBe(true);
+      expect(agent.isToolEnabled("grep")).toBe(false);
     });
   });
 
@@ -856,6 +881,7 @@ describe("Agent with Multi-Provider Configuration", () => {
   describe("Tool result context limits", () => {
     class LargeResultTool implements ExecutableTool {
       readonly name = "large_result_tool";
+      readonly description = "Return a very large output.";
 
       getSchema() {
         return {
@@ -1002,6 +1028,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
       class LoopTool implements ExecutableTool {
         readonly name = "loop_tool";
+        readonly description = "No-op loop tool for testing.";
 
         getSchema() {
           return {
@@ -1073,6 +1100,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should throw a clear error when loop fallback also returns empty", async () => {
       class LoopTool implements ExecutableTool {
         readonly name = "loop_tool";
+        readonly description = "No-op loop tool for testing.";
 
         getSchema() {
           return {
@@ -1164,6 +1192,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should emit enriched request_started for no-tools fallback request", async () => {
       class LoopTool implements ExecutableTool {
         readonly name = "loop_tool";
+        readonly description = "No-op.";
         getSchema() {
           return {
             type: "function" as const,
@@ -1445,6 +1474,9 @@ describe("Agent with Multi-Provider Configuration", () => {
           if (event.type === "status") {
             statuses.push(event.status);
           }
+          if (event.type === "tool_started") {
+            expect(event.activityLabel).toBe("Reading package.json");
+          }
         },
       });
 
@@ -1456,6 +1488,79 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(eventTypes).toContain("reasoning_summary");
       expect(statuses).toContain("Preparing request");
       expect(statuses).toContain("Tool call received");
+    });
+
+    it("should fall back to a generic activity label for custom tools", async () => {
+      class CustomTool implements ExecutableTool {
+        readonly name = "custom_tool";
+        readonly description = "Custom tool for testing.";
+
+        getSchema() {
+          return {
+            type: "function" as const,
+            function: {
+              name: "custom_tool",
+              description: "Custom tool for testing",
+              parameters: {
+                type: "object",
+                properties: {},
+              },
+            },
+          };
+        }
+
+        async execute(): Promise<string> {
+          return "custom-result";
+        }
+      }
+
+      class CustomToolProvider implements LLMProvider {
+        name = "custom-tool-provider";
+        private callCount = 0;
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          this.callCount++;
+          if (this.callCount === 1) {
+            yield {
+              type: "tool_calls",
+              toolCalls: [
+                {
+                  id: "tool-1",
+                  function: {
+                    name: "custom_tool",
+                    arguments: {},
+                  },
+                },
+              ],
+            };
+            return;
+          }
+          yield { type: "assistant_text", delta: "Done." };
+        }
+      }
+
+      const events: AgentVisibilityEvent[] = [];
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      agent.addTool(new CustomTool());
+      (agent as any).provider = new CustomToolProvider();
+
+      await agent.streamChat("Use custom tool", () => {}, {
+        onEvent: (event) => {
+          events.push(event);
+        },
+      });
+
+      const started = events.find((event) => event.type === "tool_started");
+      expect(started?.type).toBe("tool_started");
+      if (started?.type === "tool_started") {
+        expect(started.activityLabel).toBe("custom_tool");
+      }
     });
 
     it("should store last turn reasoning summary separately from session context", async () => {

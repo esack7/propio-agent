@@ -14,6 +14,22 @@ function recursivePattern(pattern: string): string {
 
 export class FindTool implements ExecutableTool {
   readonly name = "find";
+  readonly description = "Find files by name or glob.";
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const path = args.path;
+    const pattern = args.pattern;
+    if (typeof path === "string" && path.length > 0) {
+      if (typeof pattern === "string" && pattern.length > 0) {
+        return `Finding files in ${path} matching ${JSON.stringify(pattern)}`;
+      }
+      return `Finding files in ${path}`;
+    }
+
+    return typeof pattern === "string" && pattern.length > 0
+      ? `Finding files matching ${JSON.stringify(pattern)}`
+      : "Finding files";
+  }
 
   getSchema(): ChatTool {
     return {

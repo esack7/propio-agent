@@ -20,6 +20,7 @@ import {
 import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
+import type { ToolSummary } from "./tools/registry.js";
 import {
   AgentDiagnosticEvent,
   measureMessages,
@@ -54,6 +55,7 @@ export type AgentVisibilityEvent =
       type: "tool_started";
       toolName: string;
       toolCallId: string;
+      activityLabel: string;
       argumentChars: number;
       argumentPreview: string;
     }
@@ -61,12 +63,14 @@ export type AgentVisibilityEvent =
       type: "tool_finished";
       toolName: string;
       toolCallId: string;
+      activityLabel: string;
       resultPreview: string;
     }
   | {
       type: "tool_failed";
       toolName: string;
       toolCallId: string;
+      activityLabel: string;
       resultPreview: string;
     }
   | {
@@ -187,6 +191,13 @@ export class Agent {
     event: AgentVisibilityEvent,
   ): void {
     options?.onEvent?.(event);
+  }
+
+  private describeToolInvocation(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): string {
+    return this.toolRegistry.describeToolInvocation(toolName, args);
   }
 
   private emitStatus(
@@ -893,11 +904,16 @@ export class Agent {
             const toolName = toolCall.function.name;
             const serializedArgs = JSON.stringify(args ?? {});
             const toolCallId = toolCall.id!;
-            this.emitStatus(options, `Executing ${toolName}`, "tool");
+            const activityLabel = this.describeToolInvocation(
+              toolName,
+              args ?? {},
+            );
+            this.emitStatus(options, "Running tool", "tool");
             this.emitVisibilityEvent(options, {
               type: "tool_started",
               toolName,
               toolCallId,
+              activityLabel,
               argumentChars: serializedArgs.length,
               argumentPreview: this.toPreview(serializedArgs),
             });
@@ -947,6 +963,7 @@ export class Agent {
               type: failed ? "tool_failed" : "tool_finished",
               toolName,
               toolCallId,
+              activityLabel,
               resultPreview: this.toPreview(result),
             });
 
@@ -1120,6 +1137,10 @@ export class Agent {
     return this.toolRegistry.getEnabledSchemas();
   }
 
+  getToolSummaries(): ReadonlyArray<ToolSummary> {
+    return this.toolRegistry.getToolSummaries();
+  }
+
   addTool(tool: ExecutableTool): void {
     this.toolRegistry.register(tool, true);
   }
@@ -1134,6 +1155,18 @@ export class Agent {
 
   disableTool(name: string): void {
     this.toolRegistry.disable(name);
+  }
+
+  enableAllTools(): void {
+    this.toolRegistry.enableAll();
+  }
+
+  disableAllTools(): void {
+    this.toolRegistry.disableAll();
+  }
+
+  resetToolsToManifestDefaults(): void {
+    this.toolRegistry.resetToManifestDefaults();
   }
 
   getToolNames(): string[] {

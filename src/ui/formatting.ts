@@ -9,6 +9,30 @@ export function formatAssistantMessage(text: string): string {
   return colors.assistant(text);
 }
 
+export function formatInputPrompt(text: string): string {
+  return colors.inputPrompt(text);
+}
+
+export function formatAssistantPrefix(text: string): string {
+  return colors.assistantPrefix(text);
+}
+
+export function formatAssistantGutter(text: string): string {
+  return colors.assistantGutter(text);
+}
+
+export function formatInputBorder(text: string): string {
+  return colors.inputBorder(text);
+}
+
+export function formatInputFill(text: string): string {
+  return colors.inputFill(text);
+}
+
+export function formatInputPlaceholder(text: string): string {
+  return colors.inputPlaceholder(text);
+}
+
 export function formatToolExecution(toolName: string): string {
   return colors.tool(`${symbols.bullet} ${toolName}`);
 }

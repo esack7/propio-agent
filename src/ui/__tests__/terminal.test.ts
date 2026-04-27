@@ -1,25 +1,11 @@
 import { TerminalUi } from "../terminal.js";
-
-function createMockStream(
-  isTTY = true,
-): NodeJS.WriteStream & { chunks: string[] } {
-  const chunks: string[] = [];
-
-  return {
-    chunks,
-    columns: 80,
-    isTTY,
-    write: (chunk: string | Uint8Array) => {
-      chunks.push(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
-      return true;
-    },
-  } as unknown as NodeJS.WriteStream & { chunks: string[] };
-}
+import { symbols } from "../symbols.js";
+import { createTtyTestStream, stripAnsi } from "./ttyTestStream.js";
 
 describe("TerminalUi", () => {
   it("writes informational lines to stderr", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     const ui = new TerminalUi({
       interactive: false,
       json: false,
@@ -35,8 +21,8 @@ describe("TerminalUi", () => {
   });
 
   it("writes JSON payloads only to stdout", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     const ui = new TerminalUi({
       interactive: false,
       json: true,
@@ -52,19 +38,112 @@ describe("TerminalUi", () => {
     expect(stdout.chunks.join("")).toContain('"response": "ok"');
   });
 
-  it("returns plain prompt text in plain mode", () => {
+  it("returns the glyph chat prompt in plain interactive mode", () => {
     const ui = new TerminalUi({
       interactive: true,
       json: false,
       plain: true,
     });
 
-    expect(ui.prompt("You: ")).toBe("You: ");
+    expect(ui.chatPrompt()).toBe(`${symbols.prompt} `);
+  });
+
+  it("returns the glyph chat prompt with styling in interactive mode", () => {
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+    });
+
+    expect(stripAnsi(ui.chatPrompt())).toBe(`${symbols.prompt} `);
+  });
+
+  it("begins interactive assistant turns with a blank line and gutter", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+
+    expect(stderr.chunks.join("")).toBe("\n");
+  });
+
+  it("does not duplicate submitted chat input in retained interactive TTY mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.persistSubmittedInput("hello");
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stripAnsi(stdout.chunks.join(""))).toBe("");
+  });
+
+  it("preserves the Assistant prefix in non-interactive human-readable mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+
+    expect(stderr.chunks.join("")).toBe("Assistant: ");
+  });
+
+  it("preserves the Assistant prefix in non-interactive rich mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+
+    expect(stripAnsi(stderr.chunks.join(""))).toBe("Assistant: ");
+  });
+
+  it("suppresses assistant turn framing in JSON mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: true,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginAssistantResponse();
+    ui.writeAssistant("ignored");
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
   });
 
   it("ensures trailing newline on cleanup after token writes", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     const ui = new TerminalUi({
       interactive: false,
       json: false,
@@ -79,41 +158,9 @@ describe("TerminalUi", () => {
     expect(stderr.chunks.join("")).toBe("partial\n");
   });
 
-  it("does not duplicate success symbol when finishing an active spinner", () => {
-    const ui = new TerminalUi({
-      interactive: true,
-      json: false,
-      plain: false,
-    });
-
-    const succeed = jest.fn();
-    (ui as any).spinner = { succeed };
-
-    ui.success("ls completed");
-
-    expect(succeed).toHaveBeenCalledTimes(1);
-    expect(succeed.mock.calls[0][0]).not.toContain("✔");
-  });
-
-  it("does not duplicate error symbol when failing an active spinner", () => {
-    const ui = new TerminalUi({
-      interactive: true,
-      json: false,
-      plain: false,
-    });
-
-    const fail = jest.fn();
-    (ui as any).spinner = { fail };
-
-    ui.error("ls failed");
-
-    expect(fail).toHaveBeenCalledTimes(1);
-    expect(fail.mock.calls[0][0]).not.toContain("✖");
-  });
-
   it("wraps long lines at word boundaries instead of truncating", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     stderr.columns = 40;
     const ui = new TerminalUi({
       interactive: false,
@@ -135,8 +182,8 @@ describe("TerminalUi", () => {
   });
 
   it("does not split single long words when wrapping", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     stderr.columns = 15;
     const ui = new TerminalUi({
       interactive: false,
@@ -154,25 +201,9 @@ describe("TerminalUi", () => {
     expect(output).not.toContain("…");
   });
 
-  it("wraps ANSI-colored lines by visible width", () => {
-    const ui = new TerminalUi({
-      interactive: false,
-      json: false,
-      plain: true,
-    });
-
-    const line = "\x1b[31mred\x1b[0m \x1b[32mblue\x1b[0m \x1b[33mgreen\x1b[0m";
-    const wrapped = (ui as any).wrapLineAtWordBoundaries(line, 12);
-    const stripped = wrapped.map((value: string) =>
-      value.replace(/\x1b\[[0-9;]*m/g, ""),
-    );
-
-    expect(stripped).toEqual(["red blue", "green"]);
-  });
-
   it("emits a newline before subtle output that follows a partial writeAssistant", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     const ui = new TerminalUi({
       interactive: false,
       json: false,
@@ -181,7 +212,7 @@ describe("TerminalUi", () => {
       stderr,
     });
 
-    ui.writeAssistant("Assistant: ");
+    ui.beginAssistantResponse();
     ui.newline();
     ui.subtle("Prompt plan: mock/model iter=1 | ~500 prompt tokens (est.)");
     ui.writeAssistant("Here is ");
@@ -196,8 +227,8 @@ describe("TerminalUi", () => {
   });
 
   it("subtle output on its own line when no prior partial write exists", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     const ui = new TerminalUi({
       interactive: false,
       json: false,
@@ -214,8 +245,8 @@ describe("TerminalUi", () => {
   });
 
   it("suppresses prompt plan output in JSON mode", () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
     const ui = new TerminalUi({
       interactive: false,
       json: true,
@@ -227,6 +258,88 @@ describe("TerminalUi", () => {
     ui.writeAssistant("ignored");
     ui.newline();
     ui.subtle("Prompt plan: should not appear");
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
+  });
+
+  it("renders idle footer and turn completion lines in subtle style", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.idleFooter("? help | /tools | /context | /session list | /exit");
+    ui.turnComplete(4200);
+
+    const output = stderr.chunks.join("");
+    expect(output).toContain(
+      "? help | /tools | /context | /session list | /exit",
+    );
+    expect(output).toContain("Turn complete in 4.2s");
+  });
+
+  it("renders retained overlays in interactive TTY mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.openOverlay({
+      kind: "tools",
+      entries: [
+        { kind: "section", text: "Tools" },
+        { kind: "command", text: "  /exit - save and leave" },
+      ],
+    });
+    ui.closeOverlay();
+
+    const output = stderr.chunks.join("");
+    expect(output).toContain("Tools");
+    expect(output).toContain("/exit - save and leave");
+  });
+
+  it("suppresses idle footer and turn completion in JSON mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: true,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.idleFooter("ignored");
+    ui.turnComplete(1200);
+
+    expect(stderr.chunks.join("")).toBe("");
+    expect(stdout.chunks.join("")).toBe("");
+  });
+
+  it("suppresses idle footer and turn completion in non-interactive mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.idleFooter("ignored");
+    ui.turnComplete(1200);
 
     expect(stderr.chunks.join("")).toBe("");
     expect(stdout.chunks.join("")).toBe("");

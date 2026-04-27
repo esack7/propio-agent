@@ -10,6 +10,12 @@ export function setColorEnabled(enabled: boolean): void {
 const colors = {
   userInput: chalk.hex("#56B6C2"), // Cyan
   assistant: chalk.hex("#ABB2BF"), // Light Gray
+  inputPrompt: chalk.hex("#56B6C2"), // Cyan
+  assistantPrefix: chalk.hex("#5C6370"), // Dark Gray
+  assistantGutter: chalk.hex("#5C6370"), // Dark Gray
+  inputBorder: chalk.hex("#5C6370"), // Dark Gray
+  inputFill: chalk.bgHex("#282C34"), // Dark background
+  inputPlaceholder: chalk.hex("#5C6370"), // Dark Gray
   tool: chalk.hex("#C678DD"), // Purple
   success: chalk.hex("#98C379"), // Green
   error: chalk.hex("#E06C75"), // Red
@@ -22,6 +28,12 @@ const colors = {
 // Export color functions for each semantic role
 export const userInput = (text: string) => colors.userInput(text);
 export const assistant = (text: string) => colors.assistant(text);
+export const inputPrompt = (text: string) => colors.inputPrompt(text);
+export const assistantPrefix = (text: string) => colors.assistantPrefix(text);
+export const assistantGutter = (text: string) => colors.assistantGutter(text);
+export const inputBorder = (text: string) => colors.inputBorder(text);
+export const inputFill = (text: string) => colors.inputFill(text);
+export const inputPlaceholder = (text: string) => colors.inputPlaceholder(text);
 export const tool = (text: string) => colors.tool(text);
 export const success = (text: string) => colors.success(text);
 export const error = (text: string) => colors.error(text);

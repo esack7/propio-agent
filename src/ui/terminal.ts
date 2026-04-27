@@ -1,21 +1,23 @@
-import {
-  formatAssistantMessage,
-  formatCommand,
-  formatError,
-  formatInfo,
-  formatSubtle,
-  formatSuccess,
-  formatUserMessage,
-  formatWarning,
-} from "./formatting.js";
-import { error as colorError, success as colorSuccess } from "./colors.js";
-import { OperationSpinner } from "./spinner.js";
+import { formatInputPrompt, formatUserMessage } from "./formatting.js";
 import {
   MarkdownStreamer,
   PassthroughStreamer,
   NullStreamer,
   type Streamer,
 } from "./markdownRenderer.js";
+import { FooterRenderer } from "./footerRenderer.js";
+import { StatusRenderer } from "./statusRenderer.js";
+import { TranscriptRenderer } from "./transcriptRenderer.js";
+import { TerminalWriter } from "./terminalWriter.js";
+import { symbols } from "./symbols.js";
+import { ReplRenderer } from "./replRenderer.js";
+import {
+  ReplUiStore,
+  type OverlayState,
+  type ReplAppMode,
+  type TranscriptEntry,
+} from "./replUi.js";
+import type { PromptState } from "./promptState.js";
 
 export interface TerminalUiOptions {
   interactive: boolean;
@@ -29,46 +31,138 @@ export class TerminalUi {
   private readonly interactive: boolean;
   private readonly plain: boolean;
   private readonly json: boolean;
-  private readonly stdout: NodeJS.WriteStream;
-  private readonly stderr: NodeJS.WriteStream;
-  private spinner: OperationSpinner | null = null;
-  private pendingStderrLine = false;
+  private readonly writer: TerminalWriter;
+  private readonly transcript: TranscriptRenderer;
+  private readonly statusRenderer: StatusRenderer;
+  private readonly footerRenderer: FooterRenderer;
+  private readonly retainedStore: ReplUiStore | null;
+  private readonly retainedRenderer: ReplRenderer | null;
+  private readonly retainedPromptOutputStream: NodeJS.WriteStream;
 
   constructor(options: TerminalUiOptions) {
     this.interactive = options.interactive;
     this.plain = options.plain;
     this.json = options.json;
-    this.stdout = options.stdout ?? process.stdout;
-    this.stderr = options.stderr ?? process.stderr;
+    this.writer = new TerminalWriter({
+      stdout: options.stdout,
+      stderr: options.stderr,
+    });
+
+    const style = this.applyStyle.bind(this);
+    const clearStatus = () => this.statusRenderer.clear();
+
+    this.statusRenderer = new StatusRenderer({
+      stream: this.writer.getStderrStream(),
+      style,
+      interactive: this.interactive,
+      plain: this.plain,
+      json: this.json,
+      fallbackInfo: (text) => {
+        this.transcript.info(text);
+      },
+    });
+    this.transcript = new TranscriptRenderer({
+      writer: this.writer,
+      style,
+      clearStatus,
+      interactive: this.interactive,
+      json: this.json,
+    });
+    this.footerRenderer = new FooterRenderer({
+      writer: this.writer,
+      style,
+      clearStatus,
+      interactive: this.interactive,
+      json: this.json,
+    });
+
+    const useRetainedRenderer =
+      this.interactive &&
+      !this.plain &&
+      !this.json &&
+      this.writer.getStderrStream().isTTY;
+
+    this.retainedPromptOutputStream = this.writer.getStderrStream();
+
+    if (useRetainedRenderer) {
+      this.retainedStore = new ReplUiStore();
+      this.retainedRenderer = new ReplRenderer({
+        writer: this.writer,
+        transcriptRenderer: this.transcript,
+        statusRenderer: this.statusRenderer,
+        footerRenderer: this.footerRenderer,
+      });
+      const retainedStore = this.retainedStore;
+      this.retainedStore.subscribe(() => {
+        this.retainedRenderer?.flush(retainedStore.getState());
+      });
+    } else {
+      this.retainedStore = null;
+      this.retainedRenderer = null;
+    }
   }
 
   getPromptOutputStream(): NodeJS.WriteStream {
-    return this.stderr;
+    return this.retainedPromptOutputStream;
   }
 
   isJsonMode(): boolean {
     return this.json;
   }
 
+  setMode(mode: ReplAppMode): void {
+    if (!this.retainedStore) {
+      return;
+    }
+
+    this.retainedStore.setMode(mode);
+  }
+
+  setPromptState(state: PromptState | null): void {
+    if (!this.retainedStore) {
+      return;
+    }
+
+    this.retainedStore.setPrompt(state);
+  }
+
   createMarkdownStream(): Streamer {
-    // JSON mode: suppress all output
     if (this.json) {
       return new NullStreamer();
     }
 
-    // Plain or non-TTY mode: passthrough without markdown parsing
-    if (this.plain || !this.stderr.isTTY) {
+    if (this.plain || !this.writer.getStderrStream().isTTY) {
       return new PassthroughStreamer((token) => {
         this.writeAssistant(token);
       });
     }
 
-    // Interactive + TTY: use full markdown streaming with rendering
-    return new MarkdownStreamer(this.stderr);
+    return new MarkdownStreamer(this.writer.getStderrStream());
   }
 
   prompt(text: string): string {
     return this.applyStyle(text, formatUserMessage);
+  }
+
+  chatPrompt(): string {
+    return this.applyStyle(`${symbols.prompt} `, formatInputPrompt);
+  }
+
+  beginAssistantResponse(): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "assistant_start" });
+  }
+
+  persistSubmittedInput(text: string): void {
+    if (!this.retainedStore || this.json) {
+      return;
+    }
+
+    // The live prompt already leaves the submitted input visible in retained TTY mode.
+    // Avoid writing a second transcript copy and duplicating the user's message.
   }
 
   status(text: string, phase?: string): void {
@@ -76,90 +170,106 @@ export class TerminalUi {
       return;
     }
 
-    if (!this.interactive || this.plain) {
-      this.info(text);
+    if (this.retainedStore) {
+      this.retainedStore.setStatus({ kind: "status", text, phase });
       return;
     }
 
-    const formatted = this.applyStyle(text, formatInfo);
-    if (!this.spinner) {
-      this.spinner = new OperationSpinner(formatted, {
-        enabled: true,
-        stream: this.stderr,
-        phase,
-      });
-      this.spinner.start();
-      return;
-    }
-
-    this.spinner.setPhase(phase ?? null);
-    this.spinner.setText(formatted);
+    this.statusRenderer.status(text, phase);
   }
 
   traceStatus(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine(this.applyStyle(`Status: ${text}`, formatSubtle));
+
+    if (this.retainedStore) {
+      this.retainedStore.setStatus({ kind: "status", text });
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "subtle", text: `Status: ${text}` });
   }
 
   traceActivity(text: string, level: "info" | "error" = "info"): void {
     if (this.json) {
       return;
     }
-    this.done();
-    if (level === "error") {
-      this.writeStderrLine(this.applyStyle(`Activity: ${text}`, formatError));
+
+    if (this.retainedStore) {
+      this.retainedStore.setActivity({ text, level });
       return;
     }
-    this.writeStderrLine(this.applyStyle(`Activity: ${text}`, formatInfo));
+
+    this.appendTranscriptEntry({
+      kind: level === "error" ? "error" : "info",
+      text: `Activity: ${text}`,
+    });
   }
 
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine("");
-    this.writeStderrLine(
-      this.applyStyle(
-        `Reasoning summary (${source}): ${summary}`,
-        formatSubtle,
-      ),
-    );
+
+    this.appendTranscriptEntry({
+      kind: "reasoning_summary",
+      summary,
+      source,
+    });
+  }
+
+  idleFooter(text: string): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.setFooter(text);
+      return;
+    }
+
+    this.footerRenderer.idleFooter(text);
+  }
+
+  turnComplete(durationMs: number): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "turn_complete", durationMs });
   }
 
   info(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine(this.applyStyle(text, formatInfo));
+
+    this.appendTranscriptEntry({ kind: "info", text });
   }
 
   command(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine(this.applyStyle(text, formatCommand));
+
+    this.appendTranscriptEntry({ kind: "command", text });
   }
 
   subtle(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine(this.applyStyle(text, formatSubtle));
+
+    this.appendTranscriptEntry({ kind: "subtle", text });
   }
 
   warn(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine(this.applyStyle(text, formatWarning));
+
+    this.appendTranscriptEntry({ kind: "warn", text });
   }
 
   success(text: string): void {
@@ -167,86 +277,184 @@ export class TerminalUi {
       return;
     }
 
-    if (this.spinner) {
-      // Spinner success output already renders a symbol, so only apply color here.
-      const spinnerFormatted = this.applyStyle(text, colorSuccess);
-      this.spinner.succeed(spinnerFormatted);
-      this.spinner = null;
+    if (this.statusRenderer.succeed(text)) {
+      if (this.retainedStore) {
+        this.retainedStore.setStatus(null);
+        this.retainedStore.setActivity(null);
+      }
       return;
     }
 
-    const formatted = this.applyStyle(text, formatSuccess);
-    this.writeStderrLine(formatted);
+    this.appendTranscriptEntry({ kind: "success", text });
   }
 
   error(text: string): void {
-    if (this.spinner) {
-      // Spinner error output already renders a symbol, so only apply color here.
-      const spinnerFormatted = this.applyStyle(text, colorError);
-      this.spinner.fail(spinnerFormatted);
-      this.spinner = null;
+    if (this.json) {
       return;
     }
-    const formatted = this.applyStyle(text, formatError);
-    this.writeStderrLine(formatted);
+
+    if (this.statusRenderer.fail(text)) {
+      if (this.retainedStore) {
+        this.retainedStore.setStatus(null);
+        this.retainedStore.setActivity(null);
+      }
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "error", text });
   }
 
   progress(current: number, total: number, label?: string): void {
-    const safeTotal = total <= 0 ? 1 : total;
-    const boundedCurrent = Math.max(0, Math.min(current, safeTotal));
-    const percentage = Math.floor((boundedCurrent / safeTotal) * 100);
-    const progressText = label
-      ? `${label} (${boundedCurrent}/${safeTotal}, ${percentage}%)`
-      : `${boundedCurrent}/${safeTotal} (${percentage}%)`;
-    this.status(progressText);
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.setStatus({
+        kind: "progress",
+        current,
+        total,
+        label,
+      });
+      return;
+    }
+
+    this.statusRenderer.progress(current, total, label);
   }
 
   section(title: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine("");
-    this.writeStderrLine(this.applyStyle(title, formatInfo));
+
+    this.appendTranscriptEntry({ kind: "section", text: title });
   }
 
   indent(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderrLine(`  ${text}`);
+
+    this.appendTranscriptEntry({ kind: "indent", text });
   }
 
   writeAssistant(text: string): void {
     if (this.json) {
       return;
     }
-    this.done();
-    this.writeStderr(this.applyStyle(text, formatAssistantMessage));
+
+    this.appendTranscriptEntry({ kind: "assistant_token", text });
   }
 
   writeJson(value: unknown): void {
-    this.done();
-    this.writeStdoutLine(JSON.stringify(value, null, 2));
+    this.clearStatusIfNeeded();
+    this.transcript.writeJson(value);
+  }
+
+  openOverlay(overlay: OverlayState): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.openOverlay(overlay);
+      return;
+    }
+
+    this.renderOverlayEntries(overlay.entries);
+  }
+
+  closeOverlay(): void {
+    if (this.retainedStore) {
+      this.retainedStore.closeOverlay();
+    }
   }
 
   newline(): void {
-    if (this.pendingStderrLine) {
-      this.writeStderr("\n");
-    }
+    this.writer.newline();
   }
 
   done(): void {
-    if (this.spinner) {
-      this.spinner.stop();
-      this.spinner = null;
-    }
+    this.clearStatusIfNeeded();
   }
 
   cleanup(): void {
     this.done();
     this.newline();
+  }
+
+  private clearStatusIfNeeded(): void {
+    if (this.retainedStore) {
+      const state = this.retainedStore.getState();
+      if (state.status || state.activity) {
+        this.retainedStore.clearEphemeralSurfaces();
+      }
+      return;
+    }
+
+    this.statusRenderer.clear();
+  }
+
+  private appendTranscriptEntry(entry: TranscriptEntry): void {
+    if (this.retainedStore) {
+      this.retainedStore.appendTranscriptEntry(entry);
+      return;
+    }
+
+    this.renderLegacyTranscriptEntry(entry);
+  }
+
+  private renderLegacyTranscriptEntry(entry: TranscriptEntry): void {
+    switch (entry.kind) {
+      case "user_message":
+        this.transcript.userMessage(entry.text);
+        break;
+      case "assistant_start":
+        this.transcript.beginAssistantResponse();
+        break;
+      case "assistant_token":
+        this.transcript.writeAssistant(entry.text);
+        break;
+      case "info":
+        this.transcript.info(entry.text);
+        break;
+      case "command":
+        this.transcript.command(entry.text);
+        break;
+      case "subtle":
+        this.transcript.subtle(entry.text);
+        break;
+      case "warn":
+        this.transcript.warn(entry.text);
+        break;
+      case "success":
+        this.transcript.success(entry.text);
+        break;
+      case "error":
+        this.transcript.error(entry.text);
+        break;
+      case "section":
+        this.transcript.section(entry.text);
+        break;
+      case "indent":
+        this.transcript.indent(entry.text);
+        break;
+      case "reasoning_summary":
+        this.transcript.reasoningSummary(entry.summary, entry.source);
+        break;
+      case "turn_complete":
+        this.transcript.turnComplete(entry.durationMs);
+        break;
+      case "json":
+        this.transcript.writeJson(entry.value);
+        break;
+    }
+  }
+
+  private renderOverlayEntries(entries: readonly TranscriptEntry[]): void {
+    for (const entry of entries) {
+      this.renderLegacyTranscriptEntry(entry);
+    }
   }
 
   private applyStyle(
@@ -257,81 +465,5 @@ export class TerminalUi {
       return text;
     }
     return formatter(text);
-  }
-
-  private writeStdoutLine(text: string): void {
-    this.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
-  }
-
-  private writeStderrLine(text: string): void {
-    const normalized = text.endsWith("\n") ? text : `${text}\n`;
-    this.writeStderr(this.fitToTerminalWidth(normalized));
-  }
-
-  private writeStderr(text: string): void {
-    this.stderr.write(text);
-    this.pendingStderrLine = !text.endsWith("\n");
-  }
-
-  private fitToTerminalWidth(text: string): string {
-    if (
-      !this.stderr.isTTY ||
-      !this.stderr.columns ||
-      this.stderr.columns < 10
-    ) {
-      return text;
-    }
-
-    const maxWidth = this.stderr.columns - 1;
-    const lines = text.split("\n");
-    const fitted = lines.flatMap((line) =>
-      this.wrapLineAtWordBoundaries(line, maxWidth),
-    );
-    return fitted.join("\n");
-  }
-
-  private wrapLineAtWordBoundaries(line: string, maxWidth: number): string[] {
-    if (this.visibleLength(line) <= maxWidth) {
-      return [line];
-    }
-
-    const words = line.split(" ");
-    const wrappedLines: string[] = [];
-    let currentLine = "";
-
-    for (const word of words) {
-      if (currentLine.length === 0) {
-        if (this.visibleLength(word) > maxWidth) {
-          wrappedLines.push(word);
-        } else {
-          currentLine = word;
-        }
-        continue;
-      }
-
-      const candidate = `${currentLine} ${word}`;
-      if (this.visibleLength(candidate) <= maxWidth) {
-        currentLine = candidate;
-        continue;
-      }
-
-      wrappedLines.push(currentLine);
-      if (this.visibleLength(word) > maxWidth) {
-        wrappedLines.push(word);
-        currentLine = "";
-      } else {
-        currentLine = word;
-      }
-    }
-
-    if (currentLine.length > 0) {
-      wrappedLines.push(currentLine);
-    }
-
-    return wrappedLines.length > 0 ? wrappedLines : [line];
-  }
-
-  private visibleLength(value: string): number {
-    return value.replace(/\x1b\[[0-9;]*m/g, "").length;
   }
 }

@@ -8,6 +8,14 @@ import {
 
 export class WriteTool implements ExecutableTool {
   readonly name = "write";
+  readonly description = "Write a file atomically.";
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const path = args.path;
+    return typeof path === "string" && path.length > 0
+      ? `Writing ${path}`
+      : "Writing file";
+  }
 
   getSchema(): ChatTool {
     return {

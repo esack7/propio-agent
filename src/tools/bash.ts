@@ -8,8 +8,16 @@ const execFileAsync = promisify(execFile);
 
 export class BashTool implements ExecutableTool {
   readonly name = "bash";
+  readonly description = "Run a shell command.";
   private readonly DEFAULT_TIMEOUT = 30000;
   private readonly MAX_OUTPUT_SIZE = 50 * 1024;
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const command = args.command;
+    return typeof command === "string" && command.length > 0
+      ? `Running ${command}`
+      : "Running shell command";
+  }
 
   getSchema(): ChatTool {
     return {

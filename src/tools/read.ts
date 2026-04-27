@@ -7,6 +7,14 @@ const READ_OUTPUT_LIMIT = 50 * 1024;
 
 export class ReadTool implements ExecutableTool {
   readonly name = "read";
+  readonly description = "Read a text file.";
+
+  getInvocationLabel(args: Record<string, unknown>): string | undefined {
+    const path = args.path;
+    return typeof path === "string" && path.length > 0
+      ? `Reading ${path}`
+      : "Reading file";
+  }
 
   getSchema(): ChatTool {
     return {
