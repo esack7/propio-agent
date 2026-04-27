@@ -173,6 +173,25 @@ describe("ReplRenderer", () => {
     expect(stderr.chunks.join("")).toContain("Idle footer");
   });
 
+  it("does not rerender equivalent ephemeral state objects", () => {
+    const { renderer, spinner, store, clearStderrLinesSpy } = createHarness();
+
+    store.setStatus({ kind: "status", text: "Working", phase: "tool call" });
+    renderer.flush(store.getState());
+
+    store.setStatus({ kind: "status", text: "Working", phase: "tool call" });
+    renderer.flush(store.getState());
+
+    store.setActivity({ text: "Reading files", level: "info" });
+    renderer.flush(store.getState());
+
+    store.setActivity({ text: "Reading files", level: "info" });
+    renderer.flush(store.getState());
+
+    expect(spinner.start).toHaveBeenCalledTimes(1);
+    expect(clearStderrLinesSpy).not.toHaveBeenCalled();
+  });
+
   it("does not redraw multiline chat prompt state in the retained renderer", () => {
     const { renderer, stderr, store } = createHarness();
 
@@ -220,5 +239,22 @@ describe("ReplRenderer", () => {
     renderer.flush(store.getState());
 
     expect(clearStderrLinesSpy).toHaveBeenCalledWith(2);
+  });
+
+  it("counts JSON overlay entries using their rendered stderr lines", () => {
+    const { renderer, clearStderrLinesSpy, store, stderr } = createHarness();
+
+    store.openOverlay({
+      kind: "custom",
+      entries: [{ kind: "json", value: { foo: "bar", nested: { baz: 1 } } }],
+    });
+    renderer.flush(store.getState());
+
+    expect(stderr.chunks.join("")).toContain('"foo": "bar"');
+
+    store.closeOverlay();
+    renderer.flush(store.getState());
+
+    expect(clearStderrLinesSpy).toHaveBeenCalledWith(6);
   });
 });

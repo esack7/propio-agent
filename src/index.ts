@@ -470,6 +470,11 @@ async function main(): Promise<number> {
     showPromptPlan: parsedArgs.flags.showPromptPlan,
   };
 
+  if (parsedArgs.flags.help) {
+    process.stdout.write(HELP_TEXT);
+    return 0;
+  }
+
   setColorEnabled(colorEnabled);
 
   const { TerminalUi } = await import("./ui/terminal.js");
@@ -478,12 +483,6 @@ async function main(): Promise<number> {
     plain: plain || parsedArgs.flags.help,
     json: jsonMode,
   });
-
-  if (parsedArgs.flags.help) {
-    ui.command(HELP_TEXT.trimEnd());
-    ui.cleanup();
-    return 0;
-  }
 
   if (parsedArgs.parseErrors.length > 0) {
     for (const error of parsedArgs.parseErrors) {

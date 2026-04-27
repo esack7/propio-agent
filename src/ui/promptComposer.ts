@@ -7,6 +7,7 @@ import {
 } from "./chatPromptSession.js";
 import {
   applySubmittedText,
+  clonePromptState,
   createPromptState,
   type PromptRequest,
   type PromptState,
@@ -105,20 +106,6 @@ function updateLiveHistorySnapshot(
 ): string[] {
   const nextHistory = [text, ...history.filter((entry) => entry !== text)];
   return nextHistory.slice(0, PROMPT_HISTORY_LIMIT);
-}
-
-function clonePromptState(state: PromptState): PromptState {
-  return {
-    ...state,
-    history: state.history ? [...state.history] : undefined,
-    historySearch: state.historySearch ? { ...state.historySearch } : undefined,
-    typeahead: state.typeahead
-      ? {
-          ...state.typeahead,
-          matches: [...state.typeahead.matches],
-        }
-      : undefined,
-  };
 }
 
 function isTerminalPrompt(options: PromptComposerOptions): boolean {

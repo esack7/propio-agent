@@ -1,4 +1,4 @@
-import type { PromptState } from "./promptState.js";
+import { clonePromptState, type PromptState } from "./promptState.js";
 
 export type ReplAppMode =
   | "idle"
@@ -61,20 +61,6 @@ export type ReplUiAction =
   | { type: "openOverlay"; overlay: OverlayState }
   | { type: "closeOverlay" }
   | { type: "clearEphemeralSurfaces" };
-
-function clonePromptState(state: PromptState): PromptState {
-  return {
-    ...state,
-    history: state.history ? [...state.history] : undefined,
-    historySearch: state.historySearch ? { ...state.historySearch } : undefined,
-    typeahead: state.typeahead
-      ? {
-          ...state.typeahead,
-          matches: [...state.typeahead.matches],
-        }
-      : undefined,
-  };
-}
 
 function cloneOverlayState(overlay: OverlayState | null): OverlayState | null {
   if (!overlay) {

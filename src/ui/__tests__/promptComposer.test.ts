@@ -359,6 +359,7 @@ describe("createPromptComposer", () => {
       status: "submitted",
       text: "hello",
     });
+    await flush();
     expect(historyStore.load()).toEqual(["hello"]);
 
     composer.close();
@@ -450,6 +451,7 @@ describe("createPromptComposer", () => {
       status: "submitted",
       text: "/context",
     });
+    await flush();
     expect(historyStore.load()).toEqual(["/context"]);
     expect(readlineHarness.getHistory()).toEqual(["/context"]);
 
@@ -599,6 +601,7 @@ describe("createPromptComposer reverse history search", () => {
       status: "submitted",
       text: "older",
     });
+    await flush();
     expect(historyStore.load()).toEqual(["older", "newer"]);
     expect(harness.getOutput()).toContain("\n");
 
@@ -1218,6 +1221,84 @@ describe("createPromptComposer multiline chat editing", () => {
     await expect(prompt).resolves.toEqual({
       status: "submitted",
       text: "draft",
+    });
+
+    harness.composer.close();
+  });
+});
+
+describe("createPromptComposer word-wise editing", () => {
+  it("moves across words with Ctrl/Alt navigation keys", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("alpha beta gamma");
+
+    harness.emitKeypress({ name: "left", ctrl: true });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alpha beta gamma",
+      cursor: 11,
+    });
+
+    harness.emitKeypress({ name: "left", meta: true });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alpha beta gamma",
+      cursor: 6,
+    });
+
+    harness.emitKeypress({ name: "right", ctrl: true });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alpha beta gamma",
+      cursor: 10,
+    });
+
+    harness.emitKeypress({ name: "f", meta: true }, "\u001bf");
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alpha beta gamma",
+      cursor: 16,
+    });
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({ status: "closed" });
+  });
+
+  it("deletes the previous word with Alt+Backspace", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+
+    harness.typeText("alpha beta gamma");
+    harness.emitKeypress({ name: "backspace", meta: true });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alpha beta ",
+      cursor: 11,
+    });
+
+    harness.emitKeypress({ name: "backspace", meta: true });
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "alpha ",
+      cursor: 6,
+    });
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "alpha ",
     });
 
     harness.composer.close();

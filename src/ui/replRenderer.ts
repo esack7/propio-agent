@@ -17,16 +17,108 @@ export interface ReplRendererOptions {
   footerRenderer: FooterRenderer;
 }
 
-function statusKey(status: EphemeralStatus | null): string {
-  return status ? JSON.stringify(status) : "null";
+function statusesEqual(
+  left: EphemeralStatus | null,
+  right: EphemeralStatus | null,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (!left || !right || left.kind !== right.kind) {
+    return false;
+  }
+
+  switch (left.kind) {
+    case "status":
+      return (
+        right.kind === "status" &&
+        left.text === right.text &&
+        left.phase === right.phase
+      );
+    case "progress":
+      return (
+        right.kind === "progress" &&
+        left.current === right.current &&
+        left.total === right.total &&
+        left.label === right.label
+      );
+  }
 }
 
-function overlayKey(overlay: OverlayState | null): string {
-  return overlay ? JSON.stringify(overlay) : "null";
+function transcriptEntriesEqual(
+  left: TranscriptEntry,
+  right: TranscriptEntry,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (left.kind !== right.kind) {
+    return false;
+  }
+
+  switch (left.kind) {
+    case "user_message":
+    case "info":
+    case "command":
+    case "subtle":
+    case "warn":
+    case "success":
+    case "error":
+    case "section":
+    case "indent":
+    case "assistant_token":
+      return right.kind === left.kind && left.text === right.text;
+    case "assistant_start":
+      return true;
+    case "reasoning_summary":
+      return (
+        right.kind === "reasoning_summary" &&
+        left.summary === right.summary &&
+        left.source === right.source
+      );
+    case "turn_complete":
+      return (
+        right.kind === "turn_complete" && left.durationMs === right.durationMs
+      );
+    case "json":
+      return right.kind === "json" && left.value === right.value;
+  }
 }
 
-function activityKey(activity: ToolActivityState | null): string {
-  return activity ? JSON.stringify(activity) : "null";
+function overlaysEqual(
+  left: OverlayState | null,
+  right: OverlayState | null,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+
+  if (!left || !right || left.kind !== right.kind) {
+    return false;
+  }
+
+  if (left.entries.length !== right.entries.length) {
+    return false;
+  }
+
+  return left.entries.every((entry, index) =>
+    transcriptEntriesEqual(entry, right.entries[index]),
+  );
+}
+
+function activitiesEqual(
+  left: ToolActivityState | null,
+  right: ToolActivityState | null,
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.text === right.text &&
+      left.level === right.level)
+  );
 }
 
 export class ReplRenderer {
@@ -42,9 +134,7 @@ export class ReplRenderer {
       this.options.statusRenderer.clear();
     }
 
-    if (
-      statusKey(previousState?.status ?? null) !== statusKey(nextState.status)
-    ) {
+    if (!statusesEqual(previousState?.status ?? null, nextState.status)) {
       this.renderStatus(nextState.status);
     }
 
@@ -52,11 +142,9 @@ export class ReplRenderer {
     const transcriptAppended =
       nextState.transcript.length > previousTranscriptLength;
     const bottomSignatureChanged =
-      activityKey(previousState?.activity ?? null) !==
-        activityKey(nextState.activity) ||
+      !activitiesEqual(previousState?.activity ?? null, nextState.activity) ||
       previousState?.footer !== nextState.footer ||
-      overlayKey(previousState?.overlay ?? null) !==
-        overlayKey(nextState.overlay);
+      !overlaysEqual(previousState?.overlay ?? null, nextState.overlay);
     const shouldClearBottomZone =
       this.renderedBottomLineCount > 0 &&
       (bottomSignatureChanged || transcriptAppended);
@@ -152,6 +240,13 @@ export class ReplRenderer {
     }
 
     for (const entry of overlay.entries) {
+      if (entry.kind === "json") {
+        this.options.writer.writeStderrLine(
+          JSON.stringify(entry.value, null, 2),
+        );
+        continue;
+      }
+
       this.renderTranscriptEntry(entry);
     }
   }
@@ -221,7 +316,10 @@ function countOverlayLines(
         );
         break;
       case "json":
-        count += 0;
+        count += countWrittenStderrLines(
+          JSON.stringify(entry.value, null, 2),
+          writer,
+        );
         break;
     }
   }

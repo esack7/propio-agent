@@ -134,6 +134,44 @@ function getLineColumn(buffer: string, cursor: number): number {
   );
 }
 
+function isWhitespaceCharacter(character: string | undefined): boolean {
+  return character !== undefined && /\s/.test(character);
+}
+
+function getPreviousWordBoundary(buffer: string, cursor: number): number {
+  let nextCursor = clampPromptCursor(cursor, buffer.length);
+
+  while (nextCursor > 0 && isWhitespaceCharacter(buffer[nextCursor - 1])) {
+    nextCursor -= 1;
+  }
+
+  while (nextCursor > 0 && !isWhitespaceCharacter(buffer[nextCursor - 1])) {
+    nextCursor -= 1;
+  }
+
+  return nextCursor;
+}
+
+function getNextWordBoundary(buffer: string, cursor: number): number {
+  let nextCursor = clampPromptCursor(cursor, buffer.length);
+
+  while (
+    nextCursor < buffer.length &&
+    isWhitespaceCharacter(buffer[nextCursor])
+  ) {
+    nextCursor += 1;
+  }
+
+  while (
+    nextCursor < buffer.length &&
+    !isWhitespaceCharacter(buffer[nextCursor])
+  ) {
+    nextCursor += 1;
+  }
+
+  return nextCursor;
+}
+
 function wrapLineByWidth(line: string, width: number): string[] {
   if (!Number.isFinite(width) || width <= 0) {
     return [line];
@@ -310,10 +348,6 @@ function setRawMode(inputStream: NodeJS.ReadStream, enabled: boolean): void {
 
 function isPrintableKey(str: string | undefined, key: readline.Key): boolean {
   return Boolean(str && !key.ctrl && !key.meta);
-}
-
-function isLineFeedKeypress(str: string | undefined): boolean {
-  return str === "\n";
 }
 
 export function createChatPromptSession(
@@ -682,6 +716,35 @@ export function createChatPromptSession(
     render();
   };
 
+  const deleteWordBeforeCursor = (): void => {
+    clearTransientStatus();
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
+    if (searchState) {
+      const nextCursor = getPreviousWordBoundary(
+        searchState.query,
+        searchState.query.length,
+      );
+      updateSearchQuery(searchState.query.slice(0, nextCursor));
+      return;
+    }
+
+    if (historyIndex !== null) {
+      clearHistoryNavigation();
+    }
+
+    if (cursor === 0) {
+      return;
+    }
+
+    const nextCursor = getPreviousWordBoundary(buffer, cursor);
+    buffer = `${buffer.slice(0, nextCursor)}${buffer.slice(cursor)}`;
+    cursor = nextCursor;
+    render();
+  };
+
   const moveCursor = (direction: "left" | "right" | "home" | "end"): void => {
     clearTransientStatus();
     if (typeaheadState) {
@@ -702,6 +765,23 @@ export function createChatPromptSession(
       cursor = getLineEndIndex(buffer, cursor);
     }
 
+    render();
+  };
+
+  const moveCursorByWord = (direction: "left" | "right"): void => {
+    clearTransientStatus();
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
+    if (searchState) {
+      return;
+    }
+
+    cursor =
+      direction === "left"
+        ? getPreviousWordBoundary(buffer, cursor)
+        : getNextWordBoundary(buffer, cursor);
     render();
   };
 
@@ -824,10 +904,7 @@ export function createChatPromptSession(
       return;
     }
 
-    if (
-      !searchState &&
-      ((key.name === "j" && key.ctrl) || isLineFeedKeypress(str))
-    ) {
+    if (!searchState && ((key.name === "j" && key.ctrl) || str === "\n")) {
       insertText("\n");
       return;
     }
@@ -862,8 +939,25 @@ export function createChatPromptSession(
       return;
     }
 
+    if (
+      (key.name === "left" || key.name === "right") &&
+      (key.ctrl || key.meta)
+    ) {
+      moveCursorByWord(key.name);
+      return;
+    }
+
+    if (key.meta && (key.name === "b" || key.name === "f")) {
+      moveCursorByWord(key.name === "b" ? "left" : "right");
+      return;
+    }
+
     switch (key.name) {
       case "backspace":
+        if (key.meta) {
+          deleteWordBeforeCursor();
+          return;
+        }
         deleteBeforeCursor();
         return;
       case "delete":

@@ -76,13 +76,13 @@ function loadHistoryFile(filePath: string, maxEntries: number): string[] {
   }
 }
 
-function saveHistoryFile(
+async function saveHistoryFile(
   filePath: string,
   entries: readonly string[],
   maxEntries: number,
-): void {
+): Promise<void> {
   const directory = path.dirname(filePath);
-  fs.mkdirSync(directory, { recursive: true });
+  await fs.promises.mkdir(directory, { recursive: true });
 
   const nextEntries = normalizeEntries(entries, maxEntries);
   const payload: PromptHistoryFile = {
@@ -95,12 +95,16 @@ function saveHistoryFile(
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
   );
 
-  fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await fs.promises.writeFile(
+    tempPath,
+    `${JSON.stringify(payload, null, 2)}\n`,
+    "utf8",
+  );
   try {
-    fs.renameSync(tempPath, filePath);
+    await fs.promises.rename(tempPath, filePath);
   } catch (error) {
     try {
-      fs.rmSync(tempPath, { force: true });
+      await fs.promises.rm(tempPath, { force: true });
     } catch {
       // best-effort cleanup only
     }
@@ -112,26 +116,71 @@ export function createPromptHistoryStore(
   options: PromptHistoryStoreOptions,
 ): PromptHistoryStore {
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
+  let cachedEntries: string[] | null = null;
+  let persistScheduled = false;
+  let persistInFlight = false;
+  let persistRequested = false;
+
+  const getEntries = (): string[] => {
+    if (cachedEntries === null) {
+      cachedEntries = loadHistoryFile(options.filePath, maxEntries);
+    }
+
+    return cachedEntries;
+  };
+
+  const flushPersist = async (): Promise<void> => {
+    if (persistInFlight) {
+      persistRequested = true;
+      return;
+    }
+
+    persistInFlight = true;
+
+    try {
+      do {
+        persistRequested = false;
+        const snapshot = [...getEntries()];
+
+        try {
+          await saveHistoryFile(options.filePath, snapshot, maxEntries);
+        } catch {
+          // Prompt history is best-effort; do not block prompt submission.
+        }
+      } while (persistRequested);
+    } finally {
+      persistInFlight = false;
+    }
+  };
+
+  const schedulePersist = (): void => {
+    if (persistScheduled) {
+      persistRequested = true;
+      return;
+    }
+
+    persistScheduled = true;
+    setImmediate(() => {
+      persistScheduled = false;
+      void flushPersist();
+    });
+  };
 
   return {
     load(): readonly string[] {
-      return loadHistoryFile(options.filePath, maxEntries);
+      return [...getEntries()];
     },
     record(text: string): void {
       if (!shouldRecordPromptHistoryEntry(text)) {
         return;
       }
 
-      try {
-        const existing = loadHistoryFile(options.filePath, maxEntries);
-        const nextEntries = [
-          text,
-          ...existing.filter((entry) => entry !== text),
-        ];
-        saveHistoryFile(options.filePath, nextEntries, maxEntries);
-      } catch {
-        // Prompt history is best-effort; do not block prompt submission.
-      }
+      const existing = getEntries();
+      cachedEntries = normalizeEntries(
+        [text, ...existing.filter((entry) => entry !== text)],
+        maxEntries,
+      );
+      schedulePersist();
     },
   };
 }

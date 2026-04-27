@@ -3,6 +3,25 @@ import * as os from "os";
 import * as path from "path";
 import { createPromptHistoryStore } from "../promptHistory.js";
 
+function flush(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 1000,
+): Promise<void> {
+  const startedAt = Date.now();
+
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error("Timed out waiting for prompt history persistence");
+    }
+
+    await flush();
+  }
+}
+
 describe("createPromptHistoryStore", () => {
   let tempRoot: string;
 
@@ -49,11 +68,12 @@ describe("createPromptHistoryStore", () => {
     expect(store.load()).toEqual(["newest", "older", "oldest"]);
   });
 
-  it("preserves submitted text content while trimming eligibility", () => {
+  it("preserves submitted text content while trimming eligibility", async () => {
     const filePath = path.join(tempRoot, "prompt-history.json");
     const store = createPromptHistoryStore({ filePath });
 
     store.record("  /context  ");
+    await waitFor(() => fs.existsSync(filePath));
 
     expect(store.load()).toEqual(["  /context  "]);
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
@@ -75,24 +95,26 @@ describe("createPromptHistoryStore", () => {
     expect(fs.existsSync(filePath)).toBe(false);
   });
 
-  it("moves duplicate entries to the newest position", () => {
+  it("moves duplicate entries to the newest position", async () => {
     const filePath = path.join(tempRoot, "prompt-history.json");
     const store = createPromptHistoryStore({ filePath });
 
     store.record("one");
     store.record("two");
     store.record("one");
+    await flush();
 
     expect(store.load()).toEqual(["one", "two"]);
   });
 
-  it("caps history at 200 entries", () => {
+  it("caps history at 200 entries", async () => {
     const filePath = path.join(tempRoot, "prompt-history.json");
     const store = createPromptHistoryStore({ filePath });
 
     for (let index = 0; index < 201; index += 1) {
       store.record(`prompt-${index}`);
     }
+    await flush();
 
     const history = store.load();
 
@@ -101,7 +123,7 @@ describe("createPromptHistoryStore", () => {
     expect(history[199]).toBe("prompt-1");
   });
 
-  it("creates parent directories when saving", () => {
+  it("creates parent directories when saving", async () => {
     const filePath = path.join(
       tempRoot,
       "nested",
@@ -111,6 +133,7 @@ describe("createPromptHistoryStore", () => {
     const store = createPromptHistoryStore({ filePath });
 
     store.record("hello");
+    await waitFor(() => fs.existsSync(filePath));
 
     expect(fs.existsSync(path.dirname(filePath))).toBe(true);
     expect(fs.existsSync(filePath)).toBe(true);

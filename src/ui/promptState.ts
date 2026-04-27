@@ -47,6 +47,20 @@ export function createPromptState(request: PromptRequest): PromptState {
   };
 }
 
+export function clonePromptState(state: PromptState): PromptState {
+  return {
+    ...state,
+    history: state.history ? [...state.history] : undefined,
+    historySearch: state.historySearch ? { ...state.historySearch } : undefined,
+    typeahead: state.typeahead
+      ? {
+          ...state.typeahead,
+          matches: [...state.typeahead.matches],
+        }
+      : undefined,
+  };
+}
+
 export function applySubmittedText(
   state: PromptState,
   submittedText: string,

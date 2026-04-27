@@ -1,6 +1,7 @@
 import {
   applySubmittedText,
   clampPromptCursor,
+  clonePromptState,
   createPromptState,
 } from "../promptState.js";
 
@@ -59,6 +60,40 @@ describe("promptState", () => {
     expect(next.buffer).toBe("world");
     expect(next.cursor).toBe(5);
     expect(next.multiline).toBe(false);
+  });
+
+  it("clones nested prompt state without sharing mutable arrays", () => {
+    const state = createPromptState({
+      promptText: "Name? ",
+      mode: "chat",
+      history: ["first"],
+      defaultValue: "hello",
+    });
+    state.historySearch = {
+      active: true,
+      query: "he",
+      match: "hello",
+      matchIndex: 0,
+      matchCount: 1,
+    };
+    state.typeahead = {
+      active: true,
+      kind: "command",
+      query: "/he",
+      match: "/help",
+      matchIndex: 0,
+      matchCount: 1,
+      matches: ["/help"],
+    };
+
+    const clone = clonePromptState(state);
+
+    expect(clone).toEqual(state);
+    expect(clone).not.toBe(state);
+    expect(clone.history).not.toBe(state.history);
+    expect(clone.historySearch).not.toBe(state.historySearch);
+    expect(clone.typeahead).not.toBe(state.typeahead);
+    expect(clone.typeahead?.matches).not.toBe(state.typeahead?.matches);
   });
 
   it("clamps cursor values to the buffer bounds", () => {
