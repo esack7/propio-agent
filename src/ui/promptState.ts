@@ -4,6 +4,7 @@ import type { HistorySearchSummary } from "./historySearch.js";
 export type PromptMode = "chat" | "confirm" | "menu";
 
 export interface PromptState {
+  promptText?: string;
   buffer: string;
   cursor: number;
   mode: PromptMode;
@@ -35,6 +36,7 @@ export function clampPromptCursor(
 export function createPromptState(request: PromptRequest): PromptState {
   const buffer = request.defaultValue ?? "";
   return {
+    promptText: request.promptText,
     buffer,
     cursor: clampPromptCursor(buffer.length, buffer.length),
     mode: request.mode,

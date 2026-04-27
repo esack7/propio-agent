@@ -10,6 +10,14 @@ import { StatusRenderer } from "./statusRenderer.js";
 import { TranscriptRenderer } from "./transcriptRenderer.js";
 import { TerminalWriter } from "./terminalWriter.js";
 import { symbols } from "./symbols.js";
+import { ReplRenderer } from "./replRenderer.js";
+import {
+  ReplUiStore,
+  type OverlayState,
+  type ReplAppMode,
+  type TranscriptEntry,
+} from "./replUi.js";
+import type { PromptState } from "./promptState.js";
 
 export interface TerminalUiOptions {
   interactive: boolean;
@@ -27,6 +35,9 @@ export class TerminalUi {
   private readonly transcript: TranscriptRenderer;
   private readonly statusRenderer: StatusRenderer;
   private readonly footerRenderer: FooterRenderer;
+  private readonly retainedStore: ReplUiStore | null;
+  private readonly retainedRenderer: ReplRenderer | null;
+  private readonly retainedPromptOutputStream: NodeJS.WriteStream;
 
   constructor(options: TerminalUiOptions) {
     this.interactive = options.interactive;
@@ -64,14 +75,57 @@ export class TerminalUi {
       interactive: this.interactive,
       json: this.json,
     });
+
+    const useRetainedRenderer =
+      this.interactive &&
+      !this.plain &&
+      !this.json &&
+      this.writer.getStderrStream().isTTY;
+
+    this.retainedPromptOutputStream = useRetainedRenderer
+      ? createSilentPromptOutputStream(this.writer.getStderrStream())
+      : this.writer.getStderrStream();
+
+    if (useRetainedRenderer) {
+      this.retainedStore = new ReplUiStore();
+      this.retainedRenderer = new ReplRenderer({
+        writer: this.writer,
+        transcriptRenderer: this.transcript,
+        statusRenderer: this.statusRenderer,
+        footerRenderer: this.footerRenderer,
+      });
+      const retainedStore = this.retainedStore;
+      this.retainedStore.subscribe(() => {
+        this.retainedRenderer?.flush(retainedStore.getState());
+      });
+    } else {
+      this.retainedStore = null;
+      this.retainedRenderer = null;
+    }
   }
 
   getPromptOutputStream(): NodeJS.WriteStream {
-    return this.writer.getStderrStream();
+    return this.retainedPromptOutputStream;
   }
 
   isJsonMode(): boolean {
     return this.json;
+  }
+
+  setMode(mode: ReplAppMode): void {
+    if (!this.retainedStore) {
+      return;
+    }
+
+    this.retainedStore.setMode(mode);
+  }
+
+  setPromptState(state: PromptState | null): void {
+    if (!this.retainedStore) {
+      return;
+    }
+
+    this.retainedStore.setPrompt(state);
   }
 
   createMarkdownStream(): Streamer {
@@ -101,10 +155,27 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.beginAssistantResponse();
+    this.appendTranscriptEntry({ kind: "assistant_start" });
+  }
+
+  persistSubmittedInput(text: string): void {
+    if (!this.retainedStore || this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "user_message", text });
   }
 
   status(text: string, phase?: string): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.setStatus({ kind: "status", text, phase });
+      return;
+    }
+
     this.statusRenderer.status(text, phase);
   }
 
@@ -113,7 +184,12 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.traceStatus(text);
+    if (this.retainedStore) {
+      this.retainedStore.setStatus({ kind: "status", text });
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "subtle", text: `Status: ${text}` });
   }
 
   traceActivity(text: string, level: "info" | "error" = "info"): void {
@@ -121,7 +197,15 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.traceActivity(text, level);
+    if (this.retainedStore) {
+      this.retainedStore.setActivity({ text, level });
+      return;
+    }
+
+    this.appendTranscriptEntry({
+      kind: level === "error" ? "error" : "info",
+      text: `Activity: ${text}`,
+    });
   }
 
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
@@ -129,15 +213,32 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.reasoningSummary(summary, source);
+    this.appendTranscriptEntry({
+      kind: "reasoning_summary",
+      summary,
+      source,
+    });
   }
 
   idleFooter(text: string): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.setFooter(text);
+      return;
+    }
+
     this.footerRenderer.idleFooter(text);
   }
 
   turnComplete(durationMs: number): void {
-    this.transcript.turnComplete(durationMs);
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "turn_complete", durationMs });
   }
 
   info(text: string): void {
@@ -145,7 +246,7 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.info(text);
+    this.appendTranscriptEntry({ kind: "info", text });
   }
 
   command(text: string): void {
@@ -153,7 +254,7 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.command(text);
+    this.appendTranscriptEntry({ kind: "command", text });
   }
 
   subtle(text: string): void {
@@ -161,7 +262,7 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.subtle(text);
+    this.appendTranscriptEntry({ kind: "subtle", text });
   }
 
   warn(text: string): void {
@@ -169,7 +270,7 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.warn(text);
+    this.appendTranscriptEntry({ kind: "warn", text });
   }
 
   success(text: string): void {
@@ -178,10 +279,14 @@ export class TerminalUi {
     }
 
     if (this.statusRenderer.succeed(text)) {
+      if (this.retainedStore) {
+        this.retainedStore.setStatus(null);
+        this.retainedStore.setActivity(null);
+      }
       return;
     }
 
-    this.transcript.success(text);
+    this.appendTranscriptEntry({ kind: "success", text });
   }
 
   error(text: string): void {
@@ -190,13 +295,31 @@ export class TerminalUi {
     }
 
     if (this.statusRenderer.fail(text)) {
+      if (this.retainedStore) {
+        this.retainedStore.setStatus(null);
+        this.retainedStore.setActivity(null);
+      }
       return;
     }
 
-    this.transcript.error(text);
+    this.appendTranscriptEntry({ kind: "error", text });
   }
 
   progress(current: number, total: number, label?: string): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.setStatus({
+        kind: "progress",
+        current,
+        total,
+        label,
+      });
+      return;
+    }
+
     this.statusRenderer.progress(current, total, label);
   }
 
@@ -205,7 +328,7 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.section(title);
+    this.appendTranscriptEntry({ kind: "section", text: title });
   }
 
   indent(text: string): void {
@@ -213,7 +336,7 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.indent(text);
+    this.appendTranscriptEntry({ kind: "indent", text });
   }
 
   writeAssistant(text: string): void {
@@ -221,11 +344,31 @@ export class TerminalUi {
       return;
     }
 
-    this.transcript.writeAssistant(text);
+    this.appendTranscriptEntry({ kind: "assistant_token", text });
   }
 
   writeJson(value: unknown): void {
+    this.clearStatusIfNeeded();
     this.transcript.writeJson(value);
+  }
+
+  openOverlay(overlay: OverlayState): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.openOverlay(overlay);
+      return;
+    }
+
+    this.renderOverlayEntries(overlay.entries);
+  }
+
+  closeOverlay(): void {
+    if (this.retainedStore) {
+      this.retainedStore.closeOverlay();
+    }
   }
 
   newline(): void {
@@ -233,12 +376,86 @@ export class TerminalUi {
   }
 
   done(): void {
-    this.statusRenderer.clear();
+    this.clearStatusIfNeeded();
   }
 
   cleanup(): void {
     this.done();
     this.newline();
+  }
+
+  private clearStatusIfNeeded(): void {
+    if (this.retainedStore) {
+      const state = this.retainedStore.getState();
+      if (state.status || state.activity) {
+        this.retainedStore.clearEphemeralSurfaces();
+      }
+      return;
+    }
+
+    this.statusRenderer.clear();
+  }
+
+  private appendTranscriptEntry(entry: TranscriptEntry): void {
+    if (this.retainedStore) {
+      this.retainedStore.appendTranscriptEntry(entry);
+      return;
+    }
+
+    this.renderLegacyTranscriptEntry(entry);
+  }
+
+  private renderLegacyTranscriptEntry(entry: TranscriptEntry): void {
+    switch (entry.kind) {
+      case "user_message":
+        this.transcript.userMessage(entry.text);
+        break;
+      case "assistant_start":
+        this.transcript.beginAssistantResponse();
+        break;
+      case "assistant_token":
+        this.transcript.writeAssistant(entry.text);
+        break;
+      case "info":
+        this.transcript.info(entry.text);
+        break;
+      case "command":
+        this.transcript.command(entry.text);
+        break;
+      case "subtle":
+        this.transcript.subtle(entry.text);
+        break;
+      case "warn":
+        this.transcript.warn(entry.text);
+        break;
+      case "success":
+        this.transcript.success(entry.text);
+        break;
+      case "error":
+        this.transcript.error(entry.text);
+        break;
+      case "section":
+        this.transcript.section(entry.text);
+        break;
+      case "indent":
+        this.transcript.indent(entry.text);
+        break;
+      case "reasoning_summary":
+        this.transcript.reasoningSummary(entry.summary, entry.source);
+        break;
+      case "turn_complete":
+        this.transcript.turnComplete(entry.durationMs);
+        break;
+      case "json":
+        this.transcript.writeJson(entry.value);
+        break;
+    }
+  }
+
+  private renderOverlayEntries(entries: readonly TranscriptEntry[]): void {
+    for (const entry of entries) {
+      this.renderLegacyTranscriptEntry(entry);
+    }
   }
 
   private applyStyle(
@@ -250,4 +467,22 @@ export class TerminalUi {
     }
     return formatter(text);
   }
+}
+
+function createSilentPromptOutputStream(
+  backingStream: NodeJS.WriteStream,
+): NodeJS.WriteStream {
+  const silentStream = Object.create(backingStream) as NodeJS.WriteStream;
+  Object.defineProperty(silentStream, "isTTY", {
+    value: true,
+    enumerable: true,
+    configurable: true,
+  });
+  Object.defineProperty(silentStream, "columns", {
+    get: () => backingStream.columns,
+    enumerable: true,
+    configurable: true,
+  });
+  silentStream.write = () => true;
+  return silentStream;
 }

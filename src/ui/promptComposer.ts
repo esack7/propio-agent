@@ -55,6 +55,7 @@ export interface PromptComposerOptions {
   output?: NodeJS.WriteStream;
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
+  renderState?: (state: PromptState | null) => void;
   historyStore?: PromptHistoryStore;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -195,6 +196,8 @@ export function createPromptComposer(
       multiline: state.multiline,
       editorStatus: state.editorStatus,
     };
+
+    options.renderState?.(clonePromptState(currentState));
   };
 
   const settlePending = (result: PromptResult): void => {
@@ -235,6 +238,7 @@ export function createPromptComposer(
     }
 
     activePrompt = null;
+    options.renderState?.(null);
     resolve(result);
   };
 
@@ -245,6 +249,7 @@ export function createPromptComposer(
 
     closed = true;
     setCloseReason("closed");
+    options.renderState?.(null);
     rl.close();
   };
 
@@ -258,6 +263,7 @@ export function createPromptComposer(
     }
 
     currentState = createPromptState(request);
+    options.renderState?.(clonePromptState(currentState));
     activePrompt = {
       request,
       historySnapshot: snapshotLiveHistory(rl),

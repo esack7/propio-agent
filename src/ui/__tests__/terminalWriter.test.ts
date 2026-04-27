@@ -43,4 +43,16 @@ describe("TerminalWriter", () => {
     expect(stderr.chunks.join("")).toBe("partial\n");
     expect(stdout.chunks).toHaveLength(0);
   });
+
+  it("clears the current stderr line before moving upward", () => {
+    const stdout = createMockStream();
+    const stderr = createMockStream();
+    const writer = new TerminalWriter({ stdout, stderr });
+
+    writer.clearStderrLines(2);
+
+    expect(stderr.chunks.join("")).toBe(
+      "\u001b[1G\u001b[2K\u001b[1A\u001b[1G\u001b[2K",
+    );
+  });
 });

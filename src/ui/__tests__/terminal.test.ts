@@ -75,6 +75,24 @@ describe("TerminalUi", () => {
     expect(stderr.chunks.join("")).toBe(`\n${gutter}`);
   });
 
+  it("persists submitted chat input in retained interactive TTY mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.persistSubmittedInput("hello");
+
+    expect(stripAnsi(stderr.chunks.join(""))).toContain(
+      `${symbols.prompt} hello`,
+    );
+  });
+
   it("preserves the Assistant prefix in non-interactive human-readable mode", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
@@ -266,6 +284,31 @@ describe("TerminalUi", () => {
       "? help | /tools | /context | /session list | /exit",
     );
     expect(output).toContain("Turn complete in 4.2s");
+  });
+
+  it("renders retained overlays in interactive TTY mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.openOverlay({
+      kind: "tools",
+      entries: [
+        { kind: "section", text: "Tools" },
+        { kind: "command", text: "  /exit - save and leave" },
+      ],
+    });
+    ui.closeOverlay();
+
+    const output = stderr.chunks.join("");
+    expect(output).toContain("Tools");
+    expect(output).toContain("/exit - save and leave");
   });
 
   it("suppresses idle footer and turn completion in JSON mode", () => {

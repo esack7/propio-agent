@@ -13,7 +13,10 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function createHarness(renderFooter?: (footer: string) => void) {
+function createHarness(options?: {
+  renderFooter?: (footer: string) => void;
+  renderState?: (state: unknown) => void;
+}) {
   const inputStream = new PassThrough();
   const outputStream = new PassThrough();
   outputStream.setEncoding("utf8");
@@ -21,7 +24,8 @@ function createHarness(renderFooter?: (footer: string) => void) {
   const composer = createPromptComposer({
     input: inputStream as unknown as NodeJS.ReadStream,
     output: outputStream as unknown as NodeJS.WriteStream,
-    renderFooter,
+    renderFooter: options?.renderFooter,
+    renderState: options?.renderState as ((state: unknown) => void) | undefined,
   });
 
   return {
@@ -245,7 +249,7 @@ describe("createPromptComposer", () => {
 
   it("renders the supplied footer through the injected renderer", async () => {
     const renderFooter = jest.fn();
-    const harness = createHarness(renderFooter);
+    const harness = createHarness({ renderFooter });
 
     const prompt = harness.composer.compose({
       mode: "chat",
@@ -261,6 +265,37 @@ describe("createPromptComposer", () => {
       status: "submitted",
       text: "alice",
     });
+
+    harness.composer.close();
+  });
+
+  it("surfaces prompt state snapshots through the render callback", async () => {
+    const renderState = jest.fn();
+    const harness = createHarness({ renderState });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: "Idle footer",
+    });
+
+    await flush();
+    expect(renderState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        buffer: "",
+        cursor: 0,
+        mode: "chat",
+        footer: "Idle footer",
+      }),
+    );
+
+    harness.inputStream.write("alice\n");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "alice",
+    });
+
+    expect(renderState).toHaveBeenCalledWith(null);
 
     harness.composer.close();
   });

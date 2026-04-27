@@ -5,8 +5,10 @@ import {
   formatCommand,
   formatError,
   formatInfo,
+  formatInputPrompt,
   formatSubtle,
   formatSuccess,
+  formatUserMessage,
   formatWarning,
 } from "./formatting.js";
 import { symbols } from "./symbols.js";
@@ -29,6 +31,26 @@ function formatDurationSeconds(durationMs: number): string {
 
 export class TranscriptRenderer {
   constructor(private readonly options: TranscriptRendererOptions) {}
+
+  userMessage(text: string): void {
+    this.options.clearStatus();
+
+    if (!this.options.interactive) {
+      this.options.writer.writeStderrLine(text);
+      return;
+    }
+
+    const prompt = symbols.prompt === "❯" ? "❯ " : `${symbols.prompt} `;
+    const continuation = " ".repeat(prompt.length);
+    const lines = text.split("\n");
+
+    lines.forEach((line, index) => {
+      const prefix = index === 0 ? prompt : continuation;
+      const styledPrefix = this.options.style(prefix, formatInputPrompt);
+      const styledLine = this.options.style(line, formatUserMessage);
+      this.options.writer.writeStderrLine(`${styledPrefix}${styledLine}`);
+    });
+  }
 
   beginAssistantResponse(): void {
     this.options.clearStatus();

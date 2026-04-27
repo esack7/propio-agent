@@ -33,19 +33,13 @@ import {
   type PromptPlanLine,
   type MemoryLine,
 } from "./ui/contextInspector.js";
+import { type TranscriptEntry } from "./ui/replUi.js";
 import { getDefaultSessionsDir } from "./sessions/sessionHistory.js";
 import {
   saveSessionOnExit,
   handleSessionCommand as handleSessionCmd,
   hasSessionContent,
 } from "./sessions/sessionCommands.js";
-
-type AppMode =
-  | "idle"
-  | "running"
-  | "awaitingInput"
-  | "showingResults"
-  | "error";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -141,27 +135,26 @@ function isAbortError(error: unknown): boolean {
   return message.includes("abort") || message.includes("cancel");
 }
 
-function printSlashCommandHelp(
-  ui: Pick<TerminalUi, "command" | "subtle" | "section">,
-): void {
-  for (const line of buildSlashCommandHelpLines()) {
-    switch (line.style) {
-      case "section":
-        ui.section(line.text);
-        break;
-      case "info":
-        ui.command(line.text);
-        break;
-      case "subtle":
-        if (line.text.length > 0) {
-          ui.subtle(line.text);
-        } else {
-          ui.command("");
-        }
-        break;
-    }
-  }
-  ui.command("");
+function printSlashCommandHelp(ui: Pick<TerminalUi, "openOverlay">): void {
+  const entries: TranscriptEntry[] = buildSlashCommandHelpLines().map(
+    (line) => {
+      switch (line.style) {
+        case "section":
+          return { kind: "section", text: line.text };
+        case "info":
+          return { kind: "command", text: line.text };
+        case "subtle":
+          return line.text.length > 0
+            ? { kind: "subtle", text: line.text }
+            : { kind: "command", text: "" };
+      }
+    },
+  );
+
+  ui.openOverlay({
+    kind: "help",
+    entries,
+  });
 }
 
 async function readStdinInput(): Promise<string> {
@@ -202,7 +195,6 @@ function renderStyledLines(
 async function runNonInteractiveSession(
   agent: Agent,
   ui: TerminalUi,
-  setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
   visibility: VisibilityOptions,
 ): Promise<number> {
@@ -221,7 +213,7 @@ async function runNonInteractiveSession(
 
   const abortController = new AbortController();
   setCurrentAbortController(abortController);
-  setMode("running");
+  ui.setMode("running");
 
   try {
     const result = await streamAssistantTurn(
@@ -231,7 +223,7 @@ async function runNonInteractiveSession(
       abortController.signal,
       visibility,
     );
-    setMode("showingResults");
+    ui.setMode("showingResults");
     if (ui.isJsonMode()) {
       ui.writeJson({
         response: result.response,
@@ -250,7 +242,7 @@ async function runNonInteractiveSession(
     }
 
     const message = error instanceof Error ? error.message : "Unknown error";
-    setMode("error");
+    ui.setMode("error");
     if (ui.isJsonMode()) {
       ui.writeJson({ error: message });
     } else {
@@ -295,7 +287,6 @@ async function handleSessionCommand(
 async function runInteractiveSession(
   agent: Agent,
   ui: TerminalUi,
-  setMode: (mode: AppMode) => void,
   setCurrentAbortController: (controller: AbortController | null) => void,
   setActiveComposer: (composer: PromptComposer | null) => void,
   shouldExit: () => boolean,
@@ -308,6 +299,9 @@ async function runInteractiveSession(
     renderFooter: (footer) => {
       ui.idleFooter(footer);
     },
+    renderState: (state) => {
+      ui.setPromptState(state);
+    },
   });
   setActiveComposer(composer);
 
@@ -318,7 +312,7 @@ async function runInteractiveSession(
 
     let shownReadyPromptMessage = false;
     while (!shouldExit()) {
-      setMode("awaitingInput");
+      ui.setMode("awaitingInput");
       if (!shownReadyPromptMessage) {
         ui.info("AI Agent started. Type your message and press Enter.");
         shownReadyPromptMessage = true;
@@ -331,6 +325,7 @@ async function runInteractiveSession(
       });
 
       if (nextInput.status === "closed") {
+        ui.closeOverlay();
         if (composer.getCloseReason() === "interrupted") {
           return 130;
         }
@@ -340,6 +335,7 @@ async function runInteractiveSession(
         return 0;
       }
 
+      ui.closeOverlay();
       const trimmedInput = nextInput.text.trim();
 
       if (shouldExit()) {
@@ -419,7 +415,8 @@ async function runInteractiveSession(
         continue;
       }
 
-      setMode("running");
+      ui.persistSubmittedInput(trimmedInput);
+      ui.setMode("running");
       const abortController = new AbortController();
       setCurrentAbortController(abortController);
       const turnStartedAtMs = Date.now();
@@ -432,7 +429,7 @@ async function runInteractiveSession(
           abortController.signal,
           visibility,
         );
-        setMode("showingResults");
+        ui.setMode("showingResults");
         ui.command("");
         ui.turnComplete(Date.now() - turnStartedAtMs);
       } catch (error) {
@@ -440,7 +437,7 @@ async function runInteractiveSession(
           return 130;
         }
 
-        setMode("error");
+        ui.setMode("error");
         ui.error(
           `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         );
@@ -511,11 +508,6 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  let mode: AppMode = "idle";
-  const setMode = (nextMode: AppMode) => {
-    mode = nextMode;
-  };
-
   let shouldExit = false;
   let currentAbortController: AbortController | null = null;
   let activeComposer: PromptComposer | null = null;
@@ -528,7 +520,7 @@ async function main(): Promise<number> {
 
   const handleSigint = () => {
     shouldExit = true;
-    setMode("error");
+    ui.setMode("error");
     activeComposer?.close();
     if (currentAbortController && !currentAbortController.signal.aborted) {
       currentAbortController.abort();
@@ -572,7 +564,6 @@ Always provide clear, concise responses and summarize what you did after complet
       const code = await runInteractiveSession(
         agent,
         ui,
-        setMode,
         setCurrentAbortController,
         setActiveComposer,
         () => shouldExit,
@@ -587,7 +578,6 @@ Always provide clear, concise responses and summarize what you did after complet
     const nonInteractiveCode = await runNonInteractiveSession(
       agent,
       ui,
-      setMode,
       setCurrentAbortController,
       visibility,
     );

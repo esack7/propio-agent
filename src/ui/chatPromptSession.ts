@@ -247,7 +247,7 @@ function buildPromptLayout(
   };
 }
 
-function renderPromptFrame(
+export function renderPromptFrame(
   outputStream: NodeJS.WriteStream,
   promptText: string,
   buffer: string,

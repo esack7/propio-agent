@@ -5,6 +5,7 @@ import type {
   PromptRequest,
   PromptResult,
 } from "../promptComposer.js";
+import type { OverlayState } from "../replUi.js";
 
 class MockAgent {
   private tools = new Map([
@@ -153,10 +154,13 @@ class MockPromptComposer implements PromptComposer {
 describe("showToolMenu", () => {
   let mockAgent: MockAgent;
   let outputLines: string[];
+  let closeOverlayCalls: number;
   let mockUi: {
+    closeOverlay: () => void;
     command: (text: string) => void;
     error: (text: string) => void;
     info: (text: string) => void;
+    openOverlay: (overlay: OverlayState) => void;
     prompt: (text: string) => string;
     success: (text: string) => void;
   };
@@ -164,10 +168,19 @@ describe("showToolMenu", () => {
   beforeEach(() => {
     mockAgent = new MockAgent();
     outputLines = [];
+    closeOverlayCalls = 0;
     mockUi = {
+      closeOverlay: () => {
+        closeOverlayCalls += 1;
+      },
       command: (text: string) => outputLines.push(text),
       error: (text: string) => outputLines.push(text),
       info: (text: string) => outputLines.push(text),
+      openOverlay: (overlay: OverlayState) => {
+        for (const entry of overlay.entries) {
+          outputLines.push(entry.text);
+        }
+      },
       prompt: (text: string) => text,
       success: (text: string) => outputLines.push(text),
     };
@@ -257,6 +270,15 @@ describe("showToolMenu", () => {
     await showToolMenu(input, mockAgent as any, mockUi as any);
 
     expect(outputLines.join("\n")).not.toContain("Invalid input.");
+    expect(closeOverlayCalls).toBe(1);
+  });
+
+  it("closes overlay when prompt composer closes", async () => {
+    const input = new MockPromptComposer([null]);
+
+    await showToolMenu(input, mockAgent as any, mockUi as any);
+
+    expect(closeOverlayCalls).toBe(1);
   });
 
   it("supports bulk enable, disable, and defaults actions", async () => {

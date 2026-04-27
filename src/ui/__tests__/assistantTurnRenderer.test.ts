@@ -184,12 +184,10 @@ describe("streamAssistantTurn", () => {
     const output = normalizeOutput(stderr.chunks);
 
     expect(output.indexOf("Before status.")).toBeGreaterThan(-1);
-    expect(output.indexOf("Status: Querying")).toBeGreaterThan(
+    expect(output.indexOf("After status.")).toBeGreaterThan(
       output.indexOf("Before status."),
     );
-    expect(output.indexOf("After status.")).toBeGreaterThan(
-      output.indexOf("Status: Querying"),
-    );
+    expect(output).not.toContain("Status: Querying");
   });
 
   it("flushes markdown before activity traces are rendered", async () => {

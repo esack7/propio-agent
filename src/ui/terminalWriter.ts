@@ -1,3 +1,5 @@
+import * as readline from "readline";
+
 export interface TerminalWriterOptions {
   stdout?: NodeJS.WriteStream;
   stderr?: NodeJS.WriteStream;
@@ -84,6 +86,23 @@ export class TerminalWriter {
     if (this.pendingStderrLine) {
       this.writeStderr("\n");
     }
+  }
+
+  clearStderrLines(lineCount: number): void {
+    if (!this.stderr.isTTY || lineCount <= 0) {
+      return;
+    }
+
+    readline.cursorTo(this.stderr, 0);
+    readline.clearLine(this.stderr, 0);
+
+    for (let index = 1; index < lineCount; index += 1) {
+      readline.moveCursor(this.stderr, 0, -1);
+      readline.cursorTo(this.stderr, 0);
+      readline.clearLine(this.stderr, 0);
+    }
+
+    this.pendingStderrLine = false;
   }
 
   fitToTerminalWidth(text: string): string {
