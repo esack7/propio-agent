@@ -1,7 +1,8 @@
+#!/usr/bin/env node
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
-import { Agent } from "./agent.js";
+import type { Agent as AgentType } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import { getConfigPath } from "./providers/configLoader.js";
@@ -14,7 +15,6 @@ import {
 } from "./ui/promptComposer.js";
 import { createPromptHistoryStore } from "./ui/promptHistory.js";
 import { printStartupBanner } from "./ui/banner.js";
-import { TerminalUi } from "./ui/terminal.js";
 import {
   streamAssistantTurn,
   type AssistantTurnVisibilityOptions,
@@ -39,10 +39,11 @@ import {
   handleSessionCommand as handleSessionCmd,
   hasSessionContent,
 } from "./sessions/sessionCommands.js";
+import type { TerminalUi } from "./ui/terminal.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
-const HELP_TEXT = `Usage: propio-agent [options]
+const HELP_TEXT = `Usage: propio [options]
 
 Options:
   --sandbox           Run inside the Docker sandbox wrapper
@@ -176,7 +177,7 @@ function renderStyledLines(
 }
 
 async function runNonInteractiveSession(
-  agent: Agent,
+  agent: AgentType,
   ui: TerminalUi,
   setCurrentAbortController: (controller: AbortController | null) => void,
   visibility: VisibilityOptions,
@@ -237,7 +238,7 @@ async function runNonInteractiveSession(
   }
 }
 
-function saveSessionSnapshot(agent: Agent, ui: TerminalUi): void {
+function saveSessionSnapshot(agent: AgentType, ui: TerminalUi): void {
   saveSessionOnExit(agent, getDefaultSessionsDir(), ui);
 }
 
@@ -249,7 +250,7 @@ function createWorkspacePromptHistoryStore() {
 
 async function handleSessionCommand(
   input: string,
-  agent: Agent,
+  agent: AgentType,
   composer: PromptComposer,
   ui: TerminalUi,
 ): Promise<void> {
@@ -268,7 +269,7 @@ async function handleSessionCommand(
 }
 
 async function runInteractiveSession(
-  agent: Agent,
+  agent: AgentType,
   ui: TerminalUi,
   setCurrentAbortController: (controller: AbortController | null) => void,
   setActiveComposer: (composer: PromptComposer | null) => void,
@@ -471,6 +472,7 @@ async function main(): Promise<number> {
 
   setColorEnabled(colorEnabled);
 
+  const { TerminalUi } = await import("./ui/terminal.js");
   const ui = new TerminalUi({
     interactive,
     plain: plain || parsedArgs.flags.help,
@@ -525,6 +527,7 @@ async function main(): Promise<number> {
       ui.command("");
     }
 
+    const { Agent: AgentCtor } = await import("./agent.js");
     const configPath = getConfigPath();
     const agentsMdFiles = discoverAgentsMdFiles();
     const agentsMdContent = loadAgentsMdContent(agentsMdFiles);
@@ -535,7 +538,7 @@ When you need to perform actions like reading files, searching code, or executin
 
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
-    const agent = new Agent({
+    const agent = new AgentCtor({
       providersConfig: configPath,
       systemPrompt: defaultSystemPrompt,
       agentsMdContent,

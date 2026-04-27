@@ -1,9 +1,49 @@
 {
   "name": "propio-agent",
   "version": "1.0.0",
-  "description": "Multi-provider AI agent framework supporting Ollama, Bedrock, OpenRouter, Gemini, and xAI",
+  "description": "Multi-provider AI agent CLI supporting Ollama, Bedrock, OpenRouter, Gemini, and xAI",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "propio": "./bin/propio.cjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/esack7/propio-agent.git"
+  },
+  "homepage": "https://github.com/esack7/propio-agent#readme",
+  "bugs": {
+    "url": "https://github.com/esack7/propio-agent/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "llm",
+    "ollama",
+    "bedrock",
+    "openrouter",
+    "gemini",
+    "xai"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "bin/propio.cjs",
+    "bin/propio-sandbox",
+    "docker-compose.yml",
+    "Dockerfile",
+    "LICENSE",
+    "README.md",
+    "npm-shrinkwrap.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "prepack": "npm run build",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -21,7 +61,7 @@
     "fast-glob": "3.3.3",
     "marked": "17.0.5",
     "ollama": "0.6.3",
-    "ora": "9.3.0"
+    "yocto-spinner": "^1.1.0"
   },
   "devDependencies": {
     "@fission-ai/openspec": "1.2.0",

@@ -1,31 +1,30 @@
 describe("OperationSpinner class", () => {
   let spinnerModule: any;
-  let mockOraSpinner: any;
-  let mockOraFactory: any;
+  let mockSpinner: any;
+  let mockSpinnerFactory: any;
 
   beforeEach(async () => {
-    // Clear module cache before each test
     jest.resetModules();
 
-    mockOraSpinner = {
+    mockSpinner = {
       text: "",
       start: jest.fn().mockReturnThis(),
-      succeed: jest.fn().mockReturnThis(),
-      fail: jest.fn().mockReturnThis(),
+      success: jest.fn().mockReturnThis(),
+      error: jest.fn().mockReturnThis(),
       stop: jest.fn().mockReturnThis(),
     };
-    mockOraFactory = jest.fn().mockReturnValue(mockOraSpinner);
+    mockSpinnerFactory = jest.fn().mockReturnValue(mockSpinner);
 
-    // Mock ora before importing the spinner module
-    jest.doMock("ora", () => ({
-      default: mockOraFactory,
+    jest.doMock("yocto-spinner", () => ({
+      __esModule: true,
+      default: mockSpinnerFactory,
     }));
 
     spinnerModule = await import("../spinner.js");
   });
 
   afterEach(() => {
-    jest.dontMock("ora");
+    jest.dontMock("yocto-spinner");
   });
 
   describe("constructor", () => {
@@ -37,7 +36,7 @@ describe("OperationSpinner class", () => {
       expect(spinnerModule.OperationSpinner).toBeDefined();
     });
 
-    it("should initialize with an ora instance", () => {
+    it("should initialize with a yocto-spinner instance", () => {
       const spinner = new spinnerModule.OperationSpinner("Testing");
       expect(spinner).toBeInstanceOf(spinnerModule.OperationSpinner);
     });
@@ -161,7 +160,6 @@ describe("OperationSpinner class", () => {
 
   describe("NO_COLOR environment variable support", () => {
     it("should accept text parameter and create spinner instance", () => {
-      // ora respects NO_COLOR via chalk internally
       const spinner = new spinnerModule.OperationSpinner("Testing operation");
 
       expect(spinner).toBeDefined();
@@ -169,7 +167,6 @@ describe("OperationSpinner class", () => {
     });
 
     it("should work correctly with NO_COLOR consideration", () => {
-      // ora respects NO_COLOR via chalk internally, so we just verify the class works
       const spinner = new spinnerModule.OperationSpinner("test");
 
       expect(spinner).toBeDefined();
