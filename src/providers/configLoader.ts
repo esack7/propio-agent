@@ -3,6 +3,11 @@ import * as os from "os";
 import * as path from "path";
 import { ProvidersConfig, ProviderConfig } from "./config.js";
 
+export interface ProviderModelSelection {
+  readonly providerName: string;
+  readonly modelKey: string;
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -65,36 +70,69 @@ export function loadProvidersConfig(filePath: string): ProvidersConfig {
     throw new Error(`Invalid JSON in configuration file: ${error.message}`);
   }
 
+  return validateProvidersConfig(config);
+}
+
+function validateProvidersConfig(config: any): ProvidersConfig {
+  if (!isPlainObject(config)) {
+    throw new Error("Configuration root must be a JSON object");
+  }
+  const candidate = config as any;
+
   // Validate required fields exist
-  if (!config.providers) {
+  if (!candidate.providers) {
     throw new Error('Configuration must include a "providers" array');
   }
-  if (config.default === undefined) {
+  if (candidate.default === undefined) {
     throw new Error(
       'Configuration must include a "default" field specifying default provider',
     );
   }
 
   // Validate that default references an existing provider
-  const defaultProviderExists = config.providers.some(
-    (p: any) => p.name === config.default,
+  const defaultProviderExists = candidate.providers.some(
+    (p: any) => p.name === candidate.default,
   );
   if (!defaultProviderExists) {
-    const availableProviders = config.providers
+    const availableProviders = candidate.providers
       .map((p: any) => p.name)
       .join(", ");
     throw new Error(
-      `Default provider "${config.default}" not found in providers list. Available: ${availableProviders}`,
+      `Default provider "${candidate.default}" not found in providers list. Available: ${availableProviders}`,
     );
   }
 
   // Validate each provider
   const seenNames = new Set<string>();
-  for (const provider of config.providers) {
+  for (const provider of candidate.providers) {
     validateProviderConfig(provider, seenNames);
   }
 
-  return config as ProvidersConfig;
+  return candidate as unknown as ProvidersConfig;
+}
+
+function writeProvidersConfig(filePath: string, config: ProvidersConfig): void {
+  const directory = path.dirname(filePath);
+  fs.mkdirSync(directory, { recursive: true });
+
+  const tempFilePath = path.join(
+    directory,
+    `.providers.${process.pid}.${Date.now()}.tmp`,
+  );
+
+  try {
+    fs.writeFileSync(tempFilePath, `${JSON.stringify(config, null, 2)}\n`, {
+      encoding: "utf8",
+    });
+    fs.renameSync(tempFilePath, filePath);
+  } catch (error) {
+    try {
+      fs.rmSync(tempFilePath, { force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+    throw error;
+  }
 }
 
 /**
@@ -260,4 +298,50 @@ export function resolveModelKey(
   }
 
   return key;
+}
+
+export function getDefaultProviderModelSelection(
+  config: ProvidersConfig,
+): ProviderModelSelection {
+  const provider = resolveProvider(config);
+  return {
+    providerName: provider.name,
+    modelKey: provider.defaultModel,
+  };
+}
+
+export function updateDefaultProviderModelSelection(
+  config: ProvidersConfig,
+  providerName: string,
+  modelKey?: string,
+): ProvidersConfig {
+  const provider = resolveProvider(config, providerName);
+  const resolvedModelKey = resolveModelKey(provider, modelKey);
+
+  const updatedConfig = {
+    ...config,
+    default: provider.name,
+    providers: config.providers.map((entry) =>
+      entry.name === provider.name
+        ? { ...entry, defaultModel: resolvedModelKey }
+        : entry,
+    ),
+  };
+
+  return validateProvidersConfig(updatedConfig);
+}
+
+export function updateDefaultProviderModelSelectionInFile(
+  filePath: string,
+  providerName: string,
+  modelKey?: string,
+): ProvidersConfig {
+  const config = loadProvidersConfig(filePath);
+  const updatedConfig = updateDefaultProviderModelSelection(
+    config,
+    providerName,
+    modelKey,
+  );
+  writeProvidersConfig(filePath, updatedConfig);
+  return updatedConfig;
 }

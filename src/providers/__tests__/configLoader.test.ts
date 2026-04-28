@@ -3,9 +3,12 @@ import * as path from "path";
 import * as os from "os";
 import {
   getConfigPath,
+  getDefaultProviderModelSelection,
   loadProvidersConfig,
   resolveProvider,
   resolveModelKey,
+  updateDefaultProviderModelSelection,
+  updateDefaultProviderModelSelectionInFile,
 } from "../configLoader.js";
 import { ProvidersConfig, ProviderConfig } from "../config.js";
 
@@ -490,6 +493,94 @@ describe("Configuration Loader", () => {
         expect(error.message).toMatch(/llama3.2:3b/);
         expect(error.message).toMatch(/llama3.2:90b/);
       }
+    });
+  });
+
+  describe("default provider/model updates", () => {
+    const testConfig: ProvidersConfig = {
+      default: "ollama",
+      providers: [
+        {
+          name: "ollama",
+          type: "ollama",
+          models: [
+            { name: "Llama 3.2 3B", key: "llama3.2:3b" },
+            { name: "Llama 3.2 90B", key: "llama3.2:90b" },
+          ],
+          defaultModel: "llama3.2:3b",
+        },
+        {
+          name: "bedrock",
+          type: "bedrock",
+          models: [{ name: "Claude", key: "claude" }],
+          defaultModel: "claude",
+        },
+      ],
+    };
+
+    it("should expose the persisted default provider/model selection", () => {
+      expect(getDefaultProviderModelSelection(testConfig)).toEqual({
+        providerName: "ollama",
+        modelKey: "llama3.2:3b",
+      });
+    });
+
+    it("should update the default provider and selected provider defaultModel", () => {
+      const updated = updateDefaultProviderModelSelection(
+        testConfig,
+        "ollama",
+        "llama3.2:90b",
+      );
+
+      expect(updated.default).toBe("ollama");
+      expect(updated.providers[0].defaultModel).toBe("llama3.2:90b");
+      expect(updated.providers[1].defaultModel).toBe("claude");
+    });
+
+    it("should switch the root default when selecting a different provider", () => {
+      const updated = updateDefaultProviderModelSelection(
+        testConfig,
+        "bedrock",
+      );
+
+      expect(updated.default).toBe("bedrock");
+      expect(updated.providers[1].defaultModel).toBe("claude");
+    });
+
+    it("should reject invalid default provider/model updates", () => {
+      expect(() =>
+        updateDefaultProviderModelSelection(
+          testConfig,
+          "missing-provider",
+          "llama3.2:3b",
+        ),
+      ).toThrow(/unknown|provider/i);
+
+      expect(() =>
+        updateDefaultProviderModelSelection(
+          testConfig,
+          "ollama",
+          "missing-model",
+        ),
+      ).toThrow(/invalid|model/i);
+    });
+
+    it("should persist updated defaults to disk and keep the file reloadable", () => {
+      const configPath = path.join(tempDir, "updated-defaults.json");
+      fs.writeFileSync(configPath, JSON.stringify(testConfig, null, 2), "utf8");
+
+      const updated = updateDefaultProviderModelSelectionInFile(
+        configPath,
+        "ollama",
+        "llama3.2:90b",
+      );
+
+      expect(updated.default).toBe("ollama");
+      expect(updated.providers[0].defaultModel).toBe("llama3.2:90b");
+
+      const reloaded = loadProvidersConfig(configPath);
+      expect(reloaded.default).toBe("ollama");
+      expect(reloaded.providers[0].defaultModel).toBe("llama3.2:90b");
     });
   });
 });
