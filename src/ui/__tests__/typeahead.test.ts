@@ -32,6 +32,22 @@ describe("typeahead", () => {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
+  it("includes /model in slash command suggestions", () => {
+    const workspaceRoot = makeWorkspace();
+    const state = createTypeaheadState({
+      buffer: "/mo",
+      cursor: 3,
+      workspaceRoot,
+    });
+
+    expect(state?.target.kind).toBe("command");
+    expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual([
+      "/model",
+    ]);
+
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
   it("ignores slash commands that appear mid-sentence", () => {
     const workspaceRoot = makeWorkspace();
 

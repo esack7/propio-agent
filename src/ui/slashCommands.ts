@@ -20,6 +20,10 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
       { command: "/help", description: "show this help menu" },
       { command: "?", description: "alias for /help" },
       { command: "/clear", description: "clear session context" },
+      {
+        command: "/model",
+        description: "switch the active provider/model or update defaults",
+      },
     ],
   },
   {
@@ -59,6 +63,7 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
 
 const FEATURED_COMMANDS: ReadonlyArray<string> = [
   "/help",
+  "/model",
   "/tools",
   "/context",
   "/session list",

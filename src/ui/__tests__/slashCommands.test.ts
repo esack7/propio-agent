@@ -27,6 +27,7 @@ describe("slashCommands", () => {
     expect(text).toContain("Ctrl+X Ctrl+E");
     expect(text).toContain("Ctrl+X Ctrl+E    - open the editor");
     expect(text).toContain("/help");
+    expect(text).toContain("/model");
     expect(text).toContain("?");
     expect(text).toContain("/tools");
     expect(text).toContain("/context");
@@ -49,6 +50,7 @@ describe("slashCommands", () => {
     );
 
     expect(commands).toContain("/context");
+    expect(commands).toContain("/model");
     expect(commands).toContain("/context prompt");
     expect(commands).toContain("/session load");
     expect(commands).not.toContain("?");

@@ -14,6 +14,7 @@ import { ProvidersConfig, ProviderConfig } from "./providers/config.js";
 import { createProvider } from "./providers/factory.js";
 import {
   loadProvidersConfig,
+  type ProviderModelSelection,
   resolveProvider,
   resolveModelKey,
 } from "./providers/configLoader.js";
@@ -294,7 +295,7 @@ export class Agent {
     return `Used ${toolLabel}; ${completedCount} completed and ${failedCount} failed. Continued with the available results to produce the final answer.`;
   }
 
-  private switchProvider(providerName: string, modelKey?: string): void {
+  switchProvider(providerName: string, modelKey?: string): void {
     const resolvedProvider = resolveProvider(
       this.providersConfig,
       providerName,
@@ -1058,6 +1059,13 @@ export class Agent {
 
   getConversationState(): ConversationState {
     return this.contextManager.getConversationState();
+  }
+
+  getActiveModelSelection(): ProviderModelSelection {
+    return {
+      providerName: this.resolvedProviderConfig.name,
+      modelKey: this.model,
+    };
   }
 
   getLastPromptPlan(): PromptPlanSnapshot | null {

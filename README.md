@@ -306,6 +306,7 @@ propio --debug-llm-file /tmp/propio-debug.log
 | -------------------- | ------------------------------------------------------ |
 | `/help`              | Show slash-command help                                |
 | `/clear`             | Clear session context                                  |
+| `/model`             | Switch the current provider/model or update defaults   |
 | `/context`           | Show structured context overview                       |
 | `/context prompt`    | Show the latest prompt plan                            |
 | `/context memory`    | Show rolling summary and pinned memory                 |

@@ -228,7 +228,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const originalProvider = (agent as any).provider;
 
       expect(() => {
-        (agent as any).switchProvider("bedrock");
+        agent.switchProvider("bedrock");
       }).not.toThrow();
 
       const newProvider = (agent as any).provider;
@@ -239,7 +239,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
 
       expect(() => {
-        (agent as any).switchProvider("local-ollama", "llama3.2:90b");
+        agent.switchProvider("local-ollama", "llama3.2:90b");
       }).not.toThrow();
 
       expect((agent as any).model).toBe("llama3.2:90b");
@@ -251,7 +251,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         modelKey: "llama3.2:90b",
       });
 
-      (agent as any).switchProvider("bedrock");
+      agent.switchProvider("bedrock");
 
       expect((agent as any).model).toBe(
         "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -266,7 +266,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       await agent.streamChat("First message", () => {});
       const contextBefore = agent.getContext();
 
-      (agent as any).switchProvider("bedrock");
+      agent.switchProvider("bedrock");
 
       const contextAfter = agent.getContext();
       expect(contextAfter.length).toBe(contextBefore.length);
@@ -277,7 +277,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
 
       expect(() => {
-        (agent as any).switchProvider("nonexistent");
+        agent.switchProvider("nonexistent");
       }).toThrow(/unknown.*provider|not found/i);
     });
 
@@ -285,7 +285,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
 
       expect(() => {
-        (agent as any).switchProvider("bedrock", "invalid-model");
+        agent.switchProvider("bedrock", "invalid-model");
       }).toThrow(/invalid.*model|not found/i);
     });
 
@@ -294,12 +294,28 @@ describe("Agent with Multi-Provider Configuration", () => {
       const originalProvider = (agent as any).provider;
 
       try {
-        (agent as any).switchProvider("nonexistent");
+        agent.switchProvider("nonexistent");
       } catch (e) {
         // Expected to throw
       }
 
       expect((agent as any).provider).toBe(originalProvider);
+    });
+
+    it("should expose the active provider/model selection", () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+
+      expect(agent.getActiveModelSelection()).toEqual({
+        providerName: "local-ollama",
+        modelKey: "llama3.2:3b",
+      });
+
+      agent.switchProvider("local-ollama", "llama3.2:90b");
+
+      expect(agent.getActiveModelSelection()).toEqual({
+        providerName: "local-ollama",
+        modelKey: "llama3.2:90b",
+      });
     });
   });
 

@@ -9,6 +9,7 @@ import { getConfigPath } from "./providers/configLoader.js";
 import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
+import { showModelMenu } from "./ui/modelMenu.js";
 import {
   createPromptComposer,
   type PromptComposer,
@@ -271,6 +272,7 @@ async function handleSessionCommand(
 async function runInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,
+  configPath: string,
   setCurrentAbortController: (controller: AbortController | null) => void,
   setActiveComposer: (composer: PromptComposer | null) => void,
   shouldExit: () => boolean,
@@ -396,6 +398,22 @@ async function runInteractiveSession(
         if (shouldExit()) {
           return 130;
         }
+        continue;
+      }
+
+      if (trimmedInput === "/model") {
+        await showModelMenu(composer, agent, ui, configPath);
+        if (shouldExit()) {
+          return 130;
+        }
+        continue;
+      }
+
+      if (trimmedInput.startsWith("/model ")) {
+        const args = trimmedInput.slice("/model".length).trim();
+        ui.error(`Unknown /model usage: "${args}"`);
+        ui.command("Usage: /model");
+        ui.command("");
         continue;
       }
 
@@ -549,6 +567,7 @@ Always provide clear, concise responses and summarize what you did after complet
       const code = await runInteractiveSession(
         agent,
         ui,
+        configPath,
         setCurrentAbortController,
         setActiveComposer,
         () => shouldExit,
