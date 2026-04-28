@@ -3,6 +3,22 @@ import * as os from "os";
 import * as path from "path";
 import { ProvidersConfig, ProviderConfig } from "./config.js";
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => isNonEmptyString(item))
+  );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * Get the absolute path to the configuration file in the user's home directory
  *
@@ -127,6 +143,10 @@ function validateProviderConfig(provider: any, seenNames: Set<string>): void {
     seenModelKeys.add(model.key);
   }
 
+  if (provider.type === "openrouter") {
+    validateOpenRouterProviderConfig(provider);
+  }
+
   // Validate defaultModel references valid model key
   const defaultModelExists = provider.models.some(
     (m: any) => m.key === provider.defaultModel,
@@ -135,6 +155,59 @@ function validateProviderConfig(provider: any, seenNames: Set<string>): void {
     const availableModels = provider.models.map((m: any) => m.key).join(", ");
     throw new Error(
       `Provider "${provider.name}" defaultModel "${provider.defaultModel}" not found in models list. Available: ${availableModels}`,
+    );
+  }
+}
+
+function validateOpenRouterProviderConfig(provider: any): void {
+  if (provider.provider !== undefined) {
+    if (!isPlainObject(provider.provider)) {
+      throw new Error(
+        `Provider "${provider.name}" OpenRouter "provider" field must be an object`,
+      );
+    }
+
+    if (
+      provider.provider.allowFallbacks !== undefined &&
+      typeof provider.provider.allowFallbacks !== "boolean"
+    ) {
+      throw new Error(
+        `Provider "${provider.name}" OpenRouter "provider.allowFallbacks" must be a boolean`,
+      );
+    }
+
+    if (
+      provider.provider.requireParameters !== undefined &&
+      typeof provider.provider.requireParameters !== "boolean"
+    ) {
+      throw new Error(
+        `Provider "${provider.name}" OpenRouter "provider.requireParameters" must be a boolean`,
+      );
+    }
+
+    if (provider.provider.order !== undefined) {
+      if (!isNonEmptyStringArray(provider.provider.order)) {
+        throw new Error(
+          `Provider "${provider.name}" OpenRouter "provider.order" must be a non-empty array of non-empty strings`,
+        );
+      }
+    }
+  }
+
+  if (provider.fallbackModels !== undefined) {
+    if (!isNonEmptyStringArray(provider.fallbackModels)) {
+      throw new Error(
+        `Provider "${provider.name}" OpenRouter "fallbackModels" must be a non-empty array of non-empty strings`,
+      );
+    }
+  }
+
+  if (
+    provider.debugEchoUpstreamBody !== undefined &&
+    typeof provider.debugEchoUpstreamBody !== "boolean"
+  ) {
+    throw new Error(
+      `Provider "${provider.name}" OpenRouter "debugEchoUpstreamBody" must be a boolean`,
     );
   }
 }

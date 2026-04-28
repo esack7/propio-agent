@@ -7,9 +7,21 @@ import {
   ProviderError,
 } from "../types.js";
 import { ChatRequest, ChatMessage } from "../types.js";
+import { AgentDiagnosticEvent } from "../../diagnostics.js";
 
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
+
+function createSseStream(chunks: string[]): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      chunks.forEach((chunk) =>
+        controller.enqueue(new TextEncoder().encode(chunk)),
+      );
+      controller.close();
+    },
+  });
+}
 
 describe("OpenRouterProvider", () => {
   beforeEach(() => {
@@ -209,7 +221,7 @@ describe("OpenRouterProvider", () => {
       expect(hasToolCalls).toBe(true);
     });
 
-    it("should include HTTP-Referer and X-Title headers when configured", async () => {
+    it("should include HTTP-Referer and X-OpenRouter-Title headers when configured", async () => {
       const chunks = [
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
         "data: [DONE]\n\n",
@@ -245,17 +257,237 @@ describe("OpenRouterProvider", () => {
         expect.objectContaining({
           headers: expect.objectContaining({
             "HTTP-Referer": "https://myapp.com",
-            "X-Title": "My App",
+            "X-OpenRouter-Title": "My App",
           }),
         }),
       );
     });
 
+    it("should retry once without tools after a 429 and succeed", async () => {
+      const diagnosticEvents: AgentDiagnosticEvent[] = [];
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: createSseStream([
+            'data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+        });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
+      });
+
+      const request: ChatRequest = {
+        model: "openai/gpt-3.5-turbo",
+        iteration: 3,
+        messages: [{ role: "user", content: "Hello" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              description: "Lookup",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      };
+
+      const statusEvents: string[] = [];
+      let content = "";
+      for await (const event of provider.streamChat(request)) {
+        if (event.type === "status") {
+          statusEvents.push(event.status);
+        }
+        if (event.type === "assistant_text") {
+          content += event.delta;
+        }
+      }
+
+      expect(content).toBe("Recovered");
+      expect(statusEvents).toContain(
+        "Retrying without tools after OpenRouter upstream failure",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+      expect(firstBody.tools).toHaveLength(1);
+      expect(secondBody.tools).toBeUndefined();
+      expect(secondBody.model).toBe("openai/gpt-3.5-turbo");
+      expect(secondBody.messages).toEqual(firstBody.messages);
+      expect(secondBody.messages).toEqual([{ role: "user", content: "Hello" }]);
+
+      expect(diagnosticEvents).toContainEqual({
+        type: "provider_retry",
+        provider: "openrouter",
+        model: "openai/gpt-3.5-turbo",
+        iteration: 3,
+        reason: "OpenRouter upstream HTTP 429",
+        disabledTools: true,
+      });
+    });
+
+    it("should retry once without tools after a 503 and succeed", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: createSseStream([
+            'data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+        });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      const request: ChatRequest = {
+        model: "openai/gpt-3.5-turbo",
+        messages: [{ role: "user", content: "Hello" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              description: "Lookup",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      };
+
+      let content = "";
+      for await (const event of provider.streamChat(request)) {
+        if (event.type === "assistant_text") {
+          content += event.delta;
+        }
+      }
+
+      expect(content).toBe("Recovered");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+      expect(secondBody.tools).toBeUndefined();
+    });
+
+    it("should preserve model and messages when retrying without tools", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: createSseStream([
+            'data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+        });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      const request: ChatRequest = {
+        model: "openai/gpt-3.5-turbo",
+        messages: [
+          { role: "system", content: "You are helpful" },
+          { role: "user", content: "Hello" },
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              description: "Lookup",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      };
+
+      for await (const _event of provider.streamChat(request)) {
+        // consume
+      }
+
+      const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+      expect(secondBody.model).toBe(firstBody.model);
+      expect(secondBody.messages).toEqual(firstBody.messages);
+      expect(secondBody.tools).toBeUndefined();
+    });
+
+    it("should not retry on 429 when no tools are enabled", async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+      });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      await expect(async () => {
+        for await (const _event of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hello" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderRateLimitError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("should not retry on 503 when no tools are enabled", async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+      });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      await expect(async () => {
+        for await (const _event of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hello" }],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(ProviderError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it("should throw ProviderAuthenticationError on 401", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 401,
       });
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -269,6 +501,7 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderAuthenticationError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       await expect(async () => {
         for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
@@ -277,15 +510,16 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(/Invalid OpenRouter API key/);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should throw ProviderRateLimitError on 429 with retry-after", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 429,
         headers: new Map([["retry-after", "60"]]),
       });
-      (globalThis.fetch as jest.Mock).mock.results = [];
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -299,13 +533,68 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderRateLimitError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("should surface OpenRouter upstream details on 429 response bodies", async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Map(),
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: {
+                message: "Provider returned error",
+                metadata: {
+                  retry_after_seconds: 7,
+                  raw: JSON.stringify({
+                    error: {
+                      message: "Rate limit exceeded",
+                    },
+                    provider_name: "Together",
+                  }),
+                },
+              },
+            }),
+          ),
+      });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      let caughtError: unknown;
+      try {
+        for await (const chunk of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(ProviderRateLimitError);
+      expect((caughtError as ProviderRateLimitError).message).toContain(
+        "Together",
+      );
+      expect((caughtError as ProviderRateLimitError).message).toContain(
+        "Rate limit exceeded",
+      );
+      expect((caughtError as ProviderRateLimitError).retryAfterSeconds).toBe(7);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("should throw ProviderModelNotFoundError on 404", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 404,
       });
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -319,13 +608,15 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderModelNotFoundError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("should throw ProviderError on 402", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 402,
       });
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -339,6 +630,7 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       await expect(async () => {
         for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
@@ -347,13 +639,15 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(/Insufficient OpenRouter credits/);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should throw ProviderError on 5xx", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 503,
       });
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -367,6 +661,7 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       await expect(async () => {
         for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
@@ -375,10 +670,142 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(/OpenRouter service error/);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("should surface upstream provider details on 503 response bodies", async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              error: {
+                message: "Provider returned error",
+                metadata: {
+                  raw: JSON.stringify({
+                    error: {
+                      message: "Service unavailable",
+                    },
+                    provider_name: "Together",
+                  }),
+                },
+              },
+            }),
+          ),
+      });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      let caughtError: unknown;
+      try {
+        for await (const chunk of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hi" }],
+        })) {
+          // consume
+        }
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(ProviderError);
+      expect((caughtError as Error).message).toContain("Together");
+      expect((caughtError as Error).message).toContain("Service unavailable");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("should include upstream details and retry-after text if the retry also fails", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                error: {
+                  message: "Provider returned error",
+                  metadata: {
+                    retry_after_seconds: 11,
+                    raw: JSON.stringify({
+                      error: {
+                        message: "Service unavailable",
+                      },
+                      provider_name: "Together",
+                    }),
+                  },
+                },
+              }),
+            ),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                error: {
+                  message: "Provider returned error",
+                  metadata: {
+                    retry_after_seconds: 13,
+                    raw: JSON.stringify({
+                      error: {
+                        message: "Upstream still unavailable",
+                        metadata: { retry_after_seconds: 13 },
+                      },
+                      provider_name: "Together",
+                    }),
+                  },
+                },
+              }),
+            ),
+        });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      let caughtError: unknown;
+      try {
+        for await (const chunk of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hi" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "lookup",
+                description: "Lookup",
+                parameters: { type: "object", properties: {} },
+              },
+            },
+          ],
+        })) {
+          // consume
+        }
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(ProviderError);
+      expect((caughtError as Error).message).toContain("Together");
+      expect((caughtError as Error).message).toContain(
+        "Upstream still unavailable",
+      );
+      expect((caughtError as Error).message).toContain("retry after 13s");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should throw ProviderError on network failure", async () => {
-      globalThis.fetch = jest.fn().mockRejectedValue(new Error("fetch failed"));
+      const fetchMock = jest.fn().mockRejectedValue(new Error("fetch failed"));
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -392,10 +819,65 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("should serialize OpenRouter routing fields, fallback models, and debug echo body", async () => {
+      let capturedBody: unknown = null;
+      const fetchMock = jest
+        .fn()
+        .mockImplementation((_url: string, init?: RequestInit) => {
+          capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+          return Promise.resolve({
+            ok: true,
+            body: createSseStream([
+              'data: {"choices":[{"delta":{"content":"Ok"}}]}\n\n',
+              "data: [DONE]\n\n",
+            ]),
+          });
+        });
+      globalThis.fetch = fetchMock;
+
+      const diagnosticEvents: AgentDiagnosticEvent[] = [];
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+        provider: {
+          allowFallbacks: false,
+          order: ["provider-a", "provider-b"],
+          requireParameters: true,
+        },
+        fallbackModels: ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"],
+        debugEchoUpstreamBody: true,
+        debugLoggingEnabled: true,
+        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
+      });
+
+      for await (const _event of provider.streamChat({
+        model: "openai/gpt-3.5-turbo",
+        messages: [{ role: "user", content: "Hello" }],
+      })) {
+        // consume
+      }
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(diagnosticEvents).toHaveLength(0);
+      expect(capturedBody).toEqual({
+        model: "openai/gpt-3.5-turbo",
+        messages: [{ role: "user", content: "Hello" }],
+        stream: true,
+        provider: {
+          allow_fallbacks: false,
+          order: ["provider-a", "provider-b"],
+          require_parameters: true,
+        },
+        models: ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"],
+        debug: { echo_upstream_body: true },
+      });
     });
 
     it("should throw ProviderContextLengthError on 400 with context length message in body", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 400,
         text: () =>
@@ -408,6 +890,7 @@ describe("OpenRouterProvider", () => {
             }),
           ),
       });
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -421,10 +904,11 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderContextLengthError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("should throw generic ProviderError on 400 without context length message", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
+      const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 400,
         text: () =>
@@ -432,6 +916,7 @@ describe("OpenRouterProvider", () => {
             JSON.stringify({ error: { message: "Invalid request format" } }),
           ),
       });
+      globalThis.fetch = fetchMock;
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -445,6 +930,7 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
       await expect(async () => {
         for await (const chunk of provider.streamChat({
           model: "openai/gpt-3.5-turbo",
@@ -453,6 +939,7 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.not.toThrow(ProviderContextLengthError);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -535,6 +1022,88 @@ describe("OpenRouterProvider", () => {
       expect((withToolCalls[0].toolCalls as any)[0].function.arguments).toEqual(
         { location: "NYC" },
       );
+    });
+
+    it("should normalize DSML tool markup into structured tool_calls", async () => {
+      const chunks = [
+        'data: {"choices":[{"delta":{"content":"<｜DSML｜tool_calls><｜DSML｜invoke name=\\"lookup\\"><｜DSML｜parameter name=\\"query\\" string=\\"true\\">hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      const stream = createSseStream(chunks);
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: stream,
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+      const request: ChatRequest = {
+        model: "openai/gpt-3.5-turbo",
+        messages: [{ role: "user", content: "Lookup hello" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "lookup",
+              description: "Lookup",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      };
+
+      const assistantText: string[] = [];
+      const toolCalls: unknown[] = [];
+      for await (const event of provider.streamChat(request)) {
+        if (event.type === "assistant_text") {
+          assistantText.push(event.delta);
+        }
+        if (event.type === "tool_calls") {
+          toolCalls.push(event.toolCalls);
+        }
+      }
+
+      expect(assistantText.join("")).not.toContain("<｜DSML｜tool_calls>");
+      expect(toolCalls).toHaveLength(1);
+      expect((toolCalls[0] as any)[0].function.name).toBe("lookup");
+      expect((toolCalls[0] as any)[0].function.arguments).toEqual({
+        query: "hello",
+      });
+    });
+
+    it("should throw when a tool-enabled response yields no usable output", async () => {
+      const stream = createSseStream(["data: [DONE]\n\n"]);
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: stream,
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "openai/gpt-3.5-turbo",
+        apiKey: "sk-test",
+      });
+
+      await expect(async () => {
+        for await (const _event of provider.streamChat({
+          model: "openai/gpt-3.5-turbo",
+          messages: [{ role: "user", content: "Hello" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "lookup",
+                description: "Lookup",
+                parameters: { type: "object", properties: {} },
+              },
+            },
+          ],
+        })) {
+          // consume
+        }
+      }).rejects.toThrow(/no usable assistant output/i);
     });
 
     it("should stop on [DONE] marker", async () => {

@@ -38,11 +38,20 @@ export interface BedrockProviderConfig extends BaseProviderConfig {
 /**
  * OpenRouter provider configuration with flat structure
  */
+export interface OpenRouterRoutingConfig {
+  allowFallbacks?: boolean;
+  order?: string[];
+  requireParameters?: boolean;
+}
+
 export interface OpenRouterProviderConfig extends BaseProviderConfig {
   type: "openrouter";
   apiKey?: string;
   httpReferer?: string;
   xTitle?: string;
+  provider?: OpenRouterRoutingConfig;
+  fallbackModels?: string[];
+  debugEchoUpstreamBody?: boolean;
 }
 
 /**

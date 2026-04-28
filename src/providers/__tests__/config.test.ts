@@ -135,7 +135,7 @@ describe("Configuration Types (New Structure)", () => {
   });
 
   describe("OpenRouterProviderConfig", () => {
-    it("should define openrouter provider with optional apiKey, httpReferer, xTitle", () => {
+    it("should define openrouter provider with optional apiKey, httpReferer, xTitle, and routing fields", () => {
       const config: OpenRouterProviderConfig = {
         name: "openrouter",
         type: "openrouter",
@@ -144,11 +144,25 @@ describe("Configuration Types (New Structure)", () => {
         apiKey: "sk-key",
         httpReferer: "https://app.com",
         xTitle: "My App",
+        provider: {
+          allowFallbacks: true,
+          order: ["provider-a", "provider-b"],
+          requireParameters: false,
+        },
+        fallbackModels: ["openai/gpt-4o", "openai/gpt-4.1"],
+        debugEchoUpstreamBody: true,
       };
       expect(config.type).toBe("openrouter");
       expect(config.apiKey).toBe("sk-key");
       expect(config.httpReferer).toBe("https://app.com");
       expect(config.xTitle).toBe("My App");
+      expect(config.provider?.allowFallbacks).toBe(true);
+      expect(config.provider?.order).toEqual(["provider-a", "provider-b"]);
+      expect(config.fallbackModels).toEqual([
+        "openai/gpt-4o",
+        "openai/gpt-4.1",
+      ]);
+      expect(config.debugEchoUpstreamBody).toBe(true);
     });
   });
 
