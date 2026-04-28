@@ -14,6 +14,7 @@ import { ProvidersConfig, ProviderConfig } from "./providers/config.js";
 import { createProvider } from "./providers/factory.js";
 import {
   loadProvidersConfig,
+  type ProviderModelSelection,
   resolveProvider,
   resolveModelKey,
 } from "./providers/configLoader.js";
@@ -97,11 +98,6 @@ export interface PromptPlanSnapshot {
   readonly contextWindowTokens: number;
   readonly availableInputBudget: number;
   readonly plan: PromptPlan;
-}
-
-export interface AgentModelSelection {
-  readonly providerName: string;
-  readonly modelKey: string;
 }
 
 export class Agent {
@@ -1065,7 +1061,7 @@ export class Agent {
     return this.contextManager.getConversationState();
   }
 
-  getActiveModelSelection(): AgentModelSelection {
+  getActiveModelSelection(): ProviderModelSelection {
     return {
       providerName: this.resolvedProviderConfig.name,
       modelKey: this.model,

@@ -213,28 +213,33 @@ export async function showModelMenu(
   }
 
   try {
-    if (applyMode === "persistent") {
+    agent.switchProvider(provider.name, model.key);
+  } catch (error) {
+    ui.error(
+      `Failed to switch the current session model: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    ui.command("");
+    return;
+  }
+
+  if (applyMode === "persistent") {
+    try {
       updateDefaultProviderModelSelectionInFile(
         configPath,
         provider.name,
         model.key,
       );
-    }
-
-    agent.switchProvider(provider.name, model.key);
-
-    if (applyMode === "persistent") {
       ui.success(
         `Updated the default to ${formatSelection(provider.name, model.key)} and switched the current session.`,
       );
-    } else {
-      ui.success(
-        `Switched the current session to ${formatSelection(provider.name, model.key)}.`,
+    } catch (error) {
+      ui.error(
+        `Switched the current session to ${formatSelection(provider.name, model.key)}, but failed to update defaults: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-  } catch (error) {
-    ui.error(
-      `Failed to update model selection: ${error instanceof Error ? error.message : String(error)}`,
+  } else {
+    ui.success(
+      `Switched the current session to ${formatSelection(provider.name, model.key)}.`,
     );
   }
 

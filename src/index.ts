@@ -401,19 +401,19 @@ async function runInteractiveSession(
         continue;
       }
 
-      if (trimmedInput === "/model" || trimmedInput.startsWith("/model ")) {
-        const args = trimmedInput.slice("/model".length).trim();
-        if (args.length > 0) {
-          ui.error(`Unknown /model usage: "${args}"`);
-          ui.command("Usage: /model");
-          ui.command("");
-          continue;
-        }
-
+      if (trimmedInput === "/model") {
         await showModelMenu(composer, agent, ui, configPath);
         if (shouldExit()) {
           return 130;
         }
+        continue;
+      }
+
+      if (trimmedInput.startsWith("/model ")) {
+        const args = trimmedInput.slice("/model".length).trim();
+        ui.error(`Unknown /model usage: "${args}"`);
+        ui.command("Usage: /model");
+        ui.command("");
         continue;
       }
 
