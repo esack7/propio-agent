@@ -11,8 +11,41 @@ import {
   ProviderModelNotFoundError,
   ProviderContextLengthError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
+import type { OpenRouterRoutingConfig } from "./config.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DSML_TOOL_CALL_START_TOKENS = [
+  "<｜DSML｜tool_calls>",
+  "<｜DSML｜function_calls>",
+] as const;
+const DSML_TOOL_CALL_END_TOKENS = [
+  "</｜DSML｜tool_calls>",
+  "</｜DSML｜function_calls>",
+] as const;
+const DSML_TOOL_CALL_BLOCK_REGEX =
+  /<｜DSML｜(?:tool_calls|function_calls)>(.*?)<\/｜DSML｜(?:tool_calls|function_calls)>/gs;
+const DSML_TOOL_CALL_BLOCK_AT_START_REGEX =
+  /^<｜DSML｜(?:tool_calls|function_calls)>(.*?)<\/｜DSML｜(?:tool_calls|function_calls)>/s;
+const DSML_INVOKE_REGEX =
+  /<｜DSML｜invoke\s+name="([^"]+)"\s*>(.*?)<\/｜DSML｜invoke>/gs;
+const DSML_PARAMETER_REGEX =
+  /<｜DSML｜parameter\s+name="([^"]+)"\s+string="(?:true|false)"\s*>(.*?)<\/｜DSML｜parameter>/gs;
+
+interface OpenRouterErrorMetadata {
+  retry_after_seconds?: number;
+  provider_name?: string;
+  raw?: string;
+}
+
+interface OpenRouterErrorEnvelope {
+  error?: {
+    message?: string;
+    type?: string;
+    code?: string | number;
+    metadata?: OpenRouterErrorMetadata;
+  };
+}
 
 /** OpenAI-compatible message format for API request */
 interface OpenAIMessage {
@@ -45,6 +78,11 @@ export class OpenRouterProvider implements LLMProvider {
   private readonly apiKey: string;
   private readonly httpReferer?: string;
   private readonly xTitle?: string;
+  private readonly providerRouting?: OpenRouterRoutingConfig;
+  private readonly fallbackModels?: string[];
+  private readonly debugEchoUpstreamBody?: boolean;
+  private readonly debugLoggingEnabled: boolean;
+  private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "anthropic/claude-sonnet-4": 200000,
@@ -66,6 +104,11 @@ export class OpenRouterProvider implements LLMProvider {
     apiKey?: string;
     httpReferer?: string;
     xTitle?: string;
+    provider?: OpenRouterRoutingConfig;
+    fallbackModels?: string[];
+    debugEchoUpstreamBody?: boolean;
+    debugLoggingEnabled?: boolean;
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
   }) {
     const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
@@ -77,6 +120,11 @@ export class OpenRouterProvider implements LLMProvider {
     this.apiKey = apiKey;
     this.httpReferer = options.httpReferer;
     this.xTitle = options.xTitle;
+    this.providerRouting = options.provider;
+    this.fallbackModels = options.fallbackModels;
+    this.debugEchoUpstreamBody = options.debugEchoUpstreamBody;
+    this.debugLoggingEnabled = options.debugLoggingEnabled ?? false;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -194,137 +242,430 @@ export class OpenRouterProvider implements LLMProvider {
     };
   }
 
+  private emitDiagnostic(event: AgentDiagnosticEvent): void {
+    this.onDiagnosticEvent?.(event);
+  }
+
+  private buildRequestBody(
+    request: ChatRequest,
+    includeTools: boolean,
+  ): Record<string, unknown> {
+    const expandedMessages = this.expandToolResults(request.messages);
+    const messages = expandedMessages.map((m) =>
+      this.chatMessageToOpenAIMessage(m),
+    );
+
+    const body: Record<string, unknown> = {
+      model: request.model || this.model,
+      messages,
+      stream: true,
+    };
+
+    if (includeTools && request.tools && request.tools.length > 0) {
+      body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
+    }
+
+    if (this.providerRouting) {
+      const provider: Record<string, unknown> = {};
+      if (this.providerRouting.allowFallbacks !== undefined) {
+        provider.allow_fallbacks = this.providerRouting.allowFallbacks;
+      }
+      if (this.providerRouting.order !== undefined) {
+        provider.order = [...this.providerRouting.order];
+      }
+      if (this.providerRouting.requireParameters !== undefined) {
+        provider.require_parameters = this.providerRouting.requireParameters;
+      }
+      if (Object.keys(provider).length > 0) {
+        body.provider = provider;
+      }
+    }
+
+    if (this.fallbackModels && this.fallbackModels.length > 0) {
+      body.models = [...this.fallbackModels];
+    }
+
+    if (this.debugEchoUpstreamBody && this.debugLoggingEnabled) {
+      body.debug = { echo_upstream_body: true };
+    }
+
+    return body;
+  }
+
+  private buildHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.apiKey}`,
+      "Content-Type": "application/json",
+    };
+    if (this.httpReferer) headers["HTTP-Referer"] = this.httpReferer;
+    if (this.xTitle) headers["X-OpenRouter-Title"] = this.xTitle;
+    return headers;
+  }
+
+  private async fetchCompletion(
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    return await fetch(OPENROUTER_API_URL, {
+      method: "POST",
+      headers: this.buildHeaders(),
+      body: JSON.stringify(body),
+      signal,
+    });
+  }
+
+  private async readResponseText(response: Response): Promise<string> {
+    try {
+      return await response.text();
+    } catch {
+      return "";
+    }
+  }
+
+  private longestSuffixOverlap(text: string, token: string): number {
+    const maxLength = Math.min(text.length, token.length);
+    for (let length = maxLength; length > 0; length--) {
+      if (token.startsWith(text.slice(text.length - length))) {
+        return length;
+      }
+    }
+    return 0;
+  }
+
+  private findDsmlStartTokenIndex(text: string): number {
+    let earliest = -1;
+    for (const token of DSML_TOOL_CALL_START_TOKENS) {
+      const index = text.indexOf(token);
+      if (index !== -1 && (earliest === -1 || index < earliest)) {
+        earliest = index;
+      }
+    }
+    return earliest;
+  }
+
+  private parseDsmlToolCalls(text: string): ChatToolCall[] {
+    const toolCalls: ChatToolCall[] = [];
+
+    for (const blockMatch of text.matchAll(DSML_TOOL_CALL_BLOCK_REGEX)) {
+      const block = blockMatch[1] ?? "";
+      for (const invokeMatch of block.matchAll(DSML_INVOKE_REGEX)) {
+        const invokeName = invokeMatch[1] ?? "";
+        const invokeBody = invokeMatch[2] ?? "";
+        const args: Record<string, unknown> = {};
+
+        for (const parameterMatch of invokeBody.matchAll(
+          DSML_PARAMETER_REGEX,
+        )) {
+          const paramName = parameterMatch[1] ?? "";
+          const rawValue = parameterMatch[2] ?? "";
+          const fullTag = parameterMatch[0];
+          const stringFlag = /string="(true|false)"/.exec(fullTag)?.[1];
+          if (!paramName) continue;
+
+          if (stringFlag === "true") {
+            args[paramName] = rawValue;
+            continue;
+          }
+
+          try {
+            args[paramName] = JSON.parse(rawValue);
+          } catch {
+            args[paramName] = rawValue;
+          }
+        }
+
+        toolCalls.push({
+          id: `call_${invokeName}_${Date.now()}_${toolCalls.length}`,
+          function: {
+            name: invokeName,
+            arguments: args,
+          },
+        });
+      }
+    }
+
+    return toolCalls;
+  }
+
+  private consumeDsmlBuffer(buffer: string): {
+    remainingBuffer: string;
+    events: ChatStreamEvent[];
+    sawUsableOutput: boolean;
+  } {
+    const events: ChatStreamEvent[] = [];
+    let remainingBuffer = buffer;
+    let sawUsableOutput = false;
+
+    while (remainingBuffer.length > 0) {
+      const startIndex = this.findDsmlStartTokenIndex(remainingBuffer);
+
+      if (startIndex === -1) {
+        const overlap = DSML_TOOL_CALL_START_TOKENS.reduce(
+          (max, token) =>
+            Math.max(max, this.longestSuffixOverlap(remainingBuffer, token)),
+          0,
+        );
+        const emitLength = remainingBuffer.length - overlap;
+        if (emitLength > 0) {
+          const content = remainingBuffer.slice(0, emitLength);
+          events.push({ type: "assistant_text", delta: content });
+          if (content.trim().length > 0) {
+            sawUsableOutput = true;
+          }
+          remainingBuffer = remainingBuffer.slice(emitLength);
+          continue;
+        }
+        break;
+      }
+
+      if (startIndex > 0) {
+        const prefix = remainingBuffer.slice(0, startIndex);
+        if (prefix.length > 0) {
+          events.push({ type: "assistant_text", delta: prefix });
+          if (prefix.trim().length > 0) {
+            sawUsableOutput = true;
+          }
+        }
+        remainingBuffer = remainingBuffer.slice(startIndex);
+        continue;
+      }
+
+      const blockMatch = remainingBuffer.match(
+        DSML_TOOL_CALL_BLOCK_AT_START_REGEX,
+      );
+      if (!blockMatch || blockMatch.index !== 0) {
+        break;
+      }
+
+      const blockText = blockMatch[0] ?? "";
+      const toolCalls = this.parseDsmlToolCalls(blockText);
+      if (toolCalls.length > 0) {
+        events.push({ type: "tool_calls", toolCalls });
+        sawUsableOutput = true;
+      }
+      remainingBuffer = remainingBuffer.slice(blockText.length);
+    }
+
+    return { remainingBuffer, events, sawUsableOutput };
+  }
+
+  private async *streamResponse(
+    response: Response,
+    options: {
+      parseDsmlToolCalls: boolean;
+      expectUsableOutput: boolean;
+      request: ChatRequest;
+    },
+  ): AsyncIterable<ChatStreamEvent> {
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw this.translateError(new Error("No response body"));
+    }
+
+    const decoder = new TextDecoder();
+    let lineBuffer = "";
+    let contentBuffer = "";
+    let sawUsableOutput = false;
+    let reachedDone = false;
+    const structuredToolCallsByIndex = new Map<
+      number,
+      { id?: string; name: string; argsString: string }
+    >();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      lineBuffer += decoder.decode(value, { stream: true });
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") {
+          reachedDone = true;
+          break;
+        }
+
+        let chunk: {
+          choices?: Array<{
+            delta?: {
+              content?: string;
+              tool_calls?: Array<{
+                index?: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
+            finish_reason?: string;
+          }>;
+        };
+        try {
+          chunk = JSON.parse(data) as typeof chunk;
+        } catch {
+          continue;
+        }
+        const choice = chunk.choices?.[0];
+        if (!choice?.delta) continue;
+
+        const delta = choice.delta;
+        if (delta.content != null && delta.content !== "") {
+          if (options.parseDsmlToolCalls) {
+            contentBuffer += delta.content;
+            const consumed = this.consumeDsmlBuffer(contentBuffer);
+            contentBuffer = consumed.remainingBuffer;
+            for (const event of consumed.events) {
+              yield event;
+            }
+            sawUsableOutput ||= consumed.sawUsableOutput;
+          } else {
+            yield { type: "assistant_text", delta: delta.content };
+            if (delta.content.trim().length > 0) {
+              sawUsableOutput = true;
+            }
+          }
+        }
+
+        if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            let acc = structuredToolCallsByIndex.get(idx);
+            if (!acc) {
+              acc = { name: "", argsString: "" };
+              structuredToolCallsByIndex.set(idx, acc);
+            }
+            if (tc.id) acc.id = tc.id;
+            if (tc.function?.name) acc.name += tc.function.name;
+            if (tc.function?.arguments != null) {
+              acc.argsString += tc.function.arguments;
+            }
+          }
+        }
+
+        if (choice.finish_reason === "tool_calls") {
+          const toolCalls: ChatToolCall[] = [];
+          const indices = [...structuredToolCallsByIndex.keys()].sort(
+            (a, b) => a - b,
+          );
+          for (const i of indices) {
+            const acc = structuredToolCallsByIndex.get(i)!;
+            let args: Record<string, unknown> = {};
+            if (acc.argsString) {
+              try {
+                args = JSON.parse(acc.argsString);
+              } catch {
+                args = { raw: acc.argsString };
+              }
+            }
+            toolCalls.push({
+              id: acc.id,
+              function: { name: acc.name || "", arguments: args },
+            });
+          }
+          if (toolCalls.length > 0) {
+            yield { type: "tool_calls", toolCalls };
+            sawUsableOutput = true;
+          }
+        }
+      }
+
+      if (reachedDone) {
+        break;
+      }
+    }
+
+    if (options.parseDsmlToolCalls && contentBuffer.length > 0) {
+      const consumed = this.consumeDsmlBuffer(contentBuffer);
+      contentBuffer = consumed.remainingBuffer;
+      for (const event of consumed.events) {
+        yield event;
+      }
+      sawUsableOutput ||= consumed.sawUsableOutput;
+    }
+
+    if (options.expectUsableOutput && !sawUsableOutput) {
+      yield {
+        type: "status",
+        status:
+          "OpenRouter returned no usable assistant output; retrying would not help.",
+        phase: "provider fallback",
+      };
+      throw new ProviderError("OpenRouter returned no usable assistant output");
+    }
+  }
+
+  private shouldRetryWithoutTools(
+    request: ChatRequest,
+    response: Response,
+  ): boolean {
+    return (
+      Boolean(request.tools && request.tools.length > 0) &&
+      (response.status === 429 || response.status === 503)
+    );
+  }
+
+  private emitRetryDiagnostic(request: ChatRequest, response: Response): void {
+    this.emitDiagnostic({
+      type: "provider_retry",
+      provider: this.name,
+      model: request.model || this.model,
+      iteration: request.iteration ?? 0,
+      reason: `OpenRouter upstream HTTP ${response.status}`,
+      disabledTools: true,
+    });
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
-      // Expand batched tool results before converting to OpenAI format
-      const expandedMessages = this.expandToolResults(request.messages);
-      const messages = expandedMessages.map((m) =>
-        this.chatMessageToOpenAIMessage(m),
-      );
-      const body: Record<string, unknown> = {
-        model: request.model || this.model,
-        messages,
-        stream: true,
-      };
-      if (request.tools && request.tools.length > 0) {
-        body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
-      }
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      };
-      if (this.httpReferer) headers["HTTP-Referer"] = this.httpReferer;
-      if (this.xTitle) headers["X-Title"] = this.xTitle;
-
-      const response = await fetch(OPENROUTER_API_URL, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: request.signal,
-      });
+      const primaryBody = this.buildRequestBody(request, true);
+      const response = await this.fetchCompletion(primaryBody, request.signal);
 
       if (!response.ok) {
-        let errorBody = "";
-        try {
-          errorBody = await response.text();
-        } catch {
-          // ignore read failures
+        const errorBody = await this.readResponseText(response);
+        if (this.shouldRetryWithoutTools(request, response)) {
+          this.emitRetryDiagnostic(request, response);
+          yield {
+            type: "status",
+            status: "Retrying without tools after OpenRouter upstream failure",
+            phase: "provider fallback",
+          };
+
+          const retryBody = this.buildRequestBody(request, false);
+          const retryResponse = await this.fetchCompletion(
+            retryBody,
+            request.signal,
+          );
+          if (!retryResponse.ok) {
+            const retryErrorBody = await this.readResponseText(retryResponse);
+            throw this.translateError(
+              new Error(retryErrorBody || `HTTP ${retryResponse.status}`),
+              retryResponse,
+              retryErrorBody,
+            );
+          }
+
+          yield* this.streamResponse(retryResponse, {
+            parseDsmlToolCalls: false,
+            expectUsableOutput: Boolean(
+              request.tools && request.tools.length > 0,
+            ),
+            request,
+          });
+          return;
         }
+
         throw this.translateError(
           new Error(errorBody || `HTTP ${response.status}`),
           response,
+          errorBody,
         );
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw this.translateError(new Error("No response body"));
-      }
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      const toolCallsByIndex = new Map<
-        number,
-        { id?: string; name: string; argsString: string }
-      >();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6).trim();
-          if (data === "[DONE]") return;
-
-          let chunk: {
-            choices?: Array<{
-              delta?: {
-                content?: string;
-                tool_calls?: Array<{
-                  index?: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
-              finish_reason?: string;
-            }>;
-          };
-          try {
-            chunk = JSON.parse(data) as typeof chunk;
-          } catch {
-            continue;
-          }
-          const choice = chunk.choices?.[0];
-          if (!choice?.delta) continue;
-
-          const delta = choice.delta;
-          if (delta.content != null && delta.content !== "") {
-            yield { type: "assistant_text", delta: delta.content };
-          }
-
-          if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              let acc = toolCallsByIndex.get(idx);
-              if (!acc) {
-                acc = { name: "", argsString: "" };
-                toolCallsByIndex.set(idx, acc);
-              }
-              if (tc.id) acc.id = tc.id;
-              if (tc.function?.name) acc.name += tc.function.name;
-              if (tc.function?.arguments != null)
-                acc.argsString += tc.function.arguments;
-            }
-          }
-
-          if (choice.finish_reason === "tool_calls") {
-            const toolCalls: ChatToolCall[] = [];
-            const indices = [...toolCallsByIndex.keys()].sort((a, b) => a - b);
-            for (const i of indices) {
-              const acc = toolCallsByIndex.get(i)!;
-              let args: Record<string, any> = {};
-              if (acc.argsString) {
-                try {
-                  args = JSON.parse(acc.argsString);
-                } catch {
-                  args = { raw: acc.argsString };
-                }
-              }
-              toolCalls.push({
-                id: acc.id,
-                function: { name: acc.name || "", arguments: args },
-              });
-            }
-            if (toolCalls.length > 0) {
-              yield { type: "tool_calls", toolCalls };
-            }
-          }
-        }
-      }
+      yield* this.streamResponse(response, {
+        parseDsmlToolCalls: Boolean(request.tools && request.tools.length > 0),
+        expectUsableOutput: Boolean(request.tools && request.tools.length > 0),
+        request,
+      });
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       throw this.translateError(error);
@@ -346,10 +687,98 @@ export class OpenRouterProvider implements LLMProvider {
     );
   }
 
-  private translateError(error: unknown, response?: Response): ProviderError {
+  private parseOpenRouterErrorBody(responseBody?: string): {
+    message?: string;
+    providerName?: string;
+    retryAfterSeconds?: number;
+  } {
+    if (!responseBody) {
+      return {};
+    }
+
+    let parsed: OpenRouterErrorEnvelope | undefined;
+    try {
+      parsed = JSON.parse(responseBody) as OpenRouterErrorEnvelope;
+    } catch {
+      return {};
+    }
+
+    const metadata = parsed.error?.metadata;
+    const details: {
+      message?: string;
+      providerName?: string;
+      retryAfterSeconds?: number;
+    } = {};
+
+    if (typeof parsed.error?.message === "string") {
+      details.message = parsed.error.message;
+    }
+
+    if (typeof metadata?.provider_name === "string") {
+      details.providerName = metadata.provider_name;
+    }
+
+    if (typeof metadata?.retry_after_seconds === "number") {
+      details.retryAfterSeconds = metadata.retry_after_seconds;
+    }
+
+    if (typeof metadata?.raw === "string") {
+      try {
+        const raw = JSON.parse(metadata.raw) as {
+          error?: {
+            message?: string;
+            metadata?: { retry_after_seconds?: number };
+          };
+          provider_name?: string;
+        };
+        if (typeof raw.provider_name === "string") {
+          details.providerName = raw.provider_name;
+        }
+        if (typeof raw.error?.message === "string") {
+          details.message = raw.error.message;
+        }
+        if (typeof raw.error?.metadata?.retry_after_seconds === "number") {
+          details.retryAfterSeconds = raw.error.metadata.retry_after_seconds;
+        }
+      } catch {
+        // If the nested raw payload is not JSON, keep the outer envelope values.
+      }
+    }
+
+    return details;
+  }
+
+  private translateError(
+    error: unknown,
+    response?: Response,
+    responseBody?: string,
+  ): ProviderError {
     const originalError =
       error instanceof Error ? error : new Error(String(error));
     if (response) {
+      const errorInfo = this.parseOpenRouterErrorBody(responseBody);
+      const upstreamDetail = (
+        includeRetryAfter: boolean,
+      ): string | undefined => {
+        const details: string[] = [];
+        const upstreamMessageParts: string[] = [];
+        if (typeof errorInfo.providerName === "string") {
+          upstreamMessageParts.push(errorInfo.providerName);
+        }
+        if (typeof errorInfo.message === "string") {
+          upstreamMessageParts.push(errorInfo.message);
+        }
+        if (upstreamMessageParts.length > 0) {
+          details.push(upstreamMessageParts.join(": "));
+        }
+        if (
+          includeRetryAfter &&
+          typeof errorInfo.retryAfterSeconds === "number"
+        ) {
+          details.push(`retry after ${errorInfo.retryAfterSeconds}s`);
+        }
+        return details.length > 0 ? details.join("; ") : undefined;
+      };
       if (
         response.status === 400 &&
         this.isContextLengthError(originalError.message)
@@ -366,12 +795,16 @@ export class OpenRouterProvider implements LLMProvider {
         );
       }
       if (response.status === 429) {
-        const retryAfter = response.headers.get("retry-after");
-        const retryAfterSeconds = retryAfter
-          ? parseInt(retryAfter, 10)
-          : undefined;
+        const retryAfter = response.headers?.get("retry-after");
+        const retryAfterSeconds =
+          errorInfo.retryAfterSeconds ??
+          (retryAfter ? parseInt(retryAfter, 10) : undefined);
+        const detail = upstreamDetail(true);
+        const message = detail
+          ? `OpenRouter rate limit exceeded (${detail})`
+          : "OpenRouter rate limit exceeded";
         return new ProviderRateLimitError(
-          "OpenRouter rate limit exceeded",
+          message,
           Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
           originalError,
         );
@@ -386,6 +819,15 @@ export class OpenRouterProvider implements LLMProvider {
       if (response.status === 402) {
         return new ProviderError(
           "Insufficient OpenRouter credits",
+          originalError,
+        );
+      }
+      if (response.status === 503) {
+        const detail = upstreamDetail(true);
+        return new ProviderError(
+          detail
+            ? `OpenRouter upstream provider unavailable (${detail})`
+            : "OpenRouter service error",
           originalError,
         );
       }

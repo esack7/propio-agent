@@ -71,6 +71,45 @@ describe("Configuration Loader", () => {
       expect(loaded.providers[0].name).toBe("ollama");
     });
 
+    it("should load valid OpenRouter config with routing and debug fields", () => {
+      const configPath = path.join(tempDir, "valid-openrouter-config.json");
+      const config: ProvidersConfig = {
+        default: "openrouter",
+        providers: [
+          {
+            name: "openrouter",
+            type: "openrouter",
+            models: [
+              { name: "GPT-4o", key: "openai/gpt-4o" },
+              { name: "DeepSeek", key: "deepseek/deepseek-chat" },
+            ],
+            defaultModel: "openai/gpt-4o",
+            apiKey: "sk-or-test",
+            provider: {
+              allowFallbacks: true,
+              order: ["provider-a", "provider-b"],
+              requireParameters: false,
+            },
+            fallbackModels: ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"],
+            debugEchoUpstreamBody: true,
+          },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      const loaded = loadProvidersConfig(configPath);
+      expect(loaded.providers[0]).toMatchObject({
+        type: "openrouter",
+        provider: {
+          allowFallbacks: true,
+          order: ["provider-a", "provider-b"],
+          requireParameters: false,
+        },
+        fallbackModels: ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"],
+        debugEchoUpstreamBody: true,
+      });
+    });
+
     it("should throw error for missing file", () => {
       const configPath = path.join(tempDir, "missing-file.json");
       expect(() => loadProvidersConfig(configPath)).toThrow(
@@ -241,6 +280,92 @@ describe("Configuration Loader", () => {
 
       expect(() => loadProvidersConfig(configPath)).toThrow(
         /duplicate|unique|model.*key/i,
+      );
+    });
+
+    it("should reject malformed OpenRouter provider routing fields", () => {
+      const configPath = path.join(tempDir, "bad-openrouter-routing.json");
+      const config: any = {
+        default: "openrouter",
+        providers: [
+          {
+            name: "openrouter",
+            type: "openrouter",
+            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            defaultModel: "openai/gpt-4o",
+            provider: {
+              allowFallbacks: "yes",
+            },
+          },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      expect(() => loadProvidersConfig(configPath)).toThrow(
+        /provider\.allowFallbacks|boolean/i,
+      );
+    });
+
+    it("should reject a non-object OpenRouter provider field", () => {
+      const configPath = path.join(tempDir, "bad-openrouter-provider.json");
+      const config: any = {
+        default: "openrouter",
+        providers: [
+          {
+            name: "openrouter",
+            type: "openrouter",
+            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            defaultModel: "openai/gpt-4o",
+            provider: [],
+          },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      expect(() => loadProvidersConfig(configPath)).toThrow(
+        /provider.*must be an object/i,
+      );
+    });
+
+    it("should reject malformed OpenRouter fallback model lists", () => {
+      const configPath = path.join(tempDir, "bad-openrouter-fallbacks.json");
+      const config: any = {
+        default: "openrouter",
+        providers: [
+          {
+            name: "openrouter",
+            type: "openrouter",
+            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            defaultModel: "openai/gpt-4o",
+            fallbackModels: [""],
+          },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      expect(() => loadProvidersConfig(configPath)).toThrow(
+        /fallbackModels|non-empty array/i,
+      );
+    });
+
+    it("should reject malformed debugEchoUpstreamBody values", () => {
+      const configPath = path.join(tempDir, "bad-openrouter-debug.json");
+      const config: any = {
+        default: "openrouter",
+        providers: [
+          {
+            name: "openrouter",
+            type: "openrouter",
+            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            defaultModel: "openai/gpt-4o",
+            debugEchoUpstreamBody: "true",
+          },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      expect(() => loadProvidersConfig(configPath)).toThrow(
+        /debugEchoUpstreamBody|boolean/i,
       );
     });
 

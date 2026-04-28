@@ -60,6 +60,7 @@ export interface ChatRequest {
   tools?: ChatTool[];
   stream?: boolean;
   signal?: AbortSignal;
+  iteration?: number;
 }
 
 /**

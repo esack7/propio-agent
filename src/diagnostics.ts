@@ -126,6 +126,14 @@ export type AgentDiagnosticEvent =
       message: string;
     }
   | {
+      type: "provider_retry";
+      provider: string;
+      model: string;
+      iteration: number;
+      reason: string;
+      disabledTools: true;
+    }
+  | {
       type: "prompt_plan";
       provider: string;
       model: string;

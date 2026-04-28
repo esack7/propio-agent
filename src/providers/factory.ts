@@ -7,6 +7,7 @@ import {
   GeminiProviderConfig,
   XaiProviderConfig,
 } from "./config.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { OllamaProvider } from "./ollama.js";
 import { BedrockProvider } from "./bedrock.js";
 import { OpenRouterProvider } from "./openrouter.js";
@@ -48,6 +49,8 @@ import { XaiProvider } from "./xai.js";
 export function createProvider(
   config: ProviderConfig,
   modelKey?: string,
+  onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void,
+  debugLoggingEnabled = false,
 ): LLMProvider {
   const model = modelKey || config.defaultModel;
 
@@ -71,6 +74,11 @@ export function createProvider(
         apiKey: openRouterConfig.apiKey,
         httpReferer: openRouterConfig.httpReferer,
         xTitle: openRouterConfig.xTitle,
+        provider: openRouterConfig.provider,
+        fallbackModels: openRouterConfig.fallbackModels,
+        debugEchoUpstreamBody: openRouterConfig.debugEchoUpstreamBody,
+        debugLoggingEnabled,
+        onDiagnosticEvent,
       });
     }
     case "gemini": {

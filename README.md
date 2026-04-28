@@ -207,11 +207,28 @@ Provides access to 300+ models through a single API key.
   "defaultModel": "openai/gpt-4o",
   "apiKey": "sk-or-v1-...",
   "httpReferer": "https://myapp.com",
-  "xTitle": "My App"
+  "xTitle": "My App",
+  "provider": {
+    "allowFallbacks": true,
+    "order": ["openai", "anthropic"],
+    "requireParameters": false
+  },
+  "fallbackModels": ["openai/gpt-4o-mini", "openai/gpt-4.1-mini"],
+  "debugEchoUpstreamBody": false
 }
 ```
 
-The `apiKey` can also be set via the `OPENROUTER_API_KEY` environment variable. `httpReferer` and `xTitle` are optional and used for OpenRouter leaderboard tracking.
+The `apiKey` can also be set via the `OPENROUTER_API_KEY` environment variable. `httpReferer` and `xTitle` are optional and used for OpenRouter leaderboard tracking. `xTitle` is still the config field name, and the provider sends it as `X-OpenRouter-Title`.
+
+OpenRouter-specific routing fields:
+
+- `provider.allowFallbacks` maps to OpenRouter `provider.allow_fallbacks`
+- `provider.order` maps to OpenRouter `provider.order` and should list upstream provider identifiers
+- `provider.requireParameters` maps to OpenRouter `provider.require_parameters`
+- `fallbackModels` maps to OpenRouter `models`
+- `debugEchoUpstreamBody` sends `debug.echo_upstream_body` when CLI debug logging is enabled
+
+When OpenRouter returns a `429` or `503` for a tool-enabled request, the provider retries once without tools, shows a visible retry status, and emits a `provider_retry` diagnostic. The retry only disables tools for that single request; it does not change the provider's default tool behavior.
 
 ### Gemini
 
@@ -468,6 +485,24 @@ ollama pull llama3.1:8b
 ```
 
 Models with confirmed good tool calling: `llama3.1:8b`, `llama3.1:70b`, `mistral:7b-instruct-v0.3`, `deepseek-coder-v2:16b`, `qwen2.5:14b`.
+
+---
+
+### OpenRouter upstream 429/503 with tools
+
+**Symptom:**
+
+OpenRouter returns `429` or `503` on the first tool-enabled turn, especially when a provider is overloaded or temporarily unavailable.
+
+**Behavior:**
+
+The provider now retries once without tools, surfaces a status message in the UI, and logs a `provider_retry` diagnostic when debug logging is enabled.
+
+**What to check:**
+
+- Confirm the provider config has the right `provider` routing hints and `fallbackModels` if you want OpenRouter to try alternate upstreams.
+- If you need to debug the upstream request body, set `debugEchoUpstreamBody: true` and run with `--debug-llm` or `--debug-llm-file <path>`.
+- If the retry still fails, the final error will include the upstream provider name and nested error text when OpenRouter provides it.
 
 ---
 

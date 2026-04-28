@@ -21,11 +21,8 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
-import {
-  AgentDiagnosticEvent,
-  measureMessages,
-  RESERVED_OUTPUT_TOKENS,
-} from "./diagnostics.js";
+import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
+import type { AgentDiagnosticEvent } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
 import { ContextManager } from "./context/contextManager.js";
 import {
@@ -166,7 +163,12 @@ export class Agent {
     );
 
     this.resolvedProviderConfig = resolvedProvider;
-    this.provider = createProvider(resolvedProvider, resolvedModelKey);
+    this.provider = createProvider(
+      resolvedProvider,
+      resolvedModelKey,
+      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+      this.diagnosticsEnabled,
+    );
     this.model = resolvedModelKey;
 
     this.contextManager = new ContextManager();
@@ -298,7 +300,12 @@ export class Agent {
       providerName,
     );
     const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
-    const newProvider = createProvider(resolvedProvider, resolvedModelKey);
+    const newProvider = createProvider(
+      resolvedProvider,
+      resolvedModelKey,
+      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+      this.diagnosticsEnabled,
+    );
 
     this.resolvedProviderConfig = resolvedProvider;
     this.provider = newProvider;
@@ -564,6 +571,7 @@ export class Agent {
           model: this.model,
           messages,
           signal: abortSignal,
+          iteration,
         })) {
           if (abortSignal?.aborted) {
             throw new Error("Request cancelled");
@@ -730,6 +738,7 @@ export class Agent {
             messages: messages,
             tools: this.toolRegistry.getEnabledSchemas(),
             signal: options?.abortSignal,
+            iteration: iterationCount,
           })) {
             if (options?.abortSignal?.aborted) {
               throw new Error("Request cancelled");
