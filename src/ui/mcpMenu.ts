@@ -94,6 +94,28 @@ function renderDetail(
   renderTools(ui, detail.tools, detail.name);
 }
 
+function parseMcpCommand(input: string): {
+  readonly subcommand: string;
+  readonly rest: string;
+} {
+  const trimmed = input.trim();
+  const remainder = trimmed.slice("/mcp".length).trimStart();
+
+  if (remainder.length === 0) {
+    return { subcommand: "", rest: "" };
+  }
+
+  const spaceIndex = remainder.indexOf(" ");
+  if (spaceIndex < 0) {
+    return { subcommand: remainder, rest: "" };
+  }
+
+  return {
+    subcommand: remainder.slice(0, spaceIndex),
+    rest: remainder.slice(spaceIndex + 1).trim(),
+  };
+}
+
 export async function handleMcpCommand(
   input: string,
   agent: Pick<
@@ -106,17 +128,17 @@ export async function handleMcpCommand(
   >,
   ui: Pick<TerminalUi, "command" | "error" | "info" | "section" | "success">,
 ): Promise<void> {
-  const parts = input.trim().split(/\s+/);
+  const { subcommand, rest } = parseMcpCommand(input);
 
-  if (parts.length === 1 || parts[1] === "list") {
+  if (subcommand === "" || subcommand === "list") {
     renderSummaries(ui, agent.getMcpServerSummaries());
     ui.command("");
     return;
   }
 
-  if (parts[1] === "get") {
-    const serverName = parts[2];
-    if (!serverName || parts.length > 3) {
+  if (subcommand === "get") {
+    const serverName = rest;
+    if (!serverName) {
       ui.error("Usage: /mcp get <server>");
       ui.command("");
       return;
@@ -134,15 +156,13 @@ export async function handleMcpCommand(
     return;
   }
 
-  if (parts[1] === "tools") {
-    if (parts.length > 3) {
-      ui.error("Usage: /mcp tools [server]");
-      ui.command("");
-      return;
-    }
-
+  if (subcommand === "tools") {
     try {
-      renderTools(ui, agent.listMcpTools(parts[2]), parts[2]);
+      renderTools(
+        ui,
+        rest ? agent.listMcpTools(rest) : agent.listMcpTools(),
+        rest || undefined,
+      );
     } catch (error) {
       ui.error(error instanceof Error ? error.message : String(error));
     }
@@ -150,9 +170,9 @@ export async function handleMcpCommand(
     return;
   }
 
-  if (parts[1] === "reconnect") {
-    const serverName = parts[2];
-    if (!serverName || parts.length > 3) {
+  if (subcommand === "reconnect") {
+    const serverName = rest;
+    if (!serverName) {
       ui.error("Usage: /mcp reconnect <server>");
       ui.command("");
       return;
@@ -172,10 +192,10 @@ export async function handleMcpCommand(
     return;
   }
 
-  if (parts[1] === "enable" || parts[1] === "disable") {
-    const serverName = parts[2];
-    if (!serverName || parts.length > 3) {
-      ui.error(`Usage: /mcp ${parts[1]} <server>`);
+  if (subcommand === "enable" || subcommand === "disable") {
+    const serverName = rest;
+    if (!serverName) {
+      ui.error(`Usage: /mcp ${subcommand} <server>`);
       ui.command("");
       return;
     }
@@ -183,14 +203,19 @@ export async function handleMcpCommand(
     try {
       const summary = await agent.setMcpServerEnabled(
         serverName,
-        parts[1] === "enable",
+        subcommand === "enable",
       );
-      if (parts[1] === "disable" || summary.status === "connected") {
+      if (subcommand === "disable" || summary.status === "connected") {
         ui.success(
-          `${parts[1] === "enable" ? "Enabled" : "Disabled"} ${summary.name}: ${formatSummary(summary)}.`,
+          `${subcommand === "enable" ? "Enabled" : "Disabled"} ${summary.name}: ${formatSummary(summary)}.`,
         );
       } else {
-        ui.error(formatActionFailure("Enabled", summary));
+        ui.error(
+          formatActionFailure(
+            subcommand === "enable" ? "Enabled" : "Disabled",
+            summary,
+          ),
+        );
       }
     } catch (error) {
       ui.error(error instanceof Error ? error.message : String(error));
@@ -199,7 +224,7 @@ export async function handleMcpCommand(
     return;
   }
 
-  ui.error(`Unknown /mcp subcommand: "${parts.slice(1).join(" ")}"`);
+  ui.error(`Unknown /mcp subcommand: "${subcommand}${rest ? ` ${rest}` : ""}"`);
   ui.command(
     "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server>]",
   );
