@@ -1,5 +1,5 @@
-import * as fs from "fs";
 import * as path from "path";
+import { createRequire } from "module";
 import { Agent } from "../agent.js";
 import { LLMProvider } from "../providers/interface.js";
 import {
@@ -15,6 +15,10 @@ import { ExecutableTool } from "../tools/interface.js";
 import type { ToolExecutionStatus } from "../tools/types.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
+
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
 
 /**
  * Mock LLM Provider for testing
@@ -316,6 +320,27 @@ describe("Agent with Multi-Provider Configuration", () => {
         providerName: "local-ollama",
         modelKey: "llama3.2:90b",
       });
+    });
+  });
+
+  describe("skills bridge", () => {
+    it("should list and refresh local skills without requiring invocation support", () => {
+      const cwdDir = path.join(tempDir, "cwd");
+      const homeDir = path.join(tempDir, "home");
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        expect(agent.listSkills()).toEqual([]);
+        expect(agent.refreshSkills()).toEqual([]);
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
     });
   });
 

@@ -53,6 +53,12 @@ import type {
   McpServerSummary,
   McpToolSummary,
 } from "./mcp/types.js";
+import { loadLocalSkills } from "./skills/index.js";
+import type {
+  Skill,
+  SkillLoadDiagnostic,
+  SkillRegistry,
+} from "./skills/index.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -128,6 +134,8 @@ export class Agent {
   private summaryRefreshRunning = false;
   private summaryDirty = false;
   private summaryGeneration = 0;
+  private skillRegistry?: SkillRegistry;
+  private skillDiagnostics: SkillLoadDiagnostic[] = [];
 
   constructor(
     options: {
@@ -366,6 +374,25 @@ export class Agent {
     this.resolvedProviderConfig = resolvedProvider;
     this.provider = newProvider;
     this.model = resolvedModelKey;
+  }
+
+  private getSkillRegistry(): SkillRegistry {
+    if (!this.skillRegistry) {
+      const { registry, diagnostics } = loadLocalSkills();
+      this.skillRegistry = registry;
+      this.skillDiagnostics = diagnostics.slice();
+    }
+    return this.skillRegistry;
+  }
+
+  listSkills(): ReadonlyArray<Skill> {
+    return this.getSkillRegistry().list();
+  }
+
+  refreshSkills(): SkillLoadDiagnostic[] {
+    const diagnostics = this.getSkillRegistry().refresh();
+    this.skillDiagnostics = diagnostics.slice();
+    return diagnostics.slice();
   }
 
   /**
