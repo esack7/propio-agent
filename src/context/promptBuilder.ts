@@ -19,6 +19,8 @@ export interface PromptBuildRequest {
   readonly systemPrompt: string;
   /** Pre-rendered pinned memory block (from memoryManager.renderPinnedMemoryBlock). */
   readonly pinnedMemoryBlock?: string;
+  /** Pre-rendered invoked skill block. */
+  readonly invokedSkillsBlock?: string;
   readonly conversationState: ConversationState;
   readonly contextWindowTokens: number;
   readonly policy: PromptBudgetPolicy;
@@ -77,10 +79,14 @@ export class PromptBuilder {
    * any rolling summary, giving it a stable position for cacheability.
    */
   private composeSystemBase(request: PromptBuildRequest): string {
+    const blocks: string[] = [request.systemPrompt];
     if (request.pinnedMemoryBlock) {
-      return `${request.systemPrompt}\n\n${request.pinnedMemoryBlock}`;
+      blocks.push(request.pinnedMemoryBlock);
     }
-    return request.systemPrompt;
+    if (request.invokedSkillsBlock) {
+      blocks.push(request.invokedSkillsBlock);
+    }
+    return blocks.join("\n\n");
   }
 
   buildPlan(request: PromptBuildRequest): PromptPlan {

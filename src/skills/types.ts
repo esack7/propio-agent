@@ -1,4 +1,4 @@
-export type SkillSource = "project" | "user";
+export type SkillSource = "project" | "user" | "bundled" | "plugin" | "mcp";
 
 export interface SkillContext {
   readonly cwd: string;
@@ -7,6 +7,26 @@ export interface SkillContext {
 
 export interface SkillInvocation {
   readonly arguments?: string;
+}
+
+export type SkillInvocationSource = "user" | "model";
+
+export interface SkillInvocationOptions {
+  readonly source?: SkillInvocationSource;
+  readonly queue?: boolean;
+}
+
+export interface SkillInvocationScope {
+  readonly invocationSource: SkillInvocationSource;
+  readonly skillName: string;
+  readonly skillRoot: string;
+  readonly skillFile: string;
+  readonly allowedTools?: readonly string[];
+  readonly model?: string;
+  readonly effort?: string;
+  readonly appliedModel?: string;
+  readonly appliedEffort?: string;
+  readonly warnings?: readonly string[];
 }
 
 export type SkillContextMode = "inline" | "fork";
@@ -32,6 +52,17 @@ export interface Skill extends SkillMetadata {
   readonly source: SkillSource;
   readonly skillRoot: string;
   readonly skillFile: string;
+}
+
+export interface InvokedSkillRecord {
+  readonly name: string;
+  readonly source: SkillSource;
+  readonly skillRoot: string;
+  readonly skillFile: string;
+  readonly arguments?: string;
+  readonly content: string;
+  readonly invokedAt: string;
+  readonly scope: SkillInvocationScope;
 }
 
 export type SkillLoadDiagnosticSeverity = "info" | "warning" | "error";

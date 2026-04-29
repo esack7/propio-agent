@@ -55,10 +55,14 @@ import type {
 } from "./mcp/types.js";
 import { loadLocalSkills } from "./skills/index.js";
 import type {
+  InvokedSkillRecord,
   Skill,
   SkillLoadDiagnostic,
+  SkillInvocationOptions,
+  SkillInvocationScope,
   SkillRegistry,
 } from "./skills/index.js";
+import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -190,7 +194,23 @@ export class Agent {
     this.model = resolvedModelKey;
 
     this.contextManager = new ContextManager();
-    this.toolRegistry = createDefaultToolRegistry();
+    this.toolRegistry = createDefaultToolRegistry({
+      skillToolInvoker: {
+        invokeSkill: async (
+          name: string,
+          argumentsText: string | undefined,
+          options:
+            | {
+                readonly source?: "model";
+                readonly queue?: boolean;
+              }
+            | undefined,
+        ) => {
+          await this.invokeSkill(name, argumentsText, options);
+          return `Activated skill ${name}.`;
+        },
+      },
+    });
     this.mcpManager = new McpManager({
       ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
     });
@@ -235,14 +255,20 @@ export class Agent {
     return this.mcpManager.describeToolInvocation(toolName, args) || toolName;
   }
 
-  private getMergedToolSchemas(): ChatTool[] {
+  private getMergedToolSchemas(allowedTools?: ReadonlySet<string>): ChatTool[] {
     const schemas = new Map<string, ChatTool>();
 
     for (const schema of this.toolRegistry.getEnabledSchemas()) {
+      if (allowedTools && !allowedTools.has(schema.function.name)) {
+        continue;
+      }
       schemas.set(schema.function.name, schema);
     }
 
     for (const schema of this.mcpManager.getConnectedToolSchemas()) {
+      if (allowedTools && !allowedTools.has(schema.function.name)) {
+        continue;
+      }
       if (!schemas.has(schema.function.name)) {
         schemas.set(schema.function.name, schema);
       }
@@ -254,7 +280,15 @@ export class Agent {
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
+    allowedTools?: ReadonlySet<string>,
   ): Promise<ToolExecutionResult> {
+    if (allowedTools && !allowedTools.has(name)) {
+      return {
+        status: "tool_disabled",
+        content: `Tool not available in the current skill scope: ${name}`,
+      };
+    }
+
     if (this.toolRegistry.hasTool(name)) {
       return await this.toolRegistry.executeWithStatus(name, args);
     }
@@ -389,10 +423,176 @@ export class Agent {
     return this.getSkillRegistry().list();
   }
 
+  listUserInvocableSkills(): ReadonlyArray<Skill> {
+    return this.getSkillRegistry().listUserInvocable();
+  }
+
+  listModelInvocableSkills(): ReadonlyArray<Skill> {
+    return this.getSkillRegistry().listModelInvocable();
+  }
+
+  getSkillDiagnostics(): ReadonlyArray<SkillLoadDiagnostic> {
+    this.getSkillRegistry();
+    return this.skillDiagnostics.slice();
+  }
+
   refreshSkills(): SkillLoadDiagnostic[] {
     const diagnostics = this.getSkillRegistry().refresh();
     this.skillDiagnostics = diagnostics.slice();
     return diagnostics.slice();
+  }
+
+  recordSkillFileTouch(paths: readonly string[]): ReadonlyArray<Skill> {
+    return this.getSkillRegistry().recordFileTouch(paths);
+  }
+
+  private getActiveSkillScopes(): SkillInvocationScope[] {
+    const invokedSkills =
+      this.contextManager.getConversationState().invokedSkills ?? [];
+    return invokedSkills.map((record) => ({
+      ...record.scope,
+      ...(record.scope.allowedTools
+        ? { allowedTools: [...record.scope.allowedTools] }
+        : {}),
+      ...(record.scope.warnings
+        ? { warnings: [...record.scope.warnings] }
+        : {}),
+    }));
+  }
+
+  private recordSkillTouchFromToolArgs(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): void {
+    if (toolName !== "read" && toolName !== "write" && toolName !== "edit") {
+      return;
+    }
+
+    const touchedPaths: string[] = [];
+    for (const [key, value] of Object.entries(args)) {
+      if (typeof value === "string" && /path/i.test(key)) {
+        touchedPaths.push(value);
+      }
+      if (Array.isArray(value) && /paths?/i.test(key)) {
+        for (const entry of value) {
+          if (typeof entry === "string" && entry.trim().length > 0) {
+            touchedPaths.push(entry);
+          }
+        }
+      }
+    }
+
+    if (touchedPaths.length > 0) {
+      this.recordSkillFileTouch(touchedPaths);
+    }
+  }
+
+  async invokeSkill(
+    name: string,
+    argumentsText?: string,
+    options?: SkillInvocationOptions,
+  ): Promise<string> {
+    const registry = this.getSkillRegistry();
+    const skill = registry.get(name);
+    if (!skill) {
+      throw new Error(`Skill not found: ${name}`);
+    }
+
+    const source = options?.source ?? "user";
+    if (source === "user" && skill.userInvocable === false) {
+      throw new Error(`Skill is not user-invocable: ${skill.name}`);
+    }
+    if (source === "model" && skill.disableModelInvocation === true) {
+      throw new Error(`Skill is not model-invocable: ${skill.name}`);
+    }
+    if (skill.context === "fork") {
+      throw new Error(
+        `Skill "${skill.name}" requests forked execution, which is not supported yet.`,
+      );
+    }
+
+    const warnings: string[] = [];
+    const requestedModel = skill.model;
+    const requestedEffort = skill.effort;
+    const appliedModel =
+      requestedModel && requestedModel === this.model ? this.model : undefined;
+    const appliedEffort = undefined;
+
+    if (requestedModel && !appliedModel) {
+      warnings.push(
+        `Requested model "${requestedModel}" was not applied; continuing with ${this.provider.name}/${this.model}.`,
+      );
+    }
+    if (requestedEffort) {
+      warnings.push(
+        `Requested effort "${requestedEffort}" was recorded but not applied by the current provider.`,
+      );
+    }
+
+    const scope: SkillInvocationScope = {
+      invocationSource: source,
+      skillName: skill.name,
+      skillRoot: skill.skillRoot,
+      skillFile: skill.skillFile,
+      ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
+      ...(requestedModel ? { model: requestedModel } : {}),
+      ...(requestedEffort ? { effort: requestedEffort } : {}),
+      ...(appliedModel ? { appliedModel } : {}),
+      ...(appliedEffort ? { appliedEffort } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
+
+    const invocationRecord: InvokedSkillRecord = {
+      name: skill.name,
+      source: skill.source,
+      skillRoot: skill.skillRoot,
+      skillFile: skill.skillFile,
+      ...(argumentsText ? { arguments: argumentsText } : {}),
+      content: registry.materialize(skill.name, { arguments: argumentsText }),
+      invokedAt: new Date().toISOString(),
+      scope,
+    };
+
+    this.contextManager.recordInvokedSkill(invocationRecord);
+
+    return invocationRecord.content;
+  }
+
+  private composeSkillDiscoveryBlock(): string {
+    return renderSkillDiscoveryBlock(
+      this.getSkillRegistry().listModelInvocable(),
+    );
+  }
+
+  private getEffectiveSystemPrompt(): string {
+    const discoveryBlock = this.composeSkillDiscoveryBlock();
+    if (!discoveryBlock) {
+      return this.systemPrompt;
+    }
+
+    return `${this.systemPrompt}\n\n${discoveryBlock}`;
+  }
+
+  private deriveAllowedToolScope(
+    scopes: ReadonlyArray<SkillInvocationScope>,
+  ): ReadonlySet<string> | undefined {
+    const scopedLists = scopes
+      .map((scope) => scope.allowedTools)
+      .filter(
+        (allowedTools): allowedTools is readonly string[] =>
+          Array.isArray(allowedTools) && allowedTools.length > 0,
+      );
+
+    if (scopedLists.length === 0) {
+      return undefined;
+    }
+
+    let allowed = new Set(scopedLists[0]);
+    for (const list of scopedLists.slice(1)) {
+      allowed = new Set([...allowed].filter((tool) => list.includes(tool)));
+    }
+
+    return allowed;
   }
 
   /**
@@ -563,7 +763,7 @@ export class Agent {
   ): PromptPlan {
     const contextWindowTokens = this.resolveContextWindowTokens();
     const plan = this.contextManager.buildPromptPlan(
-      this.systemPrompt,
+      this.getEffectiveSystemPrompt(),
       extraUserInstruction,
       {
         contextWindowTokens,
@@ -756,6 +956,7 @@ export class Agent {
       ) => void;
       onEvent?: (event: AgentVisibilityEvent) => void;
       abortSignal?: AbortSignal;
+      extraUserInstruction?: string;
     },
   ): Promise<string> {
     if (options?.abortSignal?.aborted) {
@@ -770,6 +971,11 @@ export class Agent {
     let contextRetryLevel = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
+    const extraUserInstruction =
+      options?.extraUserInstruction &&
+      options.extraUserInstruction.trim().length > 0
+        ? options.extraUserInstruction
+        : undefined;
     try {
       let finalResponse = "";
       let continueLoop = true;
@@ -778,9 +984,11 @@ export class Agent {
 
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
+        const activeSkillScopes = this.getActiveSkillScopes();
+        const allowedTools = this.deriveAllowedToolScope(activeSkillScopes);
 
         const plan = this.buildPlan(
-          undefined,
+          extraUserInstruction,
           contextRetryLevel,
           iterationCount,
         );
@@ -803,7 +1011,7 @@ export class Agent {
           model: this.model,
           iteration: iterationCount,
           contextMessages: messages.length,
-          enabledTools: this.getMergedToolSchemas().length,
+          enabledTools: this.getMergedToolSchemas(allowedTools).length,
           promptMessageCount: promptMetrics.messageCount,
           promptChars: promptMetrics.totalChars,
           estimatedPromptTokens: promptMetrics.estimatedTokens,
@@ -819,7 +1027,7 @@ export class Agent {
           for await (const event of this.provider.streamChat({
             model: this.model,
             messages: messages,
-            tools: this.getMergedToolSchemas(),
+            tools: this.getMergedToolSchemas(allowedTools),
             signal: options?.abortSignal,
             iteration: iterationCount,
           })) {
@@ -1025,9 +1233,16 @@ export class Agent {
               onToken(`[Executing tool: ${toolName}]\n`);
             }
 
-            const execResult = await this.executeToolWithStatus(toolName, args);
+            const execResult = await this.executeToolWithStatus(
+              toolName,
+              args,
+              allowedTools,
+            );
             const result = execResult.content;
             const failed = execResult.status !== "success";
+            if (!failed) {
+              this.recordSkillTouchFromToolArgs(toolName, args);
+            }
             toolExecutionEvents.push({ name: toolName, failed });
             this.emitDiagnostic({
               type: "tool_execution_finished",

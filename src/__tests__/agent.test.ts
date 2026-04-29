@@ -67,6 +67,19 @@ const testProvidersConfig: ProvidersConfig = {
   ],
 };
 
+function writeSkillDocument(
+  rootDir: string,
+  skillName: string,
+  frontmatter: string,
+  body: string,
+): string {
+  const skillDir = path.join(rootDir, ".propio", "skills", skillName);
+  fs.mkdirSync(skillDir, { recursive: true });
+  const skillFile = path.join(skillDir, "SKILL.md");
+  fs.writeFileSync(skillFile, `---\n${frontmatter}\n---\n\n${body}\n`);
+  return skillFile;
+}
+
 describe("Agent with Multi-Provider Configuration", () => {
   const tempDir = "/tmp/agent-tests";
 
@@ -337,6 +350,184 @@ describe("Agent with Multi-Provider Configuration", () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         expect(agent.listSkills()).toEqual([]);
         expect(agent.refreshSkills()).toEqual([]);
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
+    });
+
+    it("should surface an invoked skill body only once in the next prompt", async () => {
+      const cwdDir = path.join(tempDir, "skill-prompt-cwd");
+      const homeDir = path.join(tempDir, "skill-prompt-home");
+
+      fs.rmSync(cwdDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "review",
+        "name: review\ndescription: Review skill",
+        "Use the review skill body once.",
+      );
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const mockProvider = new MockProvider();
+        (agent as any).provider = mockProvider;
+
+        await agent.invokeSkill("review", "src/foo.ts", {
+          source: "user",
+          queue: true,
+        });
+        await agent.streamChat("Inspect the file", () => {});
+
+        const promptText = mockProvider.streamChatCalls[0].messages
+          .map((message) => message.content)
+          .join("\n");
+        const matches = promptText.match(/Use the review skill body once\./g);
+
+        expect(matches).toHaveLength(1);
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
+    });
+
+    it("should support an immediate skill turn with an empty user prompt", async () => {
+      const cwdDir = path.join(tempDir, "skill-immediate-cwd");
+      const homeDir = path.join(tempDir, "skill-immediate-home");
+
+      fs.rmSync(cwdDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "instant",
+        "name: instant\ndescription: Instant skill",
+        "Use the instant skill body once.",
+      );
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const mockProvider = new MockProvider();
+        (agent as any).provider = mockProvider;
+
+        await agent.invokeSkill("instant", undefined, { source: "user" });
+        await agent.streamChat("", () => {});
+
+        expect(mockProvider.streamChatCalls).toHaveLength(1);
+        const promptText = mockProvider.streamChatCalls[0].messages
+          .map((message) => message.content)
+          .join("\n");
+        expect(promptText).toContain("Use the instant skill body once.");
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
+    });
+
+    it("should not activate path skills from denied tool calls", async () => {
+      const cwdDir = path.join(tempDir, "skill-path-cwd");
+      const homeDir = path.join(tempDir, "skill-path-home");
+
+      fs.rmSync(cwdDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "scope-lock",
+        [
+          "name: scope-lock",
+          "description: Scope lock skill",
+          "allowed-tools:",
+          "  - write",
+        ].join("\n"),
+        "This skill constrains tool access.",
+      );
+      writeSkillDocument(
+        cwdDir,
+        "path-activation",
+        [
+          "name: path-activation",
+          "description: Path activation skill",
+          "paths:",
+          "  - src/**",
+        ].join("\n"),
+        "This skill should stay dormant when the read call is denied.",
+      );
+
+      class MockProviderWithDeniedRead implements LLMProvider {
+        name = "mock-denied-read";
+        streamChatCalls: ChatRequest[] = [];
+        callCount = 0;
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          this.callCount++;
+
+          if (this.callCount === 1) {
+            yield { delta: "Reading" };
+            yield {
+              delta: "",
+              toolCalls: [
+                {
+                  id: "call-1",
+                  function: {
+                    name: "read",
+                    arguments: { path: "src/app.ts" },
+                  },
+                },
+              ],
+            };
+            return;
+          }
+
+          yield { delta: "Done" };
+        }
+      }
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        await agent.invokeSkill("scope-lock", undefined, {
+          source: "user",
+          queue: true,
+        });
+
+        const mockProvider = new MockProviderWithDeniedRead();
+        (agent as any).provider = mockProvider;
+
+        await agent.streamChat("Check the file", () => {});
+
+        const requestToolNames =
+          mockProvider.streamChatCalls[0].tools?.map(
+            (tool) => tool.function.name,
+          ) ?? [];
+        const activeSkillNames = agent
+          .listUserInvocableSkills()
+          .map((skill) => skill.name);
+
+        expect(requestToolNames).not.toContain("read");
+        expect(activeSkillNames).toContain("scope-lock");
+        expect(activeSkillNames).not.toContain("path-activation");
       } finally {
         cwdSpy.mockRestore();
         homeSpy.mockRestore();

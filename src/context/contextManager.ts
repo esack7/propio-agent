@@ -22,6 +22,7 @@ import {
   PinFactInput,
   UpdateMemoryInput,
 } from "./types.js";
+import type { InvokedSkillRecord } from "../skills/types.js";
 import {
   validatePinInput,
   validateUpdateInput,
@@ -37,6 +38,7 @@ import {
   computeSummaryEligibility,
   SummaryEligibility,
 } from "./summaryManager.js";
+import { renderInvokedSkillBlock } from "./invokedSkillRenderer.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -293,6 +295,7 @@ export class ContextManager {
   private artifacts: Map<string, MutableArtifact> = new Map();
   private rollingSummary: RollingSummaryRecord | undefined;
   private pinnedMemory: PinnedMemoryRecord[] = [];
+  private invokedSkills: InvokedSkillRecord[] = [];
 
   // -------------------------------------------------------------------
   // Turn lifecycle
@@ -438,6 +441,7 @@ export class ContextManager {
     this.artifacts.clear();
     this.rollingSummary = undefined;
     this.pinnedMemory = [];
+    this.invokedSkills = [];
   }
 
   /**
@@ -463,6 +467,32 @@ export class ContextManager {
 
     this.pinnedMemory = state.pinnedMemory
       ? state.pinnedMemory.map(clonePinnedRecord)
+      : [];
+    this.invokedSkills = state.invokedSkills
+      ? state.invokedSkills.map((record) => ({
+          ...record,
+          ...(record.scope.allowedTools
+            ? {
+                scope: {
+                  ...record.scope,
+                  allowedTools: [...record.scope.allowedTools],
+                },
+              }
+            : { scope: { ...record.scope } }),
+          ...(record.scope.warnings
+            ? {
+                scope: {
+                  ...record.scope,
+                  warnings: [...record.scope.warnings],
+                  ...(record.scope.allowedTools
+                    ? {
+                        allowedTools: [...record.scope.allowedTools],
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        }))
       : [];
   }
 
@@ -507,6 +537,30 @@ export class ContextManager {
           }
         : undefined,
       pinnedMemory: this.pinnedMemory.map(clonePinnedRecord),
+      invokedSkills: this.invokedSkills.map((record) => ({
+        ...record,
+        ...(record.scope.allowedTools
+          ? {
+              scope: {
+                ...record.scope,
+                allowedTools: [...record.scope.allowedTools],
+              },
+            }
+          : { scope: { ...record.scope } }),
+        ...(record.scope.warnings
+          ? {
+              scope: {
+                ...record.scope,
+                warnings: [...record.scope.warnings],
+                ...(record.scope.allowedTools
+                  ? {
+                      allowedTools: [...record.scope.allowedTools],
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      })),
     };
   }
 
@@ -564,6 +618,33 @@ export class ContextManager {
    */
   getSummaryCoveredTurnIds(): ReadonlySet<string> {
     return new Set(this.rollingSummary?.coveredTurnIds ?? []);
+  }
+
+  recordInvokedSkill(record: InvokedSkillRecord): void {
+    this.invokedSkills.push({
+      ...record,
+      ...(record.scope.allowedTools
+        ? {
+            scope: {
+              ...record.scope,
+              allowedTools: [...record.scope.allowedTools],
+            },
+          }
+        : { scope: { ...record.scope } }),
+      ...(record.scope.warnings
+        ? {
+            scope: {
+              ...record.scope,
+              warnings: [...record.scope.warnings],
+              ...(record.scope.allowedTools
+                ? {
+                    allowedTools: [...record.scope.allowedTools],
+                  }
+                : {}),
+            },
+          }
+        : {}),
+    });
   }
 
   // -------------------------------------------------------------------
@@ -764,12 +845,14 @@ export class ContextManager {
     const request: PromptBuildRequest = {
       systemPrompt,
       pinnedMemoryBlock,
+      invokedSkillsBlock: renderInvokedSkillBlock(this.invokedSkills),
       conversationState: {
         preamble: this.preTurnMessages,
         turns: this.turns as unknown as ReadonlyArray<TurnRecord>,
         artifacts: Array.from(this.artifacts.values()) as ArtifactRecord[],
         rollingSummary: this.rollingSummary,
         pinnedMemory: this.pinnedMemory,
+        invokedSkills: this.invokedSkills,
       },
       contextWindowTokens: contextWindow,
       policy,

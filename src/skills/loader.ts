@@ -487,9 +487,17 @@ function cloneSkill(skill: Skill): Skill {
   };
 }
 
+const SOURCE_ORDER: Record<SkillSource, number> = {
+  project: 0,
+  user: 1,
+  bundled: 2,
+  plugin: 3,
+  mcp: 4,
+};
+
 function compareSkillRecords(a: Skill, b: Skill): number {
   if (a.source !== b.source) {
-    return a.source === "project" ? -1 : 1;
+    return SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source];
   }
   const byName = a.name.localeCompare(b.name);
   if (byName !== 0) {

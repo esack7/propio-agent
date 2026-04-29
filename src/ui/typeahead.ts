@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { getSlashCommandCompletionCommands } from "./slashCommands.js";
+import type { Skill } from "../skills/types.js";
 
 export type TypeaheadKind = "command" | "path";
 
@@ -470,6 +471,30 @@ export function createDefaultTypeaheadProviders(
         }),
     },
   ];
+}
+
+export function createSkillCommandTypeaheadProvider(
+  getSkills: () => ReadonlyArray<Skill>,
+): TypeaheadProvider {
+  return {
+    kind: "command",
+    getSuggestions: (target) => {
+      const query = target.query.trim().toLowerCase();
+      if (!query.startsWith("/skill") || query.startsWith("/skills")) {
+        return [];
+      }
+
+      return getSkills()
+        .filter((skill) => skill.userInvocable !== false)
+        .map((skill) => ({
+          kind: "command" as const,
+          value: `/skill ${skill.name}`,
+        }))
+        .filter((suggestion) =>
+          suggestion.value.toLowerCase().startsWith(query),
+        );
+    },
+  };
 }
 
 export function resolveTypeaheadTarget(

@@ -16,6 +16,8 @@ import {
   MemorySource,
 } from "./types.js";
 import { ChatMessage, ChatToolCall, ToolResult } from "../providers/types.js";
+import type { SkillInvocationScope } from "../skills/types.js";
+import type { InvokedSkillRecord } from "../skills/types.js";
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -123,6 +125,30 @@ export interface PersistedPinnedMemoryRecord {
   readonly supersededById?: string;
 }
 
+export interface PersistedSkillInvocationScope {
+  readonly invocationSource: SkillInvocationScope["invocationSource"];
+  readonly skillName: string;
+  readonly skillRoot: string;
+  readonly skillFile: string;
+  readonly allowedTools?: ReadonlyArray<string>;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly appliedModel?: string;
+  readonly appliedEffort?: string;
+  readonly warnings?: ReadonlyArray<string>;
+}
+
+export interface PersistedInvokedSkillRecord {
+  readonly name: string;
+  readonly source: InvokedSkillRecord["source"];
+  readonly skillRoot: string;
+  readonly skillFile: string;
+  readonly arguments?: string;
+  readonly content: string;
+  readonly invokedAt: string;
+  readonly scope: PersistedSkillInvocationScope;
+}
+
 export interface PersistedSessionV2 {
   readonly version: 2;
   readonly savedAt: string;
@@ -133,6 +159,20 @@ export interface PersistedSessionV2 {
     readonly rollingSummary?: RollingSummaryRecord;
     readonly artifacts: ReadonlyArray<PersistedArtifactRecord>;
     readonly pinnedMemory: ReadonlyArray<PersistedPinnedMemoryRecord>;
+  };
+}
+
+export interface PersistedSessionV3 {
+  readonly version: 3;
+  readonly savedAt: string;
+  readonly metadata: SessionMetadata;
+  readonly context: {
+    readonly preamble: ReadonlyArray<PersistedChatMessage>;
+    readonly turns: ReadonlyArray<PersistedTurnRecord>;
+    readonly rollingSummary?: RollingSummaryRecord;
+    readonly artifacts: ReadonlyArray<PersistedArtifactRecord>;
+    readonly pinnedMemory: ReadonlyArray<PersistedPinnedMemoryRecord>;
+    readonly invokedSkills: ReadonlyArray<PersistedInvokedSkillRecord>;
   };
 }
 
@@ -223,12 +263,50 @@ function persistPinnedMemory(
   return result as unknown as PersistedPinnedMemoryRecord;
 }
 
+function persistSkillScope(
+  scope: SkillInvocationScope,
+): PersistedSkillInvocationScope {
+  const result: Record<string, unknown> = {
+    invocationSource: scope.invocationSource,
+    skillName: scope.skillName,
+    skillRoot: scope.skillRoot,
+    skillFile: scope.skillFile,
+  };
+  if (scope.allowedTools !== undefined) {
+    result.allowedTools = [...scope.allowedTools];
+  }
+  if (scope.model !== undefined) result.model = scope.model;
+  if (scope.effort !== undefined) result.effort = scope.effort;
+  if (scope.appliedModel !== undefined)
+    result.appliedModel = scope.appliedModel;
+  if (scope.appliedEffort !== undefined)
+    result.appliedEffort = scope.appliedEffort;
+  if (scope.warnings !== undefined) result.warnings = [...scope.warnings];
+  return result as unknown as PersistedSkillInvocationScope;
+}
+
+function persistInvokedSkill(
+  record: InvokedSkillRecord,
+): PersistedInvokedSkillRecord {
+  const result: Record<string, unknown> = {
+    name: record.name,
+    source: record.source,
+    skillRoot: record.skillRoot,
+    skillFile: record.skillFile,
+    content: record.content,
+    invokedAt: record.invokedAt,
+    scope: persistSkillScope(record.scope),
+  };
+  if (record.arguments !== undefined) result.arguments = record.arguments;
+  return result as unknown as PersistedInvokedSkillRecord;
+}
+
 export function serializeSession(
   state: ConversationState,
   metadata: SessionMetadata,
 ): string {
-  const persisted: PersistedSessionV2 = {
-    version: 2,
+  const persisted: PersistedSessionV3 = {
+    version: 3,
     savedAt: new Date().toISOString(),
     metadata: { ...metadata },
     context: {
@@ -236,6 +314,7 @@ export function serializeSession(
       turns: state.turns.map(persistTurn),
       artifacts: state.artifacts.map(persistArtifact),
       pinnedMemory: (state.pinnedMemory ?? []).map(persistPinnedMemory),
+      invokedSkills: (state.invokedSkills ?? []).map(persistInvokedSkill),
       ...(state.rollingSummary
         ? {
             rollingSummary: {
@@ -532,6 +611,56 @@ function validatePinnedMemoryRecord(record: unknown, label: string): void {
   }
 }
 
+function validateSkillScope(scope: unknown, label: string): void {
+  assertObject(scope, label);
+  assertString(scope.invocationSource, `${label}.invocationSource`);
+  if (scope.invocationSource !== "user" && scope.invocationSource !== "model") {
+    throw new SessionParseError(
+      `${label}.invocationSource must be one of: user, model`,
+    );
+  }
+  assertString(scope.skillName, `${label}.skillName`);
+  assertString(scope.skillRoot, `${label}.skillRoot`);
+  assertString(scope.skillFile, `${label}.skillFile`);
+  const obj = scope as Record<string, unknown>;
+  if (obj.allowedTools !== undefined) {
+    assertArray(obj.allowedTools, `${label}.allowedTools`);
+    for (let i = 0; i < obj.allowedTools.length; i++) {
+      assertString(obj.allowedTools[i], `${label}.allowedTools[${i}]`);
+    }
+  }
+  if (obj.model !== undefined) assertString(obj.model, `${label}.model`);
+  if (obj.effort !== undefined) assertString(obj.effort, `${label}.effort`);
+  if (obj.appliedModel !== undefined)
+    assertString(obj.appliedModel, `${label}.appliedModel`);
+  if (obj.appliedEffort !== undefined)
+    assertString(obj.appliedEffort, `${label}.appliedEffort`);
+  if (obj.warnings !== undefined) {
+    assertArray(obj.warnings, `${label}.warnings`);
+    for (let i = 0; i < obj.warnings.length; i++) {
+      assertString(obj.warnings[i], `${label}.warnings[${i}]`);
+    }
+  }
+}
+
+function validateInvokedSkillRecord(record: unknown, label: string): void {
+  assertObject(record, label);
+  assertString(record.name, `${label}.name`);
+  assertString(record.source, `${label}.source`);
+  assertString(record.skillRoot, `${label}.skillRoot`);
+  assertString(record.skillFile, `${label}.skillFile`);
+  assertString(record.content, `${label}.content`);
+  assertString(record.invokedAt, `${label}.invokedAt`);
+  validateSkillScope(
+    (record as Record<string, unknown>).scope,
+    `${label}.scope`,
+  );
+  const rec = record as Record<string, unknown>;
+  if (rec.arguments !== undefined) {
+    assertString(rec.arguments, `${label}.arguments`);
+  }
+}
+
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
   assertString(metadata.providerName, "metadata.providerName");
@@ -548,7 +677,7 @@ function validateMetadata(metadata: unknown): void {
 
 export function parseSession(
   json: string,
-): PersistedSessionV1 | PersistedSessionV2 {
+): PersistedSessionV1 | PersistedSessionV2 | PersistedSessionV3 {
   let raw: unknown;
   try {
     raw = JSON.parse(json);
@@ -559,9 +688,9 @@ export function parseSession(
   assertObject(raw, "session");
 
   const version = raw.version;
-  if (version !== 1 && version !== 2) {
+  if (version !== 1 && version !== 2 && version !== 3) {
     throw new SessionParseError(
-      `Unsupported session version: ${String(version)}. Supported versions: 1, 2.`,
+      `Unsupported session version: ${String(version)}. Supported versions: 1, 2, 3.`,
     );
   }
 
@@ -593,7 +722,7 @@ export function parseSession(
     validateRollingSummary(ctx.rollingSummary, "context.rollingSummary");
   }
 
-  if (version === 2) {
+  if (version === 2 || version === 3) {
     assertArray(ctx.pinnedMemory, "context.pinnedMemory");
     for (let i = 0; i < (ctx.pinnedMemory as unknown[]).length; i++) {
       validatePinnedMemoryRecord(
@@ -601,6 +730,20 @@ export function parseSession(
         `context.pinnedMemory[${i}]`,
       );
     }
+  }
+
+  if (version === 3) {
+    assertArray(ctx.invokedSkills, "context.invokedSkills");
+    for (let i = 0; i < (ctx.invokedSkills as unknown[]).length; i++) {
+      validateInvokedSkillRecord(
+        (ctx.invokedSkills as unknown[])[i],
+        `context.invokedSkills[${i}]`,
+      );
+    }
+    return raw as unknown as PersistedSessionV3;
+  }
+
+  if (version === 2) {
     return raw as unknown as PersistedSessionV2;
   }
 
@@ -704,13 +847,51 @@ function restorePinnedMemory(
   };
 }
 
+function restoreSkillScope(
+  scope: PersistedSkillInvocationScope,
+): SkillInvocationScope {
+  return {
+    invocationSource: scope.invocationSource,
+    skillName: scope.skillName,
+    skillRoot: scope.skillRoot,
+    skillFile: scope.skillFile,
+    ...(scope.allowedTools ? { allowedTools: [...scope.allowedTools] } : {}),
+    ...(scope.model ? { model: scope.model } : {}),
+    ...(scope.effort ? { effort: scope.effort } : {}),
+    ...(scope.appliedModel ? { appliedModel: scope.appliedModel } : {}),
+    ...(scope.appliedEffort ? { appliedEffort: scope.appliedEffort } : {}),
+    ...(scope.warnings ? { warnings: [...scope.warnings] } : {}),
+  };
+}
+
+function restoreInvokedSkill(
+  record: PersistedInvokedSkillRecord,
+): InvokedSkillRecord {
+  return {
+    name: record.name,
+    source: record.source,
+    skillRoot: record.skillRoot,
+    skillFile: record.skillFile,
+    ...(record.arguments ? { arguments: record.arguments } : {}),
+    content: record.content,
+    invokedAt: record.invokedAt,
+    scope: restoreSkillScope(record.scope),
+  };
+}
+
 export function restoreConversationState(
-  persisted: PersistedSessionV1 | PersistedSessionV2,
+  persisted: PersistedSessionV1 | PersistedSessionV2 | PersistedSessionV3,
 ): ConversationState {
   const pinnedMemory =
-    persisted.version === 2
+    persisted.version === 2 || persisted.version === 3
       ? (persisted as PersistedSessionV2).context.pinnedMemory.map(
           restorePinnedMemory,
+        )
+      : [];
+  const invokedSkills =
+    persisted.version === 3
+      ? (persisted as PersistedSessionV3).context.invokedSkills.map(
+          restoreInvokedSkill,
         )
       : [];
 
@@ -725,5 +906,6 @@ export function restoreConversationState(
         }
       : undefined,
     pinnedMemory,
+    invokedSkills,
   };
 }

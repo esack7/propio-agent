@@ -165,6 +165,42 @@ describe("persistence", () => {
       );
     });
 
+    it("should round-trip invoked skills and keep them active in prompt assembly", () => {
+      const manager = new ContextManager();
+      manager.recordInvokedSkill({
+        name: "review",
+        source: "project",
+        skillRoot: "/repo/.propio/skills/review",
+        skillFile: "/repo/.propio/skills/review/SKILL.md",
+        arguments: "src/foo.ts",
+        content: "Skill body for review.",
+        invokedAt: "2026-03-28T12:00:00Z",
+        scope: {
+          invocationSource: "user",
+          skillName: "review",
+          skillRoot: "/repo/.propio/skills/review",
+          skillFile: "/repo/.propio/skills/review/SKILL.md",
+          allowedTools: ["read"],
+          warnings: ["Recorded for persistence testing."],
+        },
+      });
+
+      const restored = roundTrip(manager);
+
+      expect(restored.invokedSkills).toHaveLength(1);
+      const restoredInvokedSkills = restored.invokedSkills ?? [];
+      expect(restoredInvokedSkills[0].scope.allowedTools).toEqual(["read"]);
+      expect(restoredInvokedSkills[0].scope.warnings).toEqual([
+        "Recorded for persistence testing.",
+      ]);
+
+      const target = new ContextManager();
+      target.importState(restored);
+
+      const plan = target.buildPromptPlan("System prompt");
+      expect(plan.messages[0].content).toContain("Skill body for review.");
+    });
+
     it("should round-trip text tool artifacts", () => {
       const manager = buildPopulatedManager();
       const original = manager.getConversationState();
@@ -292,12 +328,12 @@ describe("persistence", () => {
   // =================================================================
 
   describe("metadata", () => {
-    it("should include version 2 in the serialized output", () => {
+    it("should include version 3 in the serialized output", () => {
       const manager = new ContextManager();
       const state = manager.getConversationState();
       const json = serializeSession(state, TEST_METADATA);
       const parsed = parseSession(json);
-      expect(parsed.version).toBe(2);
+      expect(parsed.version).toBe(3);
     });
 
     it("should include savedAt timestamp", () => {
@@ -765,7 +801,7 @@ describe("persistence", () => {
         SessionParseError,
       );
       expect(() => parseSession(JSON.stringify(data))).toThrow(
-        "Unsupported session version: 99. Supported versions: 1, 2.",
+        "Unsupported session version: 99. Supported versions: 1, 2, 3.",
       );
     });
 
