@@ -1,8 +1,11 @@
+import { EventEmitter } from "events";
+
 export function createTtyTestStream(
   isTTY = true,
   columns = 80,
 ): NodeJS.WriteStream & { chunks: string[] } {
   const chunks: string[] = [];
+  const emitter = new EventEmitter();
 
   return {
     chunks,
@@ -16,6 +19,10 @@ export function createTtyTestStream(
     clearLine: () => true,
     moveCursor: () => true,
     clearScreenDown: () => true,
+    on: emitter.on.bind(emitter),
+    off: emitter.off.bind(emitter),
+    removeListener: emitter.removeListener.bind(emitter),
+    emit: emitter.emit.bind(emitter),
   } as unknown as NodeJS.WriteStream & { chunks: string[] };
 }
 

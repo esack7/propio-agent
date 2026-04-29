@@ -8,7 +8,7 @@ import {
 import { FooterRenderer } from "./footerRenderer.js";
 import { StatusRenderer } from "./statusRenderer.js";
 import { TranscriptRenderer } from "./transcriptRenderer.js";
-import { TerminalWriter } from "./terminalWriter.js";
+import { TerminalWriter, watchTerminalResize } from "./terminalWriter.js";
 import { symbols } from "./symbols.js";
 import { ReplRenderer } from "./replRenderer.js";
 import {
@@ -38,6 +38,7 @@ export class TerminalUi {
   private readonly retainedStore: ReplUiStore | null;
   private readonly retainedRenderer: ReplRenderer | null;
   private readonly retainedPromptOutputStream: NodeJS.WriteStream;
+  private unwatchResize: () => void = () => {};
 
   constructor(options: TerminalUiOptions) {
     this.interactive = options.interactive;
@@ -96,6 +97,17 @@ export class TerminalUi {
       this.retainedStore.subscribe(() => {
         this.retainedRenderer?.flush(retainedStore.getState());
       });
+      this.unwatchResize = watchTerminalResize(
+        this.writer.getStderrStream(),
+        () => {
+          const state = retainedStore.getState();
+          if (state.prompt) {
+            return;
+          }
+
+          this.retainedRenderer?.handleResize(state);
+        },
+      );
     } else {
       this.retainedStore = null;
       this.retainedRenderer = null;
@@ -381,6 +393,8 @@ export class TerminalUi {
   cleanup(): void {
     this.done();
     this.newline();
+    this.unwatchResize();
+    this.unwatchResize = () => {};
   }
 
   private clearStatusIfNeeded(): void {

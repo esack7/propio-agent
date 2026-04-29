@@ -20,6 +20,7 @@ import {
   type TypeaheadSummary,
 } from "./typeahead.js";
 import { openPromptEditor, type PromptEditorRunner } from "./promptEditor.js";
+import { watchTerminalResize } from "./terminalWriter.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
@@ -172,36 +173,127 @@ function getNextWordBoundary(buffer: string, cursor: number): number {
   return nextCursor;
 }
 
-function wrapLineByWidth(line: string, width: number): string[] {
-  if (!Number.isFinite(width) || width <= 0) {
-    return [line];
-  }
+interface WrappedPromptSegment {
+  text: string;
+  start: number;
+  end: number;
+}
 
-  const segments: string[] = [];
+function splitLongTokenByWidth(
+  token: string,
+  tokenStart: number,
+  width: number,
+): WrappedPromptSegment[] {
+  const segments: WrappedPromptSegment[] = [];
   let current = "";
   let currentWidth = 0;
+  let currentStart = tokenStart;
+  let offset = 0;
 
-  for (const character of line) {
+  for (const character of token) {
     const characterWidth = getDisplayWidth(character);
+    const characterStart = tokenStart + offset;
+    const characterEnd = characterStart + character.length;
 
     if (current.length > 0 && currentWidth + characterWidth > width) {
-      segments.push(current);
+      segments.push({
+        text: current,
+        start: currentStart,
+        end: characterStart,
+      });
       current = character;
       currentWidth = characterWidth;
+      currentStart = characterStart;
+      offset += character.length;
       continue;
     }
 
     if (current.length === 0 && characterWidth > width) {
-      segments.push(character);
+      segments.push({
+        text: character,
+        start: characterStart,
+        end: characterEnd,
+      });
+      offset += character.length;
+      currentStart = characterEnd;
       continue;
     }
 
     current += character;
     currentWidth += characterWidth;
+    offset += character.length;
+  }
+
+  if (current.length > 0) {
+    segments.push({
+      text: current,
+      start: currentStart,
+      end: tokenStart + token.length,
+    });
+  }
+
+  return segments;
+}
+
+function wrapLineByWidth(line: string, width: number): WrappedPromptSegment[] {
+  if (!Number.isFinite(width) || width <= 0) {
+    return [{ text: line, start: 0, end: line.length }];
+  }
+
+  const segments: WrappedPromptSegment[] = [];
+  let current = "";
+  let currentWidth = 0;
+  let currentStart = 0;
+  const tokenPattern = /[^\S\n]+|\S+/g;
+  const tokens = line.matchAll(tokenPattern);
+
+  for (const match of tokens) {
+    const token = match[0];
+    const tokenStart = match.index ?? 0;
+    const tokenEnd = tokenStart + token.length;
+    const tokenWidth = getDisplayWidth(token);
+
+    if (current.length > 0 && currentWidth + tokenWidth > width) {
+      segments.push({
+        text: current,
+        start: currentStart,
+        end: tokenStart,
+      });
+      current = "";
+      currentWidth = 0;
+      currentStart = tokenStart;
+    }
+
+    if (tokenWidth > width) {
+      if (current.length > 0) {
+        segments.push({
+          text: current,
+          start: currentStart,
+          end: tokenStart,
+        });
+        current = "";
+        currentWidth = 0;
+      }
+
+      segments.push(...splitLongTokenByWidth(token, tokenStart, width));
+      currentStart = tokenEnd;
+      continue;
+    }
+
+    if (current.length === 0) {
+      currentStart = tokenStart;
+    }
+
+    current += token;
+    currentWidth += tokenWidth;
   }
 
   if (current.length > 0 || line.length === 0) {
-    segments.push(current);
+    segments.push({
+      text: current,
+      start: currentStart,
+      end: currentStart + current.length,
+    });
   }
 
   return segments;
@@ -244,27 +336,29 @@ function buildPromptLayout(
     ) {
       const prefix =
         lineIndex === 0 && segmentIndex === 0 ? promptText : indent;
-      lines.push(`${prefix}${wrapped[segmentIndex]}`);
+      lines.push(`${prefix}${wrapped[segmentIndex].text}`);
     }
 
     const lineLength = line.length;
     const cursorLineEnd = consumedCharacters + lineLength;
     const cursorLineStart = consumedCharacters;
-    const lineWrapWidth = Number.isFinite(availableWidth) ? availableWidth : 0;
 
     if (cursor >= cursorLineStart && cursor <= cursorLineEnd) {
       const lineCursorOffset = cursor - cursorLineStart;
-      const prefixWidth = getDisplayWidth(line.slice(0, lineCursorOffset));
-      const segmentIndex = Number.isFinite(availableWidth)
-        ? prefixWidth === 0
-          ? 0
-          : Math.floor((prefixWidth - 1) / lineWrapWidth)
-        : 0;
-      const columnInSegment = Number.isFinite(availableWidth)
-        ? prefixWidth === 0
-          ? 0
-          : ((prefixWidth - 1) % lineWrapWidth) + 1
-        : prefixWidth;
+      const segmentIndex = Math.max(
+        0,
+        wrapped.findIndex(
+          (segment, index) =>
+            lineCursorOffset >= segment.start &&
+            (lineCursorOffset < segment.end ||
+              index === wrapped.length - 1 ||
+              lineCursorOffset === segment.start),
+        ),
+      );
+      const segment = wrapped[segmentIndex];
+      const columnInSegment = getDisplayWidth(
+        line.slice(segment.start, lineCursorOffset),
+      );
       cursorRow = renderedRows + segmentIndex;
       cursorCol = promptWidth + columnInSegment;
     }
@@ -427,6 +521,12 @@ export function createChatPromptSession(
 
     lastLayout = layout;
   };
+
+  const unwatchResize = watchTerminalResize(outputStream, () => {
+    if (active) {
+      render();
+    }
+  });
 
   const clearHistoryNavigation = (): void => {
     historyIndex = null;
@@ -1003,6 +1103,7 @@ export function createChatPromptSession(
     }
 
     active = false;
+    unwatchResize();
     inputStream.removeListener("keypress", handleKeypress as never);
     restoreRawMode();
   };

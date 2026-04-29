@@ -1,6 +1,7 @@
 import { TerminalUi } from "../terminal.js";
 import { symbols } from "../symbols.js";
 import { createTtyTestStream, stripAnsi } from "./ttyTestStream.js";
+import { createPromptState } from "../promptState.js";
 
 describe("TerminalUi", () => {
   it("writes informational lines to stderr", () => {
@@ -307,6 +308,70 @@ describe("TerminalUi", () => {
     const output = stderr.chunks.join("");
     expect(output).toContain("Tools");
     expect(output).toContain("/exit - save and leave");
+  });
+
+  it("repaints retained overlays when the terminal is resized", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream(true, 80);
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.openOverlay({
+      kind: "custom",
+      entries: [
+        {
+          kind: "info",
+          text: "alpha beta gamma delta epsilon",
+        },
+      ],
+    });
+    stderr.chunks.length = 0;
+
+    stderr.columns = 20;
+    stderr.emit("resize");
+
+    const output = stripAnsi(stderr.chunks.join(""));
+    expect(output).toContain("alpha beta gamma");
+    expect(output).toContain("delta epsilon");
+
+    ui.cleanup();
+  });
+
+  it("does not redraw retained footer while the chat prompt owns the cursor", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream(true, 80);
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    ui.setPromptState(
+      createPromptState({
+        mode: "chat",
+        promptText: "❯ ",
+        footer: "Enter to send | ? help",
+      }),
+    );
+    ui.idleFooter("Enter to send | ? help");
+    stderr.chunks.length = 0;
+
+    stderr.columns = 40;
+    stderr.emit("resize");
+    stderr.emit("resize");
+
+    expect(stripAnsi(stderr.chunks.join(""))).not.toContain(
+      "Enter to send | ? help",
+    );
+
+    ui.cleanup();
   });
 
   it("suppresses idle footer and turn completion in JSON mode", () => {

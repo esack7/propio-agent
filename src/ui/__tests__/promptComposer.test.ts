@@ -247,6 +247,30 @@ describe("createPromptComposer", () => {
     harness.composer.close();
   });
 
+  it("wraps chat input at word boundaries", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      columns: 15,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "> ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.typeText("alpha beta gamma");
+
+    expect(harness.getOutput()).toContain("> alpha beta \n  gamma");
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+  });
+
   it("renders the supplied footer through the injected renderer", async () => {
     const renderFooter = jest.fn();
     const harness = createHarness({ renderFooter });
@@ -267,6 +291,36 @@ describe("createPromptComposer", () => {
     });
 
     harness.composer.close();
+  });
+
+  it("repaints the active chat prompt when terminal columns change", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      columns: 50,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "> ",
+    });
+    await flush();
+
+    harness.typeText("alpha beta gamma delta");
+    harness.takeOutput();
+
+    (harness.outputStream as NodeJS.WriteStream).columns = 14;
+    harness.outputStream.emit("resize");
+
+    const output = harness.takeOutput();
+    expect(output).toMatch(/\u001b\[(?:0)?J/);
+    expect(output).toContain("> alpha beta");
+    expect(output).toContain("  gamma delta");
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
   });
 
   it("surfaces prompt state snapshots through the render callback", async () => {
