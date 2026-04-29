@@ -41,6 +41,8 @@ import {
   hasSessionContent,
 } from "./sessions/sessionCommands.js";
 import type { TerminalUi } from "./ui/terminal.js";
+import { handleMcpCommand } from "./ui/mcpMenu.js";
+import { getMcpConfigPath } from "./mcp/config.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -401,6 +403,14 @@ async function runInteractiveSession(
         continue;
       }
 
+      if (trimmedInput === "/mcp" || trimmedInput.startsWith("/mcp ")) {
+        await handleMcpCommand(trimmedInput, agent, ui);
+        if (shouldExit()) {
+          return 130;
+        }
+        continue;
+      }
+
       if (trimmedInput === "/model") {
         await showModelMenu(composer, agent, ui, configPath);
         if (shouldExit()) {
@@ -537,6 +547,7 @@ async function main(): Promise<number> {
     stderrEnabled: debugLlmToStderr,
     filePath: debugLlmFilePath,
   });
+  let agent: AgentType | null = null;
 
   try {
     if (!ui.isJsonMode()) {
@@ -546,6 +557,7 @@ async function main(): Promise<number> {
 
     const { Agent: AgentCtor } = await import("./agent.js");
     const configPath = getConfigPath();
+    const mcpConfigPath = getMcpConfigPath();
     const agentsMdFiles = discoverAgentsMdFiles();
     const agentsMdContent = loadAgentsMdContent(agentsMdFiles);
 
@@ -555,13 +567,15 @@ When you need to perform actions like reading files, searching code, or executin
 
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
-    const agent = new AgentCtor({
+    agent = new AgentCtor({
       providersConfig: configPath,
+      mcpConfigPath,
       systemPrompt: defaultSystemPrompt,
       agentsMdContent,
       diagnosticsEnabled,
       onDiagnosticEvent: diagnosticLogger.onEvent,
     });
+    await agent.initialize();
 
     if (interactive) {
       const code = await runInteractiveSession(
@@ -590,6 +604,9 @@ Always provide clear, concise responses and summarize what you did after complet
     }
     return nonInteractiveCode;
   } finally {
+    if (agent) {
+      await agent.close();
+    }
     diagnosticLogger.cleanup();
     process.off("SIGINT", handleSigint);
     ui.done();

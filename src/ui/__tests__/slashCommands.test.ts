@@ -13,6 +13,7 @@ describe("slashCommands", () => {
       "Context",
       "Sessions",
       "Tools",
+      "MCP",
     ]);
   });
 
@@ -30,6 +31,7 @@ describe("slashCommands", () => {
     expect(text).toContain("/model");
     expect(text).toContain("?");
     expect(text).toContain("/tools");
+    expect(text).toContain("/mcp");
     expect(text).toContain("/context");
     expect(text).toContain("/session list");
   });

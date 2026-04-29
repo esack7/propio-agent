@@ -22,6 +22,7 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
+import type { ToolExecutionResult } from "./tools/types.js";
 import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
@@ -46,6 +47,12 @@ import {
   restoreConversationState,
   SessionMetadata,
 } from "./context/persistence.js";
+import { McpManager } from "./mcp/manager.js";
+import type {
+  McpServerDetail,
+  McpServerSummary,
+  McpToolSummary,
+} from "./mcp/types.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -110,6 +117,7 @@ export class Agent {
   private contextManager: ContextManager;
   private systemPrompt: string;
   private toolRegistry: ToolRegistry;
+  private mcpManager: McpManager;
   private providersConfig: ProvidersConfig;
   private diagnosticsEnabled: boolean;
   private diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
@@ -126,6 +134,7 @@ export class Agent {
       providersConfig: ProvidersConfig | string;
       providerName?: string;
       modelKey?: string;
+      mcpConfigPath?: string;
       systemPrompt?: string;
       agentsMdContent?: string;
       diagnosticsEnabled?: boolean;
@@ -174,8 +183,19 @@ export class Agent {
 
     this.contextManager = new ContextManager();
     this.toolRegistry = createDefaultToolRegistry();
+    this.mcpManager = new McpManager({
+      ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
+    });
     this.summaryManager = new SummaryManager();
     this.summaryPolicy = DEFAULT_SUMMARY_POLICY;
+  }
+
+  async initialize(): Promise<void> {
+    await this.mcpManager.initialize();
+  }
+
+  async close(): Promise<void> {
+    await this.mcpManager.close();
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -200,7 +220,42 @@ export class Agent {
     toolName: string,
     args: Record<string, unknown>,
   ): string {
-    return this.toolRegistry.describeToolInvocation(toolName, args);
+    if (this.toolRegistry.hasTool(toolName)) {
+      return this.toolRegistry.describeToolInvocation(toolName, args);
+    }
+
+    return this.mcpManager.describeToolInvocation(toolName, args) || toolName;
+  }
+
+  private getMergedToolSchemas(): ChatTool[] {
+    const schemas = new Map<string, ChatTool>();
+
+    for (const schema of this.toolRegistry.getEnabledSchemas()) {
+      schemas.set(schema.function.name, schema);
+    }
+
+    for (const schema of this.mcpManager.getConnectedToolSchemas()) {
+      if (!schemas.has(schema.function.name)) {
+        schemas.set(schema.function.name, schema);
+      }
+    }
+
+    return Array.from(schemas.values());
+  }
+
+  private async executeToolWithStatus(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolExecutionResult> {
+    if (this.toolRegistry.hasTool(name)) {
+      return await this.toolRegistry.executeWithStatus(name, args);
+    }
+
+    if (this.mcpManager.hasTool(name)) {
+      return await this.mcpManager.executeToolWithStatus(name, args);
+    }
+
+    return { status: "tool_not_found", content: `Tool not found: ${name}` };
   }
 
   private emitStatus(
@@ -721,7 +776,7 @@ export class Agent {
           model: this.model,
           iteration: iterationCount,
           contextMessages: messages.length,
-          enabledTools: this.toolRegistry.getEnabledSchemas().length,
+          enabledTools: this.getMergedToolSchemas().length,
           promptMessageCount: promptMetrics.messageCount,
           promptChars: promptMetrics.totalChars,
           estimatedPromptTokens: promptMetrics.estimatedTokens,
@@ -737,7 +792,7 @@ export class Agent {
           for await (const event of this.provider.streamChat({
             model: this.model,
             messages: messages,
-            tools: this.toolRegistry.getEnabledSchemas(),
+            tools: this.getMergedToolSchemas(),
             signal: options?.abortSignal,
             iteration: iterationCount,
           })) {
@@ -943,10 +998,7 @@ export class Agent {
               onToken(`[Executing tool: ${toolName}]\n`);
             }
 
-            const execResult = await this.toolRegistry.executeWithStatus(
-              toolName,
-              args,
-            );
+            const execResult = await this.executeToolWithStatus(toolName, args);
             const result = execResult.content;
             const failed = execResult.status !== "success";
             toolExecutionEvents.push({ name: toolName, failed });
@@ -1151,7 +1203,7 @@ export class Agent {
   }
 
   getTools(): ChatTool[] {
-    return this.toolRegistry.getEnabledSchemas();
+    return this.getMergedToolSchemas();
   }
 
   getToolSummaries(): ReadonlyArray<ToolSummary> {
@@ -1192,6 +1244,29 @@ export class Agent {
 
   isToolEnabled(name: string): boolean {
     return this.toolRegistry.isToolEnabled(name);
+  }
+
+  getMcpServerSummaries(): ReadonlyArray<McpServerSummary> {
+    return this.mcpManager.getServerSummaries();
+  }
+
+  getMcpServerDetail(name: string): McpServerDetail | null {
+    return this.mcpManager.getServerDetail(name);
+  }
+
+  listMcpTools(serverName?: string): ReadonlyArray<McpToolSummary> {
+    return this.mcpManager.listTools(serverName);
+  }
+
+  async reconnectMcpServer(name: string): Promise<McpServerSummary> {
+    return await this.mcpManager.reconnectServer(name);
+  }
+
+  async setMcpServerEnabled(
+    name: string,
+    enabled: boolean,
+  ): Promise<McpServerSummary> {
+    return await this.mcpManager.setServerEnabled(name, enabled);
   }
 
   private handleProviderError(error: any): Error {
