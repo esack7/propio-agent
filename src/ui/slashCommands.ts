@@ -59,12 +59,25 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
     name: "Tools",
     commands: [{ command: "/tools", description: "manage enabled tools" }],
   },
+  {
+    name: "MCP",
+    commands: [
+      { command: "/mcp", description: "show MCP server status" },
+      { command: "/mcp list", description: "list configured MCP servers" },
+      { command: "/mcp get", description: "show one MCP server" },
+      { command: "/mcp tools", description: "list discovered MCP tools" },
+      { command: "/mcp reconnect", description: "reconnect one MCP server" },
+      { command: "/mcp enable", description: "enable one MCP server" },
+      { command: "/mcp disable", description: "disable one MCP server" },
+    ],
+  },
 ];
 
 const FEATURED_COMMANDS: ReadonlyArray<string> = [
   "/help",
   "/model",
   "/tools",
+  "/mcp",
   "/context",
   "/session list",
   "/exit",

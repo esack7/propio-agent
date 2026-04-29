@@ -59,6 +59,16 @@ mkdir -p ~/.propio
 
 Then create `~/.propio/providers.json`. See the [Configuration](#configuration) section for the full schema and per-provider examples.
 
+### Configure MCP servers
+
+External MCP servers are configured separately from providers in `~/.propio/mcp.json`.
+
+```bash
+mkdir -p ~/.propio
+```
+
+Then add MCP servers to `~/.propio/mcp.json`. See the [MCP](#mcp) section below for the v1 config shape and the Playwright example.
+
 ### Migrating from an older version
 
 If you previously used a project-local `.propio/providers.json`:
@@ -128,6 +138,13 @@ Agent configuration lives in `~/.propio/providers.json` and is shared across all
 | ---------- | -------------------------------------- |
 | Unix/macOS | `~/.propio/providers.json`             |
 | Windows    | `%USERPROFILE%\.propio\providers.json` |
+
+MCP server configuration lives in `~/.propio/mcp.json`:
+
+| Platform   | Path                             |
+| ---------- | -------------------------------- |
+| Unix/macOS | `~/.propio/mcp.json`             |
+| Windows    | `%USERPROFILE%\.propio\mcp.json` |
 
 ### Schema
 
@@ -264,6 +281,54 @@ The `apiKey` can also be set via the `GEMINI_API_KEY` environment variable, with
 ```
 
 The `apiKey` can also be set via the `XAI_API_KEY` environment variable.
+
+## MCP
+
+`propio` loads MCP servers from `~/.propio/mcp.json` and exposes them through `/mcp`. Built-in tools still live under `/tools`.
+
+### V1 config
+
+Only stdio servers are supported in v1:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "enabled": true
+    }
+  }
+}
+```
+
+The common headless variant adds `--headless` to `args`:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--headless"],
+      "enabled": true
+    }
+  }
+}
+```
+
+### MCP commands
+
+| Command           | Description                                     |
+| ----------------- | ----------------------------------------------- |
+| `/mcp`            | Show MCP server status                          |
+| `/mcp list`       | List configured MCP servers                     |
+| `/mcp get <name>` | Show one MCP server, including discovered tools |
+| `/mcp tools`      | List discovered MCP tools                       |
+| `/mcp reconnect`  | Reconnect one MCP server                        |
+| `/mcp enable`     | Enable one MCP server                           |
+| `/mcp disable`    | Disable one MCP server                          |
+
+`/tools` continues to manage only built-in tools. MCP tools are discovered and shown through `/mcp`, but they are still exposed to the model as normal tools during a turn when the server is connected.
 
 ---
 
