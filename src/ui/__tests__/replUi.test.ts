@@ -257,4 +257,27 @@ describe("ReplRenderer", () => {
 
     expect(clearStderrLinesSpy).toHaveBeenCalledWith(6);
   });
+
+  it("repaints retained bottom content using resized line estimates", () => {
+    const { renderer, clearStderrLinesSpy, store, stderr } = createHarness();
+
+    stderr.columns = 80;
+    store.openOverlay({
+      kind: "custom",
+      entries: [
+        {
+          kind: "info",
+          text: "alpha beta gamma delta epsilon",
+        },
+      ],
+    });
+    renderer.flush(store.getState());
+
+    stderr.columns = 20;
+    renderer.handleResize(store.getState());
+
+    expect(clearStderrLinesSpy).toHaveBeenLastCalledWith(2);
+    expect(stderr.chunks.join("")).toContain("alpha beta gamma");
+    expect(stderr.chunks.join("")).toContain("delta epsilon");
+  });
 });

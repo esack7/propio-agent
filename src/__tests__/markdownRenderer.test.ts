@@ -1,3 +1,4 @@
+import { EventEmitter } from "events";
 import {
   MarkdownStreamer,
   sanitizeSurrogates,
@@ -5,6 +6,26 @@ import {
   renderMarkdown,
   defaultTheme,
 } from "../ui/markdownRenderer.js";
+
+function createResizableStderr(
+  columns: number,
+  writtenOutput: string[],
+): NodeJS.WriteStream {
+  const emitter = new EventEmitter();
+
+  return {
+    write: (chunk: string) => {
+      writtenOutput.push(chunk);
+      return true;
+    },
+    isTTY: true,
+    columns,
+    on: emitter.on.bind(emitter),
+    off: emitter.off.bind(emitter),
+    removeListener: emitter.removeListener.bind(emitter),
+    emit: emitter.emit.bind(emitter),
+  } as unknown as NodeJS.WriteStream;
+}
 
 describe("MarkdownStreamer", () => {
   let mockStderr: NodeJS.WriteStream;
@@ -119,6 +140,25 @@ describe("MarkdownStreamer", () => {
       // At least one of these should be true when divergence is handled
       // (cursor-up might be 0 if divergence is on the same line)
       expect(hasCursorUp || hasClearToEnd).toBe(true);
+    });
+
+    it("should rewind terminal soft-wrapped lines when divergence occurs", async () => {
+      mockStderr.columns = 30;
+      streamer = new MarkdownStreamer(mockStderr, 1);
+
+      streamer.push(
+        "- supercalifragilisticexpialidocioussupercalifragilistic**bol",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      writtenOutput.length = 0;
+      streamer.push("d**");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const output = writtenOutput.join("");
+
+      expect(output).toMatch(/\x1b\[[1-9]\d*A/);
+      expect(output).toContain("\x1b[0J");
     });
 
     it("should not write anything for empty buffer", () => {
@@ -356,6 +396,43 @@ describe("MarkdownStreamer", () => {
       expect(output).toContain("Item 2");
     });
 
+    it("should wrap long list items at word boundaries", () => {
+      const output = renderMarkdown(
+        "- alpha beta gamma delta",
+        defaultTheme(12),
+        12,
+      ).replace(/\x1b\[[0-9;]*m/g, "");
+
+      expect(output).toContain("• alpha beta");
+      expect(output).toContain("  gamma");
+      expect(output).toContain("  delta");
+      expect(output).not.toContain("gamm\na");
+    });
+
+    it("should keep nested list continuation indentation stable", () => {
+      const output = renderMarkdown(
+        [
+          "3. Test fragility:",
+          "   - Relies on setTimeout(20) + global writtenOutput side-effects. Consider a more deterministic mock or jest.useFakeTimers().",
+          "   - The regex assert `/\\x1b\\[[1-9]\\d*A/` is loose; could be tighter or use the existing hasCursorUp helper pattern from other tests.",
+          "4. Minor:",
+          "   - JSDoc on new helpers would be nice (file follows existing comment style).",
+        ].join("\n"),
+        defaultTheme(80),
+        80,
+      ).replace(/\x1b\[[0-9;]*m/g, "");
+
+      expect(output).toContain(
+        "   • Relies on setTimeout(20) + global writtenOutput side-effects. Consider a\n" +
+          "     more deterministic mock or jest.useFakeTimers().",
+      );
+      expect(output).toContain(
+        "   • The regex assert /\\x1b\\[[1-9]\\d*A/ is loose; could be tighter or use the\n" +
+          "     existing hasCursorUp helper pattern from other tests.",
+      );
+      expect(output).not.toContain("\n   existing");
+    });
+
     it("should handle bold and italic markdown", () => {
       streamer.push("**bold** and *italic* text");
       streamer.flush();
@@ -495,6 +572,27 @@ const x = 42;
 
       const plainOutput = writtenOutput.join("").replace(/\x1b\[[0-9;]*m/g, "");
       expect(plainOutput).toContain("\n");
+    });
+
+    it("should repaint an active stream when the terminal is resized", async () => {
+      const resizableStderr = createResizableStderr(80, writtenOutput);
+      const resizeStreamer = new MarkdownStreamer(resizableStderr, 0);
+
+      resizeStreamer.push(
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      writtenOutput.length = 0;
+
+      resizableStderr.columns = 30;
+      resizableStderr.emit("resize");
+
+      const output = writtenOutput.join("");
+      const plainOutput = output.replace(/\x1b\[[0-9;]*m/g, "");
+      expect(output).toContain("\x1b[0J");
+      expect(plainOutput).toContain("\n");
+
+      resizeStreamer.finish();
     });
   });
 });

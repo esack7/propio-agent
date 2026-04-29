@@ -1,6 +1,7 @@
 import { marked, type Token, type Tokens } from "marked";
 import { highlight, supportsLanguage } from "cli-highlight";
 import chalk from "chalk";
+import { watchTerminalResize } from "./terminalWriter.js";
 
 // ─── Core Utilities ──────────────────────────────────────────────────────────
 
@@ -150,6 +151,30 @@ function renderInlineTokens(tokens: Token[], theme: MarkdownTheme): string {
     .join("");
 }
 
+function appendWrappedListLines(
+  lines: string[],
+  content: string,
+  firstPrefix: string,
+  continuationPrefix: string,
+  width: number,
+): void {
+  const contentLines = content.length > 0 ? content.split("\n") : [""];
+
+  contentLines.forEach((contentLine, contentLineIndex) => {
+    const prefix = contentLineIndex === 0 ? firstPrefix : continuationPrefix;
+    const wrapped = wrapTextToWidth(
+      contentLine.trimEnd(),
+      Math.max(width - visibleLength(prefix), 10),
+    );
+
+    wrapped.forEach((wrappedLine, wrappedLineIndex) => {
+      lines.push(
+        `${wrappedLineIndex === 0 ? prefix : continuationPrefix}${wrappedLine}`,
+      );
+    });
+  });
+}
+
 function renderList(
   token: Tokens.List,
   theme: MarkdownTheme,
@@ -162,30 +187,55 @@ function renderList(
       ? chalk.hex("#E5C07B")(`${(token.start || 1) + i}.`)
       : theme.listBullet;
 
-    const contentParts: string[] = [];
+    const firstPrefix = `${bullet} `;
+    const continuationPrefix = " ".repeat(visibleLength(firstPrefix));
+    let renderedItemContent = false;
+
     for (const t of item.tokens) {
       if (t.type === "text") {
         const textToken = t as Tokens.Text;
-        if (textToken.tokens && textToken.tokens.length > 0) {
-          contentParts.push(renderInlineTokens(textToken.tokens, theme));
-        } else {
-          contentParts.push(chalk.hex("#ABB2BF")(textToken.text));
-        }
-      } else if (t.type === "list") {
-        const nested = renderList(t as Tokens.List, theme, width - 2);
-        contentParts.push(
-          nested
-            .split("\n")
-            .map((l) => "  " + l)
-            .join("\n"),
+        const text =
+          textToken.tokens && textToken.tokens.length > 0
+            ? renderInlineTokens(textToken.tokens, theme)
+            : chalk.hex("#ABB2BF")(textToken.text);
+
+        appendWrappedListLines(
+          lines,
+          text,
+          renderedItemContent ? continuationPrefix : firstPrefix,
+          continuationPrefix,
+          width,
         );
+        renderedItemContent = true;
+      } else if (t.type === "list") {
+        if (!renderedItemContent) {
+          lines.push(firstPrefix.trimEnd());
+          renderedItemContent = true;
+        }
+
+        const nestedWidth = Math.max(
+          width - visibleLength(continuationPrefix),
+          10,
+        );
+        const nested = renderList(t as Tokens.List, theme, nestedWidth);
+        for (const nestedLine of nested.split("\n")) {
+          lines.push(`${continuationPrefix}${nestedLine}`);
+        }
       } else {
-        contentParts.push(renderToken(t, theme, width - 2));
+        appendWrappedListLines(
+          lines,
+          renderToken(t, theme, width - visibleLength(continuationPrefix)),
+          renderedItemContent ? continuationPrefix : firstPrefix,
+          continuationPrefix,
+          width,
+        );
+        renderedItemContent = true;
       }
     }
 
-    const content = contentParts.join("\n").trim();
-    lines.push(`${bullet} ${content}`);
+    if (!renderedItemContent) {
+      lines.push(firstPrefix.trimEnd());
+    }
   });
 
   return lines.join("\n");
@@ -316,6 +366,22 @@ function stripTrailingAnsi(str: string): string {
   return str.replace(/(\x1b\[\d*(;\d+)*m|\s)*$/, "");
 }
 
+function stripAnsiSgr(str: string): string {
+  return str.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function countTerminalRows(str: string, columns: number): number {
+  const safeColumns = Math.max(columns, 1);
+  const lines = stripAnsiSgr(str).split("\n");
+
+  return lines.reduce((count, line) => {
+    const lineLength = line.length;
+    const rowsForLine =
+      lineLength === 0 ? 1 : Math.ceil(lineLength / safeColumns);
+    return count + rowsForLine;
+  }, 0);
+}
+
 /**
  * MarkdownStreamer buffers streaming tokens and renders them as markdown
  * using a custom token-based renderer with append-only delta rendering.
@@ -333,17 +399,26 @@ export class MarkdownStreamer implements Streamer {
   private lastRenderTime: number = 0;
   private readonly stderr: NodeJS.WriteStream;
   private readonly renderIntervalMs: number;
+  private readonly unwatchResize: () => void;
   private theme: MarkdownTheme;
   private width: number;
+  private disposed = false;
 
   constructor(stderr: NodeJS.WriteStream, renderIntervalMs: number = 80) {
     this.stderr = stderr;
     this.renderIntervalMs = renderIntervalMs;
     this.width = this.resolveRenderWidth();
     this.theme = defaultTheme(this.width);
+    this.unwatchResize = watchTerminalResize(this.stderr, () => {
+      this.render();
+    });
   }
 
   push(token: string): void {
+    if (this.disposed) {
+      return;
+    }
+
     this.buffer += sanitizeSurrogates(token);
     this.scheduleRender();
   }
@@ -360,6 +435,7 @@ export class MarkdownStreamer implements Streamer {
     this.renderFinal();
     this.buffer = "";
     this.committedOutput = "";
+    this.dispose();
   }
 
   /**
@@ -387,7 +463,7 @@ export class MarkdownStreamer implements Streamer {
    * and rewrites from there.
    */
   private render(): void {
-    if (this.buffer.length === 0) {
+    if (this.disposed || this.buffer.length === 0) {
       return;
     }
 
@@ -414,7 +490,7 @@ export class MarkdownStreamer implements Streamer {
    * during streaming renders.
    */
   private renderFinal(): void {
-    if (this.buffer.length === 0) {
+    if (this.disposed || this.buffer.length === 0) {
       return;
     }
 
@@ -455,12 +531,12 @@ export class MarkdownStreamer implements Streamer {
     // Find the last newline at or before the divergence point
     const rewindTo = this.committedOutput.lastIndexOf("\n", commonLen);
 
-    // Count newlines in committed output after the rewind point
-    // to know how many visual lines to move the cursor up
-    let linesUp = 0;
-    for (let i = rewindTo + 1; i < this.committedOutput.length; i++) {
-      if (this.committedOutput.charCodeAt(i) === 10) linesUp++;
-    }
+    const committedSuffix = this.committedOutput.substring(rewindTo + 1);
+    const rowsToRewrite = countTerminalRows(
+      committedSuffix,
+      this.resolveTerminalColumns(),
+    );
+    const linesUp = Math.max(0, rowsToRewrite - 1);
 
     // Rewind cursor to the line boundary
     if (linesUp > 0) {
@@ -492,8 +568,21 @@ export class MarkdownStreamer implements Streamer {
     }
   }
 
+  private dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+
+    this.disposed = true;
+    this.unwatchResize();
+  }
+
   private resolveRenderWidth(): number {
     return Math.max((this.stderr.columns ?? 80) - 1, 40);
+  }
+
+  private resolveTerminalColumns(): number {
+    return Math.max(this.stderr.columns ?? 80, 40);
   }
 
   private refreshRenderGeometry(): void {

@@ -165,6 +165,23 @@ export class ReplRenderer {
     this.previousState = nextState;
   }
 
+  handleResize(nextState: ReplUiState): void {
+    if (this.renderedBottomLineCount > 0) {
+      this.options.writer.clearStderrLines(
+        Math.max(
+          this.renderedBottomLineCount,
+          countBottomZoneLines(nextState, this.options.writer),
+        ),
+      );
+      this.renderedBottomLineCount = 0;
+    }
+
+    this.options.statusRenderer.clear();
+    this.renderStatus(nextState.status);
+    this.renderedBottomLineCount = this.renderBottomZone(nextState);
+    this.previousState = nextState;
+  }
+
   private renderStatus(status: EphemeralStatus | null): void {
     if (!status) {
       return;
@@ -255,8 +272,9 @@ export class ReplRenderer {
     let renderedLines = 0;
 
     if (state.activity) {
-      this.options.writer.writeStderrLine(`Activity: ${state.activity.text}`);
-      renderedLines += 1;
+      const text = `Activity: ${state.activity.text}`;
+      this.options.writer.writeStderrLine(text);
+      renderedLines += countWrittenStderrLines(text, this.options.writer);
     }
 
     if (state.overlay) {
@@ -266,11 +284,38 @@ export class ReplRenderer {
 
     if (state.footer && state.prompt?.mode === "chat") {
       this.options.footerRenderer.idleFooter(state.footer);
-      renderedLines += 1;
+      renderedLines += countWrittenStderrLines(
+        state.footer,
+        this.options.writer,
+      );
     }
 
     return renderedLines;
   }
+}
+
+function countBottomZoneLines(
+  state: ReplUiState,
+  writer: TerminalWriter,
+): number {
+  let count = 0;
+
+  if (state.activity) {
+    count += countWrittenStderrLines(
+      `Activity: ${state.activity.text}`,
+      writer,
+    );
+  }
+
+  if (state.overlay) {
+    count += countOverlayLines(state.overlay, writer);
+  }
+
+  if (state.footer && state.prompt?.mode === "chat") {
+    count += countWrittenStderrLines(state.footer, writer);
+  }
+
+  return count;
 }
 
 function countOverlayLines(

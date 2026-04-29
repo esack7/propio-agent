@@ -50,6 +50,26 @@ export function wrapTextToWidth(line: string, maxWidth: number): string[] {
   return wrappedLines.length > 0 ? wrappedLines : [line];
 }
 
+export function watchTerminalResize(
+  stream: NodeJS.WriteStream,
+  callback: () => void,
+): () => void {
+  if (!stream.isTTY || typeof stream.on !== "function") {
+    return () => {};
+  }
+
+  stream.on("resize", callback);
+
+  return () => {
+    if (typeof stream.off === "function") {
+      stream.off("resize", callback);
+      return;
+    }
+
+    stream.removeListener("resize", callback);
+  };
+}
+
 export class TerminalWriter {
   private readonly stdout: NodeJS.WriteStream;
   private readonly stderr: NodeJS.WriteStream;
