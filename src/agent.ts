@@ -1,4 +1,5 @@
 import { LLMProvider } from "./providers/interface.js";
+import * as os from "os";
 import {
   ChatMessage,
   ChatTool,
@@ -140,6 +141,10 @@ export class Agent {
   private summaryGeneration = 0;
   private skillRegistry?: SkillRegistry;
   private skillDiagnostics: SkillLoadDiagnostic[] = [];
+  private readonly skillContext: {
+    readonly cwd: string;
+    readonly homeDir: string;
+  };
 
   constructor(
     options: {
@@ -149,6 +154,8 @@ export class Agent {
       mcpConfigPath?: string;
       systemPrompt?: string;
       agentsMdContent?: string;
+      cwd?: string;
+      homeDir?: string;
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
     } = {} as any,
@@ -177,6 +184,10 @@ export class Agent {
     this.providersConfig = config;
     this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
     this.diagnosticsListener = options.onDiagnosticEvent;
+    this.skillContext = {
+      cwd: options.cwd ?? process.cwd(),
+      homeDir: options.homeDir ?? os.homedir(),
+    };
 
     const resolvedProvider = resolveProvider(config, options.providerName);
     const resolvedModelKey = resolveModelKey(
@@ -202,7 +213,6 @@ export class Agent {
           options:
             | {
                 readonly source?: "model";
-                readonly queue?: boolean;
               }
             | undefined,
         ) => {
@@ -412,7 +422,7 @@ export class Agent {
 
   private getSkillRegistry(): SkillRegistry {
     if (!this.skillRegistry) {
-      const { registry, diagnostics } = loadLocalSkills();
+      const { registry, diagnostics } = loadLocalSkills(this.skillContext);
       this.skillRegistry = registry;
       this.skillDiagnostics = diagnostics.slice();
     }
@@ -432,7 +442,7 @@ export class Agent {
   }
 
   getSkillDiagnostics(): ReadonlyArray<SkillLoadDiagnostic> {
-    this.getSkillRegistry();
+    this.skillDiagnostics = this.getSkillRegistry().getDiagnostics().slice();
     return this.skillDiagnostics.slice();
   }
 
@@ -495,7 +505,15 @@ export class Agent {
     const registry = this.getSkillRegistry();
     const skill = registry.get(name);
     if (!skill) {
-      throw new Error(`Skill not found: ${name}`);
+      const availableSkills = registry
+        .list()
+        .map((entry) => entry.name)
+        .sort((left, right) => left.localeCompare(right));
+      const suffix =
+        availableSkills.length > 0
+          ? ` Available skills: ${availableSkills.join(", ")}`
+          : "";
+      throw new Error(`Skill not found: ${name}.${suffix}`);
     }
 
     const source = options?.source ?? "user";
@@ -516,7 +534,7 @@ export class Agent {
     const requestedEffort = skill.effort;
     const appliedModel =
       requestedModel && requestedModel === this.model ? this.model : undefined;
-    const appliedEffort = undefined;
+    const materializationWarnings: string[] = [];
 
     if (requestedModel && !appliedModel) {
       warnings.push(
@@ -529,6 +547,20 @@ export class Agent {
       );
     }
 
+    const content = registry.materialize(
+      skill.name,
+      { arguments: argumentsText },
+      {
+        onWarning: (message) => {
+          materializationWarnings.push(message);
+        },
+      },
+    );
+    const combinedWarnings =
+      warnings.length > 0 || materializationWarnings.length > 0
+        ? [...warnings, ...materializationWarnings]
+        : undefined;
+
     const scope: SkillInvocationScope = {
       invocationSource: source,
       skillName: skill.name,
@@ -538,8 +570,7 @@ export class Agent {
       ...(requestedModel ? { model: requestedModel } : {}),
       ...(requestedEffort ? { effort: requestedEffort } : {}),
       ...(appliedModel ? { appliedModel } : {}),
-      ...(appliedEffort ? { appliedEffort } : {}),
-      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(combinedWarnings ? { warnings: combinedWarnings } : {}),
     };
 
     const invocationRecord: InvokedSkillRecord = {
@@ -548,7 +579,7 @@ export class Agent {
       skillRoot: skill.skillRoot,
       skillFile: skill.skillFile,
       ...(argumentsText ? { arguments: argumentsText } : {}),
-      content: registry.materialize(skill.name, { arguments: argumentsText }),
+      content,
       invokedAt: new Date().toISOString(),
       scope,
     };

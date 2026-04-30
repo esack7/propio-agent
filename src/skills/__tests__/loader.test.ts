@@ -194,7 +194,7 @@ Body
     ).toBe(0);
   });
 
-  it("throws on duplicate normalized names and lists every conflicting file", () => {
+  it("reports duplicate normalized names without aborting discovery", () => {
     writeSkill(
       projectRoot,
       "alpha",
@@ -215,12 +215,15 @@ Beta body
 `,
     );
 
-    expect(() =>
-      loadLocalSkills({
-        cwd: projectRoot,
-        homeDir: homeRoot,
-      }),
-    ).toThrow(/skill name "alpha"[\s\S]*SKILL\.md/i);
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(registry.list()).toHaveLength(2);
+    expect(
+      diagnostics.some((item) => item.code === "duplicate_skill_name"),
+    ).toBe(true);
   });
 
   it("does not read the body during discovery but does during materialization", () => {
@@ -244,5 +247,35 @@ ${"Body line\n".repeat(1000)}
     const materialized = registry.materialize("lazy");
     expect(materialized).toContain("Base directory for this skill:");
     expect(materialized).toContain("Body line");
+  });
+
+  it("records unknown placeholder warnings in diagnostics during materialization", () => {
+    writeSkill(
+      projectRoot,
+      "placeholder",
+      `---
+description: Placeholder skill
+---
+Use $MISSING with $ARGUMENTS.
+`,
+    );
+
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(
+      diagnostics.some((item) => item.code === "unknown_placeholder"),
+    ).toBe(false);
+
+    const materialized = registry.materialize("placeholder", {
+      arguments: "alpha",
+    });
+
+    expect(materialized).toContain("Use $MISSING with alpha.");
+    expect(
+      diagnostics.some((item) => item.code === "unknown_placeholder"),
+    ).toBe(true);
   });
 });

@@ -106,7 +106,7 @@ function normalizeStringField(
   if (typeof value !== "string") {
     diagnostics.push(
       createDiagnostic(
-        "warning",
+        "error",
         "invalid_field_type",
         `Frontmatter field "${fieldName}" in ${skillPath} must be a string.`,
         skillPath,
@@ -145,7 +145,7 @@ function normalizeBooleanField(
   if (typeof value !== "boolean") {
     diagnostics.push(
       createDiagnostic(
-        "warning",
+        "error",
         "invalid_field_type",
         `Frontmatter field "${fieldName}" in ${skillPath} must be a boolean.`,
         skillPath,
@@ -169,7 +169,7 @@ function normalizeStringArrayField(
   if (!Array.isArray(value)) {
     diagnostics.push(
       createDiagnostic(
-        "warning",
+        "error",
         "invalid_field_type",
         `Frontmatter field "${fieldName}" in ${skillPath} must be an array of strings.`,
         skillPath,
@@ -183,7 +183,7 @@ function normalizeStringArrayField(
     if (typeof entry !== "string" || entry.trim().length === 0) {
       diagnostics.push(
         createDiagnostic(
-          "warning",
+          "error",
           "invalid_field_type",
           `Frontmatter field "${fieldName}" in ${skillPath} must contain only non-empty strings.`,
           skillPath,
@@ -634,11 +634,18 @@ function scanLocalSkills(context: SkillContext): LocalSkillScanResult {
     (bucket) => bucket.length > 1,
   );
   if (duplicates.length > 0) {
-    const duplicateMessages = duplicates.map((bucket) => {
+    for (const bucket of duplicates) {
       const paths = bucket.map((skill) => `- ${skill.skillFile}`).join("\n");
-      return `Skill name "${bucket[0].name}" is defined multiple times:\n${paths}`;
-    });
-    throw new Error(duplicateMessages.join("\n\n"));
+      diagnostics.push(
+        createDiagnostic(
+          "error",
+          "duplicate_skill_name",
+          `Skill name "${bucket[0].name}" is defined multiple times:\n${paths}`,
+          bucket[0].skillFile,
+          bucket[0].name,
+        ),
+      );
+    }
   }
 
   skills.sort(compareSkillRecords);

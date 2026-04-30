@@ -1,4 +1,5 @@
 import * as path from "path";
+import { minimatch } from "minimatch";
 import type {
   InvokedSkillRecord,
   Skill,
@@ -13,6 +14,23 @@ type SkillReloadFn = (context: SkillContext) => {
   readonly diagnostics: SkillLoadDiagnostic[];
 };
 type SkillBodyLoader = (skillFile: string) => string;
+type SkillMaterializationWarningSink = (message: string) => void;
+
+function createDiagnostic(
+  severity: SkillLoadDiagnostic["severity"],
+  code: string,
+  message: string,
+  skillPath?: string,
+  skillName?: string,
+): SkillLoadDiagnostic {
+  return {
+    severity,
+    code,
+    message,
+    ...(skillPath ? { skillPath } : {}),
+    ...(skillName ? { skillName } : {}),
+  };
+}
 
 const SKILL_SOURCE_ORDER: Record<Skill["source"], number> = {
   project: 0,
@@ -34,25 +52,15 @@ function cloneSkill(skill: Skill): Skill {
 function cloneInvokedSkill(record: InvokedSkillRecord): InvokedSkillRecord {
   return {
     ...record,
-    ...(record.scope.allowedTools
-      ? {
-          scope: {
-            ...record.scope,
-            allowedTools: [...record.scope.allowedTools],
-          },
-        }
-      : { scope: { ...record.scope } }),
-    ...(record.scope.warnings
-      ? {
-          scope: {
-            ...record.scope,
-            warnings: [...record.scope.warnings],
-            ...(record.scope.allowedTools
-              ? { allowedTools: [...record.scope.allowedTools] }
-              : {}),
-          },
-        }
-      : {}),
+    scope: {
+      ...record.scope,
+      ...(record.scope.allowedTools
+        ? { allowedTools: [...record.scope.allowedTools] }
+        : {}),
+      ...(record.scope.warnings
+        ? { warnings: [...record.scope.warnings] }
+        : {}),
+    },
   };
 }
 
@@ -60,17 +68,15 @@ function normalizePath(value: string): string {
   return path.resolve(value).replace(/\\/g, "/");
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function globToRegExp(glob: string): RegExp {
-  const normalized = glob.replace(/\\/g, "/");
-  const escaped = escapeRegExp(normalized)
-    .replace(/\\\*\\\*/g, ".*")
-    .replace(/\\\*/g, "[^/]*")
-    .replace(/\\\?/g, "[^/]");
-  return new RegExp(`^${escaped}$`);
+function pathMatchesGlob(candidate: string, pattern: string): boolean {
+  return minimatch(candidate, pattern.replace(/\\/g, "/"), {
+    dot: true,
+    nobrace: false,
+    nocase: false,
+    noext: false,
+    nonegate: false,
+    nocomment: true,
+  });
 }
 
 function isPathIgnored(candidate: string): boolean {
@@ -133,7 +139,7 @@ export class SkillRegistry {
     return new SkillRegistry(
       context,
       skills.map((skill) => cloneSkill(skill)),
-      diagnostics.slice(),
+      diagnostics,
       reloadSkills,
       loadSkillBody,
     );
@@ -181,7 +187,14 @@ export class SkillRegistry {
   private getSkillOrThrow(name: string): Skill {
     const skill = this.get(name);
     if (!skill) {
-      throw new Error(`Skill not found: ${name}`);
+      const availableSkills = this.list()
+        .map((entry) => entry.name)
+        .sort((left, right) => left.localeCompare(right));
+      const suffix =
+        availableSkills.length > 0
+          ? ` Available skills: ${availableSkills.join(", ")}`
+          : "";
+      throw new Error(`Skill not found: ${name}.${suffix}`);
     }
     return skill;
   }
@@ -257,6 +270,7 @@ export class SkillRegistry {
     body: string,
     rawArguments: string,
     positionalArguments: string[],
+    onWarning?: SkillMaterializationWarningSink,
   ): { content: string; consumedPlaceholder: boolean } {
     const placeholderNames = new Set(skill.arguments ?? []);
     let consumedPlaceholder = false;
@@ -287,6 +301,15 @@ export class SkillRegistry {
           return "";
         }
 
+        const diagnostic = createDiagnostic(
+          "warning",
+          "unknown_placeholder",
+          `Unknown placeholder "${match}" in ${skill.skillFile}.`,
+          skill.skillFile,
+          skill.name,
+        );
+        this.diagnostics.push(diagnostic);
+        onWarning?.(`Unknown placeholder "${match}" in ${skill.skillFile}.`);
         return match;
       },
     );
@@ -294,7 +317,11 @@ export class SkillRegistry {
     return { content: substituted, consumedPlaceholder };
   }
 
-  materialize(name: string, invocation?: SkillInvocation): string {
+  materialize(
+    name: string,
+    invocation?: SkillInvocation,
+    options?: { readonly onWarning?: SkillMaterializationWarningSink },
+  ): string {
     const skill = this.getSkillOrThrow(name);
 
     const body = this.loadSkillBody(skill.skillFile);
@@ -306,6 +333,7 @@ export class SkillRegistry {
       body,
       rawArguments,
       positional,
+      options?.onWarning,
     );
 
     const sections: string[] = [prefix];
@@ -376,7 +404,9 @@ export class SkillRegistry {
 
       const patterns = skill.paths ?? [];
       const matches = this.touchedPaths.some((touchedPath) =>
-        patterns.some((pattern) => globToRegExp(pattern).test(touchedPath)),
+        patterns.some((pattern) =>
+          pathMatchesGlob(touchedPath, pattern.replace(/\\/g, "/")),
+        ),
       );
       if (!matches) {
         continue;

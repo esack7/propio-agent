@@ -134,7 +134,6 @@ export interface PersistedSkillInvocationScope {
   readonly model?: string;
   readonly effort?: string;
   readonly appliedModel?: string;
-  readonly appliedEffort?: string;
   readonly warnings?: ReadonlyArray<string>;
 }
 
@@ -279,8 +278,6 @@ function persistSkillScope(
   if (scope.effort !== undefined) result.effort = scope.effort;
   if (scope.appliedModel !== undefined)
     result.appliedModel = scope.appliedModel;
-  if (scope.appliedEffort !== undefined)
-    result.appliedEffort = scope.appliedEffort;
   if (scope.warnings !== undefined) result.warnings = [...scope.warnings];
   return result as unknown as PersistedSkillInvocationScope;
 }
@@ -633,8 +630,6 @@ function validateSkillScope(scope: unknown, label: string): void {
   if (obj.effort !== undefined) assertString(obj.effort, `${label}.effort`);
   if (obj.appliedModel !== undefined)
     assertString(obj.appliedModel, `${label}.appliedModel`);
-  if (obj.appliedEffort !== undefined)
-    assertString(obj.appliedEffort, `${label}.appliedEffort`);
   if (obj.warnings !== undefined) {
     assertArray(obj.warnings, `${label}.warnings`);
     for (let i = 0; i < obj.warnings.length; i++) {
@@ -859,7 +854,6 @@ function restoreSkillScope(
     ...(scope.model ? { model: scope.model } : {}),
     ...(scope.effort ? { effort: scope.effort } : {}),
     ...(scope.appliedModel ? { appliedModel: scope.appliedModel } : {}),
-    ...(scope.appliedEffort ? { appliedEffort: scope.appliedEffort } : {}),
     ...(scope.warnings ? { warnings: [...scope.warnings] } : {}),
   };
 }

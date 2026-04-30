@@ -471,27 +471,15 @@ export class ContextManager {
     this.invokedSkills = state.invokedSkills
       ? state.invokedSkills.map((record) => ({
           ...record,
-          ...(record.scope.allowedTools
-            ? {
-                scope: {
-                  ...record.scope,
-                  allowedTools: [...record.scope.allowedTools],
-                },
-              }
-            : { scope: { ...record.scope } }),
-          ...(record.scope.warnings
-            ? {
-                scope: {
-                  ...record.scope,
-                  warnings: [...record.scope.warnings],
-                  ...(record.scope.allowedTools
-                    ? {
-                        allowedTools: [...record.scope.allowedTools],
-                      }
-                    : {}),
-                },
-              }
-            : {}),
+          scope: {
+            ...record.scope,
+            ...(record.scope.allowedTools
+              ? { allowedTools: [...record.scope.allowedTools] }
+              : {}),
+            ...(record.scope.warnings
+              ? { warnings: [...record.scope.warnings] }
+              : {}),
+          },
         }))
       : [];
   }
@@ -539,27 +527,15 @@ export class ContextManager {
       pinnedMemory: this.pinnedMemory.map(clonePinnedRecord),
       invokedSkills: this.invokedSkills.map((record) => ({
         ...record,
-        ...(record.scope.allowedTools
-          ? {
-              scope: {
-                ...record.scope,
-                allowedTools: [...record.scope.allowedTools],
-              },
-            }
-          : { scope: { ...record.scope } }),
-        ...(record.scope.warnings
-          ? {
-              scope: {
-                ...record.scope,
-                warnings: [...record.scope.warnings],
-                ...(record.scope.allowedTools
-                  ? {
-                      allowedTools: [...record.scope.allowedTools],
-                    }
-                  : {}),
-              },
-            }
-          : {}),
+        scope: {
+          ...record.scope,
+          ...(record.scope.allowedTools
+            ? { allowedTools: [...record.scope.allowedTools] }
+            : {}),
+          ...(record.scope.warnings
+            ? { warnings: [...record.scope.warnings] }
+            : {}),
+        },
       })),
     };
   }
@@ -623,27 +599,15 @@ export class ContextManager {
   recordInvokedSkill(record: InvokedSkillRecord): void {
     this.invokedSkills.push({
       ...record,
-      ...(record.scope.allowedTools
-        ? {
-            scope: {
-              ...record.scope,
-              allowedTools: [...record.scope.allowedTools],
-            },
-          }
-        : { scope: { ...record.scope } }),
-      ...(record.scope.warnings
-        ? {
-            scope: {
-              ...record.scope,
-              warnings: [...record.scope.warnings],
-              ...(record.scope.allowedTools
-                ? {
-                    allowedTools: [...record.scope.allowedTools],
-                  }
-                : {}),
-            },
-          }
-        : {}),
+      scope: {
+        ...record.scope,
+        ...(record.scope.allowedTools
+          ? { allowedTools: [...record.scope.allowedTools] }
+          : {}),
+        ...(record.scope.warnings
+          ? { warnings: [...record.scope.warnings] }
+          : {}),
+      },
     });
   }
 

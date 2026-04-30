@@ -81,17 +81,11 @@ function writeSkillDocument(
 }
 
 describe("Agent with Multi-Provider Configuration", () => {
-  const tempDir = "/tmp/agent-tests";
-
-  beforeAll(() => {
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-  });
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-agent-tests-"));
 
   afterAll(() => {
     if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true });
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
@@ -125,6 +119,31 @@ describe("Agent with Multi-Provider Configuration", () => {
         modelKey: "llama3.2:90b",
       });
       expect(agent).toBeDefined();
+    });
+
+    it("should load skills from explicit cwd and homeDir", () => {
+      const cwdDir = path.join(tempDir, "explicit-cwd");
+      const homeDir = path.join(tempDir, "explicit-home");
+
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "context-skill",
+        "name: context-skill\ndescription: Context skill",
+        "Context body.",
+      );
+
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        cwd: cwdDir,
+        homeDir,
+      });
+
+      expect(agent.listSkills().map((skill) => skill.name)).toContain(
+        "context-skill",
+      );
     });
 
     it("should throw error if providerName does not exist", () => {
@@ -382,7 +401,6 @@ describe("Agent with Multi-Provider Configuration", () => {
 
         await agent.invokeSkill("review", "src/foo.ts", {
           source: "user",
-          queue: true,
         });
         await agent.streamChat("Inspect the file", () => {});
 
@@ -509,7 +527,6 @@ describe("Agent with Multi-Provider Configuration", () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("scope-lock", undefined, {
           source: "user",
-          queue: true,
         });
 
         const mockProvider = new MockProviderWithDeniedRead();
@@ -525,9 +542,157 @@ describe("Agent with Multi-Provider Configuration", () => {
           .listUserInvocableSkills()
           .map((skill) => skill.name);
 
-        expect(requestToolNames).not.toContain("read");
+        expect(requestToolNames).toEqual(["write"]);
         expect(activeSkillNames).toContain("scope-lock");
         expect(activeSkillNames).not.toContain("path-activation");
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
+    });
+
+    it("should record model and effort warnings when the current model differs", async () => {
+      const cwdDir = path.join(tempDir, "skill-model-cwd");
+      const homeDir = path.join(tempDir, "skill-model-home");
+
+      fs.rmSync(cwdDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "model-skill",
+        [
+          "name: model-skill",
+          "description: Model skill",
+          "model: claude-3.5-sonnet",
+          "effort: high",
+        ].join("\n"),
+        "Model-sensitive body.",
+      );
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        await agent.invokeSkill("model-skill", undefined, {
+          source: "user",
+        });
+
+        const invokedSkills = agent.getConversationState().invokedSkills ?? [];
+        expect(invokedSkills).toHaveLength(1);
+        expect(invokedSkills[0].scope.appliedModel).toBeUndefined();
+        expect("appliedEffort" in invokedSkills[0].scope).toBe(false);
+        expect(invokedSkills[0].scope.warnings ?? []).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining(
+              'Requested model "claude-3.5-sonnet" was not applied',
+            ),
+            expect.stringContaining(
+              'Requested effort "high" was recorded but not applied',
+            ),
+          ]),
+        );
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
+    });
+
+    it("should record a matching model as applied", async () => {
+      const cwdDir = path.join(tempDir, "skill-model-match-cwd");
+      const homeDir = path.join(tempDir, "skill-model-match-home");
+
+      fs.rmSync(cwdDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "matching-model-skill",
+        [
+          "name: matching-model-skill",
+          "description: Matching model skill",
+          "model: llama3.2:3b",
+          "effort: high",
+        ].join("\n"),
+        "Matching model body.",
+      );
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        await agent.invokeSkill("matching-model-skill", undefined, {
+          source: "user",
+        });
+
+        const invokedSkills = agent.getConversationState().invokedSkills ?? [];
+        expect(invokedSkills).toHaveLength(1);
+        expect(invokedSkills[0].scope.appliedModel).toBe("llama3.2:3b");
+        expect(invokedSkills[0].scope.warnings ?? []).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining(
+              'Requested effort "high" was recorded but not applied',
+            ),
+          ]),
+        );
+        expect(invokedSkills[0].scope.warnings ?? []).not.toEqual(
+          expect.arrayContaining([expect.stringContaining("Requested model")]),
+        );
+      } finally {
+        cwdSpy.mockRestore();
+        homeSpy.mockRestore();
+      }
+    });
+
+    it("should warn when a skill body references an unknown placeholder", async () => {
+      const cwdDir = path.join(tempDir, "skill-placeholder-cwd");
+      const homeDir = path.join(tempDir, "skill-placeholder-home");
+
+      fs.rmSync(cwdDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(homeDir, { recursive: true });
+
+      writeSkillDocument(
+        cwdDir,
+        "placeholder-skill",
+        "name: placeholder-skill\ndescription: Placeholder skill",
+        "Use $MISSING and $ARGUMENTS.",
+      );
+
+      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+
+      try {
+        const agent = new Agent({ providersConfig: testProvidersConfig });
+        expect(
+          agent
+            .getSkillDiagnostics()
+            .some((item) => item.code === "unknown_placeholder"),
+        ).toBe(false);
+        await agent.invokeSkill("placeholder-skill", "alpha beta", {
+          source: "user",
+        });
+
+        expect(
+          agent
+            .getSkillDiagnostics()
+            .some((item) => item.code === "unknown_placeholder"),
+        ).toBe(true);
+        const invokedSkills = agent.getConversationState().invokedSkills ?? [];
+        expect(invokedSkills).toHaveLength(1);
+        expect(invokedSkills[0].content).toContain("$MISSING");
+        expect(invokedSkills[0].scope.warnings ?? []).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining('Unknown placeholder "$MISSING"'),
+          ]),
+        );
       } finally {
         cwdSpy.mockRestore();
         homeSpy.mockRestore();

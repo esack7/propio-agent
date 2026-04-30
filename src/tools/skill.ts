@@ -7,7 +7,6 @@ export interface SkillToolInvoker {
     argumentsText?: string,
     options?: {
       readonly source?: "model";
-      readonly queue?: boolean;
     },
   ): Promise<string>;
 }
@@ -61,7 +60,6 @@ export class SkillTool implements ExecutableTool {
 
     await this.invoker.invokeSkill(name, argumentsText, {
       source: "model",
-      queue: true,
     });
 
     return argumentsText

@@ -13,7 +13,6 @@ export type SkillInvocationSource = "user" | "model";
 
 export interface SkillInvocationOptions {
   readonly source?: SkillInvocationSource;
-  readonly queue?: boolean;
 }
 
 export interface SkillInvocationScope {
@@ -25,7 +24,6 @@ export interface SkillInvocationScope {
   readonly model?: string;
   readonly effort?: string;
   readonly appliedModel?: string;
-  readonly appliedEffort?: string;
   readonly warnings?: readonly string[];
 }
 
