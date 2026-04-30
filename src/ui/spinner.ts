@@ -113,6 +113,7 @@ export class OperationSpinner {
     this.elapsedTimerId = setInterval(() => {
       this.refreshText();
     }, this.elapsedUpdateIntervalMs);
+    this.elapsedTimerId.unref();
   }
 
   private stopElapsedTicker(): void {

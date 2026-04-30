@@ -454,6 +454,7 @@ export class MarkdownStreamer implements Streamer {
       this.throttleTimerId = null;
       this.render();
     }, delay);
+    this.throttleTimerId.unref();
   }
 
   /**

@@ -48,9 +48,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch",
-    "test:openrouter": "NODE_OPTIONS=--experimental-vm-modules jest openrouter",
+    "test": "NODE_OPTIONS=\"--experimental-vm-modules --disable-warning=ExperimentalWarning\" jest",
+    "test:watch": "NODE_OPTIONS=\"--experimental-vm-modules --disable-warning=ExperimentalWarning\" jest --watch",
+    "test:openrouter": "NODE_OPTIONS=\"--experimental-vm-modules --disable-warning=ExperimentalWarning\" jest openrouter",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
