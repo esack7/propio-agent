@@ -56,6 +56,7 @@ export function formatContextOverview(
   const activePinned = state.pinnedMemory.filter(
     (r) => r.lifecycle === "active",
   );
+  const invokedSkillCount = state.invokedSkills?.length ?? 0;
 
   let preambleTokens = 0;
   for (const msg of state.preamble) {
@@ -99,6 +100,10 @@ export function formatContextOverview(
   });
   lines.push({
     text: `  Pinned memory: ${activePinned.length} active ${plural(activePinned.length, "record")}`,
+    style: "info",
+  });
+  lines.push({
+    text: `  Invoked skills: ${invokedSkillCount}`,
     style: "info",
   });
 
@@ -231,11 +236,12 @@ export function formatContextStats(state: ConversationState): string {
   const pinnedCount = state.pinnedMemory.filter(
     (r) => r.lifecycle === "active",
   ).length;
+  const invokedSkillsCount = state.invokedSkills?.length ?? 0;
 
   const preambleLabel =
     state.preamble.length > 0 ? `${state.preamble.length} preamble + ` : "";
 
-  return `Context: ${preambleLabel}${turnCount} ${plural(turnCount, "turn")} | ~${totalTokens} conversation tokens (est.) | ${artifactCount} ${plural(artifactCount, "artifact")} | summary ~${summaryTokens} tokens | ${pinnedCount} pinned`;
+  return `Context: ${preambleLabel}${turnCount} ${plural(turnCount, "turn")} | ~${totalTokens} conversation tokens (est.) | ${artifactCount} ${plural(artifactCount, "artifact")} | summary ~${summaryTokens} tokens | ${pinnedCount} pinned | ${invokedSkillsCount} invoked skills`;
 }
 
 // ---------------------------------------------------------------------------

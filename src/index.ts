@@ -10,6 +10,7 @@ import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { showModelMenu } from "./ui/modelMenu.js";
+import { showSkillsMenu } from "./ui/skillMenu.js";
 import {
   createPromptComposer,
   type PromptComposer,
@@ -25,6 +26,10 @@ import {
   isHelpCommand,
   getIdleFooterText,
 } from "./ui/slashCommands.js";
+import {
+  createDefaultTypeaheadProviders,
+  createSkillCommandTypeaheadProvider,
+} from "./ui/typeahead.js";
 import { AgentDiagnosticEvent } from "./diagnostics.js";
 import {
   formatContextOverview,
@@ -280,10 +285,15 @@ async function runInteractiveSession(
   shouldExit: () => boolean,
   visibility: VisibilityOptions,
 ): Promise<number> {
+  const typeaheadProviders = [
+    ...createDefaultTypeaheadProviders(process.cwd()),
+    createSkillCommandTypeaheadProvider(() => agent.listUserInvocableSkills()),
+  ];
   const composer = createPromptComposer({
     output: ui.getPromptOutputStream(),
     historyStore: createWorkspacePromptHistoryStore(),
     workspaceRoot: process.cwd(),
+    typeaheadProviders,
     renderFooter: (footer) => {
       ui.idleFooter(footer);
     },
@@ -349,6 +359,58 @@ async function runInteractiveSession(
         agent.clearContext();
         ui.success("Session context cleared.");
         ui.command("");
+        continue;
+      }
+
+      if (trimmedInput === "/skills") {
+        showSkillsMenu(agent, ui);
+        continue;
+      }
+
+      if (trimmedInput === "/skill" || trimmedInput.startsWith("/skill ")) {
+        const args = trimmedInput.slice("/skill".length).trim();
+        if (!args) {
+          ui.error("Usage: /skill <name> [arguments]");
+          ui.command("");
+          continue;
+        }
+
+        const firstSpace = args.search(/\s/);
+        const skillName =
+          firstSpace === -1 ? args : args.slice(0, firstSpace).trim();
+        const rawSkillArgs =
+          firstSpace === -1 ? "" : args.slice(firstSpace).trimStart();
+        const abortController = new AbortController();
+        const turnStartedAtMs = Date.now();
+        setCurrentAbortController(abortController);
+        ui.setMode("running");
+
+        try {
+          await agent.invokeSkill(skillName, rawSkillArgs, {
+            source: "user",
+          });
+          await streamAssistantTurn(
+            agent,
+            "",
+            ui,
+            abortController.signal,
+            visibility,
+          );
+          ui.setMode("showingResults");
+          ui.command("");
+          ui.turnComplete(Date.now() - turnStartedAtMs);
+        } catch (error) {
+          if (abortController.signal.aborted) {
+            return 130;
+          }
+          ui.error(
+            `Failed to activate skill: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          ui.command("");
+          ui.turnComplete(Date.now() - turnStartedAtMs);
+        } finally {
+          setCurrentAbortController(null);
+        }
         continue;
       }
 

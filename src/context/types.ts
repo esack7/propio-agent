@@ -1,4 +1,5 @@
 import { ChatMessage } from "../providers/types.js";
+import { InvokedSkillRecord } from "../skills/types.js";
 
 // ---------------------------------------------------------------------------
 // Pinned Memory (Phase 7)
@@ -244,4 +245,5 @@ export interface ConversationState {
   readonly artifacts: ReadonlyArray<ArtifactRecord>;
   readonly rollingSummary?: RollingSummaryRecord;
   readonly pinnedMemory: ReadonlyArray<PinnedMemoryRecord>;
+  readonly invokedSkills?: ReadonlyArray<InvokedSkillRecord>;
 }

@@ -36,6 +36,7 @@ export function hasSessionContent(state: ConversationState): boolean {
     state.preamble.length > 0 ||
     state.artifacts.length > 0 ||
     state.pinnedMemory.length > 0 ||
+    (state.invokedSkills?.length ?? 0) > 0 ||
     state.rollingSummary != null
   );
 }

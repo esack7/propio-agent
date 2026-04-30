@@ -508,7 +508,7 @@ describe("Tool Implementations", () => {
   });
 
   describe("createDefaultToolRegistry", () => {
-    it("registers exactly seven built-ins in the new order", () => {
+    it("registers the built-ins including the skill tool", () => {
       const registry = createDefaultToolRegistry();
 
       expect(registry.getToolNames()).toEqual([
@@ -519,15 +519,16 @@ describe("Tool Implementations", () => {
         "grep",
         "find",
         "ls",
+        "skill",
       ]);
     });
 
-    it("enables exactly four built-ins by default", () => {
+    it("enables the default built-ins including skill", () => {
       const registry = createDefaultToolRegistry();
 
       expect(
         registry.getEnabledSchemas().map((tool: any) => tool.function.name),
-      ).toEqual(["read", "write", "edit", "bash"]);
+      ).toEqual(["read", "write", "edit", "bash", "skill"]);
     });
 
     it("executes enabled built-ins", async () => {
