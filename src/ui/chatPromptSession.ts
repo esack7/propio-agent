@@ -1094,7 +1094,7 @@ export function createChatPromptSession(
       rawModeEnabled = false;
     }
 
-    inputStream.resume();
+    inputStream.pause();
   };
 
   const cleanup = (): void => {

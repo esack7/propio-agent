@@ -139,6 +139,7 @@ export async function streamAssistantTurn(
   );
 
   mdStream.finish();
+  ui.done();
 
   if (!ui.isJsonMode()) {
     if (response.trim().length === 0) {

@@ -145,9 +145,16 @@ export function createPromptComposer(
   let activeChatSession: ChatPromptSession | null = null;
   let activePrompt: ActivePromptContext | null = null;
 
+  const pauseInputStream = (): void => {
+    if (typeof inputStream.pause === "function") {
+      inputStream.pause();
+    }
+  };
+
   rl.once("close", () => {
     closed = true;
     setCloseReason("closed");
+    pauseInputStream();
     settlePending({ status: "closed" });
   });
 
@@ -226,6 +233,7 @@ export function createPromptComposer(
 
     activePrompt = null;
     options.renderState?.(null);
+    pauseInputStream();
     resolve(result);
   };
 
@@ -238,6 +246,7 @@ export function createPromptComposer(
     setCloseReason("closed");
     options.renderState?.(null);
     rl.close();
+    pauseInputStream();
   };
 
   const compose = async (request: PromptRequest): Promise<PromptResult> => {
