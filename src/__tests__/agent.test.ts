@@ -366,7 +366,11 @@ describe("Agent with Multi-Provider Configuration", () => {
       const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
 
       try {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const agent = new Agent({
+          providersConfig: testProvidersConfig,
+          cwd: cwdDir,
+          homeDir,
+        });
         expect(agent.listSkills()).toEqual([]);
         expect(agent.refreshSkills()).toEqual([]);
       } finally {
