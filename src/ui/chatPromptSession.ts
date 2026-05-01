@@ -113,8 +113,57 @@ function getDisplayWidth(text: string): number {
   return width;
 }
 
-function sanitizePromptPreview(text: string): string {
-  return text.replace(/\r?\n/g, " ⏎ ");
+function firstLinePreview(text: string): string {
+  return text.split(/\r\n|\r|\n/, 1)[0] ?? "";
+}
+
+function truncateToDisplayWidth(text: string, maxWidth: number): string {
+  if (!Number.isFinite(maxWidth) || getDisplayWidth(text) <= maxWidth) {
+    return text;
+  }
+
+  if (maxWidth <= 0) {
+    return "";
+  }
+
+  const marker = maxWidth >= 4 ? "..." : "";
+  const contentWidth = Math.max(0, maxWidth - getDisplayWidth(marker));
+  let result = "";
+  let width = 0;
+
+  for (let index = 0; index < text.length; ) {
+    const ansiMatch = text.slice(index).match(/^\x1B\[[0-?]*[ -/]*[@-~]/);
+    if (ansiMatch) {
+      result += ansiMatch[0];
+      index += ansiMatch[0].length;
+      continue;
+    }
+
+    const codePoint = text.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+
+    const character = String.fromCodePoint(codePoint);
+    const characterWidth = getDisplayWidth(character);
+    if (width + characterWidth > contentWidth) {
+      break;
+    }
+
+    result += character;
+    width += characterWidth;
+    index += character.length;
+  }
+
+  return `${result}${marker}`;
+}
+
+function getPromptStatusLineWidth(outputStream: NodeJS.WriteStream): number {
+  if (!outputStream.isTTY) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.max(1, (outputStream.columns ?? 80) - 1);
 }
 
 function getLineStartIndex(buffer: string, cursor: number): number {
@@ -391,12 +440,19 @@ export function renderPromptFrame(
   if (searchState) {
     const searchSummary = getHistorySearchSummary(searchState);
     const searchPrefix = `${promptText}history search: `;
+    const queryPreview = firstLinePreview(searchState.query);
     const searchSuffix = searchSummary.match
-      ? `  match: ${sanitizePromptPreview(searchSummary.match)}`
+      ? `  match: ${firstLinePreview(searchSummary.match)}`
       : "  no matches";
-    const line = `${searchPrefix}${sanitizePromptPreview(searchState.query)}${searchSuffix}`;
-    const cursorPosition =
-      getDisplayWidth(searchPrefix) + getDisplayWidth(searchState.query);
+    const maxLineWidth = getPromptStatusLineWidth(outputStream);
+    const line = truncateToDisplayWidth(
+      `${searchPrefix}${queryPreview}${searchSuffix}`,
+      maxLineWidth,
+    );
+    const cursorPosition = Math.min(
+      getDisplayWidth(searchPrefix) + getDisplayWidth(queryPreview),
+      getDisplayWidth(line),
+    );
 
     return {
       lines: [line],
