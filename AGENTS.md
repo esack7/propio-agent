@@ -38,6 +38,9 @@ Run relevant checks after changes:
 - `npm test` for unit/integration coverage.
 - `npm run build` to verify TypeScript compilation.
 - `npm run format:check` for formatting compliance when touching multiple files.
+- `npx fallow audit` after substantial TypeScript/JavaScript changes, refactors, or agent-generated edits to catch dead code, duplication, and complexity issues.
+
+Use Fallow as a structural codebase-quality check, not as a replacement for tests, type-checking, or linting.
 
 If a check is skipped, state that clearly in your final summary.
 
