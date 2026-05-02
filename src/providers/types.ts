@@ -13,6 +13,11 @@ export interface ToolResult {
 export interface ChatMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  /**
+   * Provider-specific reasoning state that some thinking models require to be
+   * replayed during tool-call loops. It is not rendered to users.
+   */
+  reasoningContent?: string;
   toolCalls?: ChatToolCall[];
   toolCallId?: string; // For tool role messages: which tool call this is a result for (deprecated, use toolResults)
   toolResults?: ToolResult[]; // For batched tool results
@@ -82,6 +87,7 @@ export interface AssistantTextStreamEvent {
 export interface ToolCallsStreamEvent {
   type: "tool_calls";
   toolCalls: ChatToolCall[];
+  reasoningContent?: string;
 }
 
 export interface StatusStreamEvent {

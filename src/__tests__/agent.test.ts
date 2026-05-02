@@ -199,6 +199,99 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
+  describe("File mentions", () => {
+    it("attaches mentioned files before the provider call", async () => {
+      const workspaceRoot = path.join(tempDir, "mentions-workspace");
+      fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspaceRoot, "src", "info.txt"),
+        "alpha\nbeta\ngamma",
+      );
+
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        cwd: workspaceRoot,
+      });
+      const mockProvider = new MockProvider();
+      (agent as any).provider = mockProvider;
+
+      const tokens: string[] = [];
+      await agent.streamChat("@src/info.txt summarize", (token) => {
+        tokens.push(token);
+      });
+
+      expect(tokens.join("")).toContain("Mock response");
+      expect(mockProvider.streamChatCalls).toHaveLength(1);
+      const request = mockProvider.streamChatCalls[0];
+      expect(request.messages.some((message) => message.role === "user")).toBe(
+        true,
+      );
+      expect(
+        request.messages.find((message) => message.role === "user")?.content,
+      ).toBe("@src/info.txt summarize");
+
+      const assistantMessage = request.messages.find(
+        (message) => message.role === "assistant" && message.toolCalls?.length,
+      );
+      expect(assistantMessage?.toolCalls?.[0].function.name).toBe("read");
+
+      const toolMessage = request.messages.find(
+        (message) => message.role === "tool" && message.toolResults?.length,
+      );
+      expect(toolMessage?.toolResults?.[0].content).toContain("beta");
+    });
+  });
+
+  describe("Provider reasoning content", () => {
+    it("carries reasoning content through same-turn tool-call loops", async () => {
+      class ReasoningToolProvider implements LLMProvider {
+        name = "reasoning-tool";
+        readonly requests: ChatRequest[] = [];
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          this.requests.push(request);
+          if (this.requests.length === 1) {
+            yield {
+              type: "tool_calls" as const,
+              reasoningContent: "I should inspect package metadata.",
+              toolCalls: [
+                {
+                  id: "tc-1",
+                  function: {
+                    name: "read",
+                    arguments: { path: "package.json" },
+                  },
+                },
+              ],
+            };
+            return;
+          }
+          yield { type: "assistant_text" as const, delta: "Done" };
+        }
+      }
+
+      const provider = new ReasoningToolProvider();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = provider;
+
+      await agent.streamChat("Inspect package", () => {});
+
+      expect(provider.requests).toHaveLength(2);
+      const replayedAssistant = provider.requests[1].messages.find(
+        (message) => message.role === "assistant" && message.toolCalls?.length,
+      );
+      expect(replayedAssistant?.reasoningContent).toBe(
+        "I should inspect package metadata.",
+      );
+    });
+  });
+
   describe("Provider Resolution", () => {
     it("should use default provider when not specified", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });

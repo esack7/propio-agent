@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { FileSearchIndex } from "../../fileSearch/index.js";
 import { acceptTypeaheadState, createTypeaheadState } from "../typeahead.js";
 
 function makeWorkspace(): string {
@@ -252,6 +253,50 @@ describe("typeahead", () => {
       }),
     ).toMatchObject({
       suggestions: [],
+    });
+
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
+  it("opens mention suggestions for bare @ tokens", async () => {
+    const workspaceRoot = makeWorkspace();
+    writeFile(workspaceRoot, "src/agent.ts");
+    writeFile(workspaceRoot, "docs/readme.md");
+    const index = FileSearchIndex.forWorkspace(workspaceRoot);
+
+    try {
+      await index.refresh(true);
+      const state = createTypeaheadState({
+        buffer: "@",
+        cursor: 1,
+        workspaceRoot,
+      });
+
+      expect(state?.target.kind).toBe("mention");
+      expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual(
+        expect.arrayContaining(["@docs/", "@src/"]),
+      );
+    } finally {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts quoted mention suggestions with trailing spaces", async () => {
+    const workspaceRoot = makeWorkspace();
+    writeFile(workspaceRoot, "docs/my file.md");
+    const index = FileSearchIndex.forWorkspace(workspaceRoot);
+    await index.refresh(true);
+
+    const state = createTypeaheadState({
+      buffer: '@"docs/my',
+      cursor: '@"docs/my'.length,
+      workspaceRoot,
+    });
+
+    expect(state?.target.kind).toBe("mention");
+    expect(acceptTypeaheadState(state!)).toEqual({
+      buffer: '@"docs/my file.md" ',
+      cursor: '@"docs/my file.md" '.length,
     });
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });

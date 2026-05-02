@@ -50,6 +50,7 @@ import {
 } from "./context/persistence.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
+  McpConfigFile,
   McpServerDetail,
   McpServerSummary,
   McpToolSummary,
@@ -64,6 +65,7 @@ import type {
   SkillRegistry,
 } from "./skills/index.js";
 import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
+import { AttachmentResolver } from "./fileSearch/index.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -141,6 +143,7 @@ export class Agent {
   private summaryGeneration = 0;
   private skillRegistry?: SkillRegistry;
   private skillDiagnostics: SkillLoadDiagnostic[] = [];
+  private attachmentResolver?: AttachmentResolver;
   private readonly skillContext: {
     readonly cwd: string;
     readonly homeDir: string;
@@ -151,6 +154,7 @@ export class Agent {
       providersConfig: ProvidersConfig | string;
       providerName?: string;
       modelKey?: string;
+      mcpConfig?: McpConfigFile;
       mcpConfigPath?: string;
       systemPrompt?: string;
       agentsMdContent?: string;
@@ -222,6 +226,7 @@ export class Agent {
       },
     });
     this.mcpManager = new McpManager({
+      ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
       ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
     });
     this.summaryManager = new SummaryManager();
@@ -333,6 +338,7 @@ export class Agent {
   private normalizeStreamEvent(event: ChatStreamEvent): {
     delta?: string;
     toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
     status?: { status: string; phase?: string };
     reasoningSummary?: {
       summary: string;
@@ -351,7 +357,10 @@ export class Agent {
     }
 
     if (event.type === "tool_calls") {
-      return { toolCalls: event.toolCalls };
+      return {
+        toolCalls: event.toolCalls,
+        reasoningContent: event.reasoningContent,
+      };
     }
 
     if (event.type === "status") {
@@ -454,6 +463,33 @@ export class Agent {
 
   recordSkillFileTouch(paths: readonly string[]): ReadonlyArray<Skill> {
     return this.getSkillRegistry().recordFileTouch(paths);
+  }
+
+  private getAttachmentResolver(): AttachmentResolver {
+    if (!this.attachmentResolver) {
+      this.attachmentResolver = new AttachmentResolver({
+        cwd: this.skillContext.cwd,
+        homeDir: this.skillContext.homeDir,
+      });
+    }
+
+    return this.attachmentResolver;
+  }
+
+  private async attachFileMentions(userMessage: string): Promise<void> {
+    const attachments =
+      await this.getAttachmentResolver().resolveText(userMessage);
+    if (attachments.length === 0) {
+      return;
+    }
+
+    this.contextManager.commitAssistantResponse(
+      "",
+      attachments.map((attachment) => attachment.toolCall),
+    );
+    this.contextManager.recordToolResults(
+      attachments.map((attachment) => attachment.toolResult),
+    );
   }
 
   private getActiveSkillScopes(): SkillInvocationScope[] {
@@ -995,6 +1031,7 @@ export class Agent {
     }
 
     this.contextManager.beginUserTurn(userMessage);
+    await this.attachFileMentions(userMessage);
     this.lastTurnReasoningSummary = null;
     this.emitStatus(options, "Preparing request", "request");
 
@@ -1051,6 +1088,7 @@ export class Agent {
 
         let fullResponse = "";
         let toolCalls: ChatToolCall[] | undefined;
+        let reasoningContent: string | undefined;
         let chunkCount = 0;
         this.emitStatus(options, "Streaming response", "response");
 
@@ -1104,6 +1142,7 @@ export class Agent {
 
             if (normalizedEvent.toolCalls) {
               toolCalls = normalizedEvent.toolCalls;
+              reasoningContent = normalizedEvent.reasoningContent;
             }
           }
         } catch (streamError) {
@@ -1162,6 +1201,9 @@ export class Agent {
         this.contextManager.commitAssistantResponse(
           fullResponse,
           normalizedToolCalls,
+          normalizedToolCalls && normalizedToolCalls.length > 0
+            ? { reasoningContent }
+            : undefined,
         );
         this.emitDiagnostic({
           type: "iteration_finished",

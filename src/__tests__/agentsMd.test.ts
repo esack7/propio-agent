@@ -2,7 +2,9 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   discoverAgentsMdFiles,
+  discoverAgentsMdFilesAsync,
   loadAgentsMdContent,
+  loadAgentsMdContentAsync,
   composeSystemPrompt,
 } from "../agentsMd.js";
 
@@ -123,6 +125,23 @@ describe("agentsMd", () => {
     });
   });
 
+  describe("discoverAgentsMdFilesAsync()", () => {
+    it("should match sync discovery order for multiple AGENTS.md files", async () => {
+      const rootDir = path.join(tempDir, "async-multi-level");
+      const midDir = path.join(rootDir, "packages");
+      const leafDir = path.join(midDir, "api");
+      fs.mkdirSync(leafDir, { recursive: true });
+
+      fs.writeFileSync(path.join(rootDir, "AGENTS.md"), "Root instructions");
+      fs.writeFileSync(path.join(midDir, "AGENTS.md"), "Package instructions");
+      fs.writeFileSync(path.join(leafDir, "AGENTS.md"), "API instructions");
+
+      await expect(discoverAgentsMdFilesAsync(leafDir)).resolves.toEqual(
+        discoverAgentsMdFiles(leafDir),
+      );
+    });
+  });
+
   describe("loadAgentsMdContent()", () => {
     it("should load single file with source heading", () => {
       const testFile = path.join(tempDir, "load-single.md");
@@ -171,6 +190,23 @@ describe("agentsMd", () => {
 
       expect(result).toContain("émojis: 🎉");
       expect(result).toContain("spëcial çhars");
+    });
+  });
+
+  describe("loadAgentsMdContentAsync()", () => {
+    it("should merge multiple files in order with source headings", async () => {
+      const file1 = path.join(tempDir, "load-async-1.md");
+      const file2 = path.join(tempDir, "load-async-2.md");
+      fs.writeFileSync(file1, "First async file content");
+      fs.writeFileSync(file2, "Second async file content");
+
+      await expect(loadAgentsMdContentAsync([file1, file2])).resolves.toBe(
+        loadAgentsMdContent([file1, file2]),
+      );
+    });
+
+    it("should return empty string for an empty array", async () => {
+      await expect(loadAgentsMdContentAsync([])).resolves.toBe("");
     });
   });
 

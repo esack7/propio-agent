@@ -105,6 +105,9 @@ interface MutableTurnRecord {
 
 function cloneMessage(msg: ChatMessage): ChatMessage {
   const clone: ChatMessage = { role: msg.role, content: msg.content };
+  if (msg.reasoningContent !== undefined) {
+    clone.reasoningContent = msg.reasoningContent;
+  }
   if (msg.toolCalls) {
     clone.toolCalls = msg.toolCalls.map((tc) => ({
       ...tc,
@@ -266,6 +269,9 @@ function contentSizeChars(content: string | Uint8Array): number {
 
 function messageChars(msg: ChatMessage): number {
   let chars = msg.content.length;
+  if (msg.reasoningContent) {
+    chars += msg.reasoningContent.length;
+  }
   if (msg.toolCalls) {
     chars += JSON.stringify(msg.toolCalls).length;
   }
@@ -311,8 +317,15 @@ export class ContextManager {
     });
   }
 
-  commitAssistantResponse(content: string, toolCalls?: ChatToolCall[]): void {
+  commitAssistantResponse(
+    content: string,
+    toolCalls?: ChatToolCall[],
+    options?: { reasoningContent?: string },
+  ): void {
     const message: ChatMessage = { role: "assistant", content, toolCalls };
+    if (options?.reasoningContent) {
+      message.reasoningContent = options.reasoningContent;
+    }
 
     const turn = this.currentTurn();
     if (!turn) {

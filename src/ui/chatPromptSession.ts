@@ -113,8 +113,57 @@ function getDisplayWidth(text: string): number {
   return width;
 }
 
-function sanitizePromptPreview(text: string): string {
-  return text.replace(/\r?\n/g, " ⏎ ");
+function firstLinePreview(text: string): string {
+  return text.split(/\r\n|\r|\n/, 1)[0] ?? "";
+}
+
+function truncateToDisplayWidth(text: string, maxWidth: number): string {
+  if (!Number.isFinite(maxWidth) || getDisplayWidth(text) <= maxWidth) {
+    return text;
+  }
+
+  if (maxWidth <= 0) {
+    return "";
+  }
+
+  const marker = maxWidth >= 4 ? "..." : "";
+  const contentWidth = Math.max(0, maxWidth - getDisplayWidth(marker));
+  let result = "";
+  let width = 0;
+
+  for (let index = 0; index < text.length; ) {
+    const ansiMatch = text.slice(index).match(/^\x1B\[[0-?]*[ -/]*[@-~]/);
+    if (ansiMatch) {
+      result += ansiMatch[0];
+      index += ansiMatch[0].length;
+      continue;
+    }
+
+    const codePoint = text.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+
+    const character = String.fromCodePoint(codePoint);
+    const characterWidth = getDisplayWidth(character);
+    if (width + characterWidth > contentWidth) {
+      break;
+    }
+
+    result += character;
+    width += characterWidth;
+    index += character.length;
+  }
+
+  return `${result}${marker}`;
+}
+
+function getPromptStatusLineWidth(outputStream: NodeJS.WriteStream): number {
+  if (!outputStream.isTTY) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.max(1, (outputStream.columns ?? 80) - 1);
 }
 
 function getLineStartIndex(buffer: string, cursor: number): number {
@@ -391,12 +440,19 @@ export function renderPromptFrame(
   if (searchState) {
     const searchSummary = getHistorySearchSummary(searchState);
     const searchPrefix = `${promptText}history search: `;
+    const queryPreview = firstLinePreview(searchState.query);
     const searchSuffix = searchSummary.match
-      ? `  match: ${sanitizePromptPreview(searchSummary.match)}`
+      ? `  match: ${firstLinePreview(searchSummary.match)}`
       : "  no matches";
-    const line = `${searchPrefix}${sanitizePromptPreview(searchState.query)}${searchSuffix}`;
-    const cursorPosition =
-      getDisplayWidth(searchPrefix) + getDisplayWidth(searchState.query);
+    const maxLineWidth = getPromptStatusLineWidth(outputStream);
+    const line = truncateToDisplayWidth(
+      `${searchPrefix}${queryPreview}${searchSuffix}`,
+      maxLineWidth,
+    );
+    const cursorPosition = Math.min(
+      getDisplayWidth(searchPrefix) + getDisplayWidth(queryPreview),
+      getDisplayWidth(line),
+    );
 
     return {
       lines: [line],
@@ -456,6 +512,10 @@ export function createChatPromptSession(
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
   let searchState: HistorySearchState | null = null;
   let typeaheadState: TypeaheadState | null = null;
+  let typeaheadPreviewApplied = false;
+  let mentionTypeaheadRetryTimer: NodeJS.Timeout | null = null;
+  let mentionTypeaheadRetryKey = "";
+  let mentionTypeaheadRetryCount = 0;
   let editorStatus: string | undefined;
   let pendingEditorHandoff = false;
   let rawModeEnabled = false;
@@ -545,6 +605,15 @@ export function createChatPromptSession(
 
   const clearTypeahead = (): void => {
     typeaheadState = null;
+    typeaheadPreviewApplied = false;
+    clearMentionTypeaheadRetry();
+  };
+
+  const clearMentionTypeaheadRetry = (): void => {
+    if (mentionTypeaheadRetryTimer) {
+      clearTimeout(mentionTypeaheadRetryTimer);
+      mentionTypeaheadRetryTimer = null;
+    }
   };
 
   const clearTransientStatus = (): void => {
@@ -556,13 +625,122 @@ export function createChatPromptSession(
       return;
     }
 
-    const selection = cancelTypeaheadState(typeaheadState);
-    buffer = selection.buffer;
-    cursor = selection.cursor;
+    if (typeaheadPreviewApplied) {
+      const selection = cancelTypeaheadState(typeaheadState);
+      buffer = selection.buffer;
+      cursor = selection.cursor;
+    }
     clearTypeahead();
     if (shouldRender) {
       render();
     }
+  };
+
+  const refreshMentionTypeahead = (): void => {
+    if (!options.enableTypeahead || searchState) {
+      return;
+    }
+
+    const nextState = createTypeaheadState({
+      buffer,
+      cursor,
+      workspaceRoot: options.workspaceRoot,
+      typeaheadProviders: options.typeaheadProviders,
+    });
+
+    if (nextState?.target.kind === "mention") {
+      typeaheadState = nextState;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    if (typeaheadState?.target.kind === "mention") {
+      clearTypeahead();
+    }
+  };
+
+  const scheduleMentionTypeaheadRetry = (): void => {
+    if (
+      !active ||
+      !typeaheadState ||
+      typeaheadState.target.kind !== "mention" ||
+      typeaheadState.suggestions.length > 0
+    ) {
+      clearMentionTypeaheadRetry();
+      mentionTypeaheadRetryKey = "";
+      mentionTypeaheadRetryCount = 0;
+      return;
+    }
+
+    const retryKey = `${buffer}\0${cursor}`;
+    if (retryKey !== mentionTypeaheadRetryKey) {
+      mentionTypeaheadRetryKey = retryKey;
+      mentionTypeaheadRetryCount = 0;
+    }
+
+    if (mentionTypeaheadRetryTimer || mentionTypeaheadRetryCount >= 100) {
+      return;
+    }
+
+    mentionTypeaheadRetryCount += 1;
+    mentionTypeaheadRetryTimer = setTimeout(() => {
+      mentionTypeaheadRetryTimer = null;
+      if (!active) {
+        return;
+      }
+
+      refreshMentionTypeahead();
+      render();
+      scheduleMentionTypeaheadRetry();
+    }, 100);
+  };
+
+  const acceptTypeaheadSelection = (): void => {
+    if (!typeaheadState) {
+      return;
+    }
+
+    clearMentionTypeaheadRetry();
+
+    if (
+      typeaheadState.suggestions.length === 0 ||
+      typeaheadState.selectedIndex < 0
+    ) {
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    const selectedSuggestion =
+      typeaheadState.suggestions[typeaheadState.selectedIndex];
+    const selection = acceptTypeaheadState(typeaheadState);
+    buffer = selection.buffer;
+    cursor = selection.cursor;
+
+    if (selectedSuggestion?.isDirectory) {
+      const refreshedState = createTypeaheadState({
+        buffer,
+        cursor,
+        workspaceRoot: options.workspaceRoot,
+        typeaheadProviders: options.typeaheadProviders,
+      });
+      typeaheadState = refreshedState;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    if (typeaheadState.target.kind === "mention") {
+      typeaheadState = null;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    if (typeaheadState.suggestions.length === 1) {
+      typeaheadState = null;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    typeaheadPreviewApplied = true;
   };
 
   const startTypeahead = (): void => {
@@ -584,13 +762,9 @@ export function createChatPromptSession(
 
     typeaheadState = nextState;
     if (nextState.suggestions.length > 0) {
-      const selection = acceptTypeaheadState(nextState);
-      buffer = selection.buffer;
-      cursor = selection.cursor;
-      if (nextState.suggestions.length === 1) {
-        typeaheadState = null;
-      }
+      acceptTypeaheadSelection();
     }
+    scheduleMentionTypeaheadRetry();
 
     render();
   };
@@ -603,10 +777,23 @@ export function createChatPromptSession(
 
     typeaheadState = cycleTypeaheadState(typeaheadState);
     if (typeaheadState.suggestions.length > 0) {
-      const selection = acceptTypeaheadState(typeaheadState);
-      buffer = selection.buffer;
-      cursor = selection.cursor;
+      acceptTypeaheadSelection();
     }
+    scheduleMentionTypeaheadRetry();
+    render();
+  };
+
+  const navigateTypeahead = (direction: "next" | "previous"): void => {
+    clearTransientStatus();
+    if (!typeaheadState) {
+      return;
+    }
+
+    typeaheadState = cycleTypeaheadState(typeaheadState, direction);
+    if (typeaheadPreviewApplied && typeaheadState.suggestions.length > 0) {
+      acceptTypeaheadSelection();
+    }
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -767,6 +954,8 @@ export function createChatPromptSession(
 
     buffer = `${buffer.slice(0, cursor)}${text}${buffer.slice(cursor)}`;
     cursor += text.length;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -791,6 +980,8 @@ export function createChatPromptSession(
 
     buffer = `${buffer.slice(0, cursor - 1)}${buffer.slice(cursor)}`;
     cursor -= 1;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -813,6 +1004,8 @@ export function createChatPromptSession(
     }
 
     buffer = `${buffer.slice(0, cursor)}${buffer.slice(cursor + 1)}`;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -842,6 +1035,8 @@ export function createChatPromptSession(
     const nextCursor = getPreviousWordBoundary(buffer, cursor);
     buffer = `${buffer.slice(0, nextCursor)}${buffer.slice(cursor)}`;
     cursor = nextCursor;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -1032,10 +1227,25 @@ export function createChatPromptSession(
 
     if (key.name === "tab") {
       if (typeaheadState) {
-        cycleTypeahead();
+        if (typeaheadPreviewApplied) {
+          cycleTypeahead();
+        } else {
+          acceptTypeaheadSelection();
+          render();
+        }
       } else {
         startTypeahead();
       }
+      return;
+    }
+
+    if (
+      typeaheadState &&
+      (key.name === "up" || key.name === "down") &&
+      !key.ctrl &&
+      !key.meta
+    ) {
+      navigateTypeahead(key.name === "up" ? "previous" : "next");
       return;
     }
 
@@ -1104,6 +1314,7 @@ export function createChatPromptSession(
 
     active = false;
     unwatchResize();
+    clearMentionTypeaheadRetry();
     inputStream.removeListener("keypress", handleKeypress as never);
     restoreRawMode();
   };

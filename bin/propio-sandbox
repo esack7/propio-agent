@@ -29,17 +29,54 @@ if ! docker info &> /dev/null; then
   exit 1
 fi
 
-# Check if Docker image exists
 if ! docker compose -f "$PROPIO_DIR/docker-compose.yml" config &> /dev/null; then
   echo "Error: Cannot read docker-compose.yml." >&2
   exit 1
 fi
 
-if ! docker compose -f "$PROPIO_DIR/docker-compose.yml" images -q &> /dev/null; then
-  echo "Error: Docker image has not been built yet." >&2
-  echo "Please run: docker compose build" >&2
-  exit 1
-fi
+compose() {
+  docker compose -f "$PROPIO_DIR/docker-compose.yml" "$@"
+}
+
+read_package_version() {
+  node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(pkg.version || '');" "$1"
+}
+
+build_sandbox_image() {
+  echo "Building propio sandbox image..." >&2
+  compose build agent
+}
+
+ensure_sandbox_image_current() {
+  local host_version
+  local image_id
+  local image_version
+
+  host_version="$(read_package_version "$PROPIO_DIR/package.json")"
+  image_id="$(compose images -q agent 2> /dev/null || true)"
+
+  if [ -z "$image_id" ]; then
+    build_sandbox_image
+    return
+  fi
+
+  image_version="$(
+    compose run --rm --no-deps -T --entrypoint node agent \
+      -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('/app/package.json', 'utf8')); process.stdout.write(pkg.version || '');" \
+      2> /dev/null || true
+  )"
+
+  if [ "$image_version" != "$host_version" ]; then
+    if [ -n "$image_version" ]; then
+      echo "Sandbox image version $image_version does not match installed propio $host_version." >&2
+    else
+      echo "Sandbox image version could not be detected." >&2
+    fi
+    build_sandbox_image
+  fi
+}
+
+ensure_sandbox_image_current
 
 # Build environment variable flags for provider credentials and terminal settings
 # Note: OLLAMA_HOST is intentionally excluded - sandbox mode uses smart host resolution
@@ -51,7 +88,7 @@ for var in GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY AWS_ACCESS_KEY_ID AW
 done
 
 # Run agent in Docker container with dynamic volume mounts
-docker compose -f "$PROPIO_DIR/docker-compose.yml" run --rm \
+compose run --rm \
   "${ENV_FLAGS[@]}" \
   -v "$(pwd):/workspace" \
   -v "$HOME/.propio:/app/.propio:ro" \

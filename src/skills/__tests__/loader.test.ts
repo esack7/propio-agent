@@ -1,6 +1,7 @@
 import * as path from "path";
 import { createRequire } from "module";
 import { loadLocalSkills } from "../index.js";
+import { readFrontmatterText } from "../loader.js";
 
 const require = createRequire(import.meta.url);
 const fs = require("fs") as typeof import("fs");
@@ -277,5 +278,73 @@ Use $MISSING with $ARGUMENTS.
     expect(
       diagnostics.some((item) => item.code === "unknown_placeholder"),
     ).toBe(true);
+  });
+
+  it("reads frontmatter with BOMs, standard fences, and ellipsis terminators", () => {
+    const standardFile = path.join(tempRoot, "standard-frontmatter.md");
+    const bomFile = path.join(tempRoot, "bom-frontmatter.md");
+    const ellipsisFile = path.join(tempRoot, "ellipsis-frontmatter.md");
+
+    fs.writeFileSync(
+      standardFile,
+      `---
+description: Standard skill
+---
+Body
+`,
+    );
+    fs.writeFileSync(
+      bomFile,
+      `\uFEFF---
+description: BOM skill
+---
+Body
+`,
+    );
+    fs.writeFileSync(
+      ellipsisFile,
+      `---
+description: Ellipsis skill
+...
+Body
+`,
+    );
+
+    expect(readFrontmatterText(standardFile)).toBe(
+      "description: Standard skill",
+    );
+    expect(readFrontmatterText(bomFile)).toBe("description: BOM skill");
+    expect(readFrontmatterText(ellipsisFile)).toBe(
+      "description: Ellipsis skill",
+    );
+  });
+
+  it("returns null for missing and malformed frontmatter", () => {
+    const missingFile = path.join(tempRoot, "missing-frontmatter.md");
+    const malformedFile = path.join(tempRoot, "malformed-frontmatter.md");
+    const laterBlockFile = path.join(tempRoot, "later-frontmatter-block.md");
+
+    fs.writeFileSync(missingFile, "description: Missing fence\n");
+    fs.writeFileSync(
+      malformedFile,
+      `---
+description: Missing closing fence
+Body
+`,
+    );
+    fs.writeFileSync(
+      laterBlockFile,
+      `Intro prose before the skill metadata.
+
+---
+description: Later block should not count
+---
+Body
+`,
+    );
+
+    expect(readFrontmatterText(missingFile)).toBeNull();
+    expect(readFrontmatterText(malformedFile)).toBeNull();
+    expect(readFrontmatterText(laterBlockFile)).toBeNull();
   });
 });

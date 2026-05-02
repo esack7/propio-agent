@@ -116,7 +116,9 @@ For system-wide access from any directory, create a symlink:
 ln -s /path/to/propio/bin/propio-sandbox ~/bin/propio-sandbox
 ```
 
-Rebuild the Docker image after code changes:
+The sandbox wrapper automatically rebuilds the Docker image when the installed `propio-agent` package version differs from the version baked into the existing sandbox image.
+
+When developing locally, rebuild the Docker image after same-version source changes:
 
 ```bash
 docker compose build
@@ -460,7 +462,6 @@ propio/
 │       ├── symbols.ts          # UI symbols
 │       ├── terminal.ts         # Terminal utilities
 │       └── toolMenu.ts         # Interactive tool enable/disable menu
-├── openspec/                   # Spec-driven change management
 ├── Dockerfile
 ├── docker-compose.yml
 ├── jest.config.js

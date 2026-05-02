@@ -51,6 +51,7 @@ interface OpenRouterErrorEnvelope {
 interface OpenAIMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  reasoning_content?: string;
   tool_calls?: Array<{
     id: string;
     type: "function";
@@ -95,6 +96,8 @@ export class OpenRouterProvider implements LLMProvider {
     "openai/gpt-4-turbo": 128000,
     "openai/o3-mini": 200000,
     "meta-llama/llama-3.3-70b-instruct": 131072,
+    "deepseek/deepseek-v4-pro": 1_000_000,
+    "deepseek/deepseek-v4-flash": 1_000_000,
   };
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 128000;
@@ -168,6 +171,9 @@ export class OpenRouterProvider implements LLMProvider {
   private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
     const role = msg.role as OpenAIMessage["role"];
     const out: OpenAIMessage = { role, content: msg.content ?? "" };
+    if (msg.reasoningContent !== undefined) {
+      out.reasoning_content = msg.reasoningContent;
+    }
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       out.tool_calls = msg.toolCalls.map((tc) => ({
         id: tc.id ?? `call_${tc.function.name}_${Date.now()}`,
@@ -190,6 +196,7 @@ export class OpenRouterProvider implements LLMProvider {
   private openAIMessageToChatMessage(msg: {
     role?: string;
     content?: string | null;
+    reasoning_content?: string | null;
     tool_calls?: Array<{
       id?: string;
       type?: string;
@@ -222,6 +229,9 @@ export class OpenRouterProvider implements LLMProvider {
       }
     }
     const chatMsg: ChatMessage = { role: "assistant", content };
+    if (msg.reasoning_content != null) {
+      chatMsg.reasoningContent = msg.reasoning_content;
+    }
     if (toolCalls.length > 0) {
       chatMsg.toolCalls = toolCalls;
     }
@@ -465,6 +475,7 @@ export class OpenRouterProvider implements LLMProvider {
     const decoder = new TextDecoder();
     let lineBuffer = "";
     let contentBuffer = "";
+    let reasoningContent = "";
     let sawUsableOutput = false;
     let reachedDone = false;
     const structuredToolCallsByIndex = new Map<
@@ -491,6 +502,7 @@ export class OpenRouterProvider implements LLMProvider {
           choices?: Array<{
             delta?: {
               content?: string;
+              reasoning_content?: string;
               tool_calls?: Array<{
                 index?: number;
                 id?: string;
@@ -509,12 +521,28 @@ export class OpenRouterProvider implements LLMProvider {
         if (!choice?.delta) continue;
 
         const delta = choice.delta;
+        if (delta.reasoning_content != null && delta.reasoning_content !== "") {
+          reasoningContent += delta.reasoning_content;
+        }
+
         if (delta.content != null && delta.content !== "") {
           if (options.parseDsmlToolCalls) {
             contentBuffer += delta.content;
             const consumed = this.consumeDsmlBuffer(contentBuffer);
             contentBuffer = consumed.remainingBuffer;
             for (const event of consumed.events) {
+              if (
+                "type" in event &&
+                event.type === "tool_calls" &&
+                reasoningContent.length > 0
+              ) {
+                yield {
+                  type: "tool_calls",
+                  toolCalls: event.toolCalls,
+                  reasoningContent,
+                };
+                continue;
+              }
               yield event;
             }
             sawUsableOutput ||= consumed.sawUsableOutput;
@@ -563,7 +591,11 @@ export class OpenRouterProvider implements LLMProvider {
             });
           }
           if (toolCalls.length > 0) {
-            yield { type: "tool_calls", toolCalls };
+            yield {
+              type: "tool_calls",
+              toolCalls,
+              ...(reasoningContent.length > 0 ? { reasoningContent } : {}),
+            };
             sawUsableOutput = true;
           }
         }
@@ -578,6 +610,18 @@ export class OpenRouterProvider implements LLMProvider {
       const consumed = this.consumeDsmlBuffer(contentBuffer);
       contentBuffer = consumed.remainingBuffer;
       for (const event of consumed.events) {
+        if (
+          "type" in event &&
+          event.type === "tool_calls" &&
+          reasoningContent.length > 0
+        ) {
+          yield {
+            type: "tool_calls",
+            toolCalls: event.toolCalls,
+            reasoningContent,
+          };
+          continue;
+        }
         yield event;
       }
       sawUsableOutput ||= consumed.sawUsableOutput;
@@ -645,7 +689,9 @@ export class OpenRouterProvider implements LLMProvider {
           }
 
           yield* this.streamResponse(retryResponse, {
-            parseDsmlToolCalls: false,
+            parseDsmlToolCalls: Boolean(
+              request.tools && request.tools.length > 0,
+            ),
             expectUsableOutput: Boolean(
               request.tools && request.tools.length > 0,
             ),

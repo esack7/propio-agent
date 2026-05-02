@@ -13,6 +13,10 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function stripAnsiControls(text: string): string {
+  return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
 function createHarness(options?: {
   renderFooter?: (footer: string) => void;
   renderState?: (state: unknown) => void;
@@ -819,6 +823,73 @@ describe("createPromptComposer reverse history search", () => {
     });
 
     harness.composer.close();
+  });
+
+  it("renders only the first line of multiline history matches", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-multiline-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("first line\nsecond line");
+    const harness = createTtyHarness({ historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+
+    expect(harness.composer.getState()).toMatchObject({
+      buffer: "first line\nsecond line",
+      historySearch: {
+        active: true,
+        match: "first line\nsecond line",
+      },
+    });
+    expect(stripAnsiControls(harness.getOutput())).toContain(
+      "history search:   match: first line",
+    );
+    expect(stripAnsiControls(harness.getOutput())).not.toContain("second line");
+
+    harness.emitKeypress({ name: "return" }, "\r");
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(prompt).resolves.toEqual({
+      status: "submitted",
+      text: "first line\nsecond line",
+    });
+
+    harness.composer.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("clips long history search previews to one terminal row", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-long-"));
+    const filePath = path.join(tempDir, "prompt-history.json");
+    const historyStore = createPromptHistoryStore({ filePath });
+    historyStore.record("abcdefghijklmnopqrstuvwxyz0123456789");
+    const harness = createTtyHarness({ columns: 32, historyStore });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    await flush();
+    harness.takeOutput();
+
+    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+
+    const rendered = stripAnsiControls(harness.takeOutput()).replace(/\r/g, "");
+    expect(rendered).toContain("...");
+    expect(rendered).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(rendered.length).toBeLessThanOrEqual(31);
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("cancels reverse search with Ctrl+G", async () => {

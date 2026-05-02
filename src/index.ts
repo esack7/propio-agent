@@ -5,8 +5,14 @@ import { fileURLToPath } from "url";
 import type { Agent as AgentType } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
-import { getConfigPath } from "./providers/configLoader.js";
-import { discoverAgentsMdFiles, loadAgentsMdContent } from "./agentsMd.js";
+import {
+  getConfigPath,
+  loadProvidersConfigAsync,
+} from "./providers/configLoader.js";
+import {
+  discoverAgentsMdFilesAsync,
+  loadAgentsMdContentAsync,
+} from "./agentsMd.js";
 import { setColorEnabled } from "./ui/colors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { showModelMenu } from "./ui/modelMenu.js";
@@ -47,7 +53,7 @@ import {
 } from "./sessions/sessionCommands.js";
 import type { TerminalUi } from "./ui/terminal.js";
 import { handleMcpCommand } from "./ui/mcpMenu.js";
-import { getMcpConfigPath } from "./mcp/config.js";
+import { getMcpConfigPath, loadMcpConfigAsync } from "./mcp/config.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -617,11 +623,17 @@ async function main(): Promise<number> {
       ui.command("");
     }
 
-    const { Agent: AgentCtor } = await import("./agent.js");
     const configPath = getConfigPath();
     const mcpConfigPath = getMcpConfigPath();
-    const agentsMdFiles = discoverAgentsMdFiles();
-    const agentsMdContent = loadAgentsMdContent(agentsMdFiles);
+    const [agentModule, providersConfig, mcpConfig, agentsMdContent] =
+      await Promise.all([
+        import("./agent.js"),
+        loadProvidersConfigAsync(configPath),
+        loadMcpConfigAsync(mcpConfigPath),
+        discoverAgentsMdFilesAsync().then((agentsMdFiles) =>
+          loadAgentsMdContentAsync(agentsMdFiles),
+        ),
+      ]);
 
     const defaultSystemPrompt = `You are a helpful AI coding assistant with access to tools. Use the tools available to you to complete user requests effectively.
 
@@ -629,8 +641,9 @@ When you need to perform actions like reading files, searching code, or executin
 
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
-    agent = new AgentCtor({
-      providersConfig: configPath,
+    agent = new agentModule.Agent({
+      providersConfig,
+      mcpConfig,
       mcpConfigPath,
       systemPrompt: defaultSystemPrompt,
       agentsMdContent,

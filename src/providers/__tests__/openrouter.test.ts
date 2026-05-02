@@ -52,6 +52,14 @@ describe("OpenRouterProvider", () => {
       expect(provider.name).toBe("openrouter");
     });
 
+    it("should report DeepSeek V4 context windows", () => {
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        apiKey: "sk-test-key",
+      });
+      expect(provider.getCapabilities().contextWindowTokens).toBe(1_000_000);
+    });
+
     it("should throw ProviderAuthenticationError when no API key is provided", () => {
       delete process.env.OPENROUTER_API_KEY;
       expect(() => {
@@ -335,6 +343,154 @@ describe("OpenRouterProvider", () => {
         reason: "OpenRouter upstream HTTP 429",
         disabledTools: true,
       });
+    });
+
+    it("should normalize DSML tool markup during a retry without native tools", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: createSseStream([
+            'data: {"choices":[{"delta":{"content":"<｜DSML｜tool_calls>\\n<｜DSML｜invoke name=\\"read\\">\\n<｜DSML｜parameter name=\\"path\\"\\nstring=\\"true\\">/Users/isaacheist/Code/propio-agent/src/sandboxDelegation.ts</｜DSML｜parameter>\\n"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"<｜DSML｜parameter name=\\"offset\\" string=\\"false\\">50</｜DSML｜parameter>\\n</｜DSML｜invoke>\\n</｜DSML｜tool_calls>"}}]}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+        });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v3.1",
+        apiKey: "sk-test",
+      });
+
+      const assistantText: string[] = [];
+      const toolCalls: unknown[] = [];
+      for await (const event of provider.streamChat({
+        model: "deepseek/deepseek-v3.1",
+        iteration: 2,
+        messages: [{ role: "user", content: "Read more" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read a file",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      })) {
+        if (event.type === "assistant_text") {
+          assistantText.push(event.delta);
+        }
+        if (event.type === "tool_calls") {
+          toolCalls.push(event.toolCalls);
+        }
+      }
+
+      expect(assistantText.join("")).not.toContain("<｜DSML｜tool_calls>");
+      expect(toolCalls).toHaveLength(1);
+      expect((toolCalls[0] as any)[0].function.name).toBe("read");
+      expect((toolCalls[0] as any)[0].function.arguments).toEqual({
+        path: "/Users/isaacheist/Code/propio-agent/src/sandboxDelegation.ts",
+        offset: 50,
+      });
+
+      const retryBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+      expect(retryBody.tools).toBeUndefined();
+    });
+
+    it("should preserve reasoning content on streamed tool calls", async () => {
+      const chunks = [
+        'data: {"choices":[{"delta":{"reasoning_content":"I should inspect the file."}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":\\"package.json\\"}"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(chunks),
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        apiKey: "sk-test",
+      });
+
+      const toolEvents: unknown[] = [];
+      for await (const event of provider.streamChat({
+        model: "deepseek/deepseek-v4-pro",
+        messages: [{ role: "user", content: "Inspect package" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read a file",
+              parameters: { type: "object", properties: {} },
+            },
+          },
+        ],
+      })) {
+        if (event.type === "tool_calls") {
+          toolEvents.push(event);
+        }
+      }
+
+      expect(toolEvents).toHaveLength(1);
+      expect((toolEvents[0] as any).reasoningContent).toBe(
+        "I should inspect the file.",
+      );
+    });
+
+    it("should send reasoning content back on assistant tool-call messages", async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(["data: [DONE]\n\n"]),
+      });
+      globalThis.fetch = fetchMock;
+
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        apiKey: "sk-test",
+      });
+
+      for await (const _event of provider.streamChat({
+        model: "deepseek/deepseek-v4-pro",
+        messages: [
+          { role: "user", content: "Inspect package" },
+          {
+            role: "assistant",
+            content: "",
+            reasoningContent: "I should inspect the file.",
+            toolCalls: [
+              {
+                id: "call_1",
+                function: {
+                  name: "read",
+                  arguments: { path: "package.json" },
+                },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: "package contents",
+            toolCallId: "call_1",
+          },
+        ],
+      })) {
+        // consume
+      }
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      expect(body.messages[1].reasoning_content).toBe(
+        "I should inspect the file.",
+      );
     });
 
     it("should retry once without tools after a 503 and succeed", async () => {

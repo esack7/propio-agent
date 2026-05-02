@@ -42,6 +42,7 @@ export interface PersistedImage {
 export interface PersistedChatMessage {
   readonly role: "user" | "assistant" | "system" | "tool";
   readonly content: string;
+  readonly reasoningContent?: string;
   readonly toolCalls?: ReadonlyArray<ChatToolCall>;
   readonly toolCallId?: string;
   readonly toolResults?: ReadonlyArray<ToolResult>;
@@ -191,6 +192,9 @@ function persistMessage(msg: ChatMessage): PersistedChatMessage {
     role: msg.role,
     content: msg.content,
   };
+  if (msg.reasoningContent !== undefined) {
+    result.reasoningContent = msg.reasoningContent;
+  }
   if (msg.toolCalls) result.toolCalls = msg.toolCalls;
   if (msg.toolCallId !== undefined) result.toolCallId = msg.toolCallId;
   if (msg.toolResults) result.toolResults = msg.toolResults;
@@ -414,6 +418,9 @@ function validateMessage(msg: unknown, label: string): void {
     );
   }
   assertString(msg.content, `${label}.content`);
+  if (msg.reasoningContent !== undefined) {
+    assertString(msg.reasoningContent, `${label}.reasoningContent`);
+  }
 
   if (msg.toolCalls !== undefined) {
     assertArray(msg.toolCalls, `${label}.toolCalls`);
@@ -758,6 +765,9 @@ function restoreImage(img: PersistedImage): Uint8Array | string {
 
 function restoreMessage(msg: PersistedChatMessage): ChatMessage {
   const result: ChatMessage = { role: msg.role, content: msg.content };
+  if (msg.reasoningContent !== undefined) {
+    result.reasoningContent = msg.reasoningContent;
+  }
   if (msg.toolCalls) {
     result.toolCalls = msg.toolCalls.map((tc) => ({
       ...tc,

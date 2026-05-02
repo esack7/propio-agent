@@ -5,6 +5,7 @@ import {
   getMcpConfigPath,
   isMcpServerEnabled,
   loadMcpConfig,
+  loadMcpConfigAsync,
   updateMcpServerEnabledInFile,
   validateMcpConfig,
   writeMcpConfig,
@@ -24,6 +25,35 @@ describe("mcp config", () => {
   it("loads a missing file as an empty MCP config", () => {
     expect(loadMcpConfig(path.join(tempDir, "missing.json"))).toEqual({
       mcpServers: {},
+    });
+  });
+
+  it("loads a missing file as an empty MCP config asynchronously", async () => {
+    await expect(
+      loadMcpConfigAsync(path.join(tempDir, "missing-async.json")),
+    ).resolves.toEqual({
+      mcpServers: {},
+    });
+  });
+
+  it("loads a valid MCP config asynchronously", async () => {
+    const filePath = path.join(tempDir, "async-mcp.json");
+    writeMcpConfig(filePath, {
+      mcpServers: {
+        fake: {
+          command: "node",
+          args: ["server.mjs"],
+        },
+      },
+    });
+
+    await expect(loadMcpConfigAsync(filePath)).resolves.toEqual({
+      mcpServers: {
+        fake: {
+          command: "node",
+          args: ["server.mjs"],
+        },
+      },
     });
   });
 
