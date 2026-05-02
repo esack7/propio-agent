@@ -15,7 +15,6 @@ Instructions for coding agents working in this repository.
 - Provider abstraction and implementations: `src/providers/`.
 - Tooling system and built-in tools: `src/tools/`.
 - CLI formatting and UX helpers: `src/ui/`.
-- Specs and change records: `openspec/`.
 
 ## Working Agreement
 
@@ -41,13 +40,6 @@ Run relevant checks after changes:
 - `npm run format:check` for formatting compliance when touching multiple files.
 
 If a check is skipped, state that clearly in your final summary.
-
-## Specs and Change Management
-
-- OpenSpec is temporarily suspended for agent/tool workflows unless the user explicitly asks to use it.
-- Do not create, update, or archive artifacts under `openspec/` unless the user requests spec work for the current task.
-- Existing `openspec/` files remain in the repository as historical/project documentation.
-- Pure refactors with no behavior change usually only require tests and code updates.
 
 ## Practical Conventions
 

@@ -460,7 +460,6 @@ propio/
 │       ├── symbols.ts          # UI symbols
 │       ├── terminal.ts         # Terminal utilities
 │       └── toolMenu.ts         # Interactive tool enable/disable menu
-├── openspec/                   # Spec-driven change management
 ├── Dockerfile
 ├── docker-compose.yml
 ├── jest.config.js
