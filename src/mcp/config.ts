@@ -62,6 +62,31 @@ export function loadMcpConfig(filePath: string): McpConfigFile {
   return validateMcpConfig(parsed);
 }
 
+export async function loadMcpConfigAsync(
+  filePath: string,
+): Promise<McpConfigFile> {
+  let fileContent: string;
+
+  try {
+    fileContent = await fs.promises.readFile(filePath, "utf8");
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      return { mcpServers: {} };
+    }
+
+    throw new Error(`Failed to read MCP config file: ${error.message}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fileContent);
+  } catch (error: any) {
+    throw new Error(`Invalid JSON in MCP config file: ${error.message}`);
+  }
+
+  return validateMcpConfig(parsed);
+}
+
 export function validateMcpConfig(config: unknown): McpConfigFile {
   if (!isPlainObject(config)) {
     throw new Error("MCP configuration root must be a JSON object");

@@ -23,6 +23,8 @@ import type {
 
 const DEFAULT_CLIENT_NAME = "propio-agent";
 const DEFAULT_CLIENT_VERSION = "1.0.0";
+const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const CLEANUP_TIMEOUT_MS = 500;
 const MAX_STDERR_TAIL_CHARS = 4000;
 
 function appendTail(existing: string | undefined, chunk: string): string {
@@ -38,6 +40,100 @@ function toErrorMessage(error: unknown): string {
 
 function formatToolCallError(toolName: string, message: string): string {
   return `Error executing ${toolName}: ${message}`;
+}
+
+function createTimeoutError(message: string): Error {
+  const error = new Error(message);
+  error.name = "TimeoutError";
+  return error;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  return new Promise<T>((resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(createTimeoutError(message));
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        resolve(value);
+      },
+      (error) => {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        reject(error);
+      },
+    );
+  });
+}
+
+async function waitBestEffort(
+  promise: Promise<unknown>,
+  timeoutMs: number,
+): Promise<boolean> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let completed = false;
+
+  await new Promise<void>((resolve) => {
+    timeout = setTimeout(resolve, timeoutMs);
+    promise.then(
+      () => {
+        completed = true;
+        resolve();
+      },
+      () => {
+        completed = true;
+        resolve();
+      },
+    );
+  });
+
+  if (timeout) {
+    clearTimeout(timeout);
+  }
+
+  return completed;
+}
+
+type TransportChildProcess = {
+  readonly exitCode: number | null;
+  kill(signal?: NodeJS.Signals): boolean;
+};
+
+function getTransportChildProcess(
+  transport: StdioClientTransport | undefined,
+): TransportChildProcess | undefined {
+  return (transport as unknown as { _process?: TransportChildProcess })
+    ?._process;
+}
+
+async function closeClientBestEffort(
+  client: Client,
+  transport: StdioClientTransport | undefined,
+): Promise<void> {
+  const childProcess = getTransportChildProcess(transport);
+  const completed = await waitBestEffort(
+    Promise.resolve().then(() => client.close()),
+    CLEANUP_TIMEOUT_MS,
+  );
+
+  if (!completed && childProcess?.exitCode === null) {
+    try {
+      childProcess.kill("SIGKILL");
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
 }
 
 function formatCallToolResult(
@@ -114,17 +210,22 @@ export class McpManager {
   private readonly runtimes = new Map<string, McpServerRuntime>();
   private readonly clientName: string;
   private readonly clientVersion: string;
+  private readonly connectTimeoutMs: number;
   private startupPromise: Promise<void> | null = null;
 
   constructor(options?: {
     configPath?: string;
+    config?: McpConfigFile;
+    connectTimeoutMs?: number;
     clientName?: string;
     clientVersion?: string;
   }) {
     this.configPath = options?.configPath ?? getMcpConfigPath();
     this.clientName = options?.clientName ?? DEFAULT_CLIENT_NAME;
     this.clientVersion = options?.clientVersion ?? DEFAULT_CLIENT_VERSION;
-    this.config = loadMcpConfig(this.configPath);
+    this.connectTimeoutMs =
+      options?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.config = options?.config ?? loadMcpConfig(this.configPath);
 
     for (const [name, entry] of Object.entries(this.config.mcpServers ?? {})) {
       this.runtimes.set(name, {
@@ -192,16 +293,13 @@ export class McpManager {
     runtime: McpServerRuntime,
   ): Promise<void> {
     const activeClient = runtime.client;
+    const activeTransport = runtime.transport;
     runtime.client = undefined;
     runtime.transport = undefined;
     runtime.instructions = undefined;
 
     if (activeClient) {
-      try {
-        await activeClient.close();
-      } catch {
-        // Best-effort cleanup only.
-      }
+      await closeClientBestEffort(activeClient, activeTransport);
     }
   }
 
@@ -311,33 +409,47 @@ export class McpManager {
       runtime.tools = [];
     };
 
-    try {
+    const startup = async (): Promise<{
+      readonly instructions?: string;
+      readonly remoteTools: McpSdkTool[];
+      readonly tools: ManagedMcpTool[];
+    }> => {
       await client.connect(transport);
       const remoteTools = await this.listAllTools(client);
       const tools = this.createManagedTools(name, remoteTools);
+      return {
+        instructions: client.getInstructions(),
+        remoteTools,
+        tools,
+      };
+    };
+
+    try {
+      const result = await withTimeout(
+        startup(),
+        this.connectTimeoutMs,
+        `Timed out after ${this.connectTimeoutMs}ms while starting MCP server "${name}"`,
+      );
 
       if (runtime.connectionId !== connectionId) {
-        await client.close();
+        await closeClientBestEffort(client, transport);
         return;
       }
 
       runtime.client = client;
       runtime.transport = transport;
-      runtime.instructions = client.getInstructions();
-      runtime.remoteTools = remoteTools;
-      runtime.tools = tools;
+      runtime.instructions = result.instructions;
+      runtime.remoteTools = result.remoteTools;
+      runtime.tools = result.tools;
       runtime.status = "connected";
       runtime.lastError = undefined;
     } catch (error) {
       if (runtime.connectionId !== connectionId) {
-        try {
-          await client.close();
-        } catch {
-          // Best-effort cleanup only.
-        }
+        await closeClientBestEffort(client, transport);
         return;
       }
 
+      runtime.connectionId++;
       runtime.client = undefined;
       runtime.transport = undefined;
       runtime.instructions = undefined;
@@ -354,11 +466,7 @@ export class McpManager {
         ? `${errorMessage}\n${stderrTail}`
         : errorMessage;
 
-      try {
-        await client.close();
-      } catch {
-        // Best-effort cleanup only.
-      }
+      await closeClientBestEffort(client, transport);
     }
   }
 

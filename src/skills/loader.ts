@@ -1,7 +1,6 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { StringDecoder } from "string_decoder";
 import { parseDocument } from "yaml";
 import type {
   LoadLocalSkillsResult,
@@ -402,70 +401,12 @@ function parseSkillFrontmatter(
 }
 
 function readFrontmatterText(skillFile: string): string | null {
-  const fd = fs.openSync(skillFile, "r");
-  const decoder = new StringDecoder("utf8");
-  const buffer = Buffer.alloc(4096);
-  let pending = "";
-  let isFirstLine = true;
-  let insideFrontmatter = false;
-  const frontmatterLines: string[] = [];
+  const content = fs.readFileSync(skillFile, "utf8").replace(/^\uFEFF/, "");
+  const match = content.match(
+    /^[ \t]*---[ \t]*\r?\n(?:(?:[ \t]*(?:---|\.\.\.)[ \t]*(?:\r?\n|$))|([\s\S]*?)\r?\n[ \t]*(?:---|\.\.\.)[ \t]*(?:\r?\n|$))/,
+  );
 
-  try {
-    while (true) {
-      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
-      if (bytesRead === 0) {
-        pending += decoder.end();
-      } else {
-        pending += decoder.write(buffer.subarray(0, bytesRead));
-      }
-
-      let newlineIndex = pending.indexOf("\n");
-      while (newlineIndex !== -1) {
-        let line = pending.slice(0, newlineIndex);
-        pending = pending.slice(newlineIndex + 1);
-        line = line.replace(/\r$/, "");
-        if (isFirstLine) {
-          isFirstLine = false;
-          line = line.replace(/^\uFEFF/, "");
-          if (line.trim() !== "---") {
-            return null;
-          }
-          insideFrontmatter = true;
-        } else if (insideFrontmatter) {
-          if (line.trim() === "---" || line.trim() === "...") {
-            return frontmatterLines.join("\n");
-          }
-          frontmatterLines.push(line);
-        }
-        newlineIndex = pending.indexOf("\n");
-      }
-
-      if (bytesRead === 0) {
-        break;
-      }
-    }
-
-    if (pending.length > 0) {
-      let line = pending.replace(/\r$/, "").replace(/^\uFEFF/, "");
-      if (isFirstLine) {
-        if (line.trim() !== "---") {
-          return null;
-        }
-        return null;
-      }
-
-      if (insideFrontmatter) {
-        if (line.trim() === "---" || line.trim() === "...") {
-          return frontmatterLines.join("\n");
-        }
-        frontmatterLines.push(line);
-      }
-    }
-
-    return insideFrontmatter ? null : null;
-  } finally {
-    fs.closeSync(fd);
-  }
+  return match ? (match[1] ?? "") : null;
 }
 
 function readSkillBody(skillFile: string): string {

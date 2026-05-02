@@ -73,6 +73,34 @@ export function loadProvidersConfig(filePath: string): ProvidersConfig {
   return validateProvidersConfig(config);
 }
 
+export async function loadProvidersConfigAsync(
+  filePath: string,
+): Promise<ProvidersConfig> {
+  let fileContent: string;
+
+  try {
+    fileContent = await fs.promises.readFile(filePath, "utf-8");
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      throw new Error(
+        `Configuration file not found: ${filePath}\n` +
+          `Please create ~/.propio/providers.json with your provider settings.\n` +
+          `See README for configuration examples.`,
+      );
+    }
+    throw new Error(`Failed to read configuration file: ${error.message}`);
+  }
+
+  let config: any;
+  try {
+    config = JSON.parse(fileContent);
+  } catch (error: any) {
+    throw new Error(`Invalid JSON in configuration file: ${error.message}`);
+  }
+
+  return validateProvidersConfig(config);
+}
+
 function validateProvidersConfig(config: any): ProvidersConfig {
   if (!isPlainObject(config)) {
     throw new Error("Configuration root must be a JSON object");

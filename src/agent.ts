@@ -50,6 +50,7 @@ import {
 } from "./context/persistence.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
+  McpConfigFile,
   McpServerDetail,
   McpServerSummary,
   McpToolSummary,
@@ -153,6 +154,7 @@ export class Agent {
       providersConfig: ProvidersConfig | string;
       providerName?: string;
       modelKey?: string;
+      mcpConfig?: McpConfigFile;
       mcpConfigPath?: string;
       systemPrompt?: string;
       agentsMdContent?: string;
@@ -224,6 +226,7 @@ export class Agent {
       },
     });
     this.mcpManager = new McpManager({
+      ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
       ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
     });
     this.summaryManager = new SummaryManager();

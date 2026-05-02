@@ -38,6 +38,37 @@ export function discoverAgentsMdFiles(startDir?: string): string[] {
 }
 
 /**
+ * Async variant of discoverAgentsMdFiles for startup preload paths.
+ */
+export async function discoverAgentsMdFilesAsync(
+  startDir?: string,
+): Promise<string[]> {
+  const start = startDir || process.cwd();
+  const found: string[] = [];
+  let currentDir = path.resolve(start);
+
+  while (true) {
+    const agentsMdPath = path.join(currentDir, "AGENTS.md");
+
+    try {
+      await fs.promises.access(agentsMdPath, fs.constants.F_OK);
+      found.push(agentsMdPath);
+    } catch {
+      // Missing AGENTS.md files are expected while walking ancestors.
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      break;
+    }
+
+    currentDir = parentDir;
+  }
+
+  return found.reverse();
+}
+
+/**
  * Load and merge AGENTS.md file contents.
  *
  * Reads an ordered list of AGENTS.md file paths and returns their merged content
@@ -58,6 +89,27 @@ export function loadAgentsMdContent(filePaths: string[]): string {
     const heading = `## Project Instructions (from ${filePath})`;
     sections.push(`${heading}\n\n${content}`);
   }
+
+  return sections.join("\n\n");
+}
+
+/**
+ * Async variant of loadAgentsMdContent for startup preload paths.
+ */
+export async function loadAgentsMdContentAsync(
+  filePaths: string[],
+): Promise<string> {
+  if (filePaths.length === 0) {
+    return "";
+  }
+
+  const sections = await Promise.all(
+    filePaths.map(async (filePath) => {
+      const content = await fs.promises.readFile(filePath, "utf-8");
+      const heading = `## Project Instructions (from ${filePath})`;
+      return `${heading}\n\n${content}`;
+    }),
+  );
 
   return sections.join("\n\n");
 }

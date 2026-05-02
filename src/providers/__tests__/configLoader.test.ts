@@ -5,6 +5,7 @@ import {
   getConfigPath,
   getDefaultProviderModelSelection,
   loadProvidersConfig,
+  loadProvidersConfigAsync,
   resolveProvider,
   resolveModelKey,
   updateDefaultProviderModelSelection,
@@ -408,6 +409,36 @@ describe("Configuration Loader", () => {
       expect(loaded.providers).toHaveLength(2);
       expect(loaded.providers[0].type).toBe("ollama");
       expect(loaded.providers[1].type).toBe("bedrock");
+    });
+  });
+
+  describe("loadProvidersConfigAsync()", () => {
+    it("should load valid JSON file and return ProvidersConfig", async () => {
+      const configPath = path.join(tempDir, "valid-async-config.json");
+      const config: ProvidersConfig = {
+        default: "ollama",
+        providers: [
+          {
+            name: "ollama",
+            type: "ollama",
+            models: [{ name: "Llama", key: "llama3.2" }],
+            defaultModel: "llama3.2",
+          },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+      await expect(loadProvidersConfigAsync(configPath)).resolves.toEqual(
+        config,
+      );
+    });
+
+    it("should preserve the missing file error message", async () => {
+      const configPath = path.join(tempDir, "missing-async-file.json");
+
+      await expect(loadProvidersConfigAsync(configPath)).rejects.toThrow(
+        /Configuration file not found/,
+      );
     });
   });
 
