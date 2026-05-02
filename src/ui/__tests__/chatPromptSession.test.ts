@@ -293,4 +293,120 @@ describe("chatPromptSession", () => {
       session.cleanup();
     }
   });
+
+  it("navigates mention matches with arrow keys before accepting", () => {
+    const inputStream = new PassThrough();
+    const outputStream = new PassThrough();
+    let latestState: ChatPromptSessionState | undefined;
+
+    (
+      inputStream as NodeJS.ReadStream & {
+        setRawMode: (mode: boolean) => void;
+      }
+    ).setRawMode = () => {};
+    (
+      outputStream as NodeJS.WriteStream & {
+        isTTY: boolean;
+        columns: number;
+      }
+    ).isTTY = false;
+    (
+      outputStream as NodeJS.WriteStream & {
+        isTTY: boolean;
+        columns: number;
+      }
+    ).columns = 80;
+
+    const mentionProvider: TypeaheadProvider = {
+      kind: "mention",
+      getSuggestions: (target) =>
+        target.query === "PLAN"
+          ? [
+              { kind: "mention", value: "@docs/PLAN-openrouter.md " },
+              { kind: "mention", value: "@docs/PLAN-file-search.md " },
+              { kind: "mention", value: "@docs/PLAN-startup.md " },
+            ]
+          : [],
+    };
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream: outputStream as unknown as NodeJS.WriteStream,
+      request: {
+        promptText: ">",
+        mode: "chat",
+      },
+      historySnapshot: ["previous prompt"],
+      enableTypeahead: true,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [mentionProvider],
+      callbacks: {
+        render: (state) => {
+          latestState = state;
+        },
+        submit: () => {
+          /* no-op */
+        },
+        interrupt: () => {
+          /* no-op */
+        },
+        close: () => {
+          /* no-op */
+        },
+      },
+    });
+
+    try {
+      for (const character of "@PLAN") {
+        inputStream.emit("keypress", character, {
+          name: character,
+          ctrl: false,
+          meta: false,
+          shift: false,
+        });
+      }
+
+      expect(latestState).toMatchObject({
+        buffer: "@PLAN",
+        typeahead: {
+          kind: "mention",
+          match: "@docs/PLAN-openrouter.md ",
+          matchIndex: 0,
+          matchCount: 3,
+        },
+      });
+
+      inputStream.emit("keypress", undefined, {
+        name: "down",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(latestState).toMatchObject({
+        buffer: "@PLAN",
+        typeahead: {
+          match: "@docs/PLAN-file-search.md ",
+          matchIndex: 1,
+          matchCount: 3,
+        },
+      });
+
+      inputStream.emit("keypress", "\t", {
+        name: "tab",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(latestState).toMatchObject({
+        buffer: "@docs/PLAN-file-search.md ",
+        cursor: "@docs/PLAN-file-search.md ".length,
+      });
+      expect(latestState?.typeahead).toBeUndefined();
+    } finally {
+      session.cleanup();
+    }
+  });
 });

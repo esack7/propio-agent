@@ -35,6 +35,16 @@ describe("MentionParser", () => {
     expect(parser.parse("hello @")).toEqual([]);
   });
 
+  it("parses top-level directories and extensionless root files", () => {
+    const parser = new MentionParser();
+
+    expect(parser.parse("Review @src and @Dockerfile, then @README.")).toEqual([
+      { raw: "@src", path: "src", quoted: false },
+      { raw: "@Dockerfile", path: "Dockerfile", quoted: false },
+      { raw: "@README", path: "README", quoted: false },
+    ]);
+  });
+
   it("ignores clearly non-file @ mentions", () => {
     const parser = new MentionParser();
     const mentions = parser.parse(

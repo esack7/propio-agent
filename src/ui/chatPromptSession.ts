@@ -728,6 +728,12 @@ export function createChatPromptSession(
       return;
     }
 
+    if (typeaheadState.target.kind === "mention") {
+      typeaheadState = null;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
     if (typeaheadState.suggestions.length === 1) {
       typeaheadState = null;
       typeaheadPreviewApplied = false;
@@ -771,6 +777,20 @@ export function createChatPromptSession(
 
     typeaheadState = cycleTypeaheadState(typeaheadState);
     if (typeaheadState.suggestions.length > 0) {
+      acceptTypeaheadSelection();
+    }
+    scheduleMentionTypeaheadRetry();
+    render();
+  };
+
+  const navigateTypeahead = (direction: "next" | "previous"): void => {
+    clearTransientStatus();
+    if (!typeaheadState) {
+      return;
+    }
+
+    typeaheadState = cycleTypeaheadState(typeaheadState, direction);
+    if (typeaheadPreviewApplied && typeaheadState.suggestions.length > 0) {
       acceptTypeaheadSelection();
     }
     scheduleMentionTypeaheadRetry();
@@ -1216,6 +1236,16 @@ export function createChatPromptSession(
       } else {
         startTypeahead();
       }
+      return;
+    }
+
+    if (
+      typeaheadState &&
+      (key.name === "up" || key.name === "down") &&
+      !key.ctrl &&
+      !key.meta
+    ) {
+      navigateTypeahead(key.name === "up" ? "previous" : "next");
       return;
     }
 

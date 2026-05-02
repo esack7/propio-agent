@@ -686,14 +686,22 @@ export function createTypeaheadState(options: {
   };
 }
 
-export function cycleTypeaheadState(state: TypeaheadState): TypeaheadState {
+export function cycleTypeaheadState(
+  state: TypeaheadState,
+  direction: "next" | "previous" = "next",
+): TypeaheadState {
   if (state.suggestions.length === 0) {
     return state;
   }
 
+  const delta = direction === "previous" ? -1 : 1;
+  const selectedIndex =
+    (state.selectedIndex + delta + state.suggestions.length) %
+    state.suggestions.length;
+
   return {
     ...state,
-    selectedIndex: (state.selectedIndex + 1) % state.suggestions.length,
+    selectedIndex,
   };
 }
 

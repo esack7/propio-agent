@@ -374,6 +374,8 @@ export class FileSearchIndex {
       return [];
     }
 
+    void this.refresh();
+
     if (trimmedQuery.length === 0) {
       return [...this.entries]
         .sort((left, right) => {

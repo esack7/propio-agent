@@ -64,6 +64,15 @@ function isFileLikeMentionPath(rawPath: string): boolean {
   }
 
   if (
+    rawPath.includes("-") &&
+    !rawPath.includes("/") &&
+    !rawPath.includes("\\") &&
+    !rawPath.includes(".")
+  ) {
+    return false;
+  }
+
+  if (
     rawPath.startsWith("./") ||
     rawPath.startsWith("../") ||
     rawPath.startsWith("/") ||
@@ -77,6 +86,7 @@ function isFileLikeMentionPath(rawPath: string): boolean {
     rawPath.includes("/") ||
     rawPath.includes("\\") ||
     rawPath.startsWith(".") ||
+    /^[\p{L}\p{N}_]+$/u.test(rawPath) ||
     /\.[^./\s]+$/u.test(rawPath)
   );
 }

@@ -76,6 +76,22 @@ describe("FileSearchIndex", () => {
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
+  it("opportunistically refreshes warm indexes during search", async () => {
+    const workspaceRoot = makeWorkspace();
+    writeFile(workspaceRoot, "src/agent.ts");
+
+    const index = new FileSearchIndex(workspaceRoot);
+    await index.refresh(true);
+    const refreshSpy = jest.spyOn(index, "refresh");
+
+    index.search("agent");
+
+    expect(refreshSpy).toHaveBeenCalledWith();
+
+    refreshSpy.mockRestore();
+    fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
   it("builds entries from git without requiring rg fallback", async () => {
     const workspaceRoot = makeWorkspace();
     writeFile(workspaceRoot, "src/agent.ts");
