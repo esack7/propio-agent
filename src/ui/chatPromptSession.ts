@@ -512,6 +512,10 @@ export function createChatPromptSession(
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
   let searchState: HistorySearchState | null = null;
   let typeaheadState: TypeaheadState | null = null;
+  let typeaheadPreviewApplied = false;
+  let mentionTypeaheadRetryTimer: NodeJS.Timeout | null = null;
+  let mentionTypeaheadRetryKey = "";
+  let mentionTypeaheadRetryCount = 0;
   let editorStatus: string | undefined;
   let pendingEditorHandoff = false;
   let rawModeEnabled = false;
@@ -601,6 +605,15 @@ export function createChatPromptSession(
 
   const clearTypeahead = (): void => {
     typeaheadState = null;
+    typeaheadPreviewApplied = false;
+    clearMentionTypeaheadRetry();
+  };
+
+  const clearMentionTypeaheadRetry = (): void => {
+    if (mentionTypeaheadRetryTimer) {
+      clearTimeout(mentionTypeaheadRetryTimer);
+      mentionTypeaheadRetryTimer = null;
+    }
   };
 
   const clearTransientStatus = (): void => {
@@ -612,13 +625,116 @@ export function createChatPromptSession(
       return;
     }
 
-    const selection = cancelTypeaheadState(typeaheadState);
-    buffer = selection.buffer;
-    cursor = selection.cursor;
+    if (typeaheadPreviewApplied) {
+      const selection = cancelTypeaheadState(typeaheadState);
+      buffer = selection.buffer;
+      cursor = selection.cursor;
+    }
     clearTypeahead();
     if (shouldRender) {
       render();
     }
+  };
+
+  const refreshMentionTypeahead = (): void => {
+    if (!options.enableTypeahead || searchState) {
+      return;
+    }
+
+    const nextState = createTypeaheadState({
+      buffer,
+      cursor,
+      workspaceRoot: options.workspaceRoot,
+      typeaheadProviders: options.typeaheadProviders,
+    });
+
+    if (nextState?.target.kind === "mention") {
+      typeaheadState = nextState;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    if (typeaheadState?.target.kind === "mention") {
+      clearTypeahead();
+    }
+  };
+
+  const scheduleMentionTypeaheadRetry = (): void => {
+    if (
+      !active ||
+      !typeaheadState ||
+      typeaheadState.target.kind !== "mention" ||
+      typeaheadState.suggestions.length > 0
+    ) {
+      clearMentionTypeaheadRetry();
+      mentionTypeaheadRetryKey = "";
+      mentionTypeaheadRetryCount = 0;
+      return;
+    }
+
+    const retryKey = `${buffer}\0${cursor}`;
+    if (retryKey !== mentionTypeaheadRetryKey) {
+      mentionTypeaheadRetryKey = retryKey;
+      mentionTypeaheadRetryCount = 0;
+    }
+
+    if (mentionTypeaheadRetryTimer || mentionTypeaheadRetryCount >= 100) {
+      return;
+    }
+
+    mentionTypeaheadRetryCount += 1;
+    mentionTypeaheadRetryTimer = setTimeout(() => {
+      mentionTypeaheadRetryTimer = null;
+      if (!active) {
+        return;
+      }
+
+      refreshMentionTypeahead();
+      render();
+      scheduleMentionTypeaheadRetry();
+    }, 100);
+  };
+
+  const acceptTypeaheadSelection = (): void => {
+    if (!typeaheadState) {
+      return;
+    }
+
+    clearMentionTypeaheadRetry();
+
+    if (
+      typeaheadState.suggestions.length === 0 ||
+      typeaheadState.selectedIndex < 0
+    ) {
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    const selectedSuggestion =
+      typeaheadState.suggestions[typeaheadState.selectedIndex];
+    const selection = acceptTypeaheadState(typeaheadState);
+    buffer = selection.buffer;
+    cursor = selection.cursor;
+
+    if (selectedSuggestion?.isDirectory) {
+      const refreshedState = createTypeaheadState({
+        buffer,
+        cursor,
+        workspaceRoot: options.workspaceRoot,
+        typeaheadProviders: options.typeaheadProviders,
+      });
+      typeaheadState = refreshedState;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    if (typeaheadState.suggestions.length === 1) {
+      typeaheadState = null;
+      typeaheadPreviewApplied = false;
+      return;
+    }
+
+    typeaheadPreviewApplied = true;
   };
 
   const startTypeahead = (): void => {
@@ -640,13 +756,9 @@ export function createChatPromptSession(
 
     typeaheadState = nextState;
     if (nextState.suggestions.length > 0) {
-      const selection = acceptTypeaheadState(nextState);
-      buffer = selection.buffer;
-      cursor = selection.cursor;
-      if (nextState.suggestions.length === 1) {
-        typeaheadState = null;
-      }
+      acceptTypeaheadSelection();
     }
+    scheduleMentionTypeaheadRetry();
 
     render();
   };
@@ -659,10 +771,9 @@ export function createChatPromptSession(
 
     typeaheadState = cycleTypeaheadState(typeaheadState);
     if (typeaheadState.suggestions.length > 0) {
-      const selection = acceptTypeaheadState(typeaheadState);
-      buffer = selection.buffer;
-      cursor = selection.cursor;
+      acceptTypeaheadSelection();
     }
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -823,6 +934,8 @@ export function createChatPromptSession(
 
     buffer = `${buffer.slice(0, cursor)}${text}${buffer.slice(cursor)}`;
     cursor += text.length;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -847,6 +960,8 @@ export function createChatPromptSession(
 
     buffer = `${buffer.slice(0, cursor - 1)}${buffer.slice(cursor)}`;
     cursor -= 1;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -869,6 +984,8 @@ export function createChatPromptSession(
     }
 
     buffer = `${buffer.slice(0, cursor)}${buffer.slice(cursor + 1)}`;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -898,6 +1015,8 @@ export function createChatPromptSession(
     const nextCursor = getPreviousWordBoundary(buffer, cursor);
     buffer = `${buffer.slice(0, nextCursor)}${buffer.slice(cursor)}`;
     cursor = nextCursor;
+    refreshMentionTypeahead();
+    scheduleMentionTypeaheadRetry();
     render();
   };
 
@@ -1088,7 +1207,12 @@ export function createChatPromptSession(
 
     if (key.name === "tab") {
       if (typeaheadState) {
-        cycleTypeahead();
+        if (typeaheadPreviewApplied) {
+          cycleTypeahead();
+        } else {
+          acceptTypeaheadSelection();
+          render();
+        }
       } else {
         startTypeahead();
       }
@@ -1160,6 +1284,7 @@ export function createChatPromptSession(
 
     active = false;
     unwatchResize();
+    clearMentionTypeaheadRetry();
     inputStream.removeListener("keypress", handleKeypress as never);
     restoreRawMode();
   };

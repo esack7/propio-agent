@@ -1,10 +1,11 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { FileSearchIndex } from "../fileSearch/index.js";
 import { getSlashCommandCompletionCommands } from "./slashCommands.js";
 import type { Skill } from "../skills/types.js";
 
-export type TypeaheadKind = "command" | "path";
+export type TypeaheadKind = "command" | "path" | "mention";
 
 export interface TypeaheadTarget {
   readonly kind: TypeaheadKind;
@@ -12,11 +13,13 @@ export interface TypeaheadTarget {
   readonly replaceStart: number;
   readonly replaceEnd: number;
   readonly workspaceRoot: string;
+  readonly quoted?: boolean;
 }
 
 export interface TypeaheadSuggestion {
   readonly value: string;
   readonly kind: TypeaheadKind;
+  readonly isDirectory?: boolean;
 }
 
 export interface TypeaheadProvider {
@@ -102,6 +105,36 @@ function findTokenEnd(buffer: string, cursor: number): number {
   return index;
 }
 
+function findMentionTokenEnd(buffer: string, tokenStart: number): number {
+  let index = Math.max(0, Math.min(tokenStart, buffer.length));
+  if (buffer[index] !== "@") {
+    return findTokenEnd(buffer, tokenStart);
+  }
+
+  index += 1;
+  if (isQuote(buffer[index])) {
+    const quote = buffer[index];
+    index += 1;
+    while (index < buffer.length) {
+      if (buffer[index] === quote) {
+        index += 1;
+        break;
+      }
+      index += 1;
+    }
+  } else {
+    while (index < buffer.length && !isWhitespace(buffer[index])) {
+      index += 1;
+    }
+  }
+
+  while (index < buffer.length && !isWhitespace(buffer[index])) {
+    index += 1;
+  }
+
+  return index;
+}
+
 function findPreviousToken(buffer: string, index: number): string | null {
   let cursor = Math.max(0, Math.min(index, buffer.length));
 
@@ -135,6 +168,16 @@ function isPathLikeToken(query: string, previousToken: string | null): boolean {
   return (
     previousToken !== null &&
     FILE_REFERENCE_VERBS.has(previousToken.toLowerCase())
+  );
+}
+
+function isMentionPathLike(query: string): boolean {
+  return (
+    query.startsWith("./") ||
+    query.startsWith("../") ||
+    query.startsWith("/") ||
+    query.startsWith("~") ||
+    query.includes("/")
   );
 }
 
@@ -279,7 +322,8 @@ function createPathTarget(
   const replaceEnd = hasClosingQuote ? tokenEnd - 1 : tokenEnd;
   const typedPrefix = buffer
     .slice(replaceStart, Math.min(cursor, replaceEnd))
-    .replace(/['"]$/, "");
+    .replace(/['"]$/, "")
+    .split("#", 1)[0];
 
   if (
     rawToken.length === 0 &&
@@ -299,6 +343,41 @@ function createPathTarget(
     replaceStart,
     replaceEnd,
     workspaceRoot,
+    quoted: quoted !== null,
+  };
+}
+
+function createMentionTarget(
+  buffer: string,
+  cursor: number,
+  workspaceRoot: string,
+): TypeaheadTarget | null {
+  const tokenStart = findTokenStart(buffer, cursor);
+  const tokenEnd = findMentionTokenEnd(buffer, tokenStart);
+  const rawToken = buffer.slice(tokenStart, tokenEnd);
+
+  if (!rawToken.startsWith("@")) {
+    return null;
+  }
+
+  const rawBody = rawToken.slice(1);
+  const quoted = isQuote(rawBody[0]) ? rawBody[0] : null;
+  let query = buffer.slice(tokenStart + 1, Math.min(cursor, tokenEnd));
+  if (quoted) {
+    query = query.slice(1);
+    if (query.endsWith(quoted)) {
+      query = query.slice(0, -1);
+    }
+  }
+  query = query.split("#", 1)[0];
+
+  return {
+    kind: "mention",
+    query,
+    replaceStart: tokenStart,
+    replaceEnd: tokenEnd,
+    workspaceRoot,
+    quoted: quoted !== null,
   };
 }
 
@@ -409,9 +488,56 @@ function listPathSuggestions(
     .map((suggestion) => ({
       kind: suggestion.kind,
       value: suggestion.value,
+      ...(suggestion.isDirectory ? { isDirectory: true } : {}),
     }));
 
   return suggestions;
+}
+
+function formatMentionSuggestionValue(
+  candidatePath: string,
+  isDirectory: boolean,
+  quoted: boolean,
+): string {
+  const normalizedPath =
+    isDirectory && candidatePath.endsWith(path.sep)
+      ? candidatePath.slice(0, -1)
+      : candidatePath;
+  const needsQuotes = quoted || /\s/.test(normalizedPath);
+
+  if (needsQuotes) {
+    return `@"${normalizedPath}"${isDirectory ? path.sep : " "}`;
+  }
+
+  return `@${normalizedPath}${isDirectory ? path.sep : " "}`;
+}
+
+function listMentionSuggestions(
+  target: TypeaheadTarget,
+  fileSearchIndex: FileSearchIndex,
+): readonly TypeaheadSuggestion[] {
+  if (isMentionPathLike(target.query)) {
+    return listPathSuggestions(target).map((suggestion) => ({
+      kind: "mention" as const,
+      value: formatMentionSuggestionValue(
+        suggestion.value,
+        suggestion.isDirectory === true,
+        target.quoted ?? false,
+      ),
+      ...(suggestion.isDirectory ? { isDirectory: true } : {}),
+    }));
+  }
+
+  const matches = fileSearchIndex.search(target.query, 20);
+  return matches.map((match) => ({
+    kind: "mention" as const,
+    value: formatMentionSuggestionValue(
+      match.path,
+      match.kind === "directory",
+      target.quoted ?? false,
+    ),
+    ...(match.kind === "directory" ? { isDirectory: true } : {}),
+  }));
 }
 
 function listCommandSuggestions(
@@ -436,6 +562,11 @@ function createTarget(
     return commandTarget;
   }
 
+  const mentionTarget = createMentionTarget(buffer, cursor, workspaceRoot);
+  if (mentionTarget) {
+    return mentionTarget;
+  }
+
   return createPathTarget(buffer, cursor, workspaceRoot);
 }
 
@@ -456,11 +587,18 @@ export function createDefaultTypeaheadProviders(
   workspaceRoot: string,
 ): readonly TypeaheadProvider[] {
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const fileSearchIndex = FileSearchIndex.forWorkspace(resolvedWorkspaceRoot);
+  void fileSearchIndex.refresh();
 
   return [
     {
       kind: "command",
       getSuggestions: (target) => listCommandSuggestions(target),
+    },
+    {
+      kind: "mention",
+      getSuggestions: (target) =>
+        listMentionSuggestions(target, fileSearchIndex),
     },
     {
       kind: "path",
