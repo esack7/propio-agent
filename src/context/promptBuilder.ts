@@ -624,6 +624,9 @@ export class PromptBuilder {
 
 function messageChars(msg: ChatMessage): number {
   let chars = msg.content.length;
+  if (msg.reasoningContent) {
+    chars += msg.reasoningContent.length;
+  }
   if (msg.toolCalls) {
     chars += JSON.stringify(msg.toolCalls).length;
   }

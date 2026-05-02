@@ -338,6 +338,7 @@ export class Agent {
   private normalizeStreamEvent(event: ChatStreamEvent): {
     delta?: string;
     toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
     status?: { status: string; phase?: string };
     reasoningSummary?: {
       summary: string;
@@ -356,7 +357,10 @@ export class Agent {
     }
 
     if (event.type === "tool_calls") {
-      return { toolCalls: event.toolCalls };
+      return {
+        toolCalls: event.toolCalls,
+        reasoningContent: event.reasoningContent,
+      };
     }
 
     if (event.type === "status") {
@@ -1084,6 +1088,7 @@ export class Agent {
 
         let fullResponse = "";
         let toolCalls: ChatToolCall[] | undefined;
+        let reasoningContent: string | undefined;
         let chunkCount = 0;
         this.emitStatus(options, "Streaming response", "response");
 
@@ -1137,6 +1142,7 @@ export class Agent {
 
             if (normalizedEvent.toolCalls) {
               toolCalls = normalizedEvent.toolCalls;
+              reasoningContent = normalizedEvent.reasoningContent;
             }
           }
         } catch (streamError) {
@@ -1195,6 +1201,9 @@ export class Agent {
         this.contextManager.commitAssistantResponse(
           fullResponse,
           normalizedToolCalls,
+          normalizedToolCalls && normalizedToolCalls.length > 0
+            ? { reasoningContent }
+            : undefined,
         );
         this.emitDiagnostic({
           type: "iteration_finished",

@@ -16,6 +16,9 @@ export function measureMessages(
   let totalChars = 0;
   for (const msg of messages) {
     totalChars += msg.content.length;
+    if (msg.reasoningContent) {
+      totalChars += msg.reasoningContent.length;
+    }
     if (msg.toolCalls) {
       totalChars += JSON.stringify(msg.toolCalls).length;
     }
