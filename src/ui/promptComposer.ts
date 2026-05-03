@@ -22,7 +22,7 @@ import {
 } from "./promptHistory.js";
 import type { PromptEditorRunner } from "./promptEditor.js";
 
-export type { PromptMode, PromptState, PromptRequest } from "./promptState.js";
+export type { PromptState, PromptRequest } from "./promptState.js";
 
 export type PromptCloseReason = "closed" | "interrupted";
 

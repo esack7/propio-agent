@@ -31,13 +31,3 @@ export function createBuiltinToolManifest(
     { tool: new SkillTool(options.skillToolInvoker), enabledByDefault: true },
   ];
 }
-
-export const BUILTIN_TOOL_MANIFEST: ReadonlyArray<BuiltinToolDefinition> = [
-  { tool: new ReadTool(), enabledByDefault: true },
-  { tool: new WriteTool(), enabledByDefault: true },
-  { tool: new EditTool(), enabledByDefault: true },
-  { tool: new BashTool(), enabledByDefault: true },
-  { tool: new GrepTool(), enabledByDefault: false },
-  { tool: new FindTool(), enabledByDefault: false },
-  { tool: new LsTool(), enabledByDefault: false },
-];

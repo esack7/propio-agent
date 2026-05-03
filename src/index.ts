@@ -13,7 +13,7 @@ import {
   discoverAgentsMdFilesAsync,
   loadAgentsMdContentAsync,
 } from "./agentsMd.js";
-import { setColorEnabled } from "./ui/colors.js";
+import { setColorEnabled } from "./ui/textColors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { showModelMenu } from "./ui/modelMenu.js";
 import { showSkillsMenu } from "./ui/skillMenu.js";
@@ -282,6 +282,297 @@ async function handleSessionCommand(
   });
 }
 
+interface InteractiveSubmissionContext {
+  agent: AgentType;
+  ui: TerminalUi;
+  composer: PromptComposer;
+  configPath: string;
+  setCurrentAbortController: (controller: AbortController | null) => void;
+  shouldExit: () => boolean;
+  visibility: VisibilityOptions;
+}
+
+async function runInteractiveTurn(
+  input: string,
+  context: InteractiveSubmissionContext,
+  options: {
+    beforeTurn?: () => Promise<void>;
+    errorPrefix: string;
+  },
+): Promise<number | null> {
+  const { agent, ui, setCurrentAbortController, visibility } = context;
+  const abortController = new AbortController();
+  const turnStartedAtMs = Date.now();
+  setCurrentAbortController(abortController);
+  ui.setMode("running");
+
+  try {
+    if (options.beforeTurn) {
+      await options.beforeTurn();
+    }
+
+    await streamAssistantTurn(
+      agent,
+      input,
+      ui,
+      abortController.signal,
+      visibility,
+    );
+    ui.setMode("showingResults");
+    ui.command("");
+    ui.turnComplete(Date.now() - turnStartedAtMs);
+  } catch (error) {
+    if (abortController.signal.aborted || isAbortError(error)) {
+      return 130;
+    }
+
+    ui.setMode("error");
+    ui.error(
+      `${options.errorPrefix}${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+    ui.command("");
+    ui.turnComplete(Date.now() - turnStartedAtMs);
+  } finally {
+    setCurrentAbortController(null);
+  }
+
+  return null;
+}
+
+type InteractiveInputHandler = (
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+) => Promise<number | null | undefined>;
+
+async function handleExitSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/exit") {
+    return undefined;
+  }
+
+  saveSessionSnapshot(context.agent, context.ui);
+  context.ui.success("Goodbye!");
+  return 0;
+}
+
+async function handleHelpSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (!isHelpCommand(trimmedInput)) {
+    return undefined;
+  }
+
+  printSlashCommandHelp(context.ui);
+  return null;
+}
+
+async function handleClearSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/clear") {
+    return undefined;
+  }
+
+  context.agent.clearContext();
+  context.ui.success("Session context cleared.");
+  context.ui.command("");
+  return null;
+}
+
+async function handleSkillsSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/skills") {
+    return undefined;
+  }
+
+  showSkillsMenu(context.agent, context.ui);
+  return null;
+}
+
+async function handleSkillSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/skill" && !trimmedInput.startsWith("/skill ")) {
+    return undefined;
+  }
+
+  const { agent, ui } = context;
+  const args = trimmedInput.slice("/skill".length).trim();
+  if (!args) {
+    ui.error("Usage: /skill <name> [arguments]");
+    ui.command("");
+    return null;
+  }
+
+  const firstSpace = args.search(/\s/);
+  const skillName = firstSpace === -1 ? args : args.slice(0, firstSpace).trim();
+  const rawSkillArgs =
+    firstSpace === -1 ? "" : args.slice(firstSpace).trimStart();
+
+  return await runInteractiveTurn("", context, {
+    errorPrefix: "Failed to activate skill: ",
+    beforeTurn: async () => {
+      await agent.invokeSkill(skillName, rawSkillArgs, {
+        source: "user",
+      });
+    },
+  });
+}
+
+async function handleContextSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/context" && !trimmedInput.startsWith("/context ")) {
+    return undefined;
+  }
+
+  const { agent, ui } = context;
+  const subcommand = trimmedInput.slice("/context".length).trim();
+
+  if (subcommand === "") {
+    const state = agent.getConversationState();
+    const hasContent =
+      state.turns.length > 0 ||
+      state.preamble.length > 0 ||
+      state.artifacts.length > 0 ||
+      state.pinnedMemory.length > 0 ||
+      state.rollingSummary != null;
+    if (!hasContent) {
+      ui.info("No session context.");
+    } else {
+      renderStyledLines(ui, formatContextOverview(state));
+    }
+  } else if (subcommand === "prompt") {
+    const snapshot = agent.getLastPromptPlan();
+    if (!snapshot) {
+      ui.info("No prompt plan yet (no requests have been built).");
+    } else {
+      renderStyledLines(ui, formatPromptPlan(snapshot));
+    }
+  } else if (subcommand === "memory") {
+    const state = agent.getConversationState();
+    renderStyledLines(ui, formatMemoryView(state));
+  } else {
+    ui.error(`Unknown /context subcommand: "${subcommand}"`);
+    ui.command("Usage: /context [prompt | memory]");
+  }
+
+  ui.command("");
+  return null;
+}
+
+async function handleSessionSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/session" && !trimmedInput.startsWith("/session ")) {
+    return undefined;
+  }
+
+  await handleSessionCommand(trimmedInput, context.agent, context.composer, context.ui);
+  return context.shouldExit() ? 130 : null;
+}
+
+async function handleToolsSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/tools") {
+    return undefined;
+  }
+
+  await showToolMenu(context.composer, context.agent, context.ui);
+  return context.shouldExit() ? 130 : null;
+}
+
+async function handleMcpSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/mcp" && !trimmedInput.startsWith("/mcp ")) {
+    return undefined;
+  }
+
+  await handleMcpCommand(trimmedInput, context.agent, context.ui);
+  return context.shouldExit() ? 130 : null;
+}
+
+async function handleModelSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  const { agent, composer, configPath, ui } = context;
+
+  if (trimmedInput === "/model") {
+    await showModelMenu(composer, agent, ui, configPath);
+    return context.shouldExit() ? 130 : null;
+  }
+
+  if (trimmedInput.startsWith("/model ")) {
+    const args = trimmedInput.slice("/model".length).trim();
+    ui.error(`Unknown /model usage: "${args}"`);
+    ui.command("Usage: /model");
+    ui.command("");
+    return null;
+  }
+
+  return undefined;
+}
+
+async function handleChatSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  context.ui.persistSubmittedInput(trimmedInput);
+  return await runInteractiveTurn(trimmedInput, context, {
+    errorPrefix: "Error: ",
+  });
+}
+
+async function handleInteractiveSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null> {
+  if (context.shouldExit()) {
+    return 130;
+  }
+
+  if (!trimmedInput) {
+    return null;
+  }
+
+  const handlers: InteractiveInputHandler[] = [
+    handleExitSubmission,
+    handleHelpSubmission,
+    handleClearSubmission,
+    handleSkillsSubmission,
+    handleSkillSubmission,
+    handleContextSubmission,
+    handleSessionSubmission,
+    handleToolsSubmission,
+    handleMcpSubmission,
+    handleModelSubmission,
+    handleChatSubmission,
+  ];
+
+  for (const handler of handlers) {
+    const result = await handler(trimmedInput, context);
+    if (result !== undefined) {
+      return result;
+    }
+  }
+
+  return null;
+}
+
 async function runInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,
@@ -342,189 +633,17 @@ async function runInteractiveSession(
       ui.closeOverlay();
       const trimmedInput = nextInput.text.trim();
 
-      if (shouldExit()) {
-        return 130;
-      }
-
-      if (!trimmedInput) {
-        continue;
-      }
-
-      if (trimmedInput === "/exit") {
-        saveSessionSnapshot(agent, ui);
-        ui.success("Goodbye!");
-        return 0;
-      }
-
-      if (isHelpCommand(trimmedInput)) {
-        printSlashCommandHelp(ui);
-        continue;
-      }
-
-      if (trimmedInput === "/clear") {
-        agent.clearContext();
-        ui.success("Session context cleared.");
-        ui.command("");
-        continue;
-      }
-
-      if (trimmedInput === "/skills") {
-        showSkillsMenu(agent, ui);
-        continue;
-      }
-
-      if (trimmedInput === "/skill" || trimmedInput.startsWith("/skill ")) {
-        const args = trimmedInput.slice("/skill".length).trim();
-        if (!args) {
-          ui.error("Usage: /skill <name> [arguments]");
-          ui.command("");
-          continue;
-        }
-
-        const firstSpace = args.search(/\s/);
-        const skillName =
-          firstSpace === -1 ? args : args.slice(0, firstSpace).trim();
-        const rawSkillArgs =
-          firstSpace === -1 ? "" : args.slice(firstSpace).trimStart();
-        const abortController = new AbortController();
-        const turnStartedAtMs = Date.now();
-        setCurrentAbortController(abortController);
-        ui.setMode("running");
-
-        try {
-          await agent.invokeSkill(skillName, rawSkillArgs, {
-            source: "user",
-          });
-          await streamAssistantTurn(
-            agent,
-            "",
-            ui,
-            abortController.signal,
-            visibility,
-          );
-          ui.setMode("showingResults");
-          ui.command("");
-          ui.turnComplete(Date.now() - turnStartedAtMs);
-        } catch (error) {
-          if (abortController.signal.aborted) {
-            return 130;
-          }
-          ui.error(
-            `Failed to activate skill: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          ui.command("");
-          ui.turnComplete(Date.now() - turnStartedAtMs);
-        } finally {
-          setCurrentAbortController(null);
-        }
-        continue;
-      }
-
-      if (trimmedInput === "/context" || trimmedInput.startsWith("/context ")) {
-        const subcommand = trimmedInput.slice("/context".length).trim();
-
-        if (subcommand === "") {
-          const state = agent.getConversationState();
-          const hasContent =
-            state.turns.length > 0 ||
-            state.preamble.length > 0 ||
-            state.artifacts.length > 0 ||
-            state.pinnedMemory.length > 0 ||
-            state.rollingSummary != null;
-          if (!hasContent) {
-            ui.info("No session context.");
-          } else {
-            renderStyledLines(ui, formatContextOverview(state));
-          }
-        } else if (subcommand === "prompt") {
-          const snapshot = agent.getLastPromptPlan();
-          if (!snapshot) {
-            ui.info("No prompt plan yet (no requests have been built).");
-          } else {
-            renderStyledLines(ui, formatPromptPlan(snapshot));
-          }
-        } else if (subcommand === "memory") {
-          const state = agent.getConversationState();
-          renderStyledLines(ui, formatMemoryView(state));
-        } else {
-          ui.error(`Unknown /context subcommand: "${subcommand}"`);
-          ui.command("Usage: /context [prompt | memory]");
-        }
-
-        ui.command("");
-        continue;
-      }
-
-      if (trimmedInput === "/session" || trimmedInput.startsWith("/session ")) {
-        await handleSessionCommand(trimmedInput, agent, composer, ui);
-        if (shouldExit()) {
-          return 130;
-        }
-        continue;
-      }
-
-      if (trimmedInput === "/tools") {
-        await showToolMenu(composer, agent, ui);
-        if (shouldExit()) {
-          return 130;
-        }
-        continue;
-      }
-
-      if (trimmedInput === "/mcp" || trimmedInput.startsWith("/mcp ")) {
-        await handleMcpCommand(trimmedInput, agent, ui);
-        if (shouldExit()) {
-          return 130;
-        }
-        continue;
-      }
-
-      if (trimmedInput === "/model") {
-        await showModelMenu(composer, agent, ui, configPath);
-        if (shouldExit()) {
-          return 130;
-        }
-        continue;
-      }
-
-      if (trimmedInput.startsWith("/model ")) {
-        const args = trimmedInput.slice("/model".length).trim();
-        ui.error(`Unknown /model usage: "${args}"`);
-        ui.command("Usage: /model");
-        ui.command("");
-        continue;
-      }
-
-      ui.persistSubmittedInput(trimmedInput);
-      ui.setMode("running");
-      const abortController = new AbortController();
-      setCurrentAbortController(abortController);
-      const turnStartedAtMs = Date.now();
-
-      try {
-        await streamAssistantTurn(
-          agent,
-          trimmedInput,
-          ui,
-          abortController.signal,
-          visibility,
-        );
-        ui.setMode("showingResults");
-        ui.command("");
-        ui.turnComplete(Date.now() - turnStartedAtMs);
-      } catch (error) {
-        if (abortController.signal.aborted || isAbortError(error)) {
-          return 130;
-        }
-
-        ui.setMode("error");
-        ui.error(
-          `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-        );
-        ui.command("");
-        ui.turnComplete(Date.now() - turnStartedAtMs);
-      } finally {
-        setCurrentAbortController(null);
+      const exitCode = await handleInteractiveSubmission(trimmedInput, {
+        agent,
+        ui,
+        composer,
+        configPath,
+        setCurrentAbortController,
+        shouldExit,
+        visibility,
+      });
+      if (exitCode !== null) {
+        return exitCode;
       }
     }
 

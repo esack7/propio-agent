@@ -12,6 +12,7 @@ import type {
   SkillSource,
 } from "./types.js";
 import { SkillRegistry } from "./registry.js";
+import { createSkillDiagnostic as createDiagnostic } from "./shared.js";
 
 const IGNORED_DIRECTORY_NAMES = new Set([
   "dist",
@@ -47,22 +48,6 @@ interface ParsedSkillEntry {
 interface LocalSkillScanResult {
   readonly skills: Skill[];
   readonly diagnostics: SkillLoadDiagnostic[];
-}
-
-function createDiagnostic(
-  severity: SkillLoadDiagnostic["severity"],
-  code: string,
-  message: string,
-  skillPath?: string,
-  skillName?: string,
-): SkillLoadDiagnostic {
-  return {
-    severity,
-    code,
-    message,
-    ...(skillPath ? { skillPath } : {}),
-    ...(skillName ? { skillName } : {}),
-  };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -400,7 +385,7 @@ function parseSkillFrontmatter(
   return { skill, diagnostics };
 }
 
-function readFrontmatterText(skillFile: string): string | null {
+export function readFrontmatterText(skillFile: string): string | null {
   const content = fs.readFileSync(skillFile, "utf8").replace(/^\uFEFF/, "");
   const match = content.match(
     /^[ \t]*---[ \t]*\r?\n(?:(?:[ \t]*(?:---|\.\.\.)[ \t]*(?:\r?\n|$))|([\s\S]*?)\r?\n[ \t]*(?:---|\.\.\.)[ \t]*(?:\r?\n|$))/,
@@ -516,6 +501,67 @@ function scanSkillDirectory(
   );
 }
 
+function scanSkillRoot(
+  root: {
+    readonly source: SkillSource;
+    readonly skillRoot: string;
+  },
+  diagnostics: SkillLoadDiagnostic[],
+  skills: Skill[],
+): void {
+  const directories = collectSkillDirectories(root.skillRoot);
+  for (const entry of directories) {
+    const parsed = scanSkillDirectory(
+      entry.directoryPath,
+      entry.directoryName,
+      root.source,
+    );
+    if (!parsed) {
+      continue;
+    }
+
+    diagnostics.push(...parsed.diagnostics);
+    if (parsed.skill) {
+      skills.push(parsed.skill);
+    }
+  }
+}
+
+function appendDuplicateSkillDiagnostics(
+  skills: Skill[],
+  diagnostics: SkillLoadDiagnostic[],
+): void {
+  const skillBuckets = new Map<string, Skill[]>();
+  for (const skill of skills) {
+    const bucket = skillBuckets.get(skill.name);
+    if (bucket) {
+      bucket.push(skill);
+    } else {
+      skillBuckets.set(skill.name, [skill]);
+    }
+  }
+
+  const duplicates = Array.from(skillBuckets.values()).filter(
+    (bucket) => bucket.length > 1,
+  );
+  if (duplicates.length === 0) {
+    return;
+  }
+
+  for (const bucket of duplicates) {
+    const paths = bucket.map((skill) => `- ${skill.skillFile}`).join("\n");
+    diagnostics.push(
+      createDiagnostic(
+        "error",
+        "duplicate_skill_name",
+        `Skill name "${bucket[0].name}" is defined multiple times:\n${paths}`,
+        bucket[0].skillFile,
+        bucket[0].name,
+      ),
+    );
+  }
+}
+
 function scanLocalSkills(context: SkillContext): LocalSkillScanResult {
   const diagnostics: SkillLoadDiagnostic[] = [];
   const skills: Skill[] = [];
@@ -543,52 +589,10 @@ function scanLocalSkills(context: SkillContext): LocalSkillScanResult {
   ];
 
   for (const root of roots) {
-    const directories = collectSkillDirectories(root.skillRoot);
-    for (const entry of directories) {
-      const parsed = scanSkillDirectory(
-        entry.directoryPath,
-        entry.directoryName,
-        root.source,
-      );
-      if (!parsed) {
-        continue;
-      }
-
-      diagnostics.push(...parsed.diagnostics);
-      if (parsed.skill) {
-        skills.push(parsed.skill);
-      }
-    }
+    scanSkillRoot(root, diagnostics, skills);
   }
 
-  const skillBuckets = new Map<string, Skill[]>();
-  for (const skill of skills) {
-    const bucket = skillBuckets.get(skill.name);
-    if (bucket) {
-      bucket.push(skill);
-    } else {
-      skillBuckets.set(skill.name, [skill]);
-    }
-  }
-
-  const duplicates = Array.from(skillBuckets.values()).filter(
-    (bucket) => bucket.length > 1,
-  );
-  if (duplicates.length > 0) {
-    for (const bucket of duplicates) {
-      const paths = bucket.map((skill) => `- ${skill.skillFile}`).join("\n");
-      diagnostics.push(
-        createDiagnostic(
-          "error",
-          "duplicate_skill_name",
-          `Skill name "${bucket[0].name}" is defined multiple times:\n${paths}`,
-          bucket[0].skillFile,
-          bucket[0].name,
-        ),
-      );
-    }
-  }
-
+  appendDuplicateSkillDiagnostics(skills, diagnostics);
   skills.sort(compareSkillRecords);
   return { skills, diagnostics };
 }
@@ -614,12 +618,3 @@ export function loadLocalSkills(
     diagnostics: result.diagnostics,
   };
 }
-
-export {
-  cloneSkill,
-  collectSkillDirectories,
-  normalizeSkillName,
-  readFrontmatterText,
-  readSkillBody,
-  scanLocalSkills,
-};

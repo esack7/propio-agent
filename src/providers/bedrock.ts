@@ -53,116 +53,170 @@ export class BedrockProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
-      // Extract system message if present
-      const systemMessage = request.messages.find((m) => m.role === "system");
-      const otherMessages = request.messages.filter((m) => m.role !== "system");
-
-      // Convert messages to Bedrock format
-      const messages = otherMessages.map((msg) =>
-        this.chatMessageToBedrockMessage(msg),
-      );
-
-      // Convert tools to Bedrock format if provided
-      const toolConfig = request.tools
-        ? {
-            tools: request.tools.map((tool) =>
-              this.chatToolToBedrockTool(tool),
-            ),
-          }
-        : undefined;
-
-      // System message needs to be converted to SystemContentBlock format
-      const systemContent = systemMessage
-        ? [{ text: systemMessage.content }]
-        : undefined;
-
-      const command = new ConverseStreamCommand({
-        modelId: request.model || this.model,
-        messages: messages as any,
-        system: systemContent as any,
-        toolConfig: toolConfig as any,
-      });
-
+      const command = this.createConverseStreamCommand(request);
       const response = await this.client.send(command, {
         abortSignal: request.signal,
       });
-      let stream = (response as any).stream || (response as any).output;
-
-      // Handle case where response itself is an async iterable
-      if (
-        !stream &&
-        typeof response === "object" &&
-        Symbol.asyncIterator in response
-      ) {
-        stream = response;
-      }
+      const stream = this.getStreamFromResponse(response);
 
       if (!stream) {
         throw new Error("No stream output");
       }
 
-      let toolCalls: ChatToolCall[] = [];
-      let currentToolCall: Partial<ChatToolCall> | null = null;
-      let currentToolInput = "";
+      const state = {
+        toolCalls: [] as ChatToolCall[],
+        currentToolCall: null as Partial<ChatToolCall> | null,
+        currentToolInput: "",
+      };
 
-      for await (const event of stream as any) {
-        if (event.contentBlockDelta) {
-          const delta = event.contentBlockDelta.delta;
-
-          // Handle text delta
-          if ((delta as any).text) {
-            yield { type: "assistant_text", delta: (delta as any).text };
-          }
-
-          // Handle tool use delta - accumulate tool input
-          if ((delta as any).toolUse) {
-            const partialInput = (delta as any).toolUse.input;
-            if (partialInput) {
-              currentToolInput += partialInput;
-            }
-          }
-        }
-
-        if (event.contentBlockStart) {
-          // In Bedrock streaming, tool use info is in event.contentBlockStart.start.toolUse
-          const toolUse = event.contentBlockStart.start?.toolUse;
-          if (toolUse) {
-            currentToolCall = {
-              id: toolUse.toolUseId, // Capture toolUseId for later reference
-              function: {
-                name: toolUse.name,
-                arguments: {},
-              },
-            };
-            currentToolInput = "";
-          }
-        }
-
-        if (event.contentBlockStop) {
-          // Tool call completed, parse the accumulated input
-          if (currentToolCall && currentToolCall.function && currentToolInput) {
-            try {
-              currentToolCall.function.arguments = JSON.parse(currentToolInput);
-            } catch {
-              currentToolCall.function.arguments = { raw: currentToolInput };
-            }
-            toolCalls.push(currentToolCall as ChatToolCall);
-            currentToolCall = null;
-            currentToolInput = "";
-          }
+      for await (const event of stream as AsyncIterable<any>) {
+        const assistantText = this.handleStreamEvent(event, state);
+        if (assistantText) {
+          yield { type: "assistant_text", delta: assistantText };
         }
       }
 
-      // Yield final chunk with tool calls if any
-      if (toolCalls.length > 0) {
-        yield {
-          type: "tool_calls",
-          toolCalls,
-        };
+      if (state.toolCalls.length > 0) {
+        yield { type: "tool_calls", toolCalls: state.toolCalls };
       }
     } catch (error) {
       throw this.translateError(error);
     }
+  }
+
+  private createConverseStreamCommand(request: ChatRequest): ConverseStreamCommand {
+    const systemMessage = request.messages.find((m) => m.role === "system");
+    const messages = request.messages
+      .filter((m) => m.role !== "system")
+      .map((msg) => this.chatMessageToBedrockMessage(msg));
+    const toolConfig = request.tools
+      ? {
+          tools: request.tools.map((tool) =>
+            this.chatToolToBedrockTool(tool),
+          ),
+        }
+      : undefined;
+
+    return new ConverseStreamCommand({
+      modelId: request.model || this.model,
+      messages: messages as any,
+      system: systemMessage ? [{ text: systemMessage.content }] : undefined,
+      toolConfig: toolConfig as any,
+    });
+  }
+
+  private getStreamFromResponse(
+    response: unknown,
+  ): AsyncIterable<any> | undefined {
+    let stream = (response as any).stream || (response as any).output;
+
+    if (
+      !stream &&
+      typeof response === "object" &&
+      response !== null &&
+      Symbol.asyncIterator in response
+    ) {
+      stream = response;
+    }
+
+    return stream as AsyncIterable<any> | undefined;
+  }
+
+  private handleStreamEvent(
+    event: any,
+    state: {
+      toolCalls: ChatToolCall[];
+      currentToolCall: Partial<ChatToolCall> | null;
+      currentToolInput: string;
+    },
+  ): string | undefined {
+    let assistantText: string | undefined;
+
+    if (event.contentBlockDelta) {
+      assistantText = this.handleContentBlockDelta(
+        event.contentBlockDelta.delta,
+        state,
+      );
+    }
+
+    if (event.contentBlockStart) {
+      this.handleContentBlockStart(event.contentBlockStart.start, state);
+    }
+
+    if (event.contentBlockStop) {
+      this.handleContentBlockStop(state);
+    }
+
+    return assistantText;
+  }
+
+  private handleContentBlockDelta(
+    delta: any,
+    state: {
+      toolCalls: ChatToolCall[];
+      currentToolCall: Partial<ChatToolCall> | null;
+      currentToolInput: string;
+    },
+  ): string | undefined {
+    if (delta.text) {
+      return delta.text;
+    }
+
+    if (delta.toolUse) {
+      const partialInput = delta.toolUse.input;
+      if (partialInput) {
+        state.currentToolInput += partialInput;
+      }
+    }
+
+    return undefined;
+  }
+
+  private handleContentBlockStart(
+    start: any,
+    state: {
+      toolCalls: ChatToolCall[];
+      currentToolCall: Partial<ChatToolCall> | null;
+      currentToolInput: string;
+    },
+  ): void {
+    const toolUse = start?.toolUse;
+    if (!toolUse) {
+      return;
+    }
+
+    state.currentToolCall = {
+      id: toolUse.toolUseId,
+      function: {
+        name: toolUse.name,
+        arguments: {},
+      },
+    };
+    state.currentToolInput = "";
+  }
+
+  private handleContentBlockStop(
+    state: {
+      toolCalls: ChatToolCall[];
+      currentToolCall: Partial<ChatToolCall> | null;
+      currentToolInput: string;
+    },
+  ): void {
+    if (!state.currentToolCall?.function || !state.currentToolInput) {
+      return;
+    }
+
+    try {
+      state.currentToolCall.function.arguments = JSON.parse(
+        state.currentToolInput,
+      );
+    } catch {
+      state.currentToolCall.function.arguments = { raw: state.currentToolInput };
+    }
+
+    state.toolCalls.push(state.currentToolCall as ChatToolCall);
+    state.currentToolCall = null;
+    state.currentToolInput = "";
   }
 
   /**
@@ -178,89 +232,109 @@ export class BedrockProvider implements LLMProvider {
   private chatMessageToBedrockMessage(msg: ChatMessage): any {
     const contentBlocks: any[] = [];
 
-    // Add text content (but not for tool role messages - they use toolResult instead)
-    if (msg.content && msg.role !== "tool") {
-      contentBlocks.push({
-        text: msg.content,
-      } as any);
-    }
-
-    // Add tool calls as toolUse blocks
-    if (msg.toolCalls && msg.toolCalls.length > 0) {
-      for (const toolCall of msg.toolCalls) {
-        contentBlocks.push({
-          toolUse: {
-            // Use the existing toolCallId if available (from Bedrock response),
-            // otherwise generate a temporary one
-            toolUseId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
-            name: toolCall.function.name,
-            input: toolCall.function.arguments,
-          },
-        } as any);
-      }
-    }
-
-    // Add images if present
-    if (msg.images && msg.images.length > 0) {
-      for (const image of msg.images) {
-        if (typeof image === "string") {
-          // Base64 string
-          if (image.startsWith("data:")) {
-            const [header, data] = image.split(",");
-            const mediaType = header.match(/:(.*?);/)?.[1] || "image/png";
-            contentBlocks.push({
-              image: {
-                format: (mediaType.split("/")[1] || "png") as any,
-                source: {
-                  bytes: Buffer.from(data, "base64"),
-                },
-              },
-            } as any);
-          }
-        } else {
-          // Uint8Array
-          contentBlocks.push({
-            image: {
-              format: "png" as any,
-              source: {
-                bytes: image,
-              },
-            },
-          } as any);
-        }
-      }
-    }
-
-    // Handle tool results (batched or single)
-    if (msg.role === "tool") {
-      // Handle batched tool results (new format)
-      if (msg.toolResults && msg.toolResults.length > 0) {
-        for (const toolResult of msg.toolResults) {
-          contentBlocks.push({
-            toolResult: {
-              toolUseId: toolResult.toolCallId,
-              content: [{ text: toolResult.content }],
-              status: "success",
-            },
-          } as any);
-        }
-      }
-      // Handle single tool result (legacy format for backward compatibility)
-      else if (msg.toolCallId) {
-        contentBlocks.push({
-          toolResult: {
-            toolUseId: msg.toolCallId,
-            content: [{ text: msg.content }],
-            status: "success",
-          },
-        } as any);
-      }
-    }
+    this.appendTextContentBlock(msg, contentBlocks);
+    this.appendToolCallBlocks(msg, contentBlocks);
+    this.appendImageBlocks(msg, contentBlocks);
+    this.appendToolResultBlocks(msg, contentBlocks);
 
     return {
       role: msg.role === "tool" ? "user" : (msg.role as any),
       content: contentBlocks,
     };
+  }
+
+  private appendTextContentBlock(
+    msg: ChatMessage,
+    contentBlocks: any[],
+  ): void {
+    if (msg.content && msg.role !== "tool") {
+      contentBlocks.push({
+        text: msg.content,
+      } as any);
+    }
+  }
+
+  private appendToolCallBlocks(msg: ChatMessage, contentBlocks: any[]): void {
+    if (!msg.toolCalls || msg.toolCalls.length === 0) {
+      return;
+    }
+
+    for (const toolCall of msg.toolCalls) {
+      contentBlocks.push({
+        toolUse: {
+          toolUseId: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
+          name: toolCall.function.name,
+          input: toolCall.function.arguments,
+        },
+      } as any);
+    }
+  }
+
+  private appendImageBlocks(msg: ChatMessage, contentBlocks: any[]): void {
+    if (!msg.images || msg.images.length === 0) {
+      return;
+    }
+
+    for (const image of msg.images) {
+      if (typeof image === "string") {
+        this.appendBase64ImageBlock(image, contentBlocks);
+      } else {
+        contentBlocks.push({
+          image: {
+            format: "png" as any,
+            source: {
+              bytes: image,
+            },
+          },
+        } as any);
+      }
+    }
+  }
+
+  private appendBase64ImageBlock(image: string, contentBlocks: any[]): void {
+    if (!image.startsWith("data:")) {
+      return;
+    }
+
+    const [header, data] = image.split(",");
+    const mediaType = header.match(/:(.*?);/)?.[1] || "image/png";
+    contentBlocks.push({
+      image: {
+        format: (mediaType.split("/")[1] || "png") as any,
+        source: {
+          bytes: Buffer.from(data, "base64"),
+        },
+      },
+    } as any);
+  }
+
+  private appendToolResultBlocks(msg: ChatMessage, contentBlocks: any[]): void {
+    if (msg.role !== "tool") {
+      return;
+    }
+
+    if (msg.toolResults && msg.toolResults.length > 0) {
+      for (const toolResult of msg.toolResults) {
+        contentBlocks.push({
+          toolResult: {
+            toolUseId: toolResult.toolCallId,
+            content: [{ text: toolResult.content }],
+            status: "success",
+          },
+        } as any);
+      }
+      return;
+    }
+
+    if (msg.toolCallId) {
+      contentBlocks.push({
+        toolResult: {
+          toolUseId: msg.toolCallId,
+          content: [{ text: msg.content }],
+          status: "success",
+        },
+      } as any);
+    }
   }
 
   /**

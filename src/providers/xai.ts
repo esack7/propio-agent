@@ -226,116 +226,193 @@ export class XaiProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
-      const expandedMessages = this.expandToolResults(request.messages);
-      const messages = expandedMessages.map((m) =>
-        this.chatMessageToOpenAIMessage(m),
-      );
-      const body: Record<string, unknown> = {
-        model: request.model || this.model,
-        messages,
-        stream: true,
-      };
-      if (request.tools && request.tools.length > 0) {
-        body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
-      }
+      const body = this.createChatCompletionRequestBody(request);
       const response = await this.createChatCompletionResponse(
         body,
         request.signal,
       );
 
-      const reader = response.body?.getReader();
+      const reader = this.getResponseReader(response);
       if (!reader) {
         throw this.translateError(new Error("No response body"));
       }
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      const toolCallsByIndex = new Map<
-        number,
-        { id?: string; name: string; argsString: string }
-      >();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6).trim();
-          if (data === "[DONE]") return;
-
-          let chunk: {
-            choices?: Array<{
-              delta?: {
-                content?: string;
-                tool_calls?: Array<{
-                  index?: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
-              finish_reason?: string;
-            }>;
-          };
-          try {
-            chunk = JSON.parse(data) as typeof chunk;
-          } catch {
-            continue;
-          }
-          const choice = chunk.choices?.[0];
-          if (!choice?.delta) continue;
-
-          const delta = choice.delta;
-          if (delta.content != null && delta.content !== "") {
-            yield { type: "assistant_text", delta: delta.content };
-          }
-
-          if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              let acc = toolCallsByIndex.get(idx);
-              if (!acc) {
-                acc = { name: "", argsString: "" };
-                toolCallsByIndex.set(idx, acc);
-              }
-              if (tc.id) acc.id = tc.id;
-              if (tc.function?.name) acc.name += tc.function.name;
-              if (tc.function?.arguments != null)
-                acc.argsString += tc.function.arguments;
-            }
-          }
-
-          if (choice.finish_reason === "tool_calls") {
-            const toolCalls: ChatToolCall[] = [];
-            const indices = [...toolCallsByIndex.keys()].sort((a, b) => a - b);
-            for (const i of indices) {
-              const acc = toolCallsByIndex.get(i)!;
-              let args: Record<string, any> = {};
-              if (acc.argsString) {
-                try {
-                  args = JSON.parse(acc.argsString);
-                } catch {
-                  args = { raw: acc.argsString };
-                }
-              }
-              toolCalls.push({
-                id: acc.id,
-                function: { name: acc.name || "", arguments: args },
-              });
-            }
-            if (toolCalls.length > 0) {
-              yield { type: "tool_calls", toolCalls };
-            }
-          }
-        }
-      }
+      const toolCallsByIndex = new Map<number, AccumulatedToolCall>();
+      yield* this.consumeStream(reader, toolCallsByIndex);
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       throw this.translateError(error);
     }
+  }
+
+  private createChatCompletionRequestBody(
+    request: ChatRequest,
+  ): Record<string, unknown> {
+    const expandedMessages = this.expandToolResults(request.messages);
+    const messages = expandedMessages.map((m) => this.chatMessageToOpenAIMessage(m));
+    const body: Record<string, unknown> = {
+      model: request.model || this.model,
+      messages,
+      stream: true,
+    };
+    if (request.tools && request.tools.length > 0) {
+      body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
+    }
+    return body;
+  }
+
+  private getResponseReader(response: Response): ReadableStreamDefaultReader<Uint8Array> | null {
+    return response.body?.getReader() ?? null;
+  }
+
+  private async *consumeStream(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): AsyncIterable<ChatStreamEvent> {
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const events = this.parseStreamLine(line, toolCallsByIndex);
+        for (const event of events) {
+          yield event;
+        }
+      }
+    }
+  }
+
+  private parseStreamLine(
+    line: string,
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): ChatStreamEvent[] {
+    if (!line.startsWith("data: ")) {
+      return [];
+    }
+
+    const data = line.slice(6).trim();
+    if (data === "[DONE]") {
+      return [];
+    }
+
+    const chunk = this.parseStreamChunk(data);
+    const choice = chunk?.choices?.[0];
+    if (!choice?.delta) {
+      return [];
+    }
+
+    const events: ChatStreamEvent[] = [];
+    const delta = choice.delta;
+
+    if (delta.content != null && delta.content !== "") {
+      events.push({ type: "assistant_text", delta: delta.content });
+    }
+
+    if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        this.accumulateToolCall(tc, toolCallsByIndex);
+      }
+    }
+
+    if (choice.finish_reason === "tool_calls") {
+      const toolCalls = this.buildToolCalls(toolCallsByIndex);
+      if (toolCalls.length > 0) {
+        events.push({ type: "tool_calls", toolCalls });
+      }
+    }
+
+    return events;
+  }
+
+  private parseStreamChunk(data: string): {
+    choices?: Array<{
+      delta?: {
+        content?: string;
+        tool_calls?: Array<{
+          index?: number;
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>;
+      };
+      finish_reason?: string;
+    }>;
+  } | null {
+    try {
+      return JSON.parse(data) as {
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+          finish_reason?: string;
+        }>;
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private accumulateToolCall(
+    tc: {
+      index?: number;
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    },
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): void {
+    const idx = tc.index ?? 0;
+    let acc = toolCallsByIndex.get(idx);
+    if (!acc) {
+      acc = { name: "", argsString: "" };
+      toolCallsByIndex.set(idx, acc);
+    }
+    if (tc.id) acc.id = tc.id;
+    if (tc.function?.name) acc.name += tc.function.name;
+    if (tc.function?.arguments != null) {
+      acc.argsString += tc.function.arguments;
+    }
+  }
+
+  private buildToolCalls(
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): ChatToolCall[] {
+    const toolCalls: ChatToolCall[] = [];
+    const indices = [...toolCallsByIndex.keys()].sort((a, b) => a - b);
+
+    for (const index of indices) {
+      const acc = toolCallsByIndex.get(index);
+      if (!acc) {
+        continue;
+      }
+
+      let args: Record<string, unknown> = {};
+      if (acc.argsString) {
+        try {
+          args = JSON.parse(acc.argsString) as Record<string, unknown>;
+        } catch {
+          args = { raw: acc.argsString };
+        }
+      }
+
+      toolCalls.push({
+        id: acc.id,
+        function: { name: acc.name || "", arguments: args },
+      });
+    }
+
+    return toolCalls;
   }
 
   private isContextLengthError(message: string): boolean {
@@ -359,50 +436,63 @@ export class XaiProvider implements LLMProvider {
     const normalizedMessage = this.normalizeErrorMessage(originalError.message);
 
     if (response) {
-      if (
-        response.status === 400 &&
-        this.isContextLengthError(normalizedMessage)
-      ) {
-        return new ProviderContextLengthError(
-          `Context length exceeded: ${normalizedMessage}`,
-          originalError,
-        );
-      }
-      if (response.status === 401) {
-        return new ProviderAuthenticationError(
-          "Invalid xAI API key",
-          originalError,
-        );
-      }
-      if (response.status === 429) {
-        const retryAfter = response.headers.get("retry-after");
-        const retryAfterSeconds = retryAfter
-          ? parseInt(retryAfter, 10)
-          : undefined;
-        return new ProviderRateLimitError(
-          "xAI rate limit exceeded",
-          Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
-          originalError,
-        );
-      }
-      if (response.status === 404) {
-        return new ProviderModelNotFoundError(
-          this.model,
-          `Model not found: ${this.model}`,
-          originalError,
-        );
-      }
-      if (response.status >= 500 && response.status < 600) {
-        return new ProviderError(
-          normalizedMessage
-            ? `xAI service error: ${normalizedMessage}`
-            : "xAI service error",
-          originalError,
-        );
+      const translatedResponseError = this.translateResponseError(
+        response,
+        normalizedMessage,
+        originalError,
+      );
+      if (translatedResponseError) {
+        return translatedResponseError;
       }
     }
-    const msg = normalizedMessage || originalError.message;
 
+    const msg = normalizedMessage || originalError.message;
+    return this.translateMessageError(msg, originalError);
+  }
+
+  private translateResponseError(
+    response: Response,
+    normalizedMessage: string,
+    originalError: Error,
+  ): ProviderError | null {
+    if (response.status === 400 && this.isContextLengthError(normalizedMessage)) {
+      return new ProviderContextLengthError(
+        `Context length exceeded: ${normalizedMessage}`,
+        originalError,
+      );
+    }
+    if (response.status === 401) {
+      return new ProviderAuthenticationError("Invalid xAI API key", originalError);
+    }
+    if (response.status === 429) {
+      const retryAfter = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfter ? parseInt(retryAfter, 10) : undefined;
+      return new ProviderRateLimitError(
+        "xAI rate limit exceeded",
+        Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
+        originalError,
+      );
+    }
+    if (response.status === 404) {
+      return new ProviderModelNotFoundError(
+        this.model,
+        `Model not found: ${this.model}`,
+        originalError,
+      );
+    }
+    if (response.status >= 500 && response.status < 600) {
+      return new ProviderError(
+        normalizedMessage
+          ? `xAI service error: ${normalizedMessage}`
+          : "xAI service error",
+        originalError,
+      );
+    }
+
+    return null;
+  }
+
+  private translateMessageError(msg: string, originalError: Error): ProviderError {
     if (this.isContextLengthError(msg)) {
       return new ProviderContextLengthError(
         `Context length exceeded: ${msg}`,
@@ -426,4 +516,10 @@ export class XaiProvider implements LLMProvider {
       originalError,
     );
   }
+}
+
+interface AccumulatedToolCall {
+  id?: string;
+  name: string;
+  argsString: string;
 }

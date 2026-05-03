@@ -2,10 +2,10 @@ import { EventEmitter } from "events";
 import {
   MarkdownStreamer,
   sanitizeSurrogates,
-  visibleLength,
   renderMarkdown,
   defaultTheme,
 } from "../ui/markdownRenderer.js";
+import { visibleLength } from "../ui/terminalWriter.js";
 
 function createResizableStderr(
   columns: number,

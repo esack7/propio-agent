@@ -21,11 +21,11 @@ export function sanitizeSurrogates(text: string): string {
   });
 }
 
-export function visibleLength(str: string): number {
+function visibleLength(str: string): number {
   return str.replace(/\x1b\[[^m]*m/g, "").length;
 }
 
-export function wrapTextToWidth(line: string, width: number): string[] {
+function wrapTextToWidth(line: string, width: number): string[] {
   if (visibleLength(line) <= width) {
     return [line];
   }
@@ -472,17 +472,7 @@ export class MarkdownStreamer implements Streamer {
     this.refreshRenderGeometry();
 
     const parsed = this.parseBufferSafely(this.buffer);
-    const stripped = stripTrailingAnsi(parsed);
-
-    if (stripped.startsWith(this.committedOutput)) {
-      const delta = stripped.substring(this.committedOutput.length);
-      if (delta.length > 0) {
-        this.stderr.write(delta);
-        this.committedOutput = stripped;
-      }
-    } else {
-      this.rewriteFromDivergence(stripped);
-    }
+    this.writeRenderedOutput(parsed, false);
   }
 
   /**
@@ -499,9 +489,12 @@ export class MarkdownStreamer implements Streamer {
     this.refreshRenderGeometry();
 
     const parsed = this.parseBufferSafely(this.buffer);
+    this.writeRenderedOutput(parsed, true);
+  }
+
+  private writeRenderedOutput(parsed: string, includeTrailing: boolean): void {
     const stripped = stripTrailingAnsi(parsed);
 
-    // Handle divergence first if needed
     if (!stripped.startsWith(this.committedOutput)) {
       this.rewriteFromDivergence(stripped);
     } else {
@@ -512,10 +505,12 @@ export class MarkdownStreamer implements Streamer {
       }
     }
 
-    // Write trailing ANSI resets and newlines that were stripped during streaming
-    const trailing = parsed.substring(stripped.length);
-    if (trailing.length > 0) {
-      this.stderr.write(trailing);
+    if (includeTrailing) {
+      // Write trailing ANSI resets and newlines that were stripped during streaming.
+      const trailing = parsed.substring(stripped.length);
+      if (trailing.length > 0) {
+        this.stderr.write(trailing);
+      }
     }
   }
 

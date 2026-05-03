@@ -1,9 +1,4 @@
-import {
-  CLI_FLAG_SHOW_CONTEXT_STATS,
-  CLI_FLAG_SHOW_PROMPT_PLAN,
-  parseCliArgs,
-  parseSandboxArgs,
-} from "../args.js";
+import { parseCliArgs, parseSandboxArgs } from "../args.js";
 
 describe("cli args parsing", () => {
   it("parses sandbox flag and forwards all non-sandbox args", () => {
@@ -123,20 +118,20 @@ describe("cli args parsing", () => {
   });
 
   it("parses --show-context-stats flag", () => {
-    const parsed = parseCliArgs([CLI_FLAG_SHOW_CONTEXT_STATS, "--foo"]);
+    const parsed = parseCliArgs(["--show-context-stats", "--foo"]);
 
     expect(parsed.flags.showContextStats).toBe(true);
     expect(parsed.forwardedArgs).toEqual([
-      CLI_FLAG_SHOW_CONTEXT_STATS,
+      "--show-context-stats",
       "--foo",
     ]);
   });
 
   it("parses --show-prompt-plan flag", () => {
-    const parsed = parseCliArgs([CLI_FLAG_SHOW_PROMPT_PLAN, "--foo"]);
+    const parsed = parseCliArgs(["--show-prompt-plan", "--foo"]);
 
     expect(parsed.flags.showPromptPlan).toBe(true);
-    expect(parsed.forwardedArgs).toEqual([CLI_FLAG_SHOW_PROMPT_PLAN, "--foo"]);
+    expect(parsed.forwardedArgs).toEqual(["--show-prompt-plan", "--foo"]);
   });
 
   it("keeps context stats and prompt plan flags false by default", () => {
@@ -149,16 +144,16 @@ describe("cli args parsing", () => {
 
   it("parses both context inspection flags together", () => {
     const parsed = parseCliArgs([
-      CLI_FLAG_SHOW_CONTEXT_STATS,
-      CLI_FLAG_SHOW_PROMPT_PLAN,
+      "--show-context-stats",
+      "--show-prompt-plan",
       "--json",
     ]);
 
     expect(parsed.flags.showContextStats).toBe(true);
     expect(parsed.flags.showPromptPlan).toBe(true);
     expect(parsed.forwardedArgs).toEqual([
-      CLI_FLAG_SHOW_CONTEXT_STATS,
-      CLI_FLAG_SHOW_PROMPT_PLAN,
+      "--show-context-stats",
+      "--show-prompt-plan",
       "--json",
     ]);
   });

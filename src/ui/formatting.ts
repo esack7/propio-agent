@@ -1,62 +1,63 @@
-import * as colors from "./colors.js";
+import * as textColors from "./textColors.js";
+import * as statusColors from "./statusColors.js";
 import { symbols } from "./symbols.js";
 
 export function formatUserMessage(text: string): string {
-  return colors.userInput(text);
+  return textColors.userInput(text);
 }
 
 export function formatAssistantMessage(text: string): string {
-  return colors.assistant(text);
+  return textColors.assistant(text);
 }
 
 export function formatInputPrompt(text: string): string {
-  return colors.inputPrompt(text);
+  return textColors.inputPrompt(text);
 }
 
-export function formatAssistantPrefix(text: string): string {
-  return colors.assistantPrefix(text);
+function formatAssistantPrefix(text: string): string {
+  return textColors.assistantPrefix(text);
 }
 
-export function formatAssistantGutter(text: string): string {
-  return colors.assistantGutter(text);
+function formatAssistantGutter(text: string): string {
+  return textColors.assistantGutter(text);
 }
 
-export function formatInputBorder(text: string): string {
-  return colors.inputBorder(text);
+function formatInputBorder(text: string): string {
+  return textColors.inputBorder(text);
 }
 
-export function formatInputFill(text: string): string {
-  return colors.inputFill(text);
+function formatInputFill(text: string): string {
+  return textColors.inputFill(text);
 }
 
-export function formatInputPlaceholder(text: string): string {
-  return colors.inputPlaceholder(text);
+function formatInputPlaceholder(text: string): string {
+  return textColors.inputPlaceholder(text);
 }
 
-export function formatToolExecution(toolName: string): string {
-  return colors.tool(`${symbols.bullet} ${toolName}`);
+function formatToolExecution(toolName: string): string {
+  return statusColors.tool(`${symbols.bullet} ${toolName}`);
 }
 
 export function formatSuccess(text: string): string {
-  return colors.success(`${symbols.success} ${text}`);
+  return statusColors.success(`${symbols.success} ${text}`);
 }
 
 export function formatError(text: string): string {
-  return colors.error(`${symbols.error} ${text}`);
+  return statusColors.error(`${symbols.error} ${text}`);
 }
 
 export function formatWarning(text: string): string {
-  return colors.warning(`${symbols.bullet} ${text}`);
+  return statusColors.warning(`${symbols.bullet} ${text}`);
 }
 
 export function formatCommand(text: string): string {
-  return colors.command(text);
+  return textColors.command(text);
 }
 
 export function formatInfo(text: string): string {
-  return colors.info(text);
+  return textColors.info(text);
 }
 
 export function formatSubtle(text: string): string {
-  return colors.subtle(text);
+  return textColors.subtle(text);
 }

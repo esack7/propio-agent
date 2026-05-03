@@ -1,6 +1,6 @@
 import type { Skill } from "./types.js";
 
-export const MAX_SKILL_DISCOVERY_CHARS = 3000;
+const MAX_SKILL_DISCOVERY_CHARS = 3000;
 
 function compact(text: string | undefined): string {
   return text ? text.replace(/\s+/g, " ").trim() : "";

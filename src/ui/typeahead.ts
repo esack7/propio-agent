@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { FileSearchIndex } from "../fileSearch/index.js";
+import { FileSearchIndex } from "../fileSearch/fileSearchIndex.js";
 import { getSlashCommandCompletionCommands } from "./slashCommands.js";
 import type { Skill } from "../skills/types.js";
 
@@ -635,7 +635,7 @@ export function createSkillCommandTypeaheadProvider(
   };
 }
 
-export function resolveTypeaheadTarget(
+function resolveTypeaheadTarget(
   buffer: string,
   cursor: number,
   workspaceRoot: string,

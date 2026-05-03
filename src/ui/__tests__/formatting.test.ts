@@ -1,8 +1,10 @@
 import chalk from "chalk";
+import { withEnvironmentVariable } from "./envTestHelpers.js";
 
 describe("formatting module", () => {
   let formattingModule: any;
-  let colorsModule: any;
+  let textColorsModule: any;
+  let statusColorsModule: any;
   let symbolsModule: any;
 
   beforeEach(async () => {
@@ -12,7 +14,8 @@ describe("formatting module", () => {
     // Clear module cache and reimport
     jest.resetModules();
     formattingModule = await import("../formatting.js");
-    colorsModule = await import("../colors.js");
+    textColorsModule = await import("../textColors.js");
+    statusColorsModule = await import("../statusColors.js");
     symbolsModule = await import("../symbols.js");
   });
 
@@ -30,36 +33,6 @@ describe("formatting module", () => {
     it("should export formatInputPrompt function", () => {
       expect(formattingModule.formatInputPrompt).toBeDefined();
       expect(typeof formattingModule.formatInputPrompt).toBe("function");
-    });
-
-    it("should export formatAssistantPrefix function", () => {
-      expect(formattingModule.formatAssistantPrefix).toBeDefined();
-      expect(typeof formattingModule.formatAssistantPrefix).toBe("function");
-    });
-
-    it("should export formatAssistantGutter function", () => {
-      expect(formattingModule.formatAssistantGutter).toBeDefined();
-      expect(typeof formattingModule.formatAssistantGutter).toBe("function");
-    });
-
-    it("should export formatInputBorder function", () => {
-      expect(formattingModule.formatInputBorder).toBeDefined();
-      expect(typeof formattingModule.formatInputBorder).toBe("function");
-    });
-
-    it("should export formatInputFill function", () => {
-      expect(formattingModule.formatInputFill).toBeDefined();
-      expect(typeof formattingModule.formatInputFill).toBe("function");
-    });
-
-    it("should export formatInputPlaceholder function", () => {
-      expect(formattingModule.formatInputPlaceholder).toBeDefined();
-      expect(typeof formattingModule.formatInputPlaceholder).toBe("function");
-    });
-
-    it("should export formatToolExecution function", () => {
-      expect(formattingModule.formatToolExecution).toBeDefined();
-      expect(typeof formattingModule.formatToolExecution).toBe("function");
     });
 
     it("should export formatSuccess function", () => {
@@ -99,7 +72,7 @@ describe("formatting module", () => {
       const result = formattingModule.formatUserMessage(text);
 
       // Should match userInput color function
-      const expected = colorsModule.userInput(text);
+      const expected = textColorsModule.userInput(text);
       expect(result).toBe(expected);
     });
 
@@ -123,7 +96,7 @@ describe("formatting module", () => {
       const result = formattingModule.formatAssistantMessage(text);
 
       // Should match assistant color function
-      const expected = colorsModule.assistant(text);
+      const expected = textColorsModule.assistant(text);
       expect(result).toBe(expected);
     });
 
@@ -145,83 +118,8 @@ describe("formatting module", () => {
     it("should return styled text with inputPrompt color", () => {
       const text = "prompt";
       const result = formattingModule.formatInputPrompt(text);
-      const expected = colorsModule.inputPrompt(text);
+      const expected = textColorsModule.inputPrompt(text);
       expect(result).toBe(expected);
-    });
-  });
-
-  describe("formatAssistantPrefix", () => {
-    it("should return styled text with assistantPrefix color", () => {
-      const text = "Assistant: ";
-      const result = formattingModule.formatAssistantPrefix(text);
-      const expected = colorsModule.assistantPrefix(text);
-      expect(result).toBe(expected);
-    });
-  });
-
-  describe("formatAssistantGutter", () => {
-    it("should return styled text with assistantGutter color", () => {
-      const text = "│ ";
-      const result = formattingModule.formatAssistantGutter(text);
-      const expected = colorsModule.assistantGutter(text);
-      expect(result).toBe(expected);
-    });
-  });
-
-  describe("formatInputBorder", () => {
-    it("should return styled text with inputBorder color", () => {
-      const text = "border";
-      const result = formattingModule.formatInputBorder(text);
-      const expected = colorsModule.inputBorder(text);
-      expect(result).toBe(expected);
-    });
-  });
-
-  describe("formatInputFill", () => {
-    it("should return styled text with inputFill background", () => {
-      const text = "fill";
-      const result = formattingModule.formatInputFill(text);
-      const expected = colorsModule.inputFill(text);
-      expect(result).toBe(expected);
-    });
-  });
-
-  describe("formatInputPlaceholder", () => {
-    it("should return styled text with inputPlaceholder color", () => {
-      const text = "placeholder";
-      const result = formattingModule.formatInputPlaceholder(text);
-      const expected = colorsModule.inputPlaceholder(text);
-      expect(result).toBe(expected);
-    });
-  });
-
-  describe("formatToolExecution", () => {
-    it("should prepend tool symbol to tool name colored with tool color", () => {
-      const toolName = "bash";
-      const result = formattingModule.formatToolExecution(toolName);
-
-      // Should contain the symbol
-      expect(result).toContain(symbolsModule.symbols.bullet);
-
-      // Should contain tool color applied
-      const expected = colorsModule.tool(
-        `${symbolsModule.symbols.bullet} ${toolName}`,
-      );
-      expect(result).toBe(expected);
-    });
-
-    it("should handle tool name with special characters", () => {
-      const toolName = "file-system-tool";
-      const result = formattingModule.formatToolExecution(toolName);
-      expect(result).toBeDefined();
-      expect(typeof result).toBe("string");
-      expect(result).toContain(symbolsModule.symbols.bullet);
-    });
-
-    it("should handle empty tool name", () => {
-      const result = formattingModule.formatToolExecution("");
-      expect(result).toBeDefined();
-      expect(typeof result).toBe("string");
     });
   });
 
@@ -234,7 +132,7 @@ describe("formatting module", () => {
       expect(result).toContain(symbolsModule.symbols.success);
 
       // Should match the composed format
-      const expected = colorsModule.success(
+      const expected = statusColorsModule.success(
         `${symbolsModule.symbols.success} ${text}`,
       );
       expect(result).toBe(expected);
@@ -264,7 +162,7 @@ describe("formatting module", () => {
       expect(result).toContain(symbolsModule.symbols.error);
 
       // Should match the composed format
-      const expected = colorsModule.error(
+      const expected = statusColorsModule.error(
         `${symbolsModule.symbols.error} ${text}`,
       );
       expect(result).toBe(expected);
@@ -294,7 +192,7 @@ describe("formatting module", () => {
       expect(result).toContain(symbolsModule.symbols.bullet);
 
       // Should match the composed format with warning color
-      const expected = colorsModule.warning(
+      const expected = statusColorsModule.warning(
         `${symbolsModule.symbols.bullet} ${text}`,
       );
       expect(result).toBe(expected);
@@ -321,7 +219,7 @@ describe("formatting module", () => {
       const result = formattingModule.formatCommand(text);
 
       // Should match command color function
-      const expected = colorsModule.command(text);
+      const expected = textColorsModule.command(text);
       expect(result).toBe(expected);
     });
 
@@ -345,7 +243,7 @@ describe("formatting module", () => {
       const result = formattingModule.formatInfo(text);
 
       // Should match info color function
-      const expected = colorsModule.info(text);
+      const expected = textColorsModule.info(text);
       expect(result).toBe(expected);
     });
 
@@ -369,7 +267,7 @@ describe("formatting module", () => {
       const result = formattingModule.formatSubtle(text);
 
       // Should match subtle color function
-      const expected = colorsModule.subtle(text);
+      const expected = textColorsModule.subtle(text);
       expect(result).toBe(expected);
     });
 
@@ -403,10 +301,6 @@ describe("formatting module", () => {
           fn: formattingModule.formatWarning,
           symbol: symbolsModule.symbols.bullet,
         },
-        {
-          fn: formattingModule.formatToolExecution,
-          symbol: symbolsModule.symbols.bullet,
-        },
       ];
 
       symbolFunctions.forEach(({ fn, symbol }) => {
@@ -422,11 +316,6 @@ describe("formatting module", () => {
         formattingModule.formatUserMessage,
         formattingModule.formatAssistantMessage,
         formattingModule.formatInputPrompt,
-        formattingModule.formatAssistantPrefix,
-        formattingModule.formatAssistantGutter,
-        formattingModule.formatInputBorder,
-        formattingModule.formatInputFill,
-        formattingModule.formatInputPlaceholder,
         formattingModule.formatCommand,
         formattingModule.formatInfo,
         formattingModule.formatSubtle,
@@ -446,52 +335,30 @@ describe("formatting module", () => {
 
   describe("NO_COLOR environment variable support", () => {
     it("should respect NO_COLOR when formatting with symbols", async () => {
-      // Save original env
-      const originalNoColor = process.env.NO_COLOR;
+      await withEnvironmentVariable("NO_COLOR", "1", async () => {
+        // Clear the module cache to force re-import with new env
+        jest.resetModules();
+        const freshFormattingModule = await import("../formatting.js");
 
-      // Set NO_COLOR
-      process.env.NO_COLOR = "1";
+        const result = freshFormattingModule.formatSuccess("test");
 
-      // Clear the module cache to force re-import with new env
-      jest.resetModules();
-      const freshFormattingModule = await import("../formatting.js");
-
-      const result = freshFormattingModule.formatSuccess("test");
-
-      // With NO_COLOR set, colors should be stripped but symbol should remain
-      expect(typeof result).toBe("string");
-      expect(result).toContain(symbolsModule.symbols.success);
-
-      // Restore env
-      if (originalNoColor === undefined) {
-        delete process.env.NO_COLOR;
-      } else {
-        process.env.NO_COLOR = originalNoColor;
-      }
+        // With NO_COLOR set, colors should be stripped but symbol should remain
+        expect(typeof result).toBe("string");
+        expect(result).toContain(symbolsModule.symbols.success);
+      });
     });
 
     it("should respect NO_COLOR when formatting with colors only", async () => {
-      // Save original env
-      const originalNoColor = process.env.NO_COLOR;
+      await withEnvironmentVariable("NO_COLOR", "1", async () => {
+        // Clear the module cache to force re-import with new env
+        jest.resetModules();
+        const freshFormattingModule = await import("../formatting.js");
 
-      // Set NO_COLOR
-      process.env.NO_COLOR = "1";
+        const result = freshFormattingModule.formatUserMessage("test");
 
-      // Clear the module cache to force re-import with new env
-      jest.resetModules();
-      const freshFormattingModule = await import("../formatting.js");
-
-      const result = freshFormattingModule.formatUserMessage("test");
-
-      // With NO_COLOR set, colors should be stripped
-      expect(typeof result).toBe("string");
-
-      // Restore env
-      if (originalNoColor === undefined) {
-        delete process.env.NO_COLOR;
-      } else {
-        process.env.NO_COLOR = originalNoColor;
-      }
+        // With NO_COLOR set, colors should be stripped
+        expect(typeof result).toBe("string");
+      });
     });
   });
 
@@ -500,35 +367,20 @@ describe("formatting module", () => {
       const text = "test";
 
       expect(formattingModule.formatUserMessage(text)).toBe(
-        colorsModule.userInput(text),
+        textColorsModule.userInput(text),
       );
       expect(formattingModule.formatAssistantMessage(text)).toBe(
-        colorsModule.assistant(text),
+        textColorsModule.assistant(text),
       );
       expect(formattingModule.formatInputPrompt(text)).toBe(
-        colorsModule.inputPrompt(text),
-      );
-      expect(formattingModule.formatAssistantPrefix(text)).toBe(
-        colorsModule.assistantPrefix(text),
-      );
-      expect(formattingModule.formatAssistantGutter(text)).toBe(
-        colorsModule.assistantGutter(text),
-      );
-      expect(formattingModule.formatInputBorder(text)).toBe(
-        colorsModule.inputBorder(text),
-      );
-      expect(formattingModule.formatInputFill(text)).toBe(
-        colorsModule.inputFill(text),
-      );
-      expect(formattingModule.formatInputPlaceholder(text)).toBe(
-        colorsModule.inputPlaceholder(text),
+        textColorsModule.inputPrompt(text),
       );
       expect(formattingModule.formatCommand(text)).toBe(
-        colorsModule.command(text),
+        textColorsModule.command(text),
       );
-      expect(formattingModule.formatInfo(text)).toBe(colorsModule.info(text));
+      expect(formattingModule.formatInfo(text)).toBe(textColorsModule.info(text));
       expect(formattingModule.formatSubtle(text)).toBe(
-        colorsModule.subtle(text),
+        textColorsModule.subtle(text),
       );
     });
 
@@ -543,9 +395,6 @@ describe("formatting module", () => {
 
       const warningResult = formattingModule.formatWarning(text);
       expect(warningResult).toContain(symbolsModule.symbols.bullet);
-
-      const toolResult = formattingModule.formatToolExecution(text);
-      expect(toolResult).toContain(symbolsModule.symbols.bullet);
     });
   });
 });

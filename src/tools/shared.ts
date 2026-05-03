@@ -1,8 +1,8 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
 
-export const DEFAULT_OUTPUT_LIMIT = 50 * 1024;
-export const DEFAULT_TRUNCATION_MARKER = "[output truncated]";
+const DEFAULT_OUTPUT_LIMIT = 50 * 1024;
+const DEFAULT_TRUNCATION_MARKER = "[output truncated]";
 
 const CONTROL_CHARACTERS = /[\x00-\x1f]/;
 const BINARY_BYTE = 0x00;
@@ -47,7 +47,7 @@ export async function readUtf8TextFile(filePath: string): Promise<string> {
   return buffer.toString("utf8");
 }
 
-export async function ensureParentDirectory(filePath: string): Promise<void> {
+async function ensureParentDirectory(filePath: string): Promise<void> {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
 }
 
