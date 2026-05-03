@@ -610,14 +610,17 @@ export class PassthroughStreamer implements Streamer {
     this.writeCallback = writeCallback;
   }
 
+  // fallow-ignore-next-line unused-class-member
   push(token: string): void {
     this.writeCallback(token);
   }
 
+  // fallow-ignore-next-line unused-class-member
   flush(): void {
     // No-op
   }
 
+  // fallow-ignore-next-line unused-class-member
   finish(): void {
     // No-op
   }
@@ -628,14 +631,17 @@ export class PassthroughStreamer implements Streamer {
  * Used for JSON mode.
  */
 export class NullStreamer implements Streamer {
+  // fallow-ignore-next-line unused-class-member
   push(_token: string): void {
     // No-op
   }
 
+  // fallow-ignore-next-line unused-class-member
   flush(): void {
     // No-op
   }
 
+  // fallow-ignore-next-line unused-class-member
   finish(): void {
     // No-op
   }

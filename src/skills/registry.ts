@@ -9,7 +9,10 @@ import type {
   SkillLoadDiagnostic,
 } from "./types.js";
 import { createMissingSkillError } from "./shared.js";
-import { createSkillDiagnostic as createDiagnostic } from "./shared.js";
+import {
+  createSkillDiagnostic as createDiagnostic,
+  cloneInvokedSkillRecord,
+} from "./shared.js";
 
 type SkillReloadFn = (context: SkillContext) => {
   readonly skills: Skill[];
@@ -32,21 +35,6 @@ function cloneSkill(skill: Skill): Skill {
     ...(skill.arguments ? { arguments: [...skill.arguments] } : {}),
     ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
     ...(skill.paths ? { paths: [...skill.paths] } : {}),
-  };
-}
-
-function cloneInvokedSkill(record: InvokedSkillRecord): InvokedSkillRecord {
-  return {
-    ...record,
-    scope: {
-      ...record.scope,
-      ...(record.scope.allowedTools
-        ? { allowedTools: [...record.scope.allowedTools] }
-        : {}),
-      ...(record.scope.warnings
-        ? { warnings: [...record.scope.warnings] }
-        : {}),
-    },
   };
 }
 
@@ -269,20 +257,18 @@ export class SkillRegistry {
     );
   }
 
-  setDiagnostics(diagnostics: SkillLoadDiagnostic[]): void {
-    this.diagnostics = diagnostics.slice();
-  }
-
   list(): ReadonlyArray<Skill> {
     return this.skills.map((skill) => cloneSkill(skill));
   }
 
+  // fallow-ignore-next-line unused-class-member
   listUserInvocable(): ReadonlyArray<Skill> {
     return Array.from(this.activeSkillsByName.values())
       .filter((skill) => skill.userInvocable !== false)
       .map((skill) => cloneSkill(skill));
   }
 
+  // fallow-ignore-next-line unused-class-member
   listModelInvocable(): ReadonlyArray<Skill> {
     return Array.from(this.activeSkillsByName.values())
       .filter((skill) => skill.disableModelInvocation !== true)
@@ -301,11 +287,6 @@ export class SkillRegistry {
 
     const skill = this.skills.find((entry) => entry.name === normalized);
     return skill ? cloneSkill(skill) : undefined;
-  }
-
-  isSkillActive(name: string): boolean {
-    const normalized = name.trim().toLowerCase();
-    return normalized.length > 0 && this.activeSkillNames.has(normalized);
   }
 
   private getSkillOrThrow(name: string): Skill {
@@ -385,6 +366,7 @@ export class SkillRegistry {
     return { content: substituted, consumedPlaceholder };
   }
 
+  // fallow-ignore-next-line unused-class-member
   materialize(
     name: string,
     invocation?: SkillInvocation,
@@ -419,6 +401,7 @@ export class SkillRegistry {
     return sections.join("\n");
   }
 
+  // fallow-ignore-next-line unused-class-member
   recordFileTouch(paths: readonly string[]): ReadonlyArray<Skill> {
     const cwd = path.resolve(this.context.cwd);
     const touched = paths
@@ -439,14 +422,12 @@ export class SkillRegistry {
     return activated.map((skill) => cloneSkill(skill));
   }
 
+  // fallow-ignore-next-line unused-class-member
   recordInvocation(record: InvokedSkillRecord): void {
-    this.invokedSkills.push(cloneInvokedSkill(record));
+    this.invokedSkills.push(cloneInvokedSkillRecord(record));
   }
 
-  listInvocations(): ReadonlyArray<InvokedSkillRecord> {
-    return this.invokedSkills.map((record) => cloneInvokedSkill(record));
-  }
-
+  // fallow-ignore-next-line unused-class-member
   refresh(): SkillLoadDiagnostic[] {
     const result = this.reloadSkills(this.context);
     this.skills = result.skills.map((skill) => cloneSkill(skill));
@@ -455,6 +436,7 @@ export class SkillRegistry {
     return this.diagnostics.slice();
   }
 
+  // fallow-ignore-next-line unused-class-member
   getDiagnostics(): ReadonlyArray<SkillLoadDiagnostic> {
     return this.diagnostics.slice();
   }

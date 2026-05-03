@@ -11,6 +11,19 @@ import {
   ProviderModelNotFoundError,
   ProviderContextLengthError,
 } from "./types.js";
+import {
+  accumulateOpenAIStreamToolCall,
+  buildOpenAIChatCompletionRequestBody,
+  buildOpenAIStreamToolCalls,
+  applyOpenAIMessageCore,
+  createOpenAIToolDefinition,
+  isAbortOrTransportError,
+  isContextLengthError,
+  parseJsonMaybe,
+  parseOpenAIStreamToolCallArguments,
+  parseRetryAfterSeconds,
+  readSseDataLines,
+} from "./shared.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { OpenRouterRoutingConfig } from "./config.js";
 
@@ -142,55 +155,10 @@ export class OpenRouterProvider implements LLMProvider {
    * Expands batched tool results into individual tool messages.
    * OpenAI/OpenRouter expects one message per tool result with tool_call_id.
    */
-  private expandToolResults(messages: ChatMessage[]): ChatMessage[] {
-    const expanded: ChatMessage[] = [];
-
-    for (const msg of messages) {
-      // If this is a batched tool result message, expand it
-      if (
-        msg.role === "tool" &&
-        msg.toolResults &&
-        msg.toolResults.length > 0
-      ) {
-        for (const toolResult of msg.toolResults) {
-          expanded.push({
-            role: "tool",
-            content: toolResult.content,
-            toolCallId: toolResult.toolCallId,
-          });
-        }
-      } else {
-        // Not a batched tool result, keep as is
-        expanded.push(msg);
-      }
-    }
-
-    return expanded;
-  }
-
   private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
     const role = msg.role as OpenAIMessage["role"];
     const out: OpenAIMessage = { role, content: msg.content ?? "" };
-    if (msg.reasoningContent !== undefined) {
-      out.reasoning_content = msg.reasoningContent;
-    }
-    if (msg.toolCalls && msg.toolCalls.length > 0) {
-      out.tool_calls = msg.toolCalls.map((tc) => ({
-        id: tc.id ?? `call_${tc.function.name}_${Date.now()}`,
-        type: "function" as const,
-        function: {
-          name: tc.function.name,
-          arguments:
-            typeof tc.function.arguments === "string"
-              ? tc.function.arguments
-              : JSON.stringify(tc.function.arguments ?? {}),
-        },
-      }));
-    }
-    if (msg.role === "tool" && msg.toolCallId) {
-      out.tool_call_id = msg.toolCallId;
-    }
-    return out;
+    return applyOpenAIMessageCore(out, msg);
   }
 
   private openAIMessageToChatMessage(msg: {
@@ -239,17 +207,7 @@ export class OpenRouterProvider implements LLMProvider {
   }
 
   private chatToolToOpenAITool(tool: ChatTool): OpenAITool {
-    return {
-      type: "function",
-      function: {
-        name: tool.function.name,
-        description: tool.function.description,
-        parameters: (tool.function.parameters ?? {
-          type: "object",
-          properties: {},
-        }) as object,
-      },
-    };
+    return createOpenAIToolDefinition(tool);
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -260,46 +218,39 @@ export class OpenRouterProvider implements LLMProvider {
     request: ChatRequest,
     includeTools: boolean,
   ): Record<string, unknown> {
-    const expandedMessages = this.expandToolResults(request.messages);
-    const messages = expandedMessages.map((m) =>
-      this.chatMessageToOpenAIMessage(m),
-    );
+    return buildOpenAIChatCompletionRequestBody({
+      request,
+      model: this.model,
+      mapMessage: (msg) => this.chatMessageToOpenAIMessage(msg),
+      mapTool: (tool) => this.chatToolToOpenAITool(tool),
+      includeTools,
+      extra: (body) => {
+        if (this.providerRouting) {
+          const provider: Record<string, unknown> = {};
+          if (this.providerRouting.allowFallbacks !== undefined) {
+            provider.allow_fallbacks = this.providerRouting.allowFallbacks;
+          }
+          if (this.providerRouting.order !== undefined) {
+            provider.order = [...this.providerRouting.order];
+          }
+          if (this.providerRouting.requireParameters !== undefined) {
+            provider.require_parameters =
+              this.providerRouting.requireParameters;
+          }
+          if (Object.keys(provider).length > 0) {
+            body.provider = provider;
+          }
+        }
 
-    const body: Record<string, unknown> = {
-      model: request.model || this.model,
-      messages,
-      stream: true,
-    };
+        if (this.fallbackModels && this.fallbackModels.length > 0) {
+          body.models = [...this.fallbackModels];
+        }
 
-    if (includeTools && request.tools && request.tools.length > 0) {
-      body.tools = request.tools.map((t) => this.chatToolToOpenAITool(t));
-    }
-
-    if (this.providerRouting) {
-      const provider: Record<string, unknown> = {};
-      if (this.providerRouting.allowFallbacks !== undefined) {
-        provider.allow_fallbacks = this.providerRouting.allowFallbacks;
-      }
-      if (this.providerRouting.order !== undefined) {
-        provider.order = [...this.providerRouting.order];
-      }
-      if (this.providerRouting.requireParameters !== undefined) {
-        provider.require_parameters = this.providerRouting.requireParameters;
-      }
-      if (Object.keys(provider).length > 0) {
-        body.provider = provider;
-      }
-    }
-
-    if (this.fallbackModels && this.fallbackModels.length > 0) {
-      body.models = [...this.fallbackModels];
-    }
-
-    if (this.debugEchoUpstreamBody && this.debugLoggingEnabled) {
-      body.debug = { echo_upstream_body: true };
-    }
-
-    return body;
+        if (this.debugEchoUpstreamBody && this.debugLoggingEnabled) {
+          body.debug = { echo_upstream_body: true };
+        }
+      },
+    });
   }
 
   private buildHeaders(): Record<string, string> {
@@ -472,8 +423,6 @@ export class OpenRouterProvider implements LLMProvider {
       throw this.translateError(new Error("No response body"));
     }
 
-    const decoder = new TextDecoder();
-    let lineBuffer = "";
     let contentBuffer = "";
     let reasoningContent = "";
     let sawUsableOutput = false;
@@ -483,126 +432,92 @@ export class OpenRouterProvider implements LLMProvider {
       { id?: string; name: string; argsString: string }
     >();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      lineBuffer += decoder.decode(value, { stream: true });
-      const lines = lineBuffer.split("\n");
-      lineBuffer = lines.pop() ?? "";
+    for await (const data of readSseDataLines(reader)) {
+      if (data === "[DONE]") {
+        reachedDone = true;
+        break;
+      }
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") {
-          reachedDone = true;
-          break;
-        }
+      const chunk = parseJsonMaybe<{
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            reasoning_content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+          finish_reason?: string;
+        }>;
+      }>(data);
+      const choice = chunk?.choices?.[0];
+      if (!choice?.delta) continue;
 
-        let chunk: {
-          choices?: Array<{
-            delta?: {
-              content?: string;
-              reasoning_content?: string;
-              tool_calls?: Array<{
-                index?: number;
-                id?: string;
-                function?: { name?: string; arguments?: string };
-              }>;
-            };
-            finish_reason?: string;
-          }>;
-        };
-        try {
-          chunk = JSON.parse(data) as typeof chunk;
-        } catch {
-          continue;
-        }
-        const choice = chunk.choices?.[0];
-        if (!choice?.delta) continue;
+      const delta = choice.delta;
+      if (delta.reasoning_content != null && delta.reasoning_content !== "") {
+        reasoningContent += delta.reasoning_content;
+      }
 
-        const delta = choice.delta;
-        if (delta.reasoning_content != null && delta.reasoning_content !== "") {
-          reasoningContent += delta.reasoning_content;
-        }
-
-        if (delta.content != null && delta.content !== "") {
-          if (options.parseDsmlToolCalls) {
-            contentBuffer += delta.content;
-            const consumed = this.consumeDsmlBuffer(contentBuffer);
-            contentBuffer = consumed.remainingBuffer;
-            for (const event of consumed.events) {
-              if (
-                "type" in event &&
-                event.type === "tool_calls" &&
-                reasoningContent.length > 0
-              ) {
-                yield {
-                  type: "tool_calls",
-                  toolCalls: event.toolCalls,
-                  reasoningContent,
-                };
-                continue;
-              }
-              yield event;
+      if (delta.content != null && delta.content !== "") {
+        if (options.parseDsmlToolCalls) {
+          contentBuffer += delta.content;
+          const consumed = this.consumeDsmlBuffer(contentBuffer);
+          contentBuffer = consumed.remainingBuffer;
+          for (const event of consumed.events) {
+            if (
+              "type" in event &&
+              event.type === "tool_calls" &&
+              reasoningContent.length > 0
+            ) {
+              yield {
+                type: "tool_calls",
+                toolCalls: event.toolCalls,
+                reasoningContent,
+              };
+              continue;
             }
-            sawUsableOutput ||= consumed.sawUsableOutput;
-          } else {
-            yield { type: "assistant_text", delta: delta.content };
-            if (delta.content.trim().length > 0) {
-              sawUsableOutput = true;
-            }
+            yield event;
           }
-        }
-
-        if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index ?? 0;
-            let acc = structuredToolCallsByIndex.get(idx);
-            if (!acc) {
-              acc = { name: "", argsString: "" };
-              structuredToolCallsByIndex.set(idx, acc);
-            }
-            if (tc.id) acc.id = tc.id;
-            if (tc.function?.name) acc.name += tc.function.name;
-            if (tc.function?.arguments != null) {
-              acc.argsString += tc.function.arguments;
-            }
-          }
-        }
-
-        if (choice.finish_reason === "tool_calls") {
-          const toolCalls: ChatToolCall[] = [];
-          const indices = [...structuredToolCallsByIndex.keys()].sort(
-            (a, b) => a - b,
-          );
-          for (const i of indices) {
-            const acc = structuredToolCallsByIndex.get(i)!;
-            let args: Record<string, unknown> = {};
-            if (acc.argsString) {
-              try {
-                args = JSON.parse(acc.argsString);
-              } catch {
-                args = { raw: acc.argsString };
-              }
-            }
-            toolCalls.push({
-              id: acc.id,
-              function: { name: acc.name || "", arguments: args },
-            });
-          }
-          if (toolCalls.length > 0) {
-            yield {
-              type: "tool_calls",
-              toolCalls,
-              ...(reasoningContent.length > 0 ? { reasoningContent } : {}),
-            };
+          sawUsableOutput ||= consumed.sawUsableOutput;
+        } else {
+          yield { type: "assistant_text", delta: delta.content };
+          if (delta.content.trim().length > 0) {
             sawUsableOutput = true;
           }
         }
       }
 
-      if (reachedDone) {
-        break;
+      if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          accumulateOpenAIStreamToolCall(
+            tc,
+            structuredToolCallsByIndex,
+            () => ({ name: "", argsString: "" }),
+          );
+        }
+      }
+
+      if (choice.finish_reason === "tool_calls") {
+        const toolCalls = buildOpenAIStreamToolCalls(
+          structuredToolCallsByIndex,
+          (acc) => ({
+            id: acc.id,
+            function: {
+              name: acc.name || "",
+              arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+            },
+          }),
+        );
+        if (toolCalls.length > 0) {
+          yield {
+            type: "tool_calls",
+            toolCalls,
+            ...(reasoningContent.length > 0 ? { reasoningContent } : {}),
+          };
+          sawUsableOutput = true;
+        }
       }
     }
 
@@ -718,21 +633,6 @@ export class OpenRouterProvider implements LLMProvider {
     }
   }
 
-  private isContextLengthError(message: string): boolean {
-    const lower = message.toLowerCase();
-    return (
-      lower.includes("context length") ||
-      lower.includes("context window") ||
-      lower.includes("maximum context") ||
-      lower.includes("token limit") ||
-      lower.includes("too many tokens") ||
-      lower.includes("input is too long") ||
-      lower.includes("prompt is too long") ||
-      lower.includes("exceeds the model") ||
-      lower.includes("reduce your prompt")
-    );
-  }
-
   private parseOpenRouterErrorBody(responseBody?: string): {
     message?: string;
     providerName?: string;
@@ -827,7 +727,7 @@ export class OpenRouterProvider implements LLMProvider {
       };
       if (
         response.status === 400 &&
-        this.isContextLengthError(originalError.message)
+        isContextLengthError(originalError.message)
       ) {
         return new ProviderContextLengthError(
           `Context length exceeded: ${originalError.message}`,
@@ -843,8 +743,7 @@ export class OpenRouterProvider implements LLMProvider {
       if (response.status === 429) {
         const retryAfter = response.headers?.get("retry-after");
         const retryAfterSeconds =
-          errorInfo.retryAfterSeconds ??
-          (retryAfter ? parseInt(retryAfter, 10) : undefined);
+          errorInfo.retryAfterSeconds ?? parseRetryAfterSeconds(retryAfter);
         const detail = upstreamDetail(true);
         const message = detail
           ? `OpenRouter rate limit exceeded (${detail})`
@@ -883,7 +782,7 @@ export class OpenRouterProvider implements LLMProvider {
     }
     const msg = originalError.message;
 
-    if (this.isContextLengthError(msg)) {
+    if (isContextLengthError(msg)) {
       return new ProviderContextLengthError(
         `Context length exceeded: ${msg}`,
         originalError,
@@ -894,12 +793,7 @@ export class OpenRouterProvider implements LLMProvider {
       return new ProviderError("Request cancelled", originalError);
     }
 
-    if (
-      msg &&
-      (msg.includes("ECONNREFUSED") ||
-        msg.includes("ETIMEDOUT") ||
-        msg.includes("fetch failed"))
-    ) {
+    if (msg && isAbortOrTransportError(msg)) {
       return new ProviderError(
         "Failed to connect to OpenRouter API",
         originalError,

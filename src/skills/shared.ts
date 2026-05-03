@@ -1,4 +1,8 @@
-import type { Skill, SkillLoadDiagnostic } from "./types.js";
+import type {
+  InvokedSkillRecord,
+  Skill,
+  SkillLoadDiagnostic,
+} from "./types.js";
 
 export function createMissingSkillError(
   name: string,
@@ -28,5 +32,24 @@ export function createSkillDiagnostic(
     message,
     ...(skillPath ? { skillPath } : {}),
     ...(skillName ? { skillName } : {}),
+  };
+}
+
+function cloneInvocationScope(
+  scope: InvokedSkillRecord["scope"],
+): InvokedSkillRecord["scope"] {
+  return {
+    ...scope,
+    ...(scope.allowedTools ? { allowedTools: [...scope.allowedTools] } : {}),
+    ...(scope.warnings ? { warnings: [...scope.warnings] } : {}),
+  };
+}
+
+export function cloneInvokedSkillRecord(
+  record: InvokedSkillRecord,
+): InvokedSkillRecord {
+  return {
+    ...record,
+    scope: cloneInvocationScope(record.scope),
   };
 }

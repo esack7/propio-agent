@@ -33,12 +33,14 @@ import {
   clonePinnedRecord,
   MemoryValidationError,
 } from "./memoryManager.js";
+import { cloneInvokedSkillRecord } from "../skills/shared.js";
 import { PromptBuilder, PromptBuildRequest } from "./promptBuilder.js";
 import {
   computeSummaryEligibility,
   SummaryEligibility,
 } from "./summaryManager.js";
 import { renderInvokedSkillBlock } from "./invokedSkillRenderer.js";
+import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -420,11 +422,9 @@ export class ContextManager {
 
   removeLastUnresolvedAssistantMessage(): void {
     if (this.turns.length === 0) {
-      if (this.preTurnMessages.length === 0) {
-        return;
-      }
       const last = this.preTurnMessages[this.preTurnMessages.length - 1];
       if (
+        last &&
         last.role === "assistant" &&
         last.toolCalls &&
         last.toolCalls.length > 0
@@ -438,12 +438,12 @@ export class ContextManager {
     if (turn.entries.length === 0) {
       return;
     }
-    const last = turn.entries[turn.entries.length - 1];
-    if (
-      last.kind === "assistant" &&
-      last.message.toolCalls &&
-      last.message.toolCalls.length > 0
-    ) {
+    const lastAssistantIdx = findLastAssistantEntryIndex(turn.entries);
+    if (lastAssistantIdx < 0 || lastAssistantIdx !== turn.entries.length - 1) {
+      return;
+    }
+    const last = turn.entries[lastAssistantIdx];
+    if (last.message.toolCalls && last.message.toolCalls.length > 0) {
       turn.entries.pop();
     }
   }
@@ -482,18 +482,7 @@ export class ContextManager {
       ? state.pinnedMemory.map(clonePinnedRecord)
       : [];
     this.invokedSkills = state.invokedSkills
-      ? state.invokedSkills.map((record) => ({
-          ...record,
-          scope: {
-            ...record.scope,
-            ...(record.scope.allowedTools
-              ? { allowedTools: [...record.scope.allowedTools] }
-              : {}),
-            ...(record.scope.warnings
-              ? { warnings: [...record.scope.warnings] }
-              : {}),
-          },
-        }))
+      ? state.invokedSkills.map(cloneInvokedSkillRecord)
       : [];
   }
 
@@ -538,18 +527,7 @@ export class ContextManager {
           }
         : undefined,
       pinnedMemory: this.pinnedMemory.map(clonePinnedRecord),
-      invokedSkills: this.invokedSkills.map((record) => ({
-        ...record,
-        scope: {
-          ...record.scope,
-          ...(record.scope.allowedTools
-            ? { allowedTools: [...record.scope.allowedTools] }
-            : {}),
-          ...(record.scope.warnings
-            ? { warnings: [...record.scope.warnings] }
-            : {}),
-        },
-      })),
+      invokedSkills: this.invokedSkills.map(cloneInvokedSkillRecord),
     };
   }
 
@@ -610,18 +588,7 @@ export class ContextManager {
   }
 
   recordInvokedSkill(record: InvokedSkillRecord): void {
-    this.invokedSkills.push({
-      ...record,
-      scope: {
-        ...record.scope,
-        ...(record.scope.allowedTools
-          ? { allowedTools: [...record.scope.allowedTools] }
-          : {}),
-        ...(record.scope.warnings
-          ? { warnings: [...record.scope.warnings] }
-          : {}),
-      },
-    });
+    this.invokedSkills.push(cloneInvokedSkillRecord(record));
   }
 
   // -------------------------------------------------------------------

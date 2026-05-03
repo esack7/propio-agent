@@ -23,11 +23,14 @@ const textColors = {
 export const userInput = (text: string) => textColors.userInput(text);
 export const assistant = (text: string) => textColors.assistant(text);
 export const inputPrompt = (text: string) => textColors.inputPrompt(text);
-export const assistantPrefix = (text: string) => textColors.assistantPrefix(text);
-export const assistantGutter = (text: string) => textColors.assistantGutter(text);
+export const assistantPrefix = (text: string) =>
+  textColors.assistantPrefix(text);
+export const assistantGutter = (text: string) =>
+  textColors.assistantGutter(text);
 export const inputBorder = (text: string) => textColors.inputBorder(text);
 export const inputFill = (text: string) => textColors.inputFill(text);
-export const inputPlaceholder = (text: string) => textColors.inputPlaceholder(text);
+export const inputPlaceholder = (text: string) =>
+  textColors.inputPlaceholder(text);
 export const command = (text: string) => textColors.command(text);
 export const subtle = (text: string) => textColors.subtle(text);
 export const info = (text: string) => textColors.info(text);

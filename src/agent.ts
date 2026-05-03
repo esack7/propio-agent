@@ -457,6 +457,7 @@ export class Agent {
     return this.getSkillRegistry().listUserInvocable();
   }
 
+  // fallow-ignore-next-line unused-class-member
   listModelInvocableSkills(): ReadonlyArray<Skill> {
     return this.getSkillRegistry().listModelInvocable();
   }
@@ -930,6 +931,28 @@ export class Agent {
     }
   }
 
+  private normalizeAndEmitStreamEvent(
+    event: ChatStreamEvent,
+    options: AgentEventOptions | undefined,
+    abortSignal: AbortSignal | undefined,
+  ): ReturnType<Agent["normalizeStreamEvent"]> {
+    if (abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
+    const normalizedEvent = this.normalizeStreamEvent(event);
+
+    if (normalizedEvent.status) {
+      this.emitStatus(
+        options,
+        normalizedEvent.status.status,
+        normalizedEvent.status.phase,
+      );
+    }
+
+    return normalizedEvent;
+  }
+
   private async requestFinalResponseWithoutTools(
     onToken: (token: string) => void,
     abortSignal: AbortSignal | undefined,
@@ -961,20 +984,11 @@ export class Agent {
           signal: abortSignal,
           iteration,
         })) {
-          if (abortSignal?.aborted) {
-            throw new Error("Request cancelled");
-          }
-
-          const normalizedEvent = this.normalizeStreamEvent(event);
-
-          if (normalizedEvent.status) {
-            this.emitStatus(
-              options,
-              normalizedEvent.status.status,
-              normalizedEvent.status.phase,
-            );
-          }
-
+          const normalizedEvent = this.normalizeAndEmitStreamEvent(
+            event,
+            options,
+            abortSignal,
+          );
           this.recordStreamChunk(
             normalizedEvent,
             iteration,
@@ -1066,20 +1080,11 @@ export class Agent {
       signal: options?.abortSignal,
       iteration,
     })) {
-      if (options?.abortSignal?.aborted) {
-        throw new Error("Request cancelled");
-      }
-
-      const normalizedEvent = this.normalizeStreamEvent(event);
-
-      if (normalizedEvent.status) {
-        this.emitStatus(
-          options,
-          normalizedEvent.status.status,
-          normalizedEvent.status.phase,
-        );
-      }
-
+      const normalizedEvent = this.normalizeAndEmitStreamEvent(
+        event,
+        options,
+        options?.abortSignal,
+      );
       if (
         normalizedEvent.reasoningSummary &&
         !providerReasoningSummary &&
@@ -1088,12 +1093,7 @@ export class Agent {
         providerReasoningSummary = normalizedEvent.reasoningSummary;
       }
 
-      this.recordStreamChunk(
-        normalizedEvent,
-        iteration,
-        streamState,
-        onToken,
-      );
+      this.recordStreamChunk(normalizedEvent, iteration, streamState, onToken);
 
       if (normalizedEvent.toolCalls) {
         toolCalls = normalizedEvent.toolCalls;
@@ -1632,10 +1632,6 @@ export class Agent {
     this.toolRegistry.register(tool, true);
   }
 
-  removeTool(name: string): void {
-    this.toolRegistry.unregister(name);
-  }
-
   enableTool(name: string): void {
     this.toolRegistry.enable(name);
   }
@@ -1664,22 +1660,27 @@ export class Agent {
     return this.toolRegistry.isToolEnabled(name);
   }
 
+  // fallow-ignore-next-line unused-class-member
   getMcpServerSummaries(): ReadonlyArray<McpServerSummary> {
     return this.mcpManager.getServerSummaries();
   }
 
+  // fallow-ignore-next-line unused-class-member
   getMcpServerDetail(name: string): McpServerDetail | null {
     return this.mcpManager.getServerDetail(name);
   }
 
+  // fallow-ignore-next-line unused-class-member
   listMcpTools(serverName?: string): ReadonlyArray<McpToolSummary> {
     return this.mcpManager.listTools(serverName);
   }
 
+  // fallow-ignore-next-line unused-class-member
   async reconnectMcpServer(name: string): Promise<McpServerSummary> {
     return await this.mcpManager.reconnectServer(name);
   }
 
+  // fallow-ignore-next-line unused-class-member
   async setMcpServerEnabled(
     name: string,
     enabled: boolean,

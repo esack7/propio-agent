@@ -1,4 +1,7 @@
-import { error as colorError, success as colorSuccess } from "./statusColors.js";
+import {
+  error as colorError,
+  success as colorSuccess,
+} from "./statusColors.js";
 import { formatInfo } from "./formatting.js";
 import { OperationSpinner } from "./spinner.js";
 

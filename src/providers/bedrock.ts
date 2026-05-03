@@ -84,16 +84,16 @@ export class BedrockProvider implements LLMProvider {
     }
   }
 
-  private createConverseStreamCommand(request: ChatRequest): ConverseStreamCommand {
+  private createConverseStreamCommand(
+    request: ChatRequest,
+  ): ConverseStreamCommand {
     const systemMessage = request.messages.find((m) => m.role === "system");
     const messages = request.messages
       .filter((m) => m.role !== "system")
       .map((msg) => this.chatMessageToBedrockMessage(msg));
     const toolConfig = request.tools
       ? {
-          tools: request.tools.map((tool) =>
-            this.chatToolToBedrockTool(tool),
-          ),
+          tools: request.tools.map((tool) => this.chatToolToBedrockTool(tool)),
         }
       : undefined;
 
@@ -195,13 +195,11 @@ export class BedrockProvider implements LLMProvider {
     state.currentToolInput = "";
   }
 
-  private handleContentBlockStop(
-    state: {
-      toolCalls: ChatToolCall[];
-      currentToolCall: Partial<ChatToolCall> | null;
-      currentToolInput: string;
-    },
-  ): void {
+  private handleContentBlockStop(state: {
+    toolCalls: ChatToolCall[];
+    currentToolCall: Partial<ChatToolCall> | null;
+    currentToolInput: string;
+  }): void {
     if (!state.currentToolCall?.function || !state.currentToolInput) {
       return;
     }
@@ -211,7 +209,9 @@ export class BedrockProvider implements LLMProvider {
         state.currentToolInput,
       );
     } catch {
-      state.currentToolCall.function.arguments = { raw: state.currentToolInput };
+      state.currentToolCall.function.arguments = {
+        raw: state.currentToolInput,
+      };
     }
 
     state.toolCalls.push(state.currentToolCall as ChatToolCall);
@@ -243,10 +243,7 @@ export class BedrockProvider implements LLMProvider {
     };
   }
 
-  private appendTextContentBlock(
-    msg: ChatMessage,
-    contentBlocks: any[],
-  ): void {
+  private appendTextContentBlock(msg: ChatMessage, contentBlocks: any[]): void {
     if (msg.content && msg.role !== "tool") {
       contentBlocks.push({
         text: msg.content,

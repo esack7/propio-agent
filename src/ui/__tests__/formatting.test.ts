@@ -378,7 +378,9 @@ describe("formatting module", () => {
       expect(formattingModule.formatCommand(text)).toBe(
         textColorsModule.command(text),
       );
-      expect(formattingModule.formatInfo(text)).toBe(textColorsModule.info(text));
+      expect(formattingModule.formatInfo(text)).toBe(
+        textColorsModule.info(text),
+      );
       expect(formattingModule.formatSubtle(text)).toBe(
         textColorsModule.subtle(text),
       );

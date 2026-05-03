@@ -54,6 +54,11 @@ import {
 import type { TerminalUi } from "./ui/terminal.js";
 import { handleMcpCommand } from "./ui/mcpMenu.js";
 import { getMcpConfigPath, loadMcpConfigAsync } from "./mcp/config.js";
+import {
+  isLlmDebugEnabled,
+  formatDiagnosticLogLine,
+  renderStyledLines,
+} from "./indexHelpers.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -76,18 +81,6 @@ Options:
   --debug-llm-file    Append provider/stream/tool diagnostic events to a file
   -h, --help          Show this help text
 `;
-
-function isLlmDebugEnabled(parsedFlag: boolean): boolean {
-  if (parsedFlag) {
-    return true;
-  }
-  const envValue = process.env.PROPIO_DEBUG_LLM;
-  if (!envValue) {
-    return false;
-  }
-  const normalized = envValue.toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
-}
 
 function createDiagnosticLogger(options: {
   stderr?: NodeJS.WriteStream;
@@ -118,7 +111,7 @@ function createDiagnosticLogger(options: {
   return {
     onEvent: (event) => {
       const timestamp = new Date().toISOString();
-      const line = `[llm-debug ${timestamp}] ${JSON.stringify(event)}\n`;
+      const line = formatDiagnosticLogLine(timestamp, event);
       for (const sink of sinks) {
         sink.write(line);
       }
@@ -169,25 +162,6 @@ async function readStdinInput(): Promise<string> {
       reject(error);
     });
   });
-}
-
-function renderStyledLines(
-  ui: Pick<TerminalUi, "command" | "info" | "subtle" | "section">,
-  lines: ReadonlyArray<{ text: string; style: "info" | "subtle" | "section" }>,
-): void {
-  for (const line of lines) {
-    switch (line.style) {
-      case "section":
-        ui.section(line.text);
-        break;
-      case "info":
-        ui.info(line.text);
-        break;
-      case "subtle":
-        ui.subtle(line.text);
-        break;
-    }
-  }
 }
 
 async function runNonInteractiveSession(
@@ -477,7 +451,12 @@ async function handleSessionSubmission(
     return undefined;
   }
 
-  await handleSessionCommand(trimmedInput, context.agent, context.composer, context.ui);
+  await handleSessionCommand(
+    trimmedInput,
+    context.agent,
+    context.composer,
+    context.ui,
+  );
   return context.shouldExit() ? 130 : null;
 }
 

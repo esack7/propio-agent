@@ -121,10 +121,7 @@ describe("cli args parsing", () => {
     const parsed = parseCliArgs(["--show-context-stats", "--foo"]);
 
     expect(parsed.flags.showContextStats).toBe(true);
-    expect(parsed.forwardedArgs).toEqual([
-      "--show-context-stats",
-      "--foo",
-    ]);
+    expect(parsed.forwardedArgs).toEqual(["--show-context-stats", "--foo"]);
   });
 
   it("parses --show-prompt-plan flag", () => {
