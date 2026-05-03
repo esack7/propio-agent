@@ -55,17 +55,18 @@ import type {
   McpServerSummary,
   McpToolSummary,
 } from "./mcp/types.js";
-import { loadLocalSkills } from "./skills/index.js";
+import { loadLocalSkills } from "./skills/loader.js";
 import type {
   InvokedSkillRecord,
   Skill,
   SkillLoadDiagnostic,
   SkillInvocationOptions,
   SkillInvocationScope,
-  SkillRegistry,
-} from "./skills/index.js";
+} from "./skills/types.js";
+import { SkillRegistry } from "./skills/registry.js";
+import { createMissingSkillError } from "./skills/shared.js";
 import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
-import { AttachmentResolver } from "./fileSearch/index.js";
+import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -105,6 +106,24 @@ export interface TurnReasoningSummary {
   summary: string;
   source: ProviderReasoningSummarySource;
 }
+
+type AgentEventOptions = {
+  readonly onEvent?: (event: AgentVisibilityEvent) => void;
+};
+
+type AgentToolOptions = AgentEventOptions & {
+  readonly onToolStart?: (toolName: string) => void;
+  readonly onToolEnd?: (
+    toolName: string,
+    result: string,
+    status: ToolExecutionStatus,
+  ) => void;
+  readonly abortSignal?: AbortSignal;
+};
+
+type AgentStreamOptions = AgentToolOptions & {
+  readonly extraUserInstruction?: string;
+};
 
 /**
  * Snapshot of a prompt plan plus the provider/model metadata that was
@@ -249,11 +268,7 @@ export class Agent {
   }
 
   private emitVisibilityEvent(
-    options:
-      | {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-        }
-      | undefined,
+    options: AgentEventOptions | undefined,
     event: AgentVisibilityEvent,
   ): void {
     options?.onEvent?.(event);
@@ -316,11 +331,7 @@ export class Agent {
   }
 
   private emitStatus(
-    options:
-      | {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-        }
-      | undefined,
+    options: AgentEventOptions | undefined,
     status: string,
     phase?: string,
   ): void {
@@ -446,6 +457,7 @@ export class Agent {
     return this.getSkillRegistry().listUserInvocable();
   }
 
+  // fallow-ignore-next-line unused-class-member
   listModelInvocableSkills(): ReadonlyArray<Skill> {
     return this.getSkillRegistry().listModelInvocable();
   }
@@ -541,15 +553,7 @@ export class Agent {
     const registry = this.getSkillRegistry();
     const skill = registry.get(name);
     if (!skill) {
-      const availableSkills = registry
-        .list()
-        .map((entry) => entry.name)
-        .sort((left, right) => left.localeCompare(right));
-      const suffix =
-        availableSkills.length > 0
-          ? ` Available skills: ${availableSkills.join(", ")}`
-          : "";
-      throw new Error(`Skill not found: ${name}.${suffix}`);
+      throw createMissingSkillError(name, registry.list());
     }
 
     const source = options?.source ?? "user";
@@ -869,15 +873,91 @@ export class Agent {
     });
   }
 
+  private emitPromptPlanAndRequestStartedDiagnostics(
+    plan: PromptPlan,
+    messages: ChatMessage[],
+    iteration: number,
+    enabledTools: number,
+    options: AgentEventOptions | undefined,
+  ): void {
+    this.emitPromptPlanDiagnostic(plan, iteration);
+    this.emitVisibilityEvent(options, {
+      type: "prompt_plan_built",
+      snapshot: structuredClone(this.lastPromptPlanSnapshot!),
+    });
+    const contextSnapshot = this.contextManager.getSnapshot();
+    const contextMetrics = measureMessages(contextSnapshot);
+    this.emitDiagnostic({
+      type: "context_snapshot",
+      ...contextMetrics,
+    });
+    const promptMetrics = measureMessages(messages);
+    this.emitDiagnostic({
+      type: "request_started",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      contextMessages: messages.length,
+      enabledTools,
+      promptMessageCount: promptMetrics.messageCount,
+      promptChars: promptMetrics.totalChars,
+      estimatedPromptTokens: promptMetrics.estimatedTokens,
+      reservedOutputTokens: plan.reservedOutputTokens,
+    });
+  }
+
+  private recordStreamChunk(
+    normalizedEvent: ReturnType<Agent["normalizeStreamEvent"]>,
+    iteration: number,
+    state: { fullResponse: string; chunkCount: number },
+    onToken: (token: string) => void,
+  ): void {
+    const token = normalizedEvent.delta ?? "";
+    if (token) {
+      state.fullResponse += token;
+    }
+    state.chunkCount++;
+    this.emitDiagnostic({
+      type: "chunk_received",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      chunkIndex: state.chunkCount,
+      chunkChars: token.length,
+      accumulatedChars: state.fullResponse.length,
+    });
+    if (token) {
+      onToken(token);
+    }
+  }
+
+  private normalizeAndEmitStreamEvent(
+    event: ChatStreamEvent,
+    options: AgentEventOptions | undefined,
+    abortSignal: AbortSignal | undefined,
+  ): ReturnType<Agent["normalizeStreamEvent"]> {
+    if (abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
+    const normalizedEvent = this.normalizeStreamEvent(event);
+
+    if (normalizedEvent.status) {
+      this.emitStatus(
+        options,
+        normalizedEvent.status.status,
+        normalizedEvent.status.phase,
+      );
+    }
+
+    return normalizedEvent;
+  }
+
   private async requestFinalResponseWithoutTools(
     onToken: (token: string) => void,
     abortSignal: AbortSignal | undefined,
     iteration: number,
-    options?:
-      | {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-        }
-      | undefined,
+    options?: AgentEventOptions,
   ): Promise<string> {
     const noToolsInstruction =
       "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.";
@@ -887,35 +967,16 @@ export class Agent {
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
       const plan = this.buildPlan(noToolsInstruction, retryLevel, iteration);
       const messages = plan.messages as ChatMessage[];
-      this.emitPromptPlanDiagnostic(plan, iteration);
-      this.emitVisibilityEvent(options, {
-        type: "prompt_plan_built",
-        snapshot: structuredClone(this.lastPromptPlanSnapshot!),
-      });
-
-      const contextSnapshot = this.contextManager.getSnapshot();
-      const contextMetrics = measureMessages(contextSnapshot);
-      this.emitDiagnostic({
-        type: "context_snapshot",
-        ...contextMetrics,
-      });
-      const promptMetrics = measureMessages(messages);
-      this.emitDiagnostic({
-        type: "request_started",
-        provider: this.provider.name,
-        model: this.model,
+      this.emitPromptPlanAndRequestStartedDiagnostics(
+        plan,
+        messages,
         iteration,
-        contextMessages: messages.length,
-        enabledTools: 0,
-        promptMessageCount: promptMetrics.messageCount,
-        promptChars: promptMetrics.totalChars,
-        estimatedPromptTokens: promptMetrics.estimatedTokens,
-        reservedOutputTokens: plan.reservedOutputTokens,
-      });
+        0,
+        options,
+      );
 
       try {
-        let fullResponse = "";
-        let chunkCount = 0;
+        const streamState = { fullResponse: "", chunkCount: 0 };
         this.emitStatus(options, "Streaming response", "response");
         for await (const event of this.provider.streamChat({
           model: this.model,
@@ -923,49 +984,31 @@ export class Agent {
           signal: abortSignal,
           iteration,
         })) {
-          if (abortSignal?.aborted) {
-            throw new Error("Request cancelled");
-          }
-
-          const normalizedEvent = this.normalizeStreamEvent(event);
-
-          if (normalizedEvent.status) {
-            this.emitStatus(
-              options,
-              normalizedEvent.status.status,
-              normalizedEvent.status.phase,
-            );
-          }
-
-          const token = normalizedEvent.delta ?? "";
-          if (token) {
-            fullResponse += token;
-          }
-          chunkCount++;
-          this.emitDiagnostic({
-            type: "chunk_received",
-            provider: this.provider.name,
-            model: this.model,
+          const normalizedEvent = this.normalizeAndEmitStreamEvent(
+            event,
+            options,
+            abortSignal,
+          );
+          this.recordStreamChunk(
+            normalizedEvent,
             iteration,
-            chunkIndex: chunkCount,
-            chunkChars: token.length,
-            accumulatedChars: fullResponse.length,
-          });
-          if (token) onToken(token);
+            streamState,
+            onToken,
+          );
         }
 
-        this.contextManager.commitAssistantResponse(fullResponse);
+        this.contextManager.commitAssistantResponse(streamState.fullResponse);
         this.emitDiagnostic({
           type: "iteration_finished",
           provider: this.provider.name,
           model: this.model,
           iteration,
-          responseChars: fullResponse.length,
-          responseIsEmpty: fullResponse.trim().length === 0,
+          responseChars: streamState.fullResponse.length,
+          responseIsEmpty: streamState.fullResponse.trim().length === 0,
           toolCalls: 0,
         });
 
-        if (fullResponse.trim().length === 0) {
+        if (streamState.fullResponse.trim().length === 0) {
           this.emitDiagnostic({
             type: "empty_response",
             provider: this.provider.name,
@@ -975,7 +1018,7 @@ export class Agent {
           });
         }
 
-        return fullResponse;
+        return streamState.fullResponse;
       } catch (error) {
         if (
           error instanceof ProviderContextLengthError &&
@@ -1011,20 +1054,309 @@ export class Agent {
     throw new Error("Exhausted all context retry levels");
   }
 
+  private async collectProviderStream(
+    messages: ChatMessage[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<{
+    fullResponse: string;
+    toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
+    providerReasoningSummary: TurnReasoningSummary | null;
+  }> {
+    const streamState = { fullResponse: "", chunkCount: 0 };
+    let toolCalls: ChatToolCall[] | undefined;
+    let reasoningContent: string | undefined;
+    let providerReasoningSummary: TurnReasoningSummary | null = null;
+
+    this.emitStatus(options, "Streaming response", "response");
+
+    for await (const event of this.provider.streamChat({
+      model: this.model,
+      messages,
+      tools: this.getMergedToolSchemas(allowedTools),
+      signal: options?.abortSignal,
+      iteration,
+    })) {
+      const normalizedEvent = this.normalizeAndEmitStreamEvent(
+        event,
+        options,
+        options?.abortSignal,
+      );
+      if (
+        normalizedEvent.reasoningSummary &&
+        !providerReasoningSummary &&
+        normalizedEvent.reasoningSummary.summary.trim().length > 0
+      ) {
+        providerReasoningSummary = normalizedEvent.reasoningSummary;
+      }
+
+      this.recordStreamChunk(normalizedEvent, iteration, streamState, onToken);
+
+      if (normalizedEvent.toolCalls) {
+        toolCalls = normalizedEvent.toolCalls;
+        reasoningContent = normalizedEvent.reasoningContent;
+      }
+    }
+
+    return {
+      fullResponse: streamState.fullResponse,
+      toolCalls,
+      reasoningContent,
+      providerReasoningSummary,
+    };
+  }
+
+  private async executeToolCalls(
+    toolCallsToExecute: ChatToolCall[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+    onToken: (token: string) => void,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<void> {
+    const artifactToolResults: ArtifactToolResult[] = [];
+
+    for (const toolCall of toolCallsToExecute) {
+      artifactToolResults.push(
+        await this.processToolCall(
+          toolCall,
+          allowedTools,
+          iteration,
+          options,
+          onToken,
+          toolExecutionEvents,
+        ),
+      );
+    }
+
+    this.contextManager.recordToolResults(artifactToolResults);
+  }
+
+  private async processToolCall(
+    toolCall: ChatToolCall,
+    allowedTools: ReadonlySet<string> | undefined,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+    onToken: (token: string) => void,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<ArtifactToolResult> {
+    if (options?.abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
+    const args = toolCall.function.arguments;
+    const toolName = toolCall.function.name;
+    const serializedArgs = JSON.stringify(args ?? {});
+    const toolCallId = toolCall.id!;
+    const activityLabel = this.describeToolInvocation(toolName, args ?? {});
+    this.emitStatus(options, "Running tool", "tool");
+    this.emitVisibilityEvent(options, {
+      type: "tool_started",
+      toolName,
+      toolCallId,
+      activityLabel,
+      argumentChars: serializedArgs.length,
+      argumentPreview: this.toPreview(serializedArgs),
+    });
+    this.emitDiagnostic({
+      type: "tool_execution_started",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      toolName,
+      toolCallId,
+      argsChars: serializedArgs.length,
+    });
+
+    if (options?.onToolStart) {
+      options.onToolStart(toolName);
+    } else {
+      onToken(`[Executing tool: ${toolName}]\n`);
+    }
+
+    const execResult = await this.executeToolWithStatus(
+      toolName,
+      args,
+      allowedTools,
+    );
+    const result = execResult.content;
+    const failed = execResult.status !== "success";
+    if (!failed) {
+      this.recordSkillTouchFromToolArgs(toolName, args);
+    }
+    toolExecutionEvents.push({ name: toolName, failed });
+    this.emitDiagnostic({
+      type: "tool_execution_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      toolName,
+      toolCallId,
+      resultChars: result.length,
+      truncatedForContext: false,
+      status: execResult.status,
+    });
+
+    const artifactToolResult: ArtifactToolResult = {
+      toolCallId,
+      toolName,
+      rawContent: result,
+      status: failed ? "error" : "success",
+    };
+
+    this.emitVisibilityEvent(options, {
+      type: failed ? "tool_failed" : "tool_finished",
+      toolName,
+      toolCallId,
+      activityLabel,
+      resultPreview: this.toPreview(result),
+    });
+
+    if (options?.onToolEnd) {
+      options.onToolEnd(toolName, result, execResult.status);
+    } else {
+      onToken(
+        `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
+      );
+    }
+
+    return artifactToolResult;
+  }
+
+  private async handleChatTurnResponse(
+    fullResponse: string,
+    toolCalls: ChatToolCall[] | undefined,
+    reasoningContent: string | undefined,
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+    allowedTools: ReadonlySet<string> | undefined,
+    emptyToolOnlyStreak: number,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<{
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+  }> {
+    const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
+      ...toolCall,
+      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
+    }));
+    if (normalizedToolCalls && normalizedToolCalls.length > 0) {
+      this.emitStatus(options, "Tool call received", "tool");
+      this.emitDiagnostic({
+        type: "tool_calls_received",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        count: normalizedToolCalls.length,
+        tools: normalizedToolCalls.map((toolCall) => toolCall.function.name),
+      });
+    }
+
+    this.contextManager.commitAssistantResponse(
+      fullResponse,
+      normalizedToolCalls,
+      normalizedToolCalls && normalizedToolCalls.length > 0
+        ? { reasoningContent }
+        : undefined,
+    );
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      responseChars: fullResponse.length,
+      responseIsEmpty: fullResponse.trim().length === 0,
+      toolCalls: normalizedToolCalls?.length ?? 0,
+    });
+
+    if (
+      fullResponse.trim().length === 0 &&
+      (!normalizedToolCalls || normalizedToolCalls.length === 0)
+    ) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        contextMessages: this.contextManager.messageCount,
+      });
+    }
+
+    const toolCallsToExecute = normalizedToolCalls ?? [];
+    const hasToolCalls = toolCallsToExecute.length > 0;
+    const isEmptyResponse = fullResponse.trim().length === 0;
+    const nextEmptyToolOnlyStreak =
+      hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
+
+    if (hasToolCalls) {
+      if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
+        this.emitDiagnostic({
+          type: "tool_loop_detected",
+          provider: this.provider.name,
+          model: this.model,
+          iteration: iterationCount,
+          emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+          threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+          action: "fallback_no_tools",
+        });
+
+        this.contextManager.removeLastUnresolvedAssistantMessage();
+
+        const finalResponse = await this.requestFinalResponseWithoutTools(
+          onToken,
+          options?.abortSignal,
+          iterationCount + 1,
+          options,
+        );
+        if (finalResponse.trim().length === 0) {
+          throw new Error(
+            "Stopped after repeated empty tool-calling turns with no final assistant response.",
+          );
+        }
+
+        return {
+          finalResponse,
+          continueLoop: false,
+          emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+        };
+      }
+
+      onToken("\n");
+      await this.executeToolCalls(
+        toolCallsToExecute,
+        allowedTools,
+        iterationCount,
+        options,
+        onToken,
+        toolExecutionEvents,
+      );
+
+      this.emitStatus(options, "Processing tool results", "tool");
+      onToken("\n");
+      return {
+        finalResponse: fullResponse,
+        continueLoop: true,
+        emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      };
+    }
+
+    this.emitStatus(options, "Generating final answer", "answer");
+    return {
+      finalResponse: fullResponse,
+      continueLoop: false,
+      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+    };
+  }
+
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
-    options?: {
-      onToolStart?: (toolName: string) => void;
-      onToolEnd?: (
-        toolName: string,
-        result: string,
-        status: ToolExecutionStatus,
-      ) => void;
-      onEvent?: (event: AgentVisibilityEvent) => void;
-      abortSignal?: AbortSignal;
-      extraUserInstruction?: string;
-    },
+    options?: AgentStreamOptions,
   ): Promise<string> {
     if (options?.abortSignal?.aborted) {
       throw new Error("Request cancelled");
@@ -1044,6 +1376,9 @@ export class Agent {
       options.extraUserInstruction.trim().length > 0
         ? options.extraUserInstruction
         : undefined;
+    let fullResponse = "";
+    let toolCalls: ChatToolCall[] | undefined;
+    let reasoningContent: string | undefined;
     try {
       let finalResponse = "";
       let continueLoop = true;
@@ -1061,90 +1396,26 @@ export class Agent {
           iterationCount,
         );
         const messages = plan.messages as ChatMessage[];
-        this.emitPromptPlanDiagnostic(plan, iterationCount);
-        this.emitVisibilityEvent(options, {
-          type: "prompt_plan_built",
-          snapshot: structuredClone(this.lastPromptPlanSnapshot!),
-        });
-        const contextSnapshot = this.contextManager.getSnapshot();
-        const contextMetrics = measureMessages(contextSnapshot);
-        this.emitDiagnostic({
-          type: "context_snapshot",
-          ...contextMetrics,
-        });
-        const promptMetrics = measureMessages(messages);
-        this.emitDiagnostic({
-          type: "request_started",
-          provider: this.provider.name,
-          model: this.model,
-          iteration: iterationCount,
-          contextMessages: messages.length,
-          enabledTools: this.getMergedToolSchemas(allowedTools).length,
-          promptMessageCount: promptMetrics.messageCount,
-          promptChars: promptMetrics.totalChars,
-          estimatedPromptTokens: promptMetrics.estimatedTokens,
-          reservedOutputTokens: plan.reservedOutputTokens,
-        });
-
-        let fullResponse = "";
-        let toolCalls: ChatToolCall[] | undefined;
-        let reasoningContent: string | undefined;
-        let chunkCount = 0;
-        this.emitStatus(options, "Streaming response", "response");
+        this.emitPromptPlanAndRequestStartedDiagnostics(
+          plan,
+          messages,
+          iterationCount,
+          this.getMergedToolSchemas(allowedTools).length,
+          options,
+        );
 
         try {
-          for await (const event of this.provider.streamChat({
-            model: this.model,
-            messages: messages,
-            tools: this.getMergedToolSchemas(allowedTools),
-            signal: options?.abortSignal,
-            iteration: iterationCount,
-          })) {
-            if (options?.abortSignal?.aborted) {
-              throw new Error("Request cancelled");
-            }
-
-            const normalizedEvent = this.normalizeStreamEvent(event);
-
-            if (normalizedEvent.status) {
-              this.emitStatus(
-                options,
-                normalizedEvent.status.status,
-                normalizedEvent.status.phase,
-              );
-            }
-
-            if (
-              normalizedEvent.reasoningSummary &&
-              !providerReasoningSummary &&
-              normalizedEvent.reasoningSummary.summary.trim().length > 0
-            ) {
-              providerReasoningSummary = normalizedEvent.reasoningSummary;
-            }
-
-            const token = normalizedEvent.delta ?? "";
-            if (token) {
-              fullResponse += token;
-            }
-            chunkCount++;
-            this.emitDiagnostic({
-              type: "chunk_received",
-              provider: this.provider.name,
-              model: this.model,
-              iteration: iterationCount,
-              chunkIndex: chunkCount,
-              chunkChars: token.length,
-              accumulatedChars: fullResponse.length,
-            });
-            if (token) {
-              onToken(token);
-            }
-
-            if (normalizedEvent.toolCalls) {
-              toolCalls = normalizedEvent.toolCalls;
-              reasoningContent = normalizedEvent.reasoningContent;
-            }
-          }
+          const streamResult = await this.collectProviderStream(
+            messages,
+            allowedTools,
+            iterationCount,
+            options,
+            onToken,
+          );
+          fullResponse = streamResult.fullResponse;
+          toolCalls = streamResult.toolCalls;
+          reasoningContent = streamResult.reasoningContent;
+          providerReasoningSummary = streamResult.providerReasoningSummary;
         } catch (streamError) {
           if (
             streamError instanceof ProviderContextLengthError &&
@@ -1179,188 +1450,20 @@ export class Agent {
         }
 
         contextRetryLevel = 0;
-
-        const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
-          ...toolCall,
-          id: toolCall.id || `toolcall_${iterationCount}_${index}`,
-        }));
-        if (normalizedToolCalls && normalizedToolCalls.length > 0) {
-          this.emitStatus(options, "Tool call received", "tool");
-          this.emitDiagnostic({
-            type: "tool_calls_received",
-            provider: this.provider.name,
-            model: this.model,
-            iteration: iterationCount,
-            count: normalizedToolCalls.length,
-            tools: normalizedToolCalls.map(
-              (toolCall) => toolCall.function.name,
-            ),
-          });
-        }
-
-        this.contextManager.commitAssistantResponse(
+        const turnResult = await this.handleChatTurnResponse(
           fullResponse,
-          normalizedToolCalls,
-          normalizedToolCalls && normalizedToolCalls.length > 0
-            ? { reasoningContent }
-            : undefined,
+          toolCalls,
+          reasoningContent,
+          iterationCount,
+          options,
+          onToken,
+          allowedTools,
+          emptyToolOnlyStreak,
+          toolExecutionEvents,
         );
-        this.emitDiagnostic({
-          type: "iteration_finished",
-          provider: this.provider.name,
-          model: this.model,
-          iteration: iterationCount,
-          responseChars: fullResponse.length,
-          responseIsEmpty: fullResponse.trim().length === 0,
-          toolCalls: normalizedToolCalls?.length ?? 0,
-        });
-
-        if (
-          fullResponse.trim().length === 0 &&
-          (!normalizedToolCalls || normalizedToolCalls.length === 0)
-        ) {
-          this.emitDiagnostic({
-            type: "empty_response",
-            provider: this.provider.name,
-            model: this.model,
-            iteration: iterationCount,
-            contextMessages: this.contextManager.messageCount,
-          });
-        }
-
-        finalResponse = fullResponse;
-
-        const toolCallsToExecute = normalizedToolCalls ?? [];
-        const hasToolCalls = toolCallsToExecute.length > 0;
-        const isEmptyResponse = fullResponse.trim().length === 0;
-        emptyToolOnlyStreak =
-          hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
-
-        if (hasToolCalls) {
-          if (emptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
-            this.emitDiagnostic({
-              type: "tool_loop_detected",
-              provider: this.provider.name,
-              model: this.model,
-              iteration: iterationCount,
-              emptyToolOnlyStreak,
-              threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
-              action: "fallback_no_tools",
-            });
-
-            this.contextManager.removeLastUnresolvedAssistantMessage();
-
-            finalResponse = await this.requestFinalResponseWithoutTools(
-              onToken,
-              options?.abortSignal,
-              iterationCount + 1,
-              options,
-            );
-            continueLoop = false;
-            if (finalResponse.trim().length === 0) {
-              throw new Error(
-                "Stopped after repeated empty tool-calling turns with no final assistant response.",
-              );
-            }
-            continue;
-          }
-
-          onToken("\n");
-          const artifactToolResults: ArtifactToolResult[] = [];
-
-          for (const toolCall of toolCallsToExecute) {
-            if (options?.abortSignal?.aborted) {
-              throw new Error("Request cancelled");
-            }
-
-            const args = toolCall.function.arguments;
-            const toolName = toolCall.function.name;
-            const serializedArgs = JSON.stringify(args ?? {});
-            const toolCallId = toolCall.id!;
-            const activityLabel = this.describeToolInvocation(
-              toolName,
-              args ?? {},
-            );
-            this.emitStatus(options, "Running tool", "tool");
-            this.emitVisibilityEvent(options, {
-              type: "tool_started",
-              toolName,
-              toolCallId,
-              activityLabel,
-              argumentChars: serializedArgs.length,
-              argumentPreview: this.toPreview(serializedArgs),
-            });
-            this.emitDiagnostic({
-              type: "tool_execution_started",
-              provider: this.provider.name,
-              model: this.model,
-              iteration: iterationCount,
-              toolName,
-              toolCallId,
-              argsChars: serializedArgs.length,
-            });
-
-            if (options?.onToolStart) {
-              options.onToolStart(toolName);
-            } else {
-              onToken(`[Executing tool: ${toolName}]\n`);
-            }
-
-            const execResult = await this.executeToolWithStatus(
-              toolName,
-              args,
-              allowedTools,
-            );
-            const result = execResult.content;
-            const failed = execResult.status !== "success";
-            if (!failed) {
-              this.recordSkillTouchFromToolArgs(toolName, args);
-            }
-            toolExecutionEvents.push({ name: toolName, failed });
-            this.emitDiagnostic({
-              type: "tool_execution_finished",
-              provider: this.provider.name,
-              model: this.model,
-              iteration: iterationCount,
-              toolName,
-              toolCallId,
-              resultChars: result.length,
-              truncatedForContext: false,
-              status: execResult.status,
-            });
-
-            artifactToolResults.push({
-              toolCallId,
-              toolName,
-              rawContent: result,
-              status: failed ? "error" : "success",
-            });
-
-            this.emitVisibilityEvent(options, {
-              type: failed ? "tool_failed" : "tool_finished",
-              toolName,
-              toolCallId,
-              activityLabel,
-              resultPreview: this.toPreview(result),
-            });
-
-            if (options?.onToolEnd) {
-              options.onToolEnd(toolName, result, execResult.status);
-            } else {
-              onToken(
-                `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
-              );
-            }
-          }
-
-          this.contextManager.recordToolResults(artifactToolResults);
-
-          this.emitStatus(options, "Processing tool results", "tool");
-          onToken("\n");
-        } else {
-          this.emitStatus(options, "Generating final answer", "answer");
-          continueLoop = false;
-        }
+        finalResponse = turnResult.finalResponse;
+        continueLoop = turnResult.continueLoop;
+        emptyToolOnlyStreak = turnResult.emptyToolOnlyStreak;
       }
 
       if (continueLoop && iterationCount >= maxIterations) {
@@ -1529,10 +1632,6 @@ export class Agent {
     this.toolRegistry.register(tool, true);
   }
 
-  removeTool(name: string): void {
-    this.toolRegistry.unregister(name);
-  }
-
   enableTool(name: string): void {
     this.toolRegistry.enable(name);
   }
@@ -1561,22 +1660,27 @@ export class Agent {
     return this.toolRegistry.isToolEnabled(name);
   }
 
+  // fallow-ignore-next-line unused-class-member
   getMcpServerSummaries(): ReadonlyArray<McpServerSummary> {
     return this.mcpManager.getServerSummaries();
   }
 
+  // fallow-ignore-next-line unused-class-member
   getMcpServerDetail(name: string): McpServerDetail | null {
     return this.mcpManager.getServerDetail(name);
   }
 
+  // fallow-ignore-next-line unused-class-member
   listMcpTools(serverName?: string): ReadonlyArray<McpToolSummary> {
     return this.mcpManager.listTools(serverName);
   }
 
+  // fallow-ignore-next-line unused-class-member
   async reconnectMcpServer(name: string): Promise<McpServerSummary> {
     return await this.mcpManager.reconnectServer(name);
   }
 
+  // fallow-ignore-next-line unused-class-member
   async setMcpServerEnabled(
     name: string,
     enabled: boolean,

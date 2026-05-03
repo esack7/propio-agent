@@ -10,6 +10,7 @@ import {
   ArtifactRecord,
   RollingSummaryRecord,
 } from "./types.js";
+import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
 // ---------------------------------------------------------------------------
 // Build request: everything the builder needs to produce a plan
@@ -177,42 +178,6 @@ export class PromptBuilder {
       currentTurnTokens +
       extraInstructionTokens;
 
-    // --- Attempt a summary-aware build first if we have summary coverage ---
-
-    if (hasCoveredIds && request.rollingSummary) {
-      const summaryResult = this.buildWithSummary(
-        request,
-        completedTurns,
-        currentTurn,
-        coveredIds!,
-        inputBudget,
-        fixedOverhead,
-        rollingSummaryTokens,
-        maxTurns,
-        artifactCap,
-      );
-
-      // Guard: only use the summary if every omitted turn is actually
-      // covered by it. If budget pressure dropped uncovered turns, fall
-      // through to the no-summary path so those turns stay visible.
-      const uncoveredOmissions = summaryResult.omittedTurnIds.filter(
-        (id) => !coveredIds!.has(id),
-      );
-      if (uncoveredOmissions.length === 0) {
-        return this.assemblePlan(
-          request,
-          `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
-          summaryResult.selectedTurns,
-          currentTurn,
-          summaryResult.omittedTurnIds,
-          true,
-          artifactCap,
-        );
-      }
-    }
-
-    // --- No-summary path: all completed turns compete for budget ---
-
     const turnLimit = currentTurn ? maxTurns - 1 : maxTurns;
     const noSummaryResult = this.selectTurnsByBudget(
       completedTurns,
@@ -222,35 +187,39 @@ export class PromptBuilder {
       artifactCap,
     );
 
-    // If turns were omitted by budget and a summary exists that covers
-    // every one of them, rebuild via the summary-aware path so the
-    // summary token cost is properly reserved in the budget.
-    if (
-      request.rollingSummary &&
-      hasCoveredIds &&
-      noSummaryResult.omittedTurnIds.length > 0 &&
-      noSummaryResult.omittedTurnIds.every((id) => coveredIds!.has(id))
-    ) {
-      const summaryResult = this.buildWithSummary(
-        request,
-        completedTurns,
-        currentTurn,
-        coveredIds!,
-        inputBudget,
-        fixedOverhead,
-        rollingSummaryTokens,
-        maxTurns,
-        artifactCap,
-      );
-      return this.assemblePlan(
-        request,
-        `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
-        summaryResult.selectedTurns,
-        currentTurn,
-        summaryResult.omittedTurnIds,
-        true,
-        artifactCap,
-      );
+    const summaryAwarePlan = this.buildSummaryAwarePlan(
+      request,
+      completedTurns,
+      currentTurn,
+      coveredIds,
+      hasCoveredIds,
+      inputBudget,
+      fixedOverhead,
+      rollingSummaryTokens,
+      maxTurns,
+      artifactCap,
+      systemBase,
+    );
+    if (summaryAwarePlan) {
+      return summaryAwarePlan;
+    }
+
+    const coveredSummaryPlan = this.buildCoveredSummaryPlan(
+      request,
+      completedTurns,
+      currentTurn,
+      coveredIds,
+      hasCoveredIds,
+      inputBudget,
+      fixedOverhead,
+      rollingSummaryTokens,
+      maxTurns,
+      artifactCap,
+      systemBase,
+      noSummaryResult.omittedTurnIds,
+    );
+    if (coveredSummaryPlan) {
+      return coveredSummaryPlan;
     }
 
     return this.assemblePlan(
@@ -260,6 +229,99 @@ export class PromptBuilder {
       currentTurn,
       noSummaryResult.omittedTurnIds,
       false,
+      artifactCap,
+    );
+  }
+
+  private buildSummaryAwarePlan(
+    request: PromptBuildRequest,
+    completedTurns: TurnRecord[],
+    currentTurn: TurnRecord | undefined,
+    coveredIds: ReadonlySet<string> | undefined,
+    hasCoveredIds: boolean,
+    inputBudget: number,
+    fixedOverhead: number,
+    rollingSummaryTokens: number,
+    maxTurns: number,
+    artifactCap: number,
+    systemBase: string,
+  ): PromptPlan | null {
+    if (!hasCoveredIds || !request.rollingSummary || !coveredIds) {
+      return null;
+    }
+
+    const summaryResult = this.buildWithSummary(
+      request,
+      completedTurns,
+      currentTurn,
+      coveredIds,
+      inputBudget,
+      fixedOverhead,
+      rollingSummaryTokens,
+      maxTurns,
+      artifactCap,
+    );
+
+    const uncoveredOmissions = summaryResult.omittedTurnIds.filter(
+      (id) => !coveredIds.has(id),
+    );
+    if (uncoveredOmissions.length > 0) {
+      return null;
+    }
+
+    return this.assemblePlan(
+      request,
+      `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+      summaryResult.selectedTurns,
+      currentTurn,
+      summaryResult.omittedTurnIds,
+      true,
+      artifactCap,
+    );
+  }
+
+  private buildCoveredSummaryPlan(
+    request: PromptBuildRequest,
+    completedTurns: TurnRecord[],
+    currentTurn: TurnRecord | undefined,
+    coveredIds: ReadonlySet<string> | undefined,
+    hasCoveredIds: boolean,
+    inputBudget: number,
+    fixedOverhead: number,
+    rollingSummaryTokens: number,
+    maxTurns: number,
+    artifactCap: number,
+    systemBase: string,
+    omittedTurnIds: string[],
+  ): PromptPlan | null {
+    if (
+      !request.rollingSummary ||
+      !hasCoveredIds ||
+      !coveredIds ||
+      omittedTurnIds.length === 0 ||
+      !omittedTurnIds.every((id) => coveredIds.has(id))
+    ) {
+      return null;
+    }
+
+    const summaryResult = this.buildWithSummary(
+      request,
+      completedTurns,
+      currentTurn,
+      coveredIds,
+      inputBudget,
+      fixedOverhead,
+      rollingSummaryTokens,
+      maxTurns,
+      artifactCap,
+    );
+    return this.assemblePlan(
+      request,
+      `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+      summaryResult.selectedTurns,
+      currentTurn,
+      summaryResult.omittedTurnIds,
+      true,
       artifactCap,
     );
   }
@@ -436,31 +498,13 @@ export class PromptBuilder {
     if (currentTurn) {
       includedTurnIds.push(currentTurn.id);
       messages.push(currentTurn.userMessage);
-
-      // Only include unresolved trailing tool chain
-      let lastAssistantIdx = -1;
-      for (let i = currentTurn.entries.length - 1; i >= 0; i--) {
-        if (currentTurn.entries[i].kind === "assistant") {
-          lastAssistantIdx = i;
-          break;
-        }
-      }
-
-      if (lastAssistantIdx >= 0) {
-        messages.push(currentTurn.entries[lastAssistantIdx].message);
-      }
-      for (let i = lastAssistantIdx + 1; i < currentTurn.entries.length; i++) {
-        const entry = currentTurn.entries[i];
-        if (entry.kind === "tool") {
-          const rehydrated = this.rehydrateToolMessage(
-            entry,
-            request,
-            REHYDRATION_MAX_CHARS,
-            includedArtifactIds,
-          );
-          messages.push(rehydrated);
-        }
-      }
+      this.appendCurrentTurnMessages(
+        messages,
+        currentTurn,
+        request,
+        REHYDRATION_MAX_CHARS,
+        includedArtifactIds,
+      );
     }
 
     if (request.extraUserInstruction) {
@@ -495,16 +539,9 @@ export class PromptBuilder {
   ): void {
     messages.push(turn.userMessage);
 
-    let lastAssistantIdx = -1;
-    if (isCurrentTurn) {
-      for (let i = turn.entries.length - 1; i >= 0; i--) {
-        if (turn.entries[i].kind === "assistant") {
-          lastAssistantIdx = i;
-          break;
-        }
-      }
-    }
-
+    const lastAssistantIdx = isCurrentTurn
+      ? findLastAssistantEntryIndex(turn.entries)
+      : -1;
     for (let i = 0; i < turn.entries.length; i++) {
       const entry = turn.entries[i];
       const isUnresolved =
@@ -525,6 +562,36 @@ export class PromptBuilder {
         // Resolved/completed tool entries use summary content only;
         // their artifact IDs are NOT recorded in includedArtifactIds
         // because the raw artifact body is not inlined into the payload.
+        messages.push(entry.message);
+      }
+    }
+  }
+
+  private appendCurrentTurnMessages(
+    messages: ChatMessage[],
+    turn: TurnRecord,
+    request: PromptBuildRequest,
+    artifactCap: number,
+    includedArtifactIds: string[],
+  ): void {
+    const lastAssistantIdx = findLastAssistantEntryIndex(turn.entries);
+
+    for (let i = 0; i < turn.entries.length; i++) {
+      const entry = turn.entries[i];
+      const isUnresolved =
+        i > lastAssistantIdx &&
+        entry.kind === "tool" &&
+        "toolInvocations" in entry;
+
+      if (isUnresolved) {
+        const rehydrated = this.rehydrateToolMessage(
+          entry,
+          request,
+          artifactCap,
+          includedArtifactIds,
+        );
+        messages.push(rehydrated);
+      } else {
         messages.push(entry.message);
       }
     }
@@ -580,12 +647,7 @@ export class PromptBuilder {
 
     let lastAssistantIdx = -1;
     if (isCurrentTurn) {
-      for (let i = turn.entries.length - 1; i >= 0; i--) {
-        if (turn.entries[i].kind === "assistant") {
-          lastAssistantIdx = i;
-          break;
-        }
-      }
+      lastAssistantIdx = findLastAssistantEntryIndex(turn.entries);
     }
 
     for (let i = 0; i < turn.entries.length; i++) {

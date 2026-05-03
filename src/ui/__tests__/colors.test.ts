@@ -1,11 +1,14 @@
 // Force chalk to use truecolor (level 3) for this test file
 // This ensures color functions are created with consistent ANSI codes
+import { withEnvironmentVariable } from "./envTestHelpers.js";
 import chalk from "chalk";
 chalk.level = 3;
 
 // Test for colors module
 describe("colors module", () => {
   let colorsModule: any;
+  let textColorsModule: any;
+  let statusColorsModule: any;
 
   beforeEach(async () => {
     // Ensure chalk level is maintained
@@ -15,83 +18,88 @@ describe("colors module", () => {
     // Must re-import chalk after resetModules and set level again
     const chalkModule = await import("chalk");
     chalkModule.default.level = 3;
-    colorsModule = await import("../colors.js");
+    textColorsModule = await import("../textColors.js");
+    statusColorsModule = await import("../statusColors.js");
+    colorsModule = {
+      ...textColorsModule,
+      ...statusColorsModule,
+    };
   });
 
   describe("color functions", () => {
     it("should export userInput function", async () => {
-      expect(colorsModule.userInput).toBeDefined();
-      expect(typeof colorsModule.userInput).toBe("function");
+      expect(textColorsModule.userInput).toBeDefined();
+      expect(typeof textColorsModule.userInput).toBe("function");
     });
 
     it("should export assistant function", async () => {
-      expect(colorsModule.assistant).toBeDefined();
-      expect(typeof colorsModule.assistant).toBe("function");
+      expect(textColorsModule.assistant).toBeDefined();
+      expect(typeof textColorsModule.assistant).toBe("function");
     });
 
     it("should export inputPrompt function", async () => {
-      expect(colorsModule.inputPrompt).toBeDefined();
-      expect(typeof colorsModule.inputPrompt).toBe("function");
+      expect(textColorsModule.inputPrompt).toBeDefined();
+      expect(typeof textColorsModule.inputPrompt).toBe("function");
     });
 
     it("should export assistantPrefix function", async () => {
-      expect(colorsModule.assistantPrefix).toBeDefined();
-      expect(typeof colorsModule.assistantPrefix).toBe("function");
+      expect(textColorsModule.assistantPrefix).toBeDefined();
+      expect(typeof textColorsModule.assistantPrefix).toBe("function");
     });
 
     it("should export assistantGutter function", async () => {
-      expect(colorsModule.assistantGutter).toBeDefined();
-      expect(typeof colorsModule.assistantGutter).toBe("function");
+      expect(textColorsModule.assistantGutter).toBeDefined();
+      expect(typeof textColorsModule.assistantGutter).toBe("function");
     });
 
     it("should export inputBorder function", async () => {
-      expect(colorsModule.inputBorder).toBeDefined();
-      expect(typeof colorsModule.inputBorder).toBe("function");
+      expect(textColorsModule.inputBorder).toBeDefined();
+      expect(typeof textColorsModule.inputBorder).toBe("function");
     });
 
     it("should export inputFill function", async () => {
-      expect(colorsModule.inputFill).toBeDefined();
-      expect(typeof colorsModule.inputFill).toBe("function");
+      expect(textColorsModule.inputFill).toBeDefined();
+      expect(typeof textColorsModule.inputFill).toBe("function");
     });
 
     it("should export inputPlaceholder function", async () => {
-      expect(colorsModule.inputPlaceholder).toBeDefined();
-      expect(typeof colorsModule.inputPlaceholder).toBe("function");
+      expect(textColorsModule.inputPlaceholder).toBeDefined();
+      expect(typeof textColorsModule.inputPlaceholder).toBe("function");
     });
 
     it("should export tool function", async () => {
-      expect(colorsModule.tool).toBeDefined();
-      expect(typeof colorsModule.tool).toBe("function");
+      expect(statusColorsModule.tool).toBeDefined();
+      expect(typeof statusColorsModule.tool).toBe("function");
     });
 
     it("should export success function", async () => {
-      expect(colorsModule.success).toBeDefined();
-      expect(typeof colorsModule.success).toBe("function");
+      expect(statusColorsModule.success).toBeDefined();
+      expect(typeof statusColorsModule.success).toBe("function");
     });
 
     it("should export error function", async () => {
-      expect(colorsModule.error).toBeDefined();
-      expect(typeof colorsModule.error).toBe("function");
+      expect(statusColorsModule.error).toBeDefined();
+      expect(typeof statusColorsModule.error).toBe("function");
     });
 
     it("should export warning function", async () => {
-      expect(colorsModule.warning).toBeDefined();
-      expect(typeof colorsModule.warning).toBe("function");
+      expect(statusColorsModule.warning).toBeDefined();
+      expect(typeof statusColorsModule.warning).toBe("function");
     });
 
     it("should export command function", async () => {
-      expect(colorsModule.command).toBeDefined();
-      expect(typeof colorsModule.command).toBe("function");
+      expect(textColorsModule.command).toBeDefined();
+      expect(typeof textColorsModule.command).toBe("function");
     });
 
     it("should export subtle function", async () => {
-      expect(colorsModule.subtle).toBeDefined();
-      expect(typeof colorsModule.subtle).toBe("function");
+      expect(textColorsModule.subtle).toBeDefined();
+      expect(typeof textColorsModule.subtle).toBe("function");
     });
 
     it("should export info function", async () => {
-      expect(colorsModule.info).toBeDefined();
-      expect(typeof colorsModule.info).toBe("function");
+      expect(textColorsModule.info).toBeDefined();
+      expect(typeof textColorsModule.info).toBe("function");
     });
   });
 
@@ -101,7 +109,7 @@ describe("colors module", () => {
     });
 
     it("userInput should return text styled with cyan (#56B6C2)", async () => {
-      const result = colorsModule.userInput("test");
+      const result = textColorsModule.userInput("test");
       // With colors enabled, the result should contain ANSI codes
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
@@ -110,98 +118,98 @@ describe("colors module", () => {
     });
 
     it("assistant should return text styled with light gray (#ABB2BF)", async () => {
-      const result = colorsModule.assistant("test");
+      const result = textColorsModule.assistant("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("inputPrompt should return text styled with cyan (#56B6C2)", async () => {
-      const result = colorsModule.inputPrompt("test");
+      const result = textColorsModule.inputPrompt("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("assistantPrefix should return text styled with dark gray (#5C6370)", async () => {
-      const result = colorsModule.assistantPrefix("test");
+      const result = textColorsModule.assistantPrefix("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("assistantGutter should return text styled with dark gray (#5C6370)", async () => {
-      const result = colorsModule.assistantGutter("test");
+      const result = textColorsModule.assistantGutter("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("inputBorder should return text styled with dark gray (#5C6370)", async () => {
-      const result = colorsModule.inputBorder("test");
+      const result = textColorsModule.inputBorder("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("inputFill should return text styled with a background fill", async () => {
-      const result = colorsModule.inputFill("test");
+      const result = textColorsModule.inputFill("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("inputPlaceholder should return text styled with dark gray (#5C6370)", async () => {
-      const result = colorsModule.inputPlaceholder("test");
+      const result = textColorsModule.inputPlaceholder("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("tool should return text styled with purple (#C678DD)", async () => {
-      const result = colorsModule.tool("test");
+      const result = statusColorsModule.tool("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("success should return text styled with green (#98C379)", async () => {
-      const result = colorsModule.success("test");
+      const result = statusColorsModule.success("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("error should return text styled with red (#E06C75)", async () => {
-      const result = colorsModule.error("test");
+      const result = statusColorsModule.error("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("warning should return text styled with orange (#D19A66)", async () => {
-      const result = colorsModule.warning("test");
+      const result = statusColorsModule.warning("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("command should return text styled with yellow (#E5C07B)", async () => {
-      const result = colorsModule.command("test");
+      const result = textColorsModule.command("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("subtle should return text styled with dark gray (#5C6370)", async () => {
-      const result = colorsModule.subtle("test");
+      const result = textColorsModule.subtle("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
     });
 
     it("info should return text styled with blue (#61AFEF)", async () => {
-      const result = colorsModule.info("test");
+      const result = textColorsModule.info("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
@@ -210,54 +218,32 @@ describe("colors module", () => {
 
   describe("NO_COLOR environment variable support", () => {
     it("should return unstyled text when NO_COLOR=1", async () => {
-      // Save original env
-      const originalNoColor = process.env.NO_COLOR;
+      await withEnvironmentVariable("NO_COLOR", "1", async () => {
+        // Clear the module cache to force re-import with new env
+        jest.resetModules();
+        const freshModule = await import("../textColors.js");
 
-      // Set NO_COLOR
-      process.env.NO_COLOR = "1";
+        const result = freshModule.userInput("test");
 
-      // Clear the module cache to force re-import with new env
-      jest.resetModules();
-      const freshModule = await import("../colors.js");
-
-      const result = freshModule.userInput("test");
-
-      // With NO_COLOR set, chalk should strip colors, so result === input
-      // We just verify the function returns a string
-      expect(typeof result).toBe("string");
-
-      // Restore env
-      if (originalNoColor === undefined) {
-        delete process.env.NO_COLOR;
-      } else {
-        process.env.NO_COLOR = originalNoColor;
-      }
+        // With NO_COLOR set, chalk should strip colors, so result === input
+        // We just verify the function returns a string
+        expect(typeof result).toBe("string");
+      });
     });
   });
 
   describe("FORCE_COLOR environment variable support", () => {
     it("should enable colors when FORCE_COLOR=1 even in non-TTY", async () => {
-      // Save original env
-      const originalForceColor = process.env.FORCE_COLOR;
+      await withEnvironmentVariable("FORCE_COLOR", "1", async () => {
+        // Clear the module cache to force re-import with new env
+        jest.resetModules();
+        const freshModule = await import("../textColors.js");
 
-      // Set FORCE_COLOR
-      process.env.FORCE_COLOR = "1";
+        const result = freshModule.userInput("test");
 
-      // Clear the module cache to force re-import with new env
-      jest.resetModules();
-      const freshModule = await import("../colors.js");
-
-      const result = freshModule.userInput("test");
-
-      // With FORCE_COLOR set, chalk should enable colors
-      expect(typeof result).toBe("string");
-
-      // Restore env
-      if (originalForceColor === undefined) {
-        delete process.env.FORCE_COLOR;
-      } else {
-        process.env.FORCE_COLOR = originalForceColor;
-      }
+        // With FORCE_COLOR set, chalk should enable colors
+        expect(typeof result).toBe("string");
+      });
     });
   });
 

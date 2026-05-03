@@ -35,7 +35,7 @@ function defaultLogError(message: string): void {
   process.stderr.write(formatError(`${message}\n`));
 }
 
-export function validateSandboxWrapper(wrapperPath: string): void {
+function validateSandboxWrapper(wrapperPath: string): void {
   if (!fs.existsSync(wrapperPath)) {
     throw new Error(`Sandbox wrapper not found at ${wrapperPath}.`);
   }

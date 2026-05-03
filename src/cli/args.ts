@@ -1,17 +1,17 @@
-export const CLI_FLAG_SANDBOX = "--sandbox";
-export const CLI_FLAG_JSON = "--json";
-export const CLI_FLAG_PLAIN = "--plain";
-export const CLI_FLAG_NO_INTERACTIVE = "--no-interactive";
-export const CLI_FLAG_SHOW_ACTIVITY = "--show-activity";
-export const CLI_FLAG_SHOW_STATUS = "--show-status";
-export const CLI_FLAG_SHOW_REASONING_SUMMARY = "--show-reasoning-summary";
-export const CLI_FLAG_SHOW_TRACE = "--show-trace";
-export const CLI_FLAG_SHOW_CONTEXT_STATS = "--show-context-stats";
-export const CLI_FLAG_SHOW_PROMPT_PLAN = "--show-prompt-plan";
-export const CLI_FLAG_DEBUG_LLM = "--debug-llm";
-export const CLI_FLAG_DEBUG_LLM_FILE = "--debug-llm-file";
-export const CLI_FLAG_HELP = "--help";
-export const CLI_FLAG_HELP_SHORT = "-h";
+const CLI_FLAG_SANDBOX = "--sandbox";
+const CLI_FLAG_JSON = "--json";
+const CLI_FLAG_PLAIN = "--plain";
+const CLI_FLAG_NO_INTERACTIVE = "--no-interactive";
+const CLI_FLAG_SHOW_ACTIVITY = "--show-activity";
+const CLI_FLAG_SHOW_STATUS = "--show-status";
+const CLI_FLAG_SHOW_REASONING_SUMMARY = "--show-reasoning-summary";
+const CLI_FLAG_SHOW_TRACE = "--show-trace";
+const CLI_FLAG_SHOW_CONTEXT_STATS = "--show-context-stats";
+const CLI_FLAG_SHOW_PROMPT_PLAN = "--show-prompt-plan";
+const CLI_FLAG_DEBUG_LLM = "--debug-llm";
+const CLI_FLAG_DEBUG_LLM_FILE = "--debug-llm-file";
+const CLI_FLAG_HELP = "--help";
+const CLI_FLAG_HELP_SHORT = "-h";
 
 export interface ParsedCliArgs {
   flags: {

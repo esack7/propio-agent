@@ -8,6 +8,11 @@ import type {
   SkillInvocationSource,
   SkillLoadDiagnostic,
 } from "./types.js";
+import { createMissingSkillError } from "./shared.js";
+import {
+  createSkillDiagnostic as createDiagnostic,
+  cloneInvokedSkillRecord,
+} from "./shared.js";
 
 type SkillReloadFn = (context: SkillContext) => {
   readonly skills: Skill[];
@@ -15,22 +20,6 @@ type SkillReloadFn = (context: SkillContext) => {
 };
 type SkillBodyLoader = (skillFile: string) => string;
 type SkillMaterializationWarningSink = (message: string) => void;
-
-function createDiagnostic(
-  severity: SkillLoadDiagnostic["severity"],
-  code: string,
-  message: string,
-  skillPath?: string,
-  skillName?: string,
-): SkillLoadDiagnostic {
-  return {
-    severity,
-    code,
-    message,
-    ...(skillPath ? { skillPath } : {}),
-    ...(skillName ? { skillName } : {}),
-  };
-}
 
 const SKILL_SOURCE_ORDER: Record<Skill["source"], number> = {
   project: 0,
@@ -46,21 +35,6 @@ function cloneSkill(skill: Skill): Skill {
     ...(skill.arguments ? { arguments: [...skill.arguments] } : {}),
     ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
     ...(skill.paths ? { paths: [...skill.paths] } : {}),
-  };
-}
-
-function cloneInvokedSkill(record: InvokedSkillRecord): InvokedSkillRecord {
-  return {
-    ...record,
-    scope: {
-      ...record.scope,
-      ...(record.scope.allowedTools
-        ? { allowedTools: [...record.scope.allowedTools] }
-        : {}),
-      ...(record.scope.warnings
-        ? { warnings: [...record.scope.warnings] }
-        : {}),
-    },
   };
 }
 
@@ -107,6 +81,144 @@ function skillDepth(skill: Skill): number {
   return normalizePath(skill.skillRoot).split("/").length;
 }
 
+interface InvocationParseState {
+  current: string;
+  positional: string[];
+  quote: "'" | '"' | null;
+  escaped: boolean;
+}
+
+function createInvocationParseState(): InvocationParseState {
+  return {
+    current: "",
+    positional: [],
+    quote: null,
+    escaped: false,
+  };
+}
+
+function flushInvocationParseState(state: InvocationParseState): void {
+  if (state.current.length > 0) {
+    state.positional.push(state.current);
+    state.current = "";
+  }
+}
+
+function consumeInvocationArgumentCharacter(
+  state: InvocationParseState,
+  character: string,
+): void {
+  if (state.escaped) {
+    state.current += character;
+    state.escaped = false;
+    return;
+  }
+
+  if (character === "\\") {
+    state.escaped = true;
+    return;
+  }
+
+  if (state.quote) {
+    if (character === state.quote) {
+      state.quote = null;
+    } else {
+      state.current += character;
+    }
+    return;
+  }
+
+  if (character === "'" || character === '"') {
+    state.quote = character;
+    return;
+  }
+
+  if (/\s/.test(character)) {
+    flushInvocationParseState(state);
+    return;
+  }
+
+  state.current += character;
+}
+
+interface PlaceholderResolution {
+  readonly value: string;
+  readonly consumed: boolean;
+  readonly unknown: boolean;
+}
+
+function resolveIndexedPlaceholder(
+  token: string,
+  positionalArguments: string[],
+): PlaceholderResolution | null {
+  if (!/^\d+$/.test(token)) {
+    return null;
+  }
+
+  const index = Number(token);
+  if (index >= 0 && index < positionalArguments.length) {
+    return {
+      value: positionalArguments[index] ?? "",
+      consumed: true,
+      unknown: false,
+    };
+  }
+
+  return { value: "", consumed: false, unknown: false };
+}
+
+function resolveNamedPlaceholder(
+  token: string,
+  positionalArguments: string[],
+  skillArguments: ReadonlyArray<string>,
+  placeholderNames: ReadonlySet<string>,
+): PlaceholderResolution | null {
+  if (!placeholderNames.has(token)) {
+    return null;
+  }
+
+  const index = skillArguments.indexOf(token);
+  if (index >= 0 && index < positionalArguments.length) {
+    return {
+      value: positionalArguments[index] ?? "",
+      consumed: true,
+      unknown: false,
+    };
+  }
+
+  return { value: "", consumed: false, unknown: false };
+}
+
+function resolvePlaceholderValue(
+  token: string,
+  match: string,
+  rawArguments: string,
+  positionalArguments: string[],
+  skillArguments: ReadonlyArray<string>,
+  placeholderNames: ReadonlySet<string>,
+): PlaceholderResolution {
+  if (token === "ARGUMENTS") {
+    return { value: rawArguments, consumed: true, unknown: false };
+  }
+
+  const indexed = resolveIndexedPlaceholder(token, positionalArguments);
+  if (indexed) {
+    return indexed;
+  }
+
+  const named = resolveNamedPlaceholder(
+    token,
+    positionalArguments,
+    skillArguments,
+    placeholderNames,
+  );
+  if (named) {
+    return named;
+  }
+
+  return { value: match, consumed: false, unknown: true };
+}
+
 export class SkillRegistry {
   private skills: Skill[];
   private diagnostics: SkillLoadDiagnostic[];
@@ -145,20 +257,18 @@ export class SkillRegistry {
     );
   }
 
-  setDiagnostics(diagnostics: SkillLoadDiagnostic[]): void {
-    this.diagnostics = diagnostics.slice();
-  }
-
   list(): ReadonlyArray<Skill> {
     return this.skills.map((skill) => cloneSkill(skill));
   }
 
+  // fallow-ignore-next-line unused-class-member
   listUserInvocable(): ReadonlyArray<Skill> {
     return Array.from(this.activeSkillsByName.values())
       .filter((skill) => skill.userInvocable !== false)
       .map((skill) => cloneSkill(skill));
   }
 
+  // fallow-ignore-next-line unused-class-member
   listModelInvocable(): ReadonlyArray<Skill> {
     return Array.from(this.activeSkillsByName.values())
       .filter((skill) => skill.disableModelInvocation !== true)
@@ -179,22 +289,10 @@ export class SkillRegistry {
     return skill ? cloneSkill(skill) : undefined;
   }
 
-  isSkillActive(name: string): boolean {
-    const normalized = name.trim().toLowerCase();
-    return normalized.length > 0 && this.activeSkillNames.has(normalized);
-  }
-
   private getSkillOrThrow(name: string): Skill {
     const skill = this.get(name);
     if (!skill) {
-      const availableSkills = this.list()
-        .map((entry) => entry.name)
-        .sort((left, right) => left.localeCompare(right));
-      const suffix =
-        availableSkills.length > 0
-          ? ` Available skills: ${availableSkills.join(", ")}`
-          : "";
-      throw new Error(`Skill not found: ${name}.${suffix}`);
+      throw createMissingSkillError(name, this.list());
     }
     return skill;
   }
@@ -216,53 +314,14 @@ export class SkillRegistry {
       return { rawArguments: "", positional: [] };
     }
 
-    const positional: string[] = [];
-    let current = "";
-    let quote: "'" | '"' | null = null;
-    let escaped = false;
-
+    const state = createInvocationParseState();
     for (const character of rawArguments) {
-      if (escaped) {
-        current += character;
-        escaped = false;
-        continue;
-      }
-
-      if (character === "\\") {
-        escaped = true;
-        continue;
-      }
-
-      if (quote) {
-        if (character === quote) {
-          quote = null;
-        } else {
-          current += character;
-        }
-        continue;
-      }
-
-      if (character === "'" || character === '"') {
-        quote = character;
-        continue;
-      }
-
-      if (/\s/.test(character)) {
-        if (current.length > 0) {
-          positional.push(current);
-          current = "";
-        }
-        continue;
-      }
-
-      current += character;
+      consumeInvocationArgumentCharacter(state, character);
     }
 
-    if (current.length > 0) {
-      positional.push(current);
-    }
+    flushInvocationParseState(state);
 
-    return { rawArguments, positional };
+    return { rawArguments, positional: state.positional };
   }
 
   private substituteMaterializedBody(
@@ -278,45 +337,36 @@ export class SkillRegistry {
     const substituted = body.replace(
       /\$(ARGUMENTS|\d+|[A-Za-z_][A-Za-z0-9_-]*)/g,
       (match, token: string) => {
-        if (token === "ARGUMENTS") {
-          consumedPlaceholder = true;
-          return rawArguments;
-        }
-
-        if (/^\d+$/.test(token)) {
-          const index = Number(token);
-          if (index >= 0 && index < positionalArguments.length) {
-            consumedPlaceholder = true;
-            return positionalArguments[index] ?? "";
-          }
-          return "";
-        }
-
-        if (placeholderNames.has(token)) {
-          const index = (skill.arguments ?? []).indexOf(token);
-          if (index >= 0 && index < positionalArguments.length) {
-            consumedPlaceholder = true;
-            return positionalArguments[index] ?? "";
-          }
-          return "";
-        }
-
-        const diagnostic = createDiagnostic(
-          "warning",
-          "unknown_placeholder",
-          `Unknown placeholder "${match}" in ${skill.skillFile}.`,
-          skill.skillFile,
-          skill.name,
+        const resolution = resolvePlaceholderValue(
+          token,
+          match,
+          rawArguments,
+          positionalArguments,
+          skill.arguments ?? [],
+          placeholderNames,
         );
-        this.diagnostics.push(diagnostic);
-        onWarning?.(`Unknown placeholder "${match}" in ${skill.skillFile}.`);
-        return match;
+        if (resolution.consumed) {
+          consumedPlaceholder = true;
+        }
+        if (resolution.unknown) {
+          const diagnostic = createDiagnostic(
+            "warning",
+            "unknown_placeholder",
+            `Unknown placeholder "${match}" in ${skill.skillFile}.`,
+            skill.skillFile,
+            skill.name,
+          );
+          this.diagnostics.push(diagnostic);
+          onWarning?.(`Unknown placeholder "${match}" in ${skill.skillFile}.`);
+        }
+        return resolution.value;
       },
     );
 
     return { content: substituted, consumedPlaceholder };
   }
 
+  // fallow-ignore-next-line unused-class-member
   materialize(
     name: string,
     invocation?: SkillInvocation,
@@ -351,6 +401,7 @@ export class SkillRegistry {
     return sections.join("\n");
   }
 
+  // fallow-ignore-next-line unused-class-member
   recordFileTouch(paths: readonly string[]): ReadonlyArray<Skill> {
     const cwd = path.resolve(this.context.cwd);
     const touched = paths
@@ -371,14 +422,12 @@ export class SkillRegistry {
     return activated.map((skill) => cloneSkill(skill));
   }
 
+  // fallow-ignore-next-line unused-class-member
   recordInvocation(record: InvokedSkillRecord): void {
-    this.invokedSkills.push(cloneInvokedSkill(record));
+    this.invokedSkills.push(cloneInvokedSkillRecord(record));
   }
 
-  listInvocations(): ReadonlyArray<InvokedSkillRecord> {
-    return this.invokedSkills.map((record) => cloneInvokedSkill(record));
-  }
-
+  // fallow-ignore-next-line unused-class-member
   refresh(): SkillLoadDiagnostic[] {
     const result = this.reloadSkills(this.context);
     this.skills = result.skills.map((skill) => cloneSkill(skill));
@@ -387,6 +436,7 @@ export class SkillRegistry {
     return this.diagnostics.slice();
   }
 
+  // fallow-ignore-next-line unused-class-member
   getDiagnostics(): ReadonlyArray<SkillLoadDiagnostic> {
     return this.diagnostics.slice();
   }
