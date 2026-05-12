@@ -100,7 +100,9 @@ describe("OpenRouterProvider", () => {
       };
       let fullContent = "";
       for await (const chunk of provider.streamChat(request)) {
-        fullContent += chunk.delta;
+        if ("delta" in chunk) {
+          fullContent += chunk.delta;
+        }
       }
 
       expect(fullContent).toBe("Hello back");

@@ -378,6 +378,7 @@ export class Agent {
       summary: string;
       source: ProviderReasoningSummarySource;
     };
+    stopReason?: string;
   } {
     if (!("type" in event)) {
       return {
@@ -410,7 +411,70 @@ export class Agent {
       };
     }
 
+    if (event.type === "terminal") {
+      return { stopReason: event.stopReason };
+    }
+
     return {};
+  }
+
+  private detectNoProgress(
+    currentToolCalls?: ChatToolCall[],
+    lookback: number = 5,
+  ): boolean {
+    const state = this.contextManager.getConversationState();
+    const turns = state.turns;
+
+    if (turns.length === 0) {
+      return false;
+    }
+
+    // Look at entries in the most recent turn
+    const lastTurn = turns[turns.length - 1];
+    const recentEntries = lastTurn.entries.slice(-lookback);
+
+    // Need at least 3 entries to detect no-progress
+    if (recentEntries.length < 2 && !currentToolCalls?.length) {
+      return false;
+    }
+
+    const recentToolNames: string[] = [];
+    let hasAnyAssistantText = false;
+
+    for (const entry of recentEntries) {
+      if (entry.kind === "assistant") {
+        const assistantMessage = entry.message;
+        if (
+          assistantMessage.content &&
+          assistantMessage.content.trim().length > 0
+        ) {
+          hasAnyAssistantText = true;
+        }
+      }
+
+      if (entry.kind === "tool" && entry.toolInvocations?.length > 0) {
+        for (const invocation of entry.toolInvocations) {
+          recentToolNames.push(invocation.toolName);
+        }
+      }
+    }
+
+    // Include current iteration's tool calls
+    if (currentToolCalls?.length > 0) {
+      for (const toolCall of currentToolCalls) {
+        recentToolNames.push(toolCall.function.name);
+      }
+    }
+
+    // No progress detected when:
+    // 1. No new assistant text in recent iterations
+    // 2. All tool calls are for the same tool (repetitive)
+    // 3. At least 3 tool invocations with this pattern
+    const uniqueToolNames = new Set(recentToolNames);
+    const allToolCallsSame = uniqueToolNames.size === 1;
+    const sufficientIterations = recentToolNames.length >= 3;
+
+    return !hasAnyAssistantText && allToolCallsSame && sufficientIterations;
   }
 
   private synthesizeAgentReasoningSummary(
@@ -1088,11 +1152,13 @@ export class Agent {
     toolCalls?: ChatToolCall[];
     reasoningContent?: string;
     providerReasoningSummary: TurnReasoningSummary | null;
+    stopReason?: string;
   }> {
     const streamState = { fullResponse: "", chunkCount: 0 };
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
     let providerReasoningSummary: TurnReasoningSummary | null = null;
+    let stopReason: string | undefined;
 
     this.emitStatus(options, "Streaming response", "response");
 
@@ -1122,6 +1188,10 @@ export class Agent {
         toolCalls = normalizedEvent.toolCalls;
         reasoningContent = normalizedEvent.reasoningContent;
       }
+
+      if (normalizedEvent.stopReason) {
+        stopReason = normalizedEvent.stopReason;
+      }
     }
 
     return {
@@ -1129,6 +1199,7 @@ export class Agent {
       toolCalls,
       reasoningContent,
       providerReasoningSummary,
+      stopReason,
     };
   }
 
@@ -1317,36 +1388,70 @@ export class Agent {
       hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
 
     if (hasToolCalls) {
-      if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
-        this.emitDiagnostic({
-          type: "tool_loop_detected",
-          provider: this.provider.name,
-          model: this.model,
-          iteration: iterationCount,
-          emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-          threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
-          action: "fallback_no_tools",
-        });
+      // Check for no-progress condition if detector is enabled
+      if (this.runtimeConfig.useNoProgressDetector) {
+        if (this.detectNoProgress(normalizedToolCalls)) {
+          this.emitDiagnostic({
+            type: "no_progress_detected",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            lookbackIterations: 5,
+          });
 
-        this.contextManager.removeLastUnresolvedAssistantMessage();
+          this.contextManager.removeLastUnresolvedAssistantMessage();
 
-        const finalResponse = await this.requestFinalResponseWithoutTools(
-          onToken,
-          options?.abortSignal,
-          iterationCount + 1,
-          options,
-        );
-        if (finalResponse.trim().length === 0) {
-          throw new Error(
-            "Stopped after repeated empty tool-calling turns with no final assistant response.",
+          const finalResponse = await this.requestFinalResponseWithoutTools(
+            onToken,
+            options?.abortSignal,
+            iterationCount + 1,
+            options,
           );
-        }
+          if (finalResponse.trim().length === 0) {
+            throw new Error(
+              "Stopped after no-progress detection with no final assistant response.",
+            );
+          }
 
-        return {
-          finalResponse,
-          continueLoop: false,
-          emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-        };
+          return {
+            finalResponse,
+            continueLoop: false,
+            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+          };
+        }
+      } else {
+        // Fallback to empty tool-only streak when detector is disabled (deprecated)
+        if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
+          this.emitDiagnostic({
+            type: "tool_loop_detected",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+            threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+            action: "fallback_no_tools",
+          });
+
+          this.contextManager.removeLastUnresolvedAssistantMessage();
+
+          const finalResponse = await this.requestFinalResponseWithoutTools(
+            onToken,
+            options?.abortSignal,
+            iterationCount + 1,
+            options,
+          );
+          if (finalResponse.trim().length === 0) {
+            throw new Error(
+              "Stopped after repeated empty tool-calling turns with no final assistant response.",
+            );
+          }
+
+          return {
+            finalResponse,
+            continueLoop: false,
+            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+          };
+        }
       }
 
       onToken("\n");
@@ -1453,6 +1558,68 @@ export class Agent {
           toolCalls = streamResult.toolCalls;
           reasoningContent = streamResult.reasoningContent;
           providerReasoningSummary = streamResult.providerReasoningSummary;
+
+          // Output-token recovery: attempt continuation if stopped due to max_tokens
+          if (
+            streamResult.stopReason === "max_tokens" &&
+            this.runtimeConfig.outputTokenRecoveryLimit > 0
+          ) {
+            let recoveryAttempts = 0;
+            let currentStopReason = streamResult.stopReason;
+
+            while (
+              recoveryAttempts < this.runtimeConfig.outputTokenRecoveryLimit &&
+              currentStopReason === "max_tokens"
+            ) {
+              recoveryAttempts++;
+              this.emitDiagnostic({
+                type: "output_token_recovery_attempt",
+                provider: this.provider.name,
+                model: this.model,
+                iteration: iterationCount,
+                attemptNumber: recoveryAttempts,
+              });
+
+              // Continue with a request for more tokens
+              const continuationMessages = [...messages];
+              if (fullResponse.trim().length > 0) {
+                continuationMessages.push({
+                  role: "assistant",
+                  content: fullResponse,
+                });
+              }
+              continuationMessages.push({
+                role: "user",
+                content:
+                  "Continue with more detail if needed. If the response is complete, just reply with a period.",
+              });
+
+              const continuationResult = await this.collectProviderStream(
+                continuationMessages,
+                allowedTools,
+                iterationCount,
+                options,
+                onToken,
+              );
+
+              fullResponse += continuationResult.fullResponse;
+              if (continuationResult.toolCalls) {
+                toolCalls = continuationResult.toolCalls;
+                reasoningContent = continuationResult.reasoningContent;
+              }
+              currentStopReason = continuationResult.stopReason;
+            }
+
+            if (currentStopReason === "max_tokens") {
+              this.emitDiagnostic({
+                type: "output_token_recovery_exhausted",
+                provider: this.provider.name,
+                model: this.model,
+                iteration: iterationCount,
+                maxAttempts: this.runtimeConfig.outputTokenRecoveryLimit,
+              });
+            }
+          }
         } catch (streamError) {
           if (
             streamError instanceof ProviderContextLengthError &&
