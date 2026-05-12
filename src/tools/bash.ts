@@ -2,7 +2,6 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { ExecutableTool } from "./interface.js";
 import { ChatTool } from "../providers/types.js";
-import { truncateText } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -95,13 +94,10 @@ export class BashTool implements ExecutableTool {
         },
       );
 
-      const truncatedStdout = truncateText(stdout, this.outputInlineLimit);
-      const truncatedStderr = truncateText(stderr, this.outputInlineLimit);
-
       return JSON.stringify(
         {
-          stdout: truncatedStdout.value,
-          stderr: truncatedStderr.value,
+          stdout,
+          stderr,
           exit_code: 0,
         },
         null,
@@ -122,13 +118,10 @@ export class BashTool implements ExecutableTool {
           ? "Command timed out and was killed"
           : (execError.stderr ?? "");
 
-        const truncatedStdout = truncateText(stdout, this.outputInlineLimit);
-        const truncatedStderr = truncateText(stderr, this.outputInlineLimit);
-
         return JSON.stringify(
           {
-            stdout: truncatedStdout.value,
-            stderr: truncatedStderr.value,
+            stdout,
+            stderr,
             exit_code: exitCode,
           },
           null,

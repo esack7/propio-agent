@@ -46,8 +46,9 @@ import { findLastAssistantEntryIndex } from "./turnUtils.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-const SUMMARY_MAX_CHARS = 1500;
-const REHYDRATION_MAX_CHARS = 12000;
+// Default values for summary and rehydration limits
+const DEFAULT_SUMMARY_MAX_CHARS = 1500;
+const DEFAULT_REHYDRATION_MAX_CHARS = 12000;
 
 // ---------------------------------------------------------------------------
 // Internal mutable counterparts of the public readonly types.  The public
@@ -304,6 +305,13 @@ export class ContextManager {
   private rollingSummary: RollingSummaryRecord | undefined;
   private pinnedMemory: PinnedMemoryRecord[] = [];
   private invokedSkills: InvokedSkillRecord[] = [];
+  private summaryMaxChars: number;
+  private rehydrationMaxChars: number;
+
+  constructor(config?: { toolResultSummaryMaxChars?: number; rehydrationMaxChars?: number }) {
+    this.summaryMaxChars = config?.toolResultSummaryMaxChars ?? DEFAULT_SUMMARY_MAX_CHARS;
+    this.rehydrationMaxChars = config?.rehydrationMaxChars ?? DEFAULT_REHYDRATION_MAX_CHARS;
+  }
 
   // -------------------------------------------------------------------
   // Turn lifecycle
@@ -347,6 +355,15 @@ export class ContextManager {
     }
   }
 
+  private generateTextSummary(text: string): string {
+    if (text.length <= this.summaryMaxChars) {
+      return text;
+    }
+    const truncated = text.substring(0, this.summaryMaxChars);
+    const omitted = text.length - this.summaryMaxChars;
+    return `${truncated}\n\n[... ${omitted} more chars truncated]`;
+  }
+
   /**
    * Record tool results backed by artifacts. Each result is stored as an
    * artifact with the full raw content; the turn entry receives only a
@@ -367,7 +384,7 @@ export class ContextManager {
 
       const summary =
         typeof result.rawContent === "string"
-          ? generateTextSummary(result.rawContent)
+          ? this.generateTextSummary(result.rawContent)
           : generateBinarySummary(size, mediaType);
 
       const artifact: MutableArtifact = {
@@ -380,6 +397,14 @@ export class ContextManager {
         estimatedTokens: estimateTokens(size),
         referencingTurnIds: turnId ? [turnId] : [],
       };
+
+      // Copy external storage metadata if provided
+      if (result.externalStorage) {
+        (artifact as any).externalPath = result.externalStorage.externalPath;
+        (artifact as any).externalSizeBytes = result.externalStorage.externalSizeBytes;
+        (artifact as any).externalLineCount = result.externalStorage.externalLineCount;
+      }
+
       this.artifacts.set(artifactId, artifact);
 
       invocations.push({

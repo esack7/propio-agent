@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import type { Agent as AgentType } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
+import { loadRuntimeConfig } from "./config/runtimeConfig.js";
 import {
   getConfigPath,
   loadProvidersConfigAsync,
@@ -49,6 +50,7 @@ import {
   getDefaultSessionsDir,
   findStaleMarkers,
   clearInProgressMarker,
+  readIndex,
 } from "./sessions/sessionHistory.js";
 import {
   saveSessionOnExit,
@@ -749,6 +751,30 @@ async function main(): Promise<number> {
 
       // Clean up the stale marker
       clearInProgressMarker(sessionsDir, sessionId);
+    }
+
+    // Artifact retention: prune artifact dirs not anchored to any saved snapshot
+    const runtimeConfig = loadRuntimeConfig();
+    const artifactsRoot = path.join(sessionsDir, "artifacts");
+    if (fs.existsSync(artifactsRoot)) {
+      const index = readIndex(sessionsDir);
+      const anchoredIds = new Set(index?.map((e) => e.sessionId).filter(Boolean) ?? []);
+      const retentionMs = runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;
+
+      for (const dirName of fs.readdirSync(artifactsRoot)) {
+        const dirPath = path.join(artifactsRoot, dirName);
+        try {
+          if (!fs.statSync(dirPath).isDirectory()) continue;
+          if (anchoredIds.has(dirName)) continue;
+
+          const mtime = fs.statSync(dirPath).mtimeMs;
+          if (Date.now() - mtime > retentionMs) {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+          }
+        } catch {
+          continue;
+        }
+      }
     }
 
     const configPath = getConfigPath();

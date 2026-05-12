@@ -84,6 +84,9 @@ export interface PersistedArtifactRecord {
   readonly contentSizeChars: number;
   readonly estimatedTokens?: number;
   readonly referencingTurnIds: ReadonlyArray<string>;
+  readonly externalPath?: string;
+  readonly externalSizeBytes?: number;
+  readonly externalLineCount?: number;
 }
 
 export interface SessionMetadata {
@@ -93,6 +96,7 @@ export interface SessionMetadata {
   readonly promptBudgetPolicy: PromptBudgetPolicy;
   readonly summaryPolicy: SummaryPolicy;
   readonly contextWindowTokens: number;
+  readonly sessionId?: string;
 }
 
 export interface PersistedSessionV1 {
@@ -232,7 +236,7 @@ function persistTurn(turn: TurnRecord): PersistedTurnRecord {
 
 function persistArtifact(artifact: ArtifactRecord): PersistedArtifactRecord {
   const isBinary = artifact.content instanceof Uint8Array;
-  return {
+  const persisted: PersistedArtifactRecord = {
     id: artifact.id,
     type: artifact.type,
     mediaType: artifact.mediaType,
@@ -245,6 +249,16 @@ function persistArtifact(artifact: ArtifactRecord): PersistedArtifactRecord {
     estimatedTokens: artifact.estimatedTokens,
     referencingTurnIds: [...artifact.referencingTurnIds],
   };
+  if (artifact.externalPath) {
+    (persisted as any).externalPath = artifact.externalPath;
+  }
+  if (artifact.externalSizeBytes !== undefined) {
+    (persisted as any).externalSizeBytes = artifact.externalSizeBytes;
+  }
+  if (artifact.externalLineCount !== undefined) {
+    (persisted as any).externalLineCount = artifact.externalLineCount;
+  }
+  return persisted;
 }
 
 function persistPinnedMemory(
@@ -823,7 +837,7 @@ function restoreArtifact(artifact: PersistedArtifactRecord): ArtifactRecord {
       ? new Uint8Array(Buffer.from(artifact.content, "base64"))
       : artifact.content;
 
-  return {
+  const restored: ArtifactRecord = {
     id: artifact.id,
     type: artifact.type,
     mediaType: artifact.mediaType,
@@ -833,6 +847,18 @@ function restoreArtifact(artifact: PersistedArtifactRecord): ArtifactRecord {
     estimatedTokens: artifact.estimatedTokens,
     referencingTurnIds: [...artifact.referencingTurnIds],
   };
+
+  if ((artifact as any).externalPath) {
+    (restored as any).externalPath = (artifact as any).externalPath;
+  }
+  if ((artifact as any).externalSizeBytes !== undefined) {
+    (restored as any).externalSizeBytes = (artifact as any).externalSizeBytes;
+  }
+  if ((artifact as any).externalLineCount !== undefined) {
+    (restored as any).externalLineCount = (artifact as any).externalLineCount;
+  }
+
+  return restored;
 }
 
 function restorePinnedMemory(

@@ -168,6 +168,9 @@ export interface ArtifactRecord {
   readonly contentSizeChars: number;
   readonly estimatedTokens?: number;
   readonly referencingTurnIds: ReadonlyArray<string>;
+  readonly externalPath?: string;
+  readonly externalSizeBytes?: number;
+  readonly externalLineCount?: number;
 }
 
 /**
@@ -179,6 +182,11 @@ export interface ArtifactRecord {
  * (e.g. "image/png"). When omitted, `mediaType` defaults to
  * "text/plain" for string content and "application/octet-stream" for
  * Uint8Array content.
+ *
+ * `externalStorage` is an optional field set by the agent layer when
+ * a tool result has been persisted to disk. It contains metadata about
+ * the persisted file (path, size, line count). The preview is stored
+ * in `rawContent` and the full content lives on disk.
  */
 export interface ArtifactToolResult {
   readonly toolCallId: string;
@@ -186,6 +194,11 @@ export interface ArtifactToolResult {
   readonly rawContent: string | Uint8Array;
   readonly mediaType?: string;
   readonly status: "success" | "error";
+  readonly externalStorage?: {
+    readonly externalPath: string;
+    readonly externalSizeBytes: number;
+    readonly externalLineCount?: number;
+  };
 }
 
 /**

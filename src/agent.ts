@@ -26,6 +26,7 @@ import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
 import type { ToolExecutionResult } from "./tools/types.js";
+import { persistToolOutput } from "./tools/outputPersistence.js";
 import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
@@ -178,6 +179,8 @@ export class Agent {
   };
   private readonly sessionId: string;
   private readonly runtimeConfig: RuntimeConfig;
+  private sessionsDir: string | null = null;
+  private pendingToolResultBytes = 0;
 
   constructor(
     options: {
@@ -241,7 +244,10 @@ export class Agent {
     );
     this.model = resolvedModelKey;
 
-    this.contextManager = new ContextManager();
+    this.contextManager = new ContextManager({
+      toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
+      rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
+    });
     this.toolRegistry = createDefaultToolRegistry({
       runtimeConfig: this.runtimeConfig,
       skillToolInvoker: {
@@ -1203,6 +1209,49 @@ export class Agent {
     };
   }
 
+  private maybePersistedResult(result: ArtifactToolResult): ArtifactToolResult {
+    if (typeof result.rawContent !== "string" || !this.sessionsDir) {
+      return result;
+    }
+
+    const bytes = Buffer.byteLength(result.rawContent, "utf8");
+    const overSize = bytes > this.runtimeConfig.toolOutputPersistThreshold;
+    const overAggregate =
+      this.pendingToolResultBytes + bytes > this.runtimeConfig.aggregateToolResultsLimit;
+
+    if (!overSize && !overAggregate) {
+      this.pendingToolResultBytes += bytes;
+      return result;
+    }
+
+    const persisted = persistToolOutput({
+      toolName: result.toolName,
+      content: result.rawContent,
+      sessionsDir: this.sessionsDir,
+      sessionId: this.sessionId,
+      inlinePreviewBytes: this.runtimeConfig.toolOutputInlineLimit,
+    });
+
+    this.emitDiagnostic({
+      type: "tool_output_persisted",
+      toolName: result.toolName,
+      sizeBytes: persisted.externalSizeBytes,
+      reason: overSize ? "size_threshold" : "aggregate_cap",
+    });
+
+    this.pendingToolResultBytes += persisted.externalSizeBytes;
+
+    return {
+      ...result,
+      rawContent: persisted.preview,
+      externalStorage: {
+        externalPath: persisted.externalPath,
+        externalSizeBytes: persisted.externalSizeBytes,
+        externalLineCount: persisted.externalLineCount,
+      },
+    };
+  }
+
   private async executeToolCalls(
     toolCallsToExecute: ChatToolCall[],
     allowedTools: ReadonlySet<string> | undefined,
@@ -1211,19 +1260,19 @@ export class Agent {
     onToken: (token: string) => void,
     toolExecutionEvents: Array<{ name: string; failed: boolean }>,
   ): Promise<void> {
+    this.pendingToolResultBytes = 0;
     const artifactToolResults: ArtifactToolResult[] = [];
 
     for (const toolCall of toolCallsToExecute) {
-      artifactToolResults.push(
-        await this.processToolCall(
-          toolCall,
-          allowedTools,
-          iteration,
-          options,
-          onToken,
-          toolExecutionEvents,
-        ),
+      const raw = await this.processToolCall(
+        toolCall,
+        allowedTools,
+        iteration,
+        options,
+        onToken,
+        toolExecutionEvents,
       );
+      artifactToolResults.push(this.maybePersistedResult(raw));
     }
 
     this.contextManager.recordToolResults(artifactToolResults);
@@ -1510,6 +1559,7 @@ export class Agent {
 
     // Get sessions dir for in-progress marker management (available to both try and catch)
     const sessionsDir = getDefaultSessionsDir();
+    this.sessionsDir = sessionsDir;
 
     try {
       // Write in-progress marker at turn start (Phase 7 crash telemetry)
@@ -1772,6 +1822,7 @@ export class Agent {
       promptBudgetPolicy: DEFAULT_BUDGET_POLICY,
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
+      sessionId: this.sessionId,
     };
     return serializeSession(state, metadata);
   }
@@ -1782,6 +1833,9 @@ export class Agent {
    * (provider, model, system prompt) is preserved in the snapshot
    * for analysis but does not alter the agent's current configuration.
    *
+   * If the snapshot contains a sessionId in metadata, adopt it for the
+   * remainder of this agent instance (artifact directory continuity).
+   *
    * Throws SessionParseError on malformed or unsupported snapshots.
    */
   importSession(json: string): void {
@@ -1790,6 +1844,18 @@ export class Agent {
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
+
+    if (persisted.metadata.sessionId) {
+      (this as any).sessionId = persisted.metadata.sessionId;
+    } else {
+      this.emitDiagnostic({
+        type: "legacy_session_no_id",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: 0,
+      });
+    }
+
     this.contextManager.importState(state);
   }
 

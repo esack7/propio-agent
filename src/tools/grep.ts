@@ -4,7 +4,6 @@ import {
   collectFilesForSearch,
   normalizeToolPath,
   readUtf8TextFile,
-  truncateText,
 } from "./shared.js";
 
 export interface GrepToolConfig {
@@ -90,7 +89,6 @@ export class GrepTool implements ExecutableTool {
 
     const files = await collectFilesForSearch(rootPath);
     const matches: string[] = [];
-    let outputLength = 0;
 
     for (const filePath of files) {
       try {
@@ -112,16 +110,6 @@ export class GrepTool implements ExecutableTool {
 
           const formatted = `${filePath}:${index + 1}:${line}`;
           matches.push(formatted);
-          outputLength += formatted.length + 1;
-
-          if (outputLength > this.outputInlineLimit) {
-            const truncated = truncateText(
-              matches.join("\n"),
-              this.outputInlineLimit,
-              "[Output truncated - exceeded size limit]",
-            );
-            return truncated.value;
-          }
         }
       } catch {
         continue;

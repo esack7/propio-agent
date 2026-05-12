@@ -188,7 +188,10 @@ export function writeSnapshot(
   fs.renameSync(tempPath, snapshotPath);
 
   const entry: SessionIndexEntry = {
-    sessionId: path.basename(snapshotFile, ".json"),
+    sessionId:
+      typeof meta.sessionId === "string"
+        ? meta.sessionId
+        : path.basename(snapshotFile, ".json"),
     snapshotFile,
     savedAt: typeof obj.savedAt === "string" ? obj.savedAt : "",
     providerName:
