@@ -484,9 +484,9 @@ Diagnostics in propio-agent are emitted locally; there is no cross-user aggregat
 
 **Modified:**
 - `src/agent.ts` (stable runtime `sessionId` field, loop cap, no-progress detector authoritative + streak fallback under flag, output-token recovery, tool-output persistence call site, per-turn aggregate counter, circuit breakers, stream watchdog, in-progress marker writes/clears using stable sessionId)
-- `src/context/contextManager.ts` (config wiring, compaction circuit breaker, `recordToolResult` accepts optional external-storage metadata; aggregate cap moved to agent layer)
+- `src/context/contextManager.ts` (config wiring, compaction circuit breaker, `recordToolResults` batch accepts entries with optional external-storage metadata; aggregate cap moved to agent layer)
 - `src/context/promptBuilder.ts` (level-3 cliff deletion, circuit breaker abort, structured-summary rendering)
-- `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default, `ArtifactRecord` external-storage fields, `ArtifactToolResult` optional `externalStorage` input field, `SessionMetadata.sessionId`, `SessionIndexEntry.sessionId`)
+- `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default, `ArtifactRecord` external-storage fields, `ArtifactToolResult` optional `externalStorage` input field, `SessionMetadata.sessionId`)
 - `src/context/summaryManager.ts` (structured summary prompt, selective preservation)
 - `src/context/memoryManager.ts` (`MAX_CONTENT_LENGTH` from config)
 - `src/context/persistence.ts` (round-trip new optional `ArtifactRecord` external-storage fields; add optional `SessionMetadata.sessionId` with backward-compatible parse; `cleanExit` / `sessionUuid` still deferred with the full autosave proposal)
