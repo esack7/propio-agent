@@ -10,7 +10,7 @@ An analysis of what would constrain propio-agent from successfully solving probl
 
 ### 2. No-progress detector replaces blunt streak heuristic
 
-~~`MAX_EMPTY_TOOL_ONLY_STREAK = 3`~~ — **Replaced.** The new no-progress detector (`detectNoProgress` in `src/agent.ts`) exits the loop only when the same tool + identical args repeats ≥ 3 times *and* no new artifacts have been produced and no assistant text was emitted. Models that read multiple different files silently are no longer misclassified as stuck. The old streak heuristic remains as a fallback when `runtimeConfig.useNoProgressDetector = false`.
+~~`MAX_EMPTY_TOOL_ONLY_STREAK = 3`~~ — **Replaced.** The new no-progress detector (`detectNoProgress` in `src/agent.ts`) exits the loop only when the same tool + identical args repeats ≥ 3 times with no assistant text in the lookback window. Artifact IDs are intentionally not compared: every tool invocation creates a new artifact ID regardless of content, so artifact-ID comparison cannot distinguish genuine progress from a stuck loop — the args-key fingerprint is the sole signal. Models that read multiple different files silently (`read fileA`, `read fileB`, `read fileC`) are no longer misclassified as stuck. The old streak heuristic remains as a fallback when `runtimeConfig.useNoProgressDetector = false`.
 
 ## Context Loss Over Time
 

@@ -51,6 +51,7 @@ import {
   findStaleMarkers,
   clearInProgressMarker,
   readIndex,
+  rebuildIndex,
 } from "./sessions/sessionHistory.js";
 import {
   saveSessionOnExit,
@@ -760,9 +761,9 @@ async function main(): Promise<number> {
     const runtimeConfig = loadRuntimeConfig();
     const artifactsRoot = path.join(sessionsDir, "artifacts");
     if (fs.existsSync(artifactsRoot)) {
-      const index = readIndex(sessionsDir);
+      const index = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir);
       const anchoredIds = new Set(
-        index?.entries.map((e) => e.runtimeSessionId).filter(Boolean) ?? [],
+        index.entries.map((e) => e.runtimeSessionId).filter(Boolean) ?? [],
       );
       const retentionMs =
         runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;

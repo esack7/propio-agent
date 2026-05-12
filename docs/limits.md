@@ -9,7 +9,7 @@ The most important set — these bound how long the model can spin within a sing
 | Knob | Default | Override | Purpose |
 | --- | --- | --- | --- |
 | `maxIterations` | `50` | `PROPIO_MAX_ITERATIONS` / `--max-iterations` | Hard cap on tool-call rounds per user turn. Emits `max_iterations_reached` diagnostic when hit. |
-| no-progress detector | enabled | `runtimeConfig.useNoProgressDetector` | Exits the loop when the same tool call (same name + identical args) repeats ≥ 3 times with no new artifacts or assistant text. Fallback: `MAX_EMPTY_TOOL_ONLY_STREAK` (authoritative only when detector is disabled). |
+| no-progress detector | enabled | `runtimeConfig.useNoProgressDetector` | Exits the loop when the same tool call (same name + identical args) repeats ≥ 3 times with no assistant text in the lookback window. Artifact IDs are not compared — each invocation creates a new ID regardless of content. Fallback: `MAX_EMPTY_TOOL_ONLY_STREAK` (authoritative only when detector is disabled). |
 | `MAX_CONTEXT_RETRY_LEVEL` | `3` | — | Escalation levels for re-trimming context on token-limit errors; level 3 now triggers a `context_pressure_circuit_breaker` abort instead of erasing all turns. |
 | `MAX_VISIBILITY_PREVIEW_CHARS` | `120` | — | Truncation cap for tool-arg previews in activity output (display only). |
 
