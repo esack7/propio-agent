@@ -90,9 +90,33 @@ export interface SummaryPolicy {
 export const DEFAULT_SUMMARY_POLICY: SummaryPolicy = {
   rawRecentTurns: 6,
   refreshIntervalTurns: 3,
-  summaryTargetTokens: 512,
+  summaryTargetTokens: 2048,
   contextPressureThreshold: 0.6,
 };
+
+/**
+ * Structured sections of a rolling summary.
+ * Each key is a human-readable section label; the value is the text for
+ * that section. The `narrative` key is the fallback for plain-text output.
+ */
+export interface RollingSummarySections {
+  /** Free-form prose that doesn't belong to a specific section. Also used
+   *  as the sole key when the LLM returns plain text and the fallback path
+   *  fills in `{ narrative: content }`. */
+  readonly narrative?: string;
+  /** Current user goals and any open questions. */
+  readonly goals?: string;
+  /** Constraints and explicit instructions from the user. */
+  readonly constraints?: string;
+  /** Key decisions and their rationale. */
+  readonly decisions?: string;
+  /** Important environmental / project / domain facts. */
+  readonly facts?: string;
+  /** What has been accomplished. */
+  readonly accomplished?: string;
+  /** What still remains to be done. */
+  readonly remaining?: string;
+}
 
 /**
  * Persistent record of the rolling summary that compacts older turns
@@ -103,6 +127,13 @@ export interface RollingSummaryRecord {
   readonly updatedAt: string;
   readonly coveredTurnIds: ReadonlyArray<string>;
   readonly estimatedTokens: number;
+  /**
+   * Parsed structured sections from the LLM response. Present when the
+   * LLM produced a valid JSON object matching RollingSummarySections.
+   * Absent (or `undefined`) when the LLM returned plain text and the
+   * fallback path stored the raw text in `.content` only.
+   */
+  readonly sections?: RollingSummarySections;
 }
 
 /**
@@ -168,6 +199,9 @@ export interface ArtifactRecord {
   readonly contentSizeChars: number;
   readonly estimatedTokens?: number;
   readonly referencingTurnIds: ReadonlyArray<string>;
+  readonly externalPath?: string;
+  readonly externalSizeBytes?: number;
+  readonly externalLineCount?: number;
 }
 
 /**
@@ -179,6 +213,11 @@ export interface ArtifactRecord {
  * (e.g. "image/png"). When omitted, `mediaType` defaults to
  * "text/plain" for string content and "application/octet-stream" for
  * Uint8Array content.
+ *
+ * `externalStorage` is an optional field set by the agent layer when
+ * a tool result has been persisted to disk. It contains metadata about
+ * the persisted file (path, size, line count). The preview is stored
+ * in `rawContent` and the full content lives on disk.
  */
 export interface ArtifactToolResult {
   readonly toolCallId: string;
@@ -186,6 +225,11 @@ export interface ArtifactToolResult {
   readonly rawContent: string | Uint8Array;
   readonly mediaType?: string;
   readonly status: "success" | "error";
+  readonly externalStorage?: {
+    readonly externalPath: string;
+    readonly externalSizeBytes: number;
+    readonly externalLineCount?: number;
+  };
 }
 
 /**

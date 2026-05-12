@@ -134,7 +134,7 @@ describe("Tool Implementations", () => {
       ).rejects.toThrow("Permission denied");
     });
 
-    it("truncates large files with an explicit marker", async () => {
+    it("returns full content for large files (agent layer handles persistence)", async () => {
       const tool = new ReadTool();
       const content = "x".repeat(60 * 1024);
       jest.mocked(mockFsPromises.stat).mockResolvedValue({
@@ -146,8 +146,8 @@ describe("Tool Implementations", () => {
 
       const result = await tool.execute({ path: "/test/large.txt" });
 
-      expect(result.length).toBeGreaterThan(0);
-      expect(result).toContain("[output truncated]");
+      expect(result).toEqual(content);
+      expect(result.length).toBe(60 * 1024);
     });
   });
 
@@ -351,17 +351,19 @@ describe("Tool Implementations", () => {
       );
     });
 
-    it("truncates large output", async () => {
+    it("returns full output for large results (agent layer handles persistence)", async () => {
       const tool = new BashTool();
+      const largeOutput = "x".repeat(60 * 1024);
       mockExecFileAsync.mockResolvedValue({
-        stdout: "x".repeat(60 * 1024),
+        stdout: largeOutput,
         stderr: "",
       });
 
       const result = await tool.execute({ command: "generate" });
       const parsed = JSON.parse(result);
 
-      expect(parsed.stdout).toContain("[output truncated]");
+      expect(parsed.stdout).toEqual(largeOutput);
+      expect(parsed.stdout.length).toBe(60 * 1024);
     });
   });
 

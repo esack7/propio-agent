@@ -6,6 +6,7 @@ import {
 } from "../summaryManager.js";
 import {
   RollingSummaryRecord,
+  RollingSummarySections,
   SummaryPolicy,
   DEFAULT_SUMMARY_POLICY,
   TurnRecord,
@@ -265,7 +266,35 @@ describe("serializeTurnForSummary", () => {
     expect(text).toContain("[Called tools: search]");
   });
 
-  it("should truncate long tool summaries to 500 chars", () => {
+  it("should keep recent tool summaries full and clip old ones at 200 chars", () => {
+    // Create a turn with 7 tool entries (300 chars each)
+    const toolSummary = "x".repeat(300);
+    const entries: TurnEntry[] = [];
+    for (let i = 0; i < 7; i++) {
+      entries.push(makeToolEntry(`tool${i}`, toolSummary));
+    }
+
+    const turn = makeTurn({
+      id: "t1",
+      userMessage: "Get data",
+      entries,
+    });
+
+    // With keepFull=5 (default), the first 2 entries should be clipped at 200,
+    // and the last 5 should be full (300)
+    const text = serializeTurnForSummary(turn, 5);
+    const lines = text.split("\n");
+    const toolLines = lines.filter((l) => l.includes("[tool"));
+
+    // First 2 tool entries should be clipped
+    expect(toolLines[0].length).toBeLessThan(220); // clipped at 200
+    expect(toolLines[1].length).toBeLessThan(220);
+    // Last 5 should be full (or close to full)
+    expect(toolLines[5].length).toBeGreaterThan(250);
+    expect(toolLines[6].length).toBeGreaterThan(250);
+  });
+
+  it("should handle the case with a single tool entry without clipping", () => {
     const longSummary = "x".repeat(1000);
     const turn = makeTurn({
       id: "t1",
@@ -273,9 +302,10 @@ describe("serializeTurnForSummary", () => {
       entries: [makeAssistantEntry(""), makeToolEntry("fetch", longSummary)],
     });
 
-    const text = serializeTurnForSummary(turn);
+    const text = serializeTurnForSummary(turn, 5); // keepFull=5, so 1 entry is "recent"
     const toolLine = text.split("\n").find((l) => l.includes("[fetch"));
-    expect(toolLine!.length).toBeLessThan(600);
+    // Should NOT be clipped since it's recent
+    expect(toolLine).toContain("x".repeat(500));
   });
 });
 
@@ -570,5 +600,107 @@ describe("SummaryManager", () => {
     expect(result.refreshedTurnCount).toBe(0);
     expect(result.summary.content).toBe("Covers both");
     expect(result.summary.coveredTurnIds).toEqual(["t0", "t1"]);
+  });
+
+  // -----------------------------------------------------------------------
+  // Structured sections (Phase 5)
+  // -----------------------------------------------------------------------
+
+  it("should parse valid JSON sections and populate sections field", async () => {
+    const sectionsJSON = JSON.stringify({
+      goals: "Build X and test it",
+      decisions: "Use approach A",
+      accomplished: "Step 1 done",
+    });
+
+    const provider = makeMockProvider(sectionsJSON);
+
+    const result = await manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+    );
+
+    expect(result.summary.sections).toBeDefined();
+    expect(result.summary.sections!.goals).toBe("Build X and test it");
+    expect(result.summary.sections!.decisions).toBe("Use approach A");
+    expect(result.summary.sections!.accomplished).toBe("Step 1 done");
+  });
+
+  it("should render sections to content field for backward compatibility", async () => {
+    const sectionsJSON = JSON.stringify({
+      goals: "Build X",
+      constraints: "Use TypeScript",
+    });
+
+    const provider = makeMockProvider(sectionsJSON);
+
+    const result = await manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+    );
+
+    expect(result.summary.content).toContain("Goals: Build X");
+    expect(result.summary.content).toContain("Constraints: Use TypeScript");
+  });
+
+  it("should fall back to plain text when LLM returns invalid JSON", async () => {
+    const plainText = "This is a plain text summary, not JSON";
+    const provider = makeMockProvider(plainText);
+
+    const result = await manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+    );
+
+    expect(result.summary.sections).toBeUndefined();
+    expect(result.summary.content).toBe(plainText);
+  });
+
+  it("should fall back to plain text when JSON has wrong shape", async () => {
+    const wrongShapeJSON = JSON.stringify({ unknownKey: "value" });
+    const provider = makeMockProvider(wrongShapeJSON);
+
+    const result = await manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+    );
+
+    expect(result.summary.sections).toBeUndefined();
+    // Should store the raw JSON string as content
+    expect(result.summary.content).toContain("unknownKey");
+  });
+
+  it("should handle sparse sections (only some keys present)", async () => {
+    const sparseJSON = JSON.stringify({
+      goals: "Do X",
+      // other keys omitted
+    });
+
+    const provider = makeMockProvider(sparseJSON);
+
+    const result = await manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+    );
+
+    expect(result.summary.sections).toBeDefined();
+    expect(result.summary.sections!.goals).toBe("Do X");
+    expect(result.summary.sections!.decisions).toBeUndefined();
+    expect(result.summary.sections!.accomplished).toBeUndefined();
   });
 });

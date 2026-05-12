@@ -1,5 +1,7 @@
 import { LLMProvider } from "./providers/interface.js";
 import * as os from "os";
+import { randomUUID } from "crypto";
+import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
 import {
   ChatMessage,
   ChatTool,
@@ -24,6 +26,7 @@ import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
 import type { ToolExecutionResult } from "./tools/types.js";
+import { persistToolOutput } from "./tools/outputPersistence.js";
 import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
 import { composeSystemPrompt } from "./agentsMd.js";
@@ -48,6 +51,12 @@ import {
   restoreConversationState,
   SessionMetadata,
 } from "./context/persistence.js";
+import {
+  getDefaultSessionsDir,
+  writeInProgressMarker,
+  clearInProgressMarker,
+  InProgressMarker,
+} from "./sessions/sessionHistory.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -123,6 +132,7 @@ type AgentToolOptions = AgentEventOptions & {
 
 type AgentStreamOptions = AgentToolOptions & {
   readonly extraUserInstruction?: string;
+  readonly maxIterations?: number;
 };
 
 /**
@@ -137,6 +147,14 @@ export interface PromptPlanSnapshot {
   readonly contextWindowTokens: number;
   readonly availableInputBudget: number;
   readonly plan: PromptPlan;
+}
+
+function stableArgsKey(args: Record<string, unknown> | null | undefined): string {
+  if (!args || typeof args !== "object") return "";
+  return Object.keys(args)
+    .sort()
+    .map((k) => `${k}=${JSON.stringify(args[k])}`)
+    .join("|");
 }
 
 export class Agent {
@@ -167,6 +185,10 @@ export class Agent {
     readonly cwd: string;
     readonly homeDir: string;
   };
+  private readonly sessionId: string;
+  private readonly runtimeConfig: RuntimeConfig;
+  private sessionsDir: string | null = null;
+  private pendingToolResultBytes = 0;
 
   constructor(
     options: {
@@ -181,6 +203,7 @@ export class Agent {
       homeDir?: string;
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+      runtimeConfig?: RuntimeConfig;
     } = {} as any,
   ) {
     if (!options.providersConfig) {
@@ -212,6 +235,9 @@ export class Agent {
       homeDir: options.homeDir ?? os.homedir(),
     };
 
+    this.sessionId = randomUUID();
+    this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
+
     const resolvedProvider = resolveProvider(config, options.providerName);
     const resolvedModelKey = resolveModelKey(
       resolvedProvider,
@@ -224,11 +250,20 @@ export class Agent {
       resolvedModelKey,
       this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
       this.diagnosticsEnabled,
+      {
+        maxRetries: this.runtimeConfig.maxRetries,
+        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+      },
     );
     this.model = resolvedModelKey;
 
-    this.contextManager = new ContextManager();
+    this.contextManager = new ContextManager({
+      toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
+      rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
+      pinnedMemoryMaxContentLength: this.runtimeConfig.pinnedMemoryMaxContentLength,
+    });
     this.toolRegistry = createDefaultToolRegistry({
+      runtimeConfig: this.runtimeConfig,
       skillToolInvoker: {
         invokeSkill: async (
           name: string,
@@ -249,8 +284,13 @@ export class Agent {
       ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
     });
     this.summaryManager = new SummaryManager();
-    this.summaryPolicy = DEFAULT_SUMMARY_POLICY;
+    this.summaryPolicy = {
+      ...DEFAULT_SUMMARY_POLICY,
+      summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
+    };
   }
+
+
 
   async initialize(): Promise<void> {
     await this.mcpManager.initialize();
@@ -355,6 +395,7 @@ export class Agent {
       summary: string;
       source: ProviderReasoningSummarySource;
     };
+    stopReason?: string;
   } {
     if (!("type" in event)) {
       return {
@@ -387,7 +428,57 @@ export class Agent {
       };
     }
 
+    if (event.type === "terminal") {
+      return { stopReason: event.stopReason };
+    }
+
     return {};
+  }
+
+  private detectNoProgress(
+    _currentToolCalls?: ChatToolCall[],
+    lookback: number = 5,
+  ): boolean {
+    const state = this.contextManager.getConversationState();
+    const turns = state.turns;
+
+    if (turns.length === 0) return false;
+
+    const lastTurn = turns[turns.length - 1];
+    // commitAssistantResponse already ran before this check, so the current
+    // iteration's assistant entry is already in history — read from there only.
+    const recentEntries = lastTurn.entries.slice(-lookback);
+
+    const seenCallSignatures: string[] = [];
+    let hasAnyAssistantText = false;
+
+    for (const entry of recentEntries) {
+      if (entry.kind === "assistant") {
+        if (entry.message.content?.trim().length > 0) {
+          hasAnyAssistantText = true;
+        }
+        // Collect per-call signatures (tool name + stable args key)
+        if (entry.message.toolCalls?.length) {
+          for (const tc of entry.message.toolCalls) {
+            seenCallSignatures.push(
+              `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
+            );
+          }
+        }
+      }
+    }
+
+    if (hasAnyAssistantText) return false;
+
+    // Need at least 3 identical call signatures in the lookback window.
+    // Each tool invocation creates a new artifact ID regardless of content, so
+    // artifact IDs cannot distinguish genuine progress from a stuck loop —
+    // the args-key comparison is the authoritative signal.
+    if (seenCallSignatures.length < 3) return false;
+
+    // Stuck if every call in the window has the same signature (same tool + same args)
+    const uniqueSignatures = new Set(seenCallSignatures);
+    return uniqueSignatures.size === 1;
   }
 
   private synthesizeAgentReasoningSummary(
@@ -433,6 +524,10 @@ export class Agent {
       resolvedModelKey,
       this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
       this.diagnosticsEnabled,
+      {
+        maxRetries: this.runtimeConfig.maxRetries,
+        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+      },
     );
 
     this.resolvedProviderConfig = resolvedProvider;
@@ -701,6 +796,20 @@ export class Agent {
   private async runSummaryRefresh(
     reason: "turn_cadence" | "context_pressure" | "synchronous_shrink",
   ): Promise<void> {
+    if (
+      this.contextManager.compactionFailures >=
+      this.runtimeConfig.compactionFailureLimit
+    ) {
+      this.emitDiagnostic({
+        type: "compaction_circuit_breaker_tripped",
+        provider: this.provider.name,
+        model: this.model,
+        consecutiveFailures: this.contextManager.compactionFailures,
+        limit: this.runtimeConfig.compactionFailureLimit,
+      });
+      return;
+    }
+
     this.summaryRefreshRunning = true;
     this.summaryDirty = false;
     const generation = this.summaryGeneration;
@@ -743,6 +852,7 @@ export class Agent {
       }
 
       this.contextManager.setRollingSummary(result.summary);
+      this.contextManager.resetCompactionFailures();
 
       this.emitDiagnostic({
         type: "summary_refresh_completed",
@@ -760,6 +870,7 @@ export class Agent {
         errorName: error instanceof Error ? error.name : "UnknownError",
         message: error instanceof Error ? error.message : String(error),
       });
+      this.contextManager.incrementCompactionFailures();
     } finally {
       this.summaryRefreshRunning = false;
 
@@ -833,12 +944,18 @@ export class Agent {
     iteration?: number,
   ): PromptPlan {
     const contextWindowTokens = this.resolveContextWindowTokens();
+    const policy: PromptBudgetPolicy = {
+      ...DEFAULT_BUDGET_POLICY,
+      maxRecentTurns: this.runtimeConfig.maxRecentTurns,
+      artifactInlineCharCap: this.runtimeConfig.artifactInlineCharCap,
+    };
     const plan = this.contextManager.buildPromptPlan(
       this.getEffectiveSystemPrompt(),
       extraUserInstruction,
       {
         contextWindowTokens,
         retryLevel,
+        policy,
       },
     );
     if (iteration != null) {
@@ -963,6 +1080,7 @@ export class Agent {
       "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.";
 
     let retryLevel = 0;
+    let shrinkCount = 0;
 
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
       const plan = this.buildPlan(noToolsInstruction, retryLevel, iteration);
@@ -978,12 +1096,15 @@ export class Agent {
       try {
         const streamState = { fullResponse: "", chunkCount: 0 };
         this.emitStatus(options, "Streaming response", "response");
-        for await (const event of this.provider.streamChat({
-          model: this.model,
-          messages,
-          signal: abortSignal,
+        for await (const event of this.withStreamIdleWatchdog(
+          this.provider.streamChat({
+            model: this.model,
+            messages,
+            signal: abortSignal,
+            iteration,
+          }),
           iteration,
-        })) {
+        )) {
           const normalizedEvent = this.normalizeAndEmitStreamEvent(
             event,
             options,
@@ -1020,32 +1141,49 @@ export class Agent {
 
         return streamState.fullResponse;
       } catch (error) {
-        if (
-          error instanceof ProviderContextLengthError &&
-          retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
-        ) {
-          const shrunk = await this.attemptSynchronousShrink(plan);
-          if (shrunk) {
+        if (error instanceof ProviderContextLengthError) {
+          if (retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
+            shrinkCount++;
+            if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+              this.emitDiagnostic({
+                type: "context_pressure_circuit_breaker",
+                provider: this.provider.name,
+                model: this.model,
+                iteration,
+                retryLevel,
+              });
+              throw error;
+            }
+            const shrunk = await this.attemptSynchronousShrink(plan);
+            if (shrunk) {
+              this.emitDiagnostic({
+                type: "provider_error",
+                provider: this.provider.name,
+                model: this.model,
+                iteration,
+                errorName: "ProviderContextLengthError",
+                message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
+              });
+              continue;
+            }
+            retryLevel++;
             this.emitDiagnostic({
               type: "provider_error",
               provider: this.provider.name,
               model: this.model,
               iteration,
               errorName: "ProviderContextLengthError",
-              message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
+              message: `Context length exceeded, retrying at level ${retryLevel}`,
             });
             continue;
           }
-          retryLevel++;
           this.emitDiagnostic({
-            type: "provider_error",
+            type: "context_pressure_circuit_breaker",
             provider: this.provider.name,
             model: this.model,
             iteration,
-            errorName: "ProviderContextLengthError",
-            message: `Context length exceeded, retrying at level ${retryLevel}`,
+            retryLevel,
           });
-          continue;
         }
         throw error;
       }
@@ -1065,21 +1203,26 @@ export class Agent {
     toolCalls?: ChatToolCall[];
     reasoningContent?: string;
     providerReasoningSummary: TurnReasoningSummary | null;
+    stopReason?: string;
   }> {
     const streamState = { fullResponse: "", chunkCount: 0 };
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
     let providerReasoningSummary: TurnReasoningSummary | null = null;
+    let stopReason: string | undefined;
 
     this.emitStatus(options, "Streaming response", "response");
 
-    for await (const event of this.provider.streamChat({
-      model: this.model,
-      messages,
-      tools: this.getMergedToolSchemas(allowedTools),
-      signal: options?.abortSignal,
+    for await (const event of this.withStreamIdleWatchdog(
+      this.provider.streamChat({
+        model: this.model,
+        messages,
+        tools: this.getMergedToolSchemas(allowedTools),
+        signal: options?.abortSignal,
+        iteration,
+      }),
       iteration,
-    })) {
+    )) {
       const normalizedEvent = this.normalizeAndEmitStreamEvent(
         event,
         options,
@@ -1099,6 +1242,10 @@ export class Agent {
         toolCalls = normalizedEvent.toolCalls;
         reasoningContent = normalizedEvent.reasoningContent;
       }
+
+      if (normalizedEvent.stopReason) {
+        stopReason = normalizedEvent.stopReason;
+      }
     }
 
     return {
@@ -1106,6 +1253,93 @@ export class Agent {
       toolCalls,
       reasoningContent,
       providerReasoningSummary,
+      stopReason,
+    };
+  }
+
+  private async *withStreamIdleWatchdog(
+    source: AsyncIterable<ChatStreamEvent>,
+    iteration: number,
+  ): AsyncIterable<ChatStreamEvent> {
+    const timeoutMs = this.runtimeConfig.streamIdleTimeoutMs;
+    if (timeoutMs <= 0) {
+      yield* source;
+      return;
+    }
+
+    const iter = source[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            this.emitDiagnostic({
+              type: "stream_idle_aborted",
+              provider: this.provider.name,
+              model: this.model,
+              iteration,
+              timeoutMs,
+            });
+            reject(new Error(`Stream idle timeout after ${timeoutMs}ms`));
+          }, timeoutMs);
+        });
+
+        try {
+          const result = await Promise.race([iter.next(), timeoutPromise]);
+          clearTimeout(timeoutHandle);
+          if (result.done) return;
+          yield result.value;
+        } catch (err) {
+          clearTimeout(timeoutHandle);
+          throw err;
+        }
+      }
+    } finally {
+      await iter.return?.();
+    }
+  }
+
+  private maybePersistedResult(result: ArtifactToolResult): ArtifactToolResult {
+    if (typeof result.rawContent !== "string" || !this.sessionsDir) {
+      return result;
+    }
+
+    const bytes = Buffer.byteLength(result.rawContent, "utf8");
+    const overSize = bytes > this.runtimeConfig.toolOutputPersistThreshold;
+    const overAggregate =
+      this.pendingToolResultBytes + bytes >
+      this.runtimeConfig.aggregateToolResultsLimit;
+
+    if (!overSize && !overAggregate) {
+      this.pendingToolResultBytes += bytes;
+      return result;
+    }
+
+    const persisted = persistToolOutput({
+      toolName: result.toolName,
+      content: result.rawContent,
+      sessionsDir: this.sessionsDir,
+      sessionId: this.sessionId,
+      inlinePreviewBytes: this.runtimeConfig.toolOutputInlineLimit,
+    });
+
+    this.emitDiagnostic({
+      type: "tool_output_persisted",
+      toolName: result.toolName,
+      sizeBytes: persisted.externalSizeBytes,
+      reason: overSize ? "size_threshold" : "aggregate_cap",
+    });
+
+    this.pendingToolResultBytes += persisted.externalSizeBytes;
+
+    return {
+      ...result,
+      rawContent: persisted.preview,
+      externalStorage: {
+        externalPath: persisted.externalPath,
+        externalSizeBytes: persisted.externalSizeBytes,
+        externalLineCount: persisted.externalLineCount,
+      },
     };
   }
 
@@ -1117,19 +1351,19 @@ export class Agent {
     onToken: (token: string) => void,
     toolExecutionEvents: Array<{ name: string; failed: boolean }>,
   ): Promise<void> {
+    this.pendingToolResultBytes = 0;
     const artifactToolResults: ArtifactToolResult[] = [];
 
     for (const toolCall of toolCallsToExecute) {
-      artifactToolResults.push(
-        await this.processToolCall(
-          toolCall,
-          allowedTools,
-          iteration,
-          options,
-          onToken,
-          toolExecutionEvents,
-        ),
+      const raw = await this.processToolCall(
+        toolCall,
+        allowedTools,
+        iteration,
+        options,
+        onToken,
+        toolExecutionEvents,
       );
+      artifactToolResults.push(this.maybePersistedResult(raw));
     }
 
     this.contextManager.recordToolResults(artifactToolResults);
@@ -1294,36 +1528,70 @@ export class Agent {
       hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
 
     if (hasToolCalls) {
-      if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
-        this.emitDiagnostic({
-          type: "tool_loop_detected",
-          provider: this.provider.name,
-          model: this.model,
-          iteration: iterationCount,
-          emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-          threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
-          action: "fallback_no_tools",
-        });
+      // Check for no-progress condition if detector is enabled
+      if (this.runtimeConfig.useNoProgressDetector) {
+        if (this.detectNoProgress(normalizedToolCalls)) {
+          this.emitDiagnostic({
+            type: "no_progress_detected",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            lookbackIterations: 5,
+          });
 
-        this.contextManager.removeLastUnresolvedAssistantMessage();
+          this.contextManager.removeLastUnresolvedAssistantMessage();
 
-        const finalResponse = await this.requestFinalResponseWithoutTools(
-          onToken,
-          options?.abortSignal,
-          iterationCount + 1,
-          options,
-        );
-        if (finalResponse.trim().length === 0) {
-          throw new Error(
-            "Stopped after repeated empty tool-calling turns with no final assistant response.",
+          const finalResponse = await this.requestFinalResponseWithoutTools(
+            onToken,
+            options?.abortSignal,
+            iterationCount + 1,
+            options,
           );
-        }
+          if (finalResponse.trim().length === 0) {
+            throw new Error(
+              "Stopped after no-progress detection with no final assistant response.",
+            );
+          }
 
-        return {
-          finalResponse,
-          continueLoop: false,
-          emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-        };
+          return {
+            finalResponse,
+            continueLoop: false,
+            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+          };
+        }
+      } else {
+        // Fallback to empty tool-only streak when detector is disabled (deprecated)
+        if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
+          this.emitDiagnostic({
+            type: "tool_loop_detected",
+            provider: this.provider.name,
+            model: this.model,
+            iteration: iterationCount,
+            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+            threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+            action: "fallback_no_tools",
+          });
+
+          this.contextManager.removeLastUnresolvedAssistantMessage();
+
+          const finalResponse = await this.requestFinalResponseWithoutTools(
+            onToken,
+            options?.abortSignal,
+            iterationCount + 1,
+            options,
+          );
+          if (finalResponse.trim().length === 0) {
+            throw new Error(
+              "Stopped after repeated empty tool-calling turns with no final assistant response.",
+            );
+          }
+
+          return {
+            finalResponse,
+            continueLoop: false,
+            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+          };
+        }
       }
 
       onToken("\n");
@@ -1369,6 +1637,7 @@ export class Agent {
 
     let iterationCount = 0;
     let contextRetryLevel = 0;
+    let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
     const extraUserInstruction =
@@ -1379,10 +1648,26 @@ export class Agent {
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
+
+    // Get sessions dir for in-progress marker management (available to both try and catch)
+    const sessionsDir = getDefaultSessionsDir();
+    this.sessionsDir = sessionsDir;
+
     try {
+      // Write in-progress marker at turn start (Phase 7 crash telemetry)
+      const inProgressMarker: InProgressMarker = {
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        providerName: this.provider.name,
+        modelKey: this.model,
+        turnIndex: iterationCount,
+      };
+      writeInProgressMarker(sessionsDir, this.sessionId, inProgressMarker);
+
       let finalResponse = "";
       let continueLoop = true;
-      const maxIterations = 10;
+      const maxIterations =
+        options?.maxIterations ?? this.runtimeConfig.maxIterations;
       let emptyToolOnlyStreak = 0;
 
       while (continueLoop && iterationCount < maxIterations) {
@@ -1416,35 +1701,114 @@ export class Agent {
           toolCalls = streamResult.toolCalls;
           reasoningContent = streamResult.reasoningContent;
           providerReasoningSummary = streamResult.providerReasoningSummary;
-        } catch (streamError) {
+
+          // Output-token recovery: attempt continuation if stopped due to max_tokens
           if (
-            streamError instanceof ProviderContextLengthError &&
-            contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
+            streamResult.stopReason === "max_tokens" &&
+            this.runtimeConfig.outputTokenRecoveryLimit > 0
           ) {
-            const shrunk = await this.attemptSynchronousShrink(plan);
-            if (shrunk) {
+            let recoveryAttempts = 0;
+            let currentStopReason = streamResult.stopReason;
+
+            while (
+              recoveryAttempts < this.runtimeConfig.outputTokenRecoveryLimit &&
+              currentStopReason === "max_tokens"
+            ) {
+              recoveryAttempts++;
+              this.emitDiagnostic({
+                type: "output_token_recovery_attempt",
+                provider: this.provider.name,
+                model: this.model,
+                iteration: iterationCount,
+                attemptNumber: recoveryAttempts,
+              });
+
+              // Continue with a request for more tokens
+              const continuationMessages = [...messages];
+              if (fullResponse.trim().length > 0) {
+                continuationMessages.push({
+                  role: "assistant",
+                  content: fullResponse,
+                });
+              }
+              continuationMessages.push({
+                role: "user",
+                content:
+                  "Continue with more detail if needed. If the response is complete, just reply with a period.",
+              });
+
+              const continuationResult = await this.collectProviderStream(
+                continuationMessages,
+                allowedTools,
+                iterationCount,
+                options,
+                onToken,
+              );
+
+              fullResponse += continuationResult.fullResponse;
+              if (continuationResult.toolCalls) {
+                toolCalls = continuationResult.toolCalls;
+                reasoningContent = continuationResult.reasoningContent;
+              }
+              currentStopReason = continuationResult.stopReason ?? currentStopReason;
+            }
+
+            if (currentStopReason === "max_tokens") {
+              this.emitDiagnostic({
+                type: "output_token_recovery_exhausted",
+                provider: this.provider.name,
+                model: this.model,
+                iteration: iterationCount,
+                maxAttempts: this.runtimeConfig.outputTokenRecoveryLimit,
+              });
+            }
+          }
+        } catch (streamError) {
+          if (streamError instanceof ProviderContextLengthError) {
+            if (contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
+              synchronousShrinkCount++;
+              if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+                this.emitDiagnostic({
+                  type: "context_pressure_circuit_breaker",
+                  provider: this.provider.name,
+                  model: this.model,
+                  iteration: iterationCount,
+                  retryLevel: contextRetryLevel,
+                });
+                throw streamError;
+              }
+              const shrunk = await this.attemptSynchronousShrink(plan);
+              if (shrunk) {
+                this.emitDiagnostic({
+                  type: "provider_error",
+                  provider: this.provider.name,
+                  model: this.model,
+                  iteration: iterationCount,
+                  errorName: "ProviderContextLengthError",
+                  message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+                });
+                iterationCount--;
+                continue;
+              }
+              contextRetryLevel++;
               this.emitDiagnostic({
                 type: "provider_error",
                 provider: this.provider.name,
                 model: this.model,
                 iteration: iterationCount,
                 errorName: "ProviderContextLengthError",
-                message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+                message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
               });
               iterationCount--;
               continue;
             }
-            contextRetryLevel++;
             this.emitDiagnostic({
-              type: "provider_error",
+              type: "context_pressure_circuit_breaker",
               provider: this.provider.name,
               model: this.model,
               iteration: iterationCount,
-              errorName: "ProviderContextLengthError",
-              message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
+              retryLevel: contextRetryLevel,
             });
-            iterationCount--;
-            continue;
           }
           throw streamError;
         }
@@ -1502,6 +1866,9 @@ export class Agent {
 
       this.checkAndScheduleSummary();
 
+      // Clear in-progress marker on clean turn completion
+      clearInProgressMarker(sessionsDir, this.sessionId);
+
       return finalResponse;
     } catch (error) {
       this.emitDiagnostic({
@@ -1512,6 +1879,12 @@ export class Agent {
         errorName: error instanceof Error ? error.name : "UnknownError",
         message: error instanceof Error ? error.message : String(error),
       });
+      // Clear marker before rethrowing (so next error doesn't double-clear)
+      try {
+        clearInProgressMarker(sessionsDir, this.sessionId);
+      } catch {
+        // Ignore marker clearing errors
+      }
       throw this.handleProviderError(error);
     }
   }
@@ -1559,6 +1932,7 @@ export class Agent {
       promptBudgetPolicy: DEFAULT_BUDGET_POLICY,
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
+      sessionId: this.sessionId,
     };
     return serializeSession(state, metadata);
   }
@@ -1569,6 +1943,9 @@ export class Agent {
    * (provider, model, system prompt) is preserved in the snapshot
    * for analysis but does not alter the agent's current configuration.
    *
+   * If the snapshot contains a sessionId in metadata, adopt it for the
+   * remainder of this agent instance (artifact directory continuity).
+   *
    * Throws SessionParseError on malformed or unsupported snapshots.
    */
   importSession(json: string): void {
@@ -1577,6 +1954,17 @@ export class Agent {
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
+
+    if (persisted.metadata.sessionId) {
+      (this as any).sessionId = persisted.metadata.sessionId;
+    } else {
+      this.emitDiagnostic({
+        type: "legacy_session_no_id",
+        provider: this.provider.name,
+        model: this.model,
+      });
+    }
+
     this.contextManager.importState(state);
   }
 

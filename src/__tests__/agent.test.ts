@@ -1583,9 +1583,13 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const response = await agent.streamChat("hello", () => {});
       expect(response).toBe("Final answer without tools.");
-      expect(events.some((event) => event.type === "tool_loop_detected")).toBe(
-        true,
-      );
+      expect(
+        events.some(
+          (event) =>
+            event.type === "no_progress_detected" ||
+            event.type === "tool_loop_detected",
+        ),
+      ).toBe(true);
       expect(provider.streamChatCalls).toHaveLength(4);
       const finalCall = provider.streamChatCalls[3];
       expect(finalCall.tools).toBeUndefined();
@@ -1646,7 +1650,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       (agent as any).provider = new EmptyLoopingProvider();
 
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
-        "Stopped after repeated empty tool-calling turns with no final assistant response.",
+        /Stopped after .* no final assistant response\./,
       );
     });
 

@@ -4,14 +4,20 @@ import {
   collectFilesForSearch,
   normalizeToolPath,
   readUtf8TextFile,
-  truncateText,
 } from "./shared.js";
 
-const GREP_OUTPUT_LIMIT = 50 * 1024;
+export interface GrepToolConfig {
+  readonly outputInlineLimit?: number;
+}
 
 export class GrepTool implements ExecutableTool {
   readonly name = "grep";
   readonly description = "Search file contents recursively.";
+  private readonly outputInlineLimit: number;
+
+  constructor(config?: GrepToolConfig) {
+    this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;
@@ -83,7 +89,6 @@ export class GrepTool implements ExecutableTool {
 
     const files = await collectFilesForSearch(rootPath);
     const matches: string[] = [];
-    let outputLength = 0;
 
     for (const filePath of files) {
       try {
@@ -105,16 +110,6 @@ export class GrepTool implements ExecutableTool {
 
           const formatted = `${filePath}:${index + 1}:${line}`;
           matches.push(formatted);
-          outputLength += formatted.length + 1;
-
-          if (outputLength > GREP_OUTPUT_LIMIT) {
-            const truncated = truncateText(
-              matches.join("\n"),
-              GREP_OUTPUT_LIMIT,
-              "[Output truncated - exceeded size limit]",
-            );
-            return truncated.value;
-          }
         }
       } catch {
         continue;

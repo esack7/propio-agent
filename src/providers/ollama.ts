@@ -10,7 +10,10 @@ import {
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
+import { withRetry } from "./withRetry.js";
 
 /**
  * Ollama implementation of LLMProvider
@@ -19,10 +22,17 @@ export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
   private ollama: Ollama;
   private model: string;
+  private retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 8192;
 
-  constructor(options: { model: string; host?: string }) {
+  constructor(options: {
+    model: string;
+    host?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const isSandbox = process.env.IS_SANDBOX === "true";
 
     // Priority: OLLAMA_HOST (no conversion) > options.host (with conversion) > default (mode-specific)
@@ -31,6 +41,8 @@ export class OllamaProvider implements LLMProvider {
 
     this.ollama = new Ollama({ host });
     this.model = options.model;
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -62,6 +74,12 @@ export class OllamaProvider implements LLMProvider {
     return configuredHost;
   }
 
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof ProviderContextLengthError) return false;
+    if (err instanceof ProviderModelNotFoundError) return false;
+    return err instanceof ProviderError;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       if (request.signal?.aborted) {
@@ -77,14 +95,35 @@ export class OllamaProvider implements LLMProvider {
         this.chatToolToOllamaTool(tool),
       );
 
-      const response = await this.ollama.chat({
-        model: request.model || this.model,
-        messages,
-        stream: true,
-        ...(tools && { tools }),
-      });
+      const response = await withRetry(
+        () =>
+          this.ollama.chat({
+            model: request.model || this.model,
+            messages,
+            stream: true,
+            ...(tools && { tools }),
+          }),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          isRetryable: (err) => this.isRetryableError(err),
+          is529: (err) => err instanceof ProviderCapacityError,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
+      );
 
       let lastToolCalls: ChatToolCall[] | undefined;
+      let stopReason: any = "end_turn";
 
       for await (const chunk of response) {
         if (request.signal?.aborted) {
@@ -102,6 +141,15 @@ export class OllamaProvider implements LLMProvider {
             this.ollamaToolCallToChatToolCall(toolCall),
           );
         }
+
+        // Capture stop reason and map from Ollama to normalized StopReason
+        if (chunk.done_reason) {
+          if (chunk.done_reason === "length") {
+            stopReason = "max_tokens";
+          } else if (chunk.done_reason === "stop") {
+            stopReason = "end_turn";
+          }
+        }
       }
 
       // Yield final chunk with tool calls if present
@@ -111,6 +159,9 @@ export class OllamaProvider implements LLMProvider {
           toolCalls: lastToolCalls,
         };
       }
+
+      // Emit normalized terminal event (Phase 4.5)
+      yield { type: "terminal", stopReason };
     } catch (error) {
       throw this.translateError(error);
     }

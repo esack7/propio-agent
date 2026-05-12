@@ -10,7 +10,10 @@ import {
   ProviderError,
   ProviderModelNotFoundError,
   ProviderRateLimitError,
+  ProviderCapacityError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
+import { withRetry } from "./withRetry.js";
 import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
@@ -68,6 +71,11 @@ export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
   private readonly model: string;
   private readonly apiKey: string;
+  private readonly retryConfig?: {
+    maxRetries: number;
+    consecutive529Limit: number;
+  };
+  private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "gemini-3.1-pro-preview": 1_048_576,
@@ -80,7 +88,12 @@ export class GeminiProvider implements LLMProvider {
     "gemini-3.1-flash-lite-preview",
   ]);
 
-  constructor(options: { model: string; apiKey?: string }) {
+  constructor(options: {
+    model: string;
+    apiKey?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const apiKey =
       options.apiKey ??
       process.env.GEMINI_API_KEY ??
@@ -93,6 +106,8 @@ export class GeminiProvider implements LLMProvider {
     }
     this.model = this.validateModel(options.model);
     this.apiKey = apiKey;
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -250,6 +265,13 @@ export class GeminiProvider implements LLMProvider {
     );
   }
 
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof ProviderContextLengthError) return false;
+    if (err instanceof ProviderAuthenticationError) return false;
+    if (err instanceof ProviderModelNotFoundError) return false;
+    return err instanceof ProviderError;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const effectiveModel = this.validateModel(request.model || this.model);
@@ -260,28 +282,49 @@ export class GeminiProvider implements LLMProvider {
         mapTool: (tool) => this.chatToolToOpenAITool(tool),
       });
 
-      const response = await fetch(GEMINI_API_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          "Content-Type": "application/json",
+      const response = await withRetry(
+        async () => {
+          const res = await fetch(GEMINI_API_URL, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+            signal: request.signal,
+          });
+          if (!res.ok) {
+            let errorBody = "";
+            try {
+              errorBody = await res.text();
+            } catch {
+              // ignore read failures
+            }
+            throw this.translateError(
+              new Error(errorBody || `HTTP ${res.status}`),
+              res,
+            );
+          }
+          return res;
         },
-        body: JSON.stringify(body),
-        signal: request.signal,
-      });
-
-      if (!response.ok) {
-        let errorBody = "";
-        try {
-          errorBody = await response.text();
-        } catch {
-          // ignore read failures
-        }
-        throw this.translateError(
-          new Error(errorBody || `HTTP ${response.status}`),
-          response,
-        );
-      }
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          isRetryable: (err) => this.isRetryableError(err),
+          is529: (err) => err instanceof ProviderCapacityError,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
+      );
 
       const reader = response.body?.getReader();
       if (!reader) {
@@ -297,6 +340,8 @@ export class GeminiProvider implements LLMProvider {
           thoughtSignature?: string;
         }
       >();
+
+      let stopReason: any = "end_turn";
 
       for await (const data of readSseDataLines(reader)) {
         if (data === "[DONE]") {
@@ -339,6 +384,23 @@ export class GeminiProvider implements LLMProvider {
         const choice = chunk?.choices?.[0];
         if (!choice?.delta) continue;
 
+        // Capture stop reason and map from Gemini to normalized StopReason
+        if (choice.finish_reason) {
+          if (choice.finish_reason === "MAX_TOKENS") {
+            stopReason = "max_tokens";
+          } else if (choice.finish_reason === "STOP") {
+            stopReason = "end_turn";
+          } else if (choice.finish_reason === "TOOL_CALLS") {
+            stopReason = "tool_use";
+          } else if (
+            choice.finish_reason === "SAFETY" ||
+            choice.finish_reason === "RECITATION" ||
+            choice.finish_reason === "OTHER"
+          ) {
+            stopReason = "error";
+          }
+        }
+
         const delta = choice.delta;
         if (delta.content != null && delta.content !== "") {
           yield { type: "assistant_text", delta: delta.content };
@@ -379,6 +441,9 @@ export class GeminiProvider implements LLMProvider {
 
         yield { type: "tool_calls", toolCalls };
       }
+
+      // Emit normalized terminal event (Phase 4.5)
+      yield { type: "terminal", stopReason };
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       throw this.translateError(error);

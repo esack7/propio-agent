@@ -15,7 +15,10 @@ import {
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
+import { withRetry } from "./withRetry.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
 /**
  * Bedrock implementation of LLMProvider
@@ -24,6 +27,8 @@ export class BedrockProvider implements LLMProvider {
   readonly name = "bedrock";
   private client: BedrockRuntimeClient;
   private model: string;
+  private retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "anthropic.claude-sonnet-4-20250514-v1:0": 200000,
@@ -37,10 +42,17 @@ export class BedrockProvider implements LLMProvider {
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 200000;
 
-  constructor(options: { model: string; region?: string }) {
+  constructor(options: {
+    model: string;
+    region?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const region = options.region || "us-east-1";
     this.client = new BedrockRuntimeClient({ region });
     this.model = options.model;
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -54,9 +66,36 @@ export class BedrockProvider implements LLMProvider {
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const command = this.createConverseStreamCommand(request);
-      const response = await this.client.send(command, {
-        abortSignal: request.signal,
-      });
+      const response = await withRetry(
+        () => this.client.send(command, { abortSignal: request.signal }),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          baseDelayMs: 500,
+          isRetryable: (err) => {
+            const name = (err as any)?.name ?? "";
+            const msg = err instanceof Error ? err.message : String(err);
+            return (
+              name === "ThrottlingException" ||
+              name === "ServiceUnavailableException" ||
+              name === "InternalServerException" ||
+              msg.includes("rate limit") ||
+              msg.includes("throttl")
+            );
+          },
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
+      );
       const stream = this.getStreamFromResponse(response);
 
       if (!stream) {
@@ -67,9 +106,25 @@ export class BedrockProvider implements LLMProvider {
         toolCalls: [] as ChatToolCall[],
         currentToolCall: null as Partial<ChatToolCall> | null,
         currentToolInput: "",
+        stopReason: "end_turn" as any,
       };
 
       for await (const event of stream as AsyncIterable<any>) {
+        // Capture stop reason from messageStop event
+        if (event.messageStop?.stopReason) {
+          const bedrockReason = event.messageStop.stopReason;
+          // Map Bedrock stop_reason to normalized StopReason
+          if (bedrockReason === "stop_sequence") {
+            state.stopReason = "stop_sequence";
+          } else if (bedrockReason === "max_tokens") {
+            state.stopReason = "max_tokens";
+          } else if (bedrockReason === "tool_use") {
+            state.stopReason = "tool_use";
+          } else {
+            state.stopReason = "end_turn";
+          }
+        }
+
         const assistantText = this.handleStreamEvent(event, state);
         if (assistantText) {
           yield { type: "assistant_text", delta: assistantText };
@@ -79,6 +134,9 @@ export class BedrockProvider implements LLMProvider {
       if (state.toolCalls.length > 0) {
         yield { type: "tool_calls", toolCalls: state.toolCalls };
       }
+
+      // Emit normalized terminal event (Phase 4.5)
+      yield { type: "terminal", stopReason: state.stopReason };
     } catch (error) {
       throw this.translateError(error);
     }

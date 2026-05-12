@@ -267,7 +267,9 @@ describe("OllamaProvider", () => {
         model: "test-model",
         messages: [{ role: "user", content: "test" }],
       })) {
-        chunks.push(chunk);
+        if (chunk.type !== "terminal") {
+          chunks.push(chunk);
+        }
       }
 
       expect(chunks).toHaveLength(2);
@@ -314,10 +316,10 @@ describe("OllamaProvider", () => {
         chunks.push(chunk);
       }
 
-      const lastChunk = chunks[chunks.length - 1];
-      expect(lastChunk.toolCalls).toBeDefined();
-      expect(lastChunk.toolCalls).toHaveLength(1);
-      expect(lastChunk.toolCalls[0].function.name).toBe("test_tool");
+      const toolCallChunk = chunks.find((c) => c.toolCalls);
+      expect(toolCallChunk).toBeDefined();
+      expect(toolCallChunk.toolCalls).toHaveLength(1);
+      expect(toolCallChunk.toolCalls[0].function.name).toBe("test_tool");
     });
 
     it("should pass tools to ollama when provided", async () => {

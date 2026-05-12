@@ -176,4 +176,81 @@ export type AgentDiagnosticEvent =
       model: string;
       errorName: string;
       message: string;
+    }
+  | {
+      type: "mid_turn_crash_detected";
+      provider: string;
+      model: string;
+      turnIndex: number;
+      ageMs: number;
+    }
+  | {
+      type: "no_progress_detected";
+      provider: string;
+      model: string;
+      iteration: number;
+      lookbackIterations: number;
+    }
+  | {
+      type: "output_token_recovery_attempt";
+      provider: string;
+      model: string;
+      iteration: number;
+      attemptNumber: number;
+    }
+  | {
+      type: "output_token_recovery_exhausted";
+      provider: string;
+      model: string;
+      iteration: number;
+      maxAttempts: number;
+    }
+  | {
+      type: "compaction_circuit_breaker_tripped";
+      provider: string;
+      model: string;
+      consecutiveFailures: number;
+      limit: number;
+    }
+  | {
+      type: "stream_idle_aborted";
+      provider: string;
+      model: string;
+      iteration: number;
+      timeoutMs: number;
+    }
+  | {
+      type: "tool_output_persisted";
+      toolName: string;
+      sizeBytes: number;
+      reason: "size_threshold" | "aggregate_cap";
+    }
+  | {
+      type: "context_pressure_circuit_breaker";
+      provider: string;
+      model: string;
+      iteration: number;
+      retryLevel: number;
+    }
+  | {
+      type: "provider_retry";
+      provider: string;
+      model: string;
+      iteration: number;
+      reason: string;
+      attemptNumber: number;
+      delayMs: number;
+    }
+  | {
+      type: "provider_stream_error";
+      provider: string;
+      model: string;
+      iteration: number;
+      errorName: string;
+      message: string;
+    }
+  | {
+      type: "legacy_session_no_id";
+      provider: string;
+      model: string;
     };

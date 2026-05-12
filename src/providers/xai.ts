@@ -9,7 +9,10 @@ import {
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
+import { withRetry } from "./withRetry.js";
 import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
@@ -60,6 +63,11 @@ export class XaiProvider implements LLMProvider {
   readonly name = "xai";
   private readonly model: string;
   private readonly apiKey: string;
+  private readonly retryConfig?: {
+    maxRetries: number;
+    consecutive529Limit: number;
+  };
+  private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "grok-4.20-0309-reasoning": 2_000_000,
@@ -71,13 +79,20 @@ export class XaiProvider implements LLMProvider {
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 2_000_000;
 
-  constructor(options: { model: string; apiKey?: string }) {
+  constructor(options: {
+    model: string;
+    apiKey?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
       throw new ProviderAuthenticationError(
         "xAI API key is required. Set XAI_API_KEY or pass apiKey in options.",
       );
     }
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
     this.model = options.model;
     this.apiKey = apiKey;
   }
@@ -165,12 +180,35 @@ export class XaiProvider implements LLMProvider {
     throw lastError ?? new ProviderError("xAI request failed");
   }
 
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof ProviderContextLengthError) return false;
+    if (err instanceof ProviderAuthenticationError) return false;
+    if (err instanceof ProviderModelNotFoundError) return false;
+    return err instanceof ProviderError;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const body = this.createChatCompletionRequestBody(request);
-      const response = await this.createChatCompletionResponse(
-        body,
-        request.signal,
+      const response = await withRetry(
+        () => this.createChatCompletionResponse(body, request.signal),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          isRetryable: (err) => this.isRetryableError(err),
+          is529: (err) => err instanceof ProviderCapacityError,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
       );
 
       const reader = this.getResponseReader(response);
@@ -206,20 +244,28 @@ export class XaiProvider implements LLMProvider {
     reader: ReadableStreamDefaultReader<Uint8Array>,
     toolCallsByIndex: Map<number, AccumulatedToolCall>,
   ): AsyncIterable<ChatStreamEvent> {
+    let finishReason: any = "end_turn";
+
     for await (const data of readSseDataLines(reader)) {
-      const events = this.parseStreamLine(data, toolCallsByIndex);
-      for (const event of events) {
+      const result = this.parseStreamLine(data, toolCallsByIndex);
+      if (result.stopReason) {
+        finishReason = result.stopReason;
+      }
+      for (const event of result.events) {
         yield event;
       }
     }
+
+    // Emit normalized terminal event (Phase 4.5)
+    yield { type: "terminal", stopReason: finishReason };
   }
 
   private parseStreamLine(
     data: string,
     toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): ChatStreamEvent[] {
+  ): { events: ChatStreamEvent[]; stopReason?: string } {
     if (data === "[DONE]") {
-      return [];
+      return { events: [] };
     }
 
     const chunk = parseJsonMaybe<{
@@ -237,11 +283,12 @@ export class XaiProvider implements LLMProvider {
     }>(data);
     const choice = chunk?.choices?.[0];
     if (!choice?.delta) {
-      return [];
+      return { events: [] };
     }
 
     const events: ChatStreamEvent[] = [];
     const delta = choice.delta;
+    let stopReason: string | undefined;
 
     if (delta.content != null && delta.content !== "") {
       events.push({ type: "assistant_text", delta: delta.content });
@@ -256,20 +303,37 @@ export class XaiProvider implements LLMProvider {
       }
     }
 
-    if (choice.finish_reason === "tool_calls") {
-      const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
-        id: acc.id,
-        function: {
-          name: acc.name || "",
-          arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-        },
-      }));
-      if (toolCalls.length > 0) {
-        events.push({ type: "tool_calls", toolCalls });
+    // Map xAI finish_reason to normalized StopReason
+    if (choice.finish_reason) {
+      if (choice.finish_reason === "length") {
+        stopReason = "max_tokens";
+      } else if (choice.finish_reason === "stop") {
+        stopReason = "end_turn";
+      } else if (choice.finish_reason === "tool_calls") {
+        stopReason = "tool_use";
+      } else {
+        stopReason = "end_turn";
+      }
+
+      // Only emit tool_calls when finish_reason is tool_calls
+      if (choice.finish_reason === "tool_calls") {
+        const toolCalls = buildOpenAIStreamToolCalls(
+          toolCallsByIndex,
+          (acc) => ({
+            id: acc.id,
+            function: {
+              name: acc.name || "",
+              arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+            },
+          }),
+        );
+        if (toolCalls.length > 0) {
+          events.push({ type: "tool_calls", toolCalls });
+        }
       }
     }
 
-    return events;
+    return { events, stopReason };
   }
 
   private isContextLengthError(message: string): boolean {

@@ -9,6 +9,7 @@ import {
   TurnEntry,
   ArtifactRecord,
   RollingSummaryRecord,
+  RollingSummarySections,
 } from "./types.js";
 import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
@@ -27,12 +28,17 @@ export interface PromptBuildRequest {
   readonly policy: PromptBudgetPolicy;
   readonly extraUserInstruction?: string;
   readonly rollingSummary?: string;
+  /** When the rolling summary has structured sections, pass them here so
+   *  the builder can render a richer block. When absent, falls back to the
+   *  plain-text `rollingSummary` field. */
+  readonly rollingSummarySections?: RollingSummarySections;
   /** Turn IDs already covered by the rolling summary. These are excluded
    *  from raw history inclusion when a summary is available. */
   readonly summaryCoveredTurnIds?: ReadonlySet<string>;
   readonly retryLevel?: number;
   readonly artifactLookup: (id: string) => ArtifactRecord | undefined;
   readonly isCurrentTurnUnresolved: (turnId: string) => boolean;
+  readonly rehydrationMaxChars?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -41,15 +47,15 @@ export interface PromptBuildRequest {
 
 const REHYDRATION_MAX_CHARS = 12000;
 
-// Approximate overhead of the <session_summary> wrapper tags + newlines
-const SESSION_SUMMARY_WRAPPER_OVERHEAD = 40;
+// Approximate overhead of the <session_summary> wrapper tags + newlines (or ## Session Summary block)
+const SESSION_SUMMARY_WRAPPER_OVERHEAD = 100;
 
-function capForRehydration(rawContent: string): string {
-  if (rawContent.length <= REHYDRATION_MAX_CHARS) {
+function capForRehydration(rawContent: string, maxChars: number = REHYDRATION_MAX_CHARS): string {
+  if (rawContent.length <= maxChars) {
     return rawContent;
   }
-  const truncated = rawContent.substring(0, REHYDRATION_MAX_CHARS);
-  const omitted = rawContent.length - REHYDRATION_MAX_CHARS;
+  const truncated = rawContent.substring(0, maxChars);
+  const omitted = rawContent.length - maxChars;
   return `${truncated}\n\n[output truncated: ${omitted} chars omitted]`;
 }
 
@@ -66,7 +72,6 @@ const RETRY_LEVELS: RetryLevelConfig[] = [
   { maxRecentTurnsFraction: 1.0, artifactCapFraction: 1.0 },
   { maxRecentTurnsFraction: 0.5, artifactCapFraction: 1.0 },
   { maxRecentTurnsFraction: 0.25, artifactCapFraction: 0.5 },
-  { maxRecentTurnsFraction: 0, artifactCapFraction: 0 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -88,6 +93,29 @@ export class PromptBuilder {
       blocks.push(request.invokedSkillsBlock);
     }
     return blocks.join("\n\n");
+  }
+
+  private renderSummaryBlock(request: PromptBuildRequest): string {
+    if (request.rollingSummarySections) {
+      const sections = request.rollingSummarySections;
+      const SECTION_LABELS: Array<[keyof RollingSummarySections, string]> = [
+        ["goals", "Goals"],
+        ["constraints", "Constraints"],
+        ["decisions", "Decisions"],
+        ["facts", "Facts"],
+        ["accomplished", "Accomplished"],
+        ["remaining", "Remaining"],
+        ["narrative", "Notes"],
+      ];
+      const lines: string[] = ["## Session Summary"];
+      for (const [key, label] of SECTION_LABELS) {
+        if (sections[key] !== undefined) {
+          lines.push(`### ${label}\n${sections[key]}`);
+        }
+      }
+      return lines.join("\n\n");
+    }
+    return `<session_summary>\n${request.rollingSummary}\n</session_summary>`;
   }
 
   buildPlan(request: PromptBuildRequest): PromptPlan {
@@ -271,7 +299,7 @@ export class PromptBuilder {
 
     return this.assemblePlan(
       request,
-      `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+      `${systemBase}\n\n${this.renderSummaryBlock(request)}`,
       summaryResult.selectedTurns,
       currentTurn,
       summaryResult.omittedTurnIds,
@@ -317,7 +345,7 @@ export class PromptBuilder {
     );
     return this.assemblePlan(
       request,
-      `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+      `${systemBase}\n\n${this.renderSummaryBlock(request)}`,
       summaryResult.selectedTurns,
       currentTurn,
       summaryResult.omittedTurnIds,
@@ -612,7 +640,8 @@ export class PromptBuilder {
       return entry.message;
     }
 
-    const effectiveCap = Math.min(artifactCap, REHYDRATION_MAX_CHARS);
+    const rehydrationMax = request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS;
+    const effectiveCap = Math.min(artifactCap, rehydrationMax);
 
     const rehydratedResults = entry.message.toolResults.map((tr, i) => {
       const invocation = entry.toolInvocations![i];
@@ -664,7 +693,7 @@ export class PromptBuilder {
         for (const inv of entry.toolInvocations) {
           const artifact = request.artifactLookup(inv.artifactId);
           if (artifact && typeof artifact.content === "string") {
-            const effectiveCap = Math.min(artifactCap, REHYDRATION_MAX_CHARS);
+            const effectiveCap = Math.min(artifactCap, request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS);
             entryChars += Math.min(artifact.content.length, effectiveCap);
           } else {
             entryChars += inv.resultSummary.length;
