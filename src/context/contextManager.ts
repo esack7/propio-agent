@@ -827,6 +827,7 @@ export class ContextManager {
       policy,
       extraUserInstruction,
       rollingSummary: summaryContent,
+      rollingSummarySections: this.rollingSummary?.sections,
       summaryCoveredTurnIds: coveredTurnIds,
       retryLevel: options?.retryLevel,
       artifactLookup: (id: string) => this.artifacts.get(id),

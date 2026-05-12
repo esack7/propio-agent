@@ -2,6 +2,7 @@ import { estimateTokens, measureMessages } from "../diagnostics.js";
 import { LLMProvider } from "../providers/interface.js";
 import {
   RollingSummaryRecord,
+  RollingSummarySections,
   SummaryPolicy,
   DEFAULT_SUMMARY_POLICY,
   TurnRecord,
@@ -12,14 +13,20 @@ import {
 // Summarization prompt template
 // ---------------------------------------------------------------------------
 
-const SUMMARY_SYSTEM_PROMPT = `You are a session summarizer. Produce a concise summary that preserves:
-- User goals and open questions
-- Constraints and explicit instructions from the user
-- Key decisions made and their rationale
-- Important facts about the environment, project, or domain
-- What was accomplished and what remains
+const SUMMARY_SYSTEM_PROMPT = `You are a session summarizer. Respond with a JSON object with the following optional keys (omit any key that has no relevant content):
 
-Omit stylistic filler, greetings, and transient observations. Keep the summary factual and compact.`;
+{
+  "goals":        "Current user objectives and open questions.",
+  "constraints":  "Explicit instructions or limits from the user.",
+  "decisions":    "Key decisions made and their rationale.",
+  "facts":        "Important facts about the environment, project, or domain.",
+  "accomplished": "What has been completed in this session.",
+  "remaining":    "What still needs to be done.",
+  "narrative":    "Anything that does not fit the above sections."
+}
+
+Output only the JSON object—no wrapper text, no Markdown code fences.
+Keep each value concise and factual; omit greetings, filler, and transient observations.`;
 
 function buildSummarizationUserPrompt(
   previousSummary: string | undefined,
@@ -35,7 +42,7 @@ function buildSummarizationUserPrompt(
   parts.push(`<new_turns>\n${turnTexts.join("\n---\n")}\n</new_turns>`);
 
   parts.push(
-    `Produce an updated session summary incorporating the previous summary (if any) and the new turns. Target roughly ${targetTokens} tokens. Output only the summary text with no wrapper tags.`,
+    `Produce an updated session summary as a JSON object using the schema in the system prompt. Incorporate the previous summary (if any) and the new turns. Target roughly ${targetTokens} tokens total across all sections. Output only the JSON object.`,
   );
 
   return parts.join("\n\n");
@@ -45,9 +52,13 @@ function buildSummarizationUserPrompt(
 // Turn serialization (summaries only — never raw artifact bodies)
 // ---------------------------------------------------------------------------
 
-function serializeTurnForSummary(turn: TurnRecord): string {
+function serializeTurnForSummary(turn: TurnRecord, keepFullToolSummaries: number = 5): string {
   const lines: string[] = [];
   lines.push(`User: ${turn.userMessage.content}`);
+
+  // Count total tool entries for selective preservation
+  const totalToolEntries = turn.entries.filter((e) => e.kind === "tool").length;
+  let toolEntryIndex = 0;
 
   for (const entry of turn.entries) {
     if (entry.kind === "assistant") {
@@ -59,12 +70,18 @@ function serializeTurnForSummary(turn: TurnRecord): string {
         lines.push(`[Called tools: ${names.join(", ")}]`);
       }
     } else if (entry.kind === "tool") {
+      const isRecent =
+        toolEntryIndex >= totalToolEntries - keepFullToolSummaries;
+      const clipLimit = isRecent ? Infinity : 200;
       const toolEntry = entry as TurnEntry & { kind: "tool" };
       for (const inv of toolEntry.toolInvocations) {
-        lines.push(
-          `[${inv.toolName} ${inv.status}]: ${inv.resultSummary.substring(0, 500)}`,
-        );
+        const summary =
+          clipLimit === Infinity
+            ? inv.resultSummary
+            : inv.resultSummary.substring(0, clipLimit);
+        lines.push(`[${inv.toolName} ${inv.status}]: ${summary}`);
       }
+      toolEntryIndex++;
     }
   }
 
@@ -132,6 +149,43 @@ export function computeSummaryEligibility(
   }
 
   return { eligibleTurns, newEligibleCount, shouldRefresh: false };
+}
+
+// ---------------------------------------------------------------------------
+// Structured summary parsing and rendering
+// ---------------------------------------------------------------------------
+
+const VALID_SECTION_KEYS = new Set<string>([
+  "narrative", "goals", "constraints", "decisions",
+  "facts", "accomplished", "remaining",
+]);
+
+function isRollingSummarySections(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length === 0) return false;
+  return keys.every(
+    (k) => VALID_SECTION_KEYS.has(k) && typeof obj[k] === "string",
+  );
+}
+
+function renderSectionsToContent(sections: RollingSummarySections): string {
+  const SECTION_LABELS: Array<[keyof RollingSummarySections, string]> = [
+    ["goals", "Goals"],
+    ["constraints", "Constraints"],
+    ["decisions", "Decisions"],
+    ["facts", "Facts"],
+    ["accomplished", "Accomplished"],
+    ["remaining", "Remaining"],
+    ["narrative", "Notes"],
+  ];
+  return SECTION_LABELS
+    .filter(([key]) => sections[key] !== undefined)
+    .map(([key, label]) => `${label}: ${sections[key]}`)
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -229,11 +283,24 @@ export class SummaryManager {
       }
     }
 
+    const trimmed = content.trim();
+    let sections: RollingSummarySections | undefined;
+
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      sections = isRollingSummarySections(parsed) ? (parsed as RollingSummarySections) : undefined;
+    } catch {
+      sections = undefined;
+    }
+
+    const renderedContent = sections ? renderSectionsToContent(sections) : trimmed;
+
     const summary: RollingSummaryRecord = {
-      content: content.trim(),
+      content: renderedContent,
       updatedAt: new Date().toISOString(),
       coveredTurnIds: eligibleTurns.map((t) => t.id),
-      estimatedTokens: estimateTokens(content.trim().length),
+      estimatedTokens: estimateTokens(renderedContent.length),
+      ...(sections !== undefined ? { sections } : {}),
     };
 
     return {

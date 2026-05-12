@@ -405,6 +405,15 @@ const VALID_MEMORY_ORIGINS = new Set<MemoryOrigin>([
   "tool",
   "application",
 ]);
+const VALID_SECTION_KEYS = new Set<string>([
+  "narrative",
+  "goals",
+  "constraints",
+  "decisions",
+  "facts",
+  "accomplished",
+  "remaining",
+]);
 
 function validateToolCall(tc: unknown, label: string): void {
   assertObject(tc, label);
@@ -571,6 +580,20 @@ function validateRollingSummary(summary: unknown, label: string): void {
   assertString(summary.updatedAt, `${label}.updatedAt`);
   assertArray(summary.coveredTurnIds, `${label}.coveredTurnIds`);
   assertNumber(summary.estimatedTokens, `${label}.estimatedTokens`);
+  // Optional structured sections (Phase 5)
+  const s = summary as Record<string, unknown>;
+  if (s.sections !== undefined) {
+    assertObject(s.sections, `${label}.sections`);
+    const sections = s.sections as Record<string, unknown>;
+    for (const [k, v] of Object.entries(sections)) {
+      if (!VALID_SECTION_KEYS.has(k)) {
+        throw new SessionParseError(
+          `${label}.sections contains unknown key "${k}"`,
+        );
+      }
+      assertString(v, `${label}.sections.${k}`);
+    }
+  }
 }
 
 function validateMemorySource(source: unknown, label: string): void {

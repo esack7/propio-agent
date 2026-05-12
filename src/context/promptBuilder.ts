@@ -9,6 +9,7 @@ import {
   TurnEntry,
   ArtifactRecord,
   RollingSummaryRecord,
+  RollingSummarySections,
 } from "./types.js";
 import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
@@ -27,6 +28,10 @@ export interface PromptBuildRequest {
   readonly policy: PromptBudgetPolicy;
   readonly extraUserInstruction?: string;
   readonly rollingSummary?: string;
+  /** When the rolling summary has structured sections, pass them here so
+   *  the builder can render a richer block. When absent, falls back to the
+   *  plain-text `rollingSummary` field. */
+  readonly rollingSummarySections?: RollingSummarySections;
   /** Turn IDs already covered by the rolling summary. These are excluded
    *  from raw history inclusion when a summary is available. */
   readonly summaryCoveredTurnIds?: ReadonlySet<string>;
@@ -41,8 +46,8 @@ export interface PromptBuildRequest {
 
 const REHYDRATION_MAX_CHARS = 12000;
 
-// Approximate overhead of the <session_summary> wrapper tags + newlines
-const SESSION_SUMMARY_WRAPPER_OVERHEAD = 40;
+// Approximate overhead of the <session_summary> wrapper tags + newlines (or ## Session Summary block)
+const SESSION_SUMMARY_WRAPPER_OVERHEAD = 100;
 
 function capForRehydration(rawContent: string): string {
   if (rawContent.length <= REHYDRATION_MAX_CHARS) {
@@ -87,6 +92,29 @@ export class PromptBuilder {
       blocks.push(request.invokedSkillsBlock);
     }
     return blocks.join("\n\n");
+  }
+
+  private renderSummaryBlock(request: PromptBuildRequest): string {
+    if (request.rollingSummarySections) {
+      const sections = request.rollingSummarySections;
+      const SECTION_LABELS: Array<[keyof RollingSummarySections, string]> = [
+        ["goals", "Goals"],
+        ["constraints", "Constraints"],
+        ["decisions", "Decisions"],
+        ["facts", "Facts"],
+        ["accomplished", "Accomplished"],
+        ["remaining", "Remaining"],
+        ["narrative", "Notes"],
+      ];
+      const lines: string[] = ["## Session Summary"];
+      for (const [key, label] of SECTION_LABELS) {
+        if (sections[key] !== undefined) {
+          lines.push(`### ${label}\n${sections[key]}`);
+        }
+      }
+      return lines.join("\n\n");
+    }
+    return `<session_summary>\n${request.rollingSummary}\n</session_summary>`;
   }
 
   buildPlan(request: PromptBuildRequest): PromptPlan {
@@ -270,7 +298,7 @@ export class PromptBuilder {
 
     return this.assemblePlan(
       request,
-      `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+      `${systemBase}\n\n${this.renderSummaryBlock(request)}`,
       summaryResult.selectedTurns,
       currentTurn,
       summaryResult.omittedTurnIds,
@@ -316,7 +344,7 @@ export class PromptBuilder {
     );
     return this.assemblePlan(
       request,
-      `${systemBase}\n\n<session_summary>\n${request.rollingSummary}\n</session_summary>`,
+      `${systemBase}\n\n${this.renderSummaryBlock(request)}`,
       summaryResult.selectedTurns,
       currentTurn,
       summaryResult.omittedTurnIds,
