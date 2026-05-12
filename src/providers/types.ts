@@ -103,6 +103,18 @@ export interface ReasoningSummaryStreamEvent {
 }
 
 /**
+ * Normalized terminal event emitted when stream ends.
+ * Maps provider-specific stop reasons to a canonical set.
+ */
+export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "error";
+
+export interface StreamTerminalEvent {
+  type: "terminal";
+  stopReason: StopReason;
+  rawProviderReason?: string; // For diagnostics: provider's original reason string
+}
+
+/**
  * Backward-compatible streaming chunk shape.
  * New implementations should emit ChatStreamEvent variants with a `type`.
  */
@@ -119,6 +131,7 @@ export type ChatStreamEvent =
   | ToolCallsStreamEvent
   | StatusStreamEvent
   | ReasoningSummaryStreamEvent
+  | StreamTerminalEvent
   | ChatChunk;
 
 /**

@@ -67,9 +67,25 @@ export class BedrockProvider implements LLMProvider {
         toolCalls: [] as ChatToolCall[],
         currentToolCall: null as Partial<ChatToolCall> | null,
         currentToolInput: "",
+        stopReason: "end_turn" as any,
       };
 
       for await (const event of stream as AsyncIterable<any>) {
+        // Capture stop reason from messageStop event
+        if (event.messageStop?.stopReason) {
+          const bedrockReason = event.messageStop.stopReason;
+          // Map Bedrock stop_reason to normalized StopReason
+          if (bedrockReason === "stop_sequence") {
+            state.stopReason = "stop_sequence";
+          } else if (bedrockReason === "max_tokens") {
+            state.stopReason = "max_tokens";
+          } else if (bedrockReason === "tool_use") {
+            state.stopReason = "tool_use";
+          } else {
+            state.stopReason = "end_turn";
+          }
+        }
+
         const assistantText = this.handleStreamEvent(event, state);
         if (assistantText) {
           yield { type: "assistant_text", delta: assistantText };
@@ -79,6 +95,9 @@ export class BedrockProvider implements LLMProvider {
       if (state.toolCalls.length > 0) {
         yield { type: "tool_calls", toolCalls: state.toolCalls };
       }
+
+      // Emit normalized terminal event (Phase 4.5)
+      yield { type: "terminal", stopReason: state.stopReason };
     } catch (error) {
       throw this.translateError(error);
     }

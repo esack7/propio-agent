@@ -85,6 +85,7 @@ export class OllamaProvider implements LLMProvider {
       });
 
       let lastToolCalls: ChatToolCall[] | undefined;
+      let stopReason: any = "end_turn";
 
       for await (const chunk of response) {
         if (request.signal?.aborted) {
@@ -102,6 +103,15 @@ export class OllamaProvider implements LLMProvider {
             this.ollamaToolCallToChatToolCall(toolCall),
           );
         }
+
+        // Capture stop reason and map from Ollama to normalized StopReason
+        if (chunk.done_reason) {
+          if (chunk.done_reason === "length") {
+            stopReason = "max_tokens";
+          } else if (chunk.done_reason === "stop") {
+            stopReason = "end_turn";
+          }
+        }
       }
 
       // Yield final chunk with tool calls if present
@@ -111,6 +121,9 @@ export class OllamaProvider implements LLMProvider {
           toolCalls: lastToolCalls,
         };
       }
+
+      // Emit normalized terminal event (Phase 4.5)
+      yield { type: "terminal", stopReason };
     } catch (error) {
       throw this.translateError(error);
     }

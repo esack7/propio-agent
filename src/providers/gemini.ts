@@ -298,6 +298,8 @@ export class GeminiProvider implements LLMProvider {
         }
       >();
 
+      let stopReason: any = "end_turn";
+
       for await (const data of readSseDataLines(reader)) {
         if (data === "[DONE]") {
           break;
@@ -339,6 +341,23 @@ export class GeminiProvider implements LLMProvider {
         const choice = chunk?.choices?.[0];
         if (!choice?.delta) continue;
 
+        // Capture stop reason and map from Gemini to normalized StopReason
+        if (choice.finish_reason) {
+          if (choice.finish_reason === "MAX_TOKENS") {
+            stopReason = "max_tokens";
+          } else if (choice.finish_reason === "STOP") {
+            stopReason = "end_turn";
+          } else if (choice.finish_reason === "TOOL_CALLS") {
+            stopReason = "tool_use";
+          } else if (
+            choice.finish_reason === "SAFETY" ||
+            choice.finish_reason === "RECITATION" ||
+            choice.finish_reason === "OTHER"
+          ) {
+            stopReason = "error";
+          }
+        }
+
         const delta = choice.delta;
         if (delta.content != null && delta.content !== "") {
           yield { type: "assistant_text", delta: delta.content };
@@ -379,6 +398,9 @@ export class GeminiProvider implements LLMProvider {
 
         yield { type: "tool_calls", toolCalls };
       }
+
+      // Emit normalized terminal event (Phase 4.5)
+      yield { type: "terminal", stopReason };
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       throw this.translateError(error);

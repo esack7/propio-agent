@@ -206,20 +206,28 @@ export class XaiProvider implements LLMProvider {
     reader: ReadableStreamDefaultReader<Uint8Array>,
     toolCallsByIndex: Map<number, AccumulatedToolCall>,
   ): AsyncIterable<ChatStreamEvent> {
+    let finishReason: any = "end_turn";
+
     for await (const data of readSseDataLines(reader)) {
-      const events = this.parseStreamLine(data, toolCallsByIndex);
-      for (const event of events) {
+      const result = this.parseStreamLine(data, toolCallsByIndex);
+      if (result.stopReason) {
+        finishReason = result.stopReason;
+      }
+      for (const event of result.events) {
         yield event;
       }
     }
+
+    // Emit normalized terminal event (Phase 4.5)
+    yield { type: "terminal", stopReason: finishReason };
   }
 
   private parseStreamLine(
     data: string,
     toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): ChatStreamEvent[] {
+  ): { events: ChatStreamEvent[]; stopReason?: string } {
     if (data === "[DONE]") {
-      return [];
+      return { events: [] };
     }
 
     const chunk = parseJsonMaybe<{
@@ -237,11 +245,12 @@ export class XaiProvider implements LLMProvider {
     }>(data);
     const choice = chunk?.choices?.[0];
     if (!choice?.delta) {
-      return [];
+      return { events: [] };
     }
 
     const events: ChatStreamEvent[] = [];
     const delta = choice.delta;
+    let stopReason: string | undefined;
 
     if (delta.content != null && delta.content !== "") {
       events.push({ type: "assistant_text", delta: delta.content });
@@ -256,20 +265,34 @@ export class XaiProvider implements LLMProvider {
       }
     }
 
-    if (choice.finish_reason === "tool_calls") {
-      const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
-        id: acc.id,
-        function: {
-          name: acc.name || "",
-          arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-        },
-      }));
-      if (toolCalls.length > 0) {
-        events.push({ type: "tool_calls", toolCalls });
+    // Map xAI finish_reason to normalized StopReason
+    if (choice.finish_reason) {
+      if (choice.finish_reason === "length") {
+        stopReason = "max_tokens";
+      } else if (choice.finish_reason === "stop") {
+        stopReason = "end_turn";
+      } else if (choice.finish_reason === "tool_calls") {
+        stopReason = "tool_use";
+      } else {
+        stopReason = "end_turn";
+      }
+
+      // Only emit tool_calls when finish_reason is tool_calls
+      if (choice.finish_reason === "tool_calls") {
+        const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
+          id: acc.id,
+          function: {
+            name: acc.name || "",
+            arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+          },
+        }));
+        if (toolCalls.length > 0) {
+          events.push({ type: "tool_calls", toolCalls });
+        }
       }
     }
 
-    return events;
+    return { events, stopReason };
   }
 
   private isContextLengthError(message: string): boolean {

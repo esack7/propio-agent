@@ -427,6 +427,7 @@ export class OpenRouterProvider implements LLMProvider {
     let reasoningContent = "";
     let sawUsableOutput = false;
     let reachedDone = false;
+    let stopReason: any = "end_turn";
     const structuredToolCallsByIndex = new Map<
       number,
       { id?: string; name: string; argsString: string }
@@ -454,6 +455,19 @@ export class OpenRouterProvider implements LLMProvider {
       }>(data);
       const choice = chunk?.choices?.[0];
       if (!choice?.delta) continue;
+
+      // Capture stop reason and map from OpenAI-style to normalized StopReason
+      if (choice.finish_reason) {
+        if (choice.finish_reason === "length") {
+          stopReason = "max_tokens";
+        } else if (choice.finish_reason === "stop") {
+          stopReason = "end_turn";
+        } else if (choice.finish_reason === "tool_calls") {
+          stopReason = "tool_use";
+        } else if (choice.finish_reason === "content_filter") {
+          stopReason = "error";
+        }
+      }
 
       const delta = choice.delta;
       if (delta.reasoning_content != null && delta.reasoning_content !== "") {
@@ -551,6 +565,9 @@ export class OpenRouterProvider implements LLMProvider {
       };
       throw new ProviderError("OpenRouter returned no usable assistant output");
     }
+
+    // Emit normalized terminal event (Phase 4.5)
+    yield { type: "terminal", stopReason };
   }
 
   private shouldRetryWithoutTools(
