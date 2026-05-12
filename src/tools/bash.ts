@@ -6,11 +6,24 @@ import { truncateText } from "./shared.js";
 
 const execFileAsync = promisify(execFile);
 
+export interface BashToolConfig {
+  readonly defaultTimeoutMs?: number;
+  readonly maxTimeoutMs?: number;
+  readonly outputInlineLimit?: number;
+}
+
 export class BashTool implements ExecutableTool {
   readonly name = "bash";
   readonly description = "Run a shell command.";
-  private readonly DEFAULT_TIMEOUT = 30000;
-  private readonly MAX_OUTPUT_SIZE = 50 * 1024;
+  private readonly defaultTimeoutMs: number;
+  private readonly maxTimeoutMs: number;
+  private readonly outputInlineLimit: number;
+
+  constructor(config?: BashToolConfig) {
+    this.defaultTimeoutMs = config?.defaultTimeoutMs ?? 120000;
+    this.maxTimeoutMs = config?.maxTimeoutMs ?? 600000;
+    this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const command = args.command;
@@ -46,8 +59,8 @@ export class BashTool implements ExecutableTool {
             },
             timeout: {
               type: "number",
-              description: "Timeout in milliseconds. Default: 30000",
-              default: 30000,
+              description: `Timeout in milliseconds. Default: ${this.defaultTimeoutMs}`,
+              default: this.defaultTimeoutMs,
             },
           },
           required: ["command"],
@@ -61,10 +74,13 @@ export class BashTool implements ExecutableTool {
     const cwd = args.cwd !== undefined ? (args.cwd as string) : process.cwd();
     const envOverrides =
       args.env !== undefined ? (args.env as Record<string, string>) : {};
-    const timeout =
+    let timeout =
       args.timeout !== undefined
         ? (args.timeout as number)
-        : this.DEFAULT_TIMEOUT;
+        : this.defaultTimeoutMs;
+    if (timeout > this.maxTimeoutMs) {
+      timeout = this.maxTimeoutMs;
+    }
     const env = { ...process.env, ...envOverrides };
 
     try {
@@ -75,12 +91,12 @@ export class BashTool implements ExecutableTool {
           cwd,
           env,
           timeout,
-          maxBuffer: this.MAX_OUTPUT_SIZE * 2,
+          maxBuffer: this.outputInlineLimit * 2,
         },
       );
 
-      const truncatedStdout = truncateText(stdout, this.MAX_OUTPUT_SIZE);
-      const truncatedStderr = truncateText(stderr, this.MAX_OUTPUT_SIZE);
+      const truncatedStdout = truncateText(stdout, this.outputInlineLimit);
+      const truncatedStderr = truncateText(stderr, this.outputInlineLimit);
 
       return JSON.stringify(
         {
@@ -106,8 +122,8 @@ export class BashTool implements ExecutableTool {
           ? "Command timed out and was killed"
           : (execError.stderr ?? "");
 
-        const truncatedStdout = truncateText(stdout, this.MAX_OUTPUT_SIZE);
-        const truncatedStderr = truncateText(stderr, this.MAX_OUTPUT_SIZE);
+        const truncatedStdout = truncateText(stdout, this.outputInlineLimit);
+        const truncatedStderr = truncateText(stderr, this.outputInlineLimit);
 
         return JSON.stringify(
           {

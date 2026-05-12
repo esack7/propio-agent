@@ -1,5 +1,7 @@
 import { LLMProvider } from "./providers/interface.js";
 import * as os from "os";
+import { randomUUID } from "crypto";
+import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
 import {
   ChatMessage,
   ChatTool,
@@ -123,6 +125,7 @@ type AgentToolOptions = AgentEventOptions & {
 
 type AgentStreamOptions = AgentToolOptions & {
   readonly extraUserInstruction?: string;
+  readonly maxIterations?: number;
 };
 
 /**
@@ -167,6 +170,8 @@ export class Agent {
     readonly cwd: string;
     readonly homeDir: string;
   };
+  private readonly sessionId: string;
+  private readonly runtimeConfig: RuntimeConfig;
 
   constructor(
     options: {
@@ -212,6 +217,9 @@ export class Agent {
       homeDir: options.homeDir ?? os.homedir(),
     };
 
+    this.sessionId = randomUUID();
+    this.runtimeConfig = loadRuntimeConfig();
+
     const resolvedProvider = resolveProvider(config, options.providerName);
     const resolvedModelKey = resolveModelKey(
       resolvedProvider,
@@ -229,6 +237,7 @@ export class Agent {
 
     this.contextManager = new ContextManager();
     this.toolRegistry = createDefaultToolRegistry({
+      runtimeConfig: this.runtimeConfig,
       skillToolInvoker: {
         invokeSkill: async (
           name: string,
@@ -250,6 +259,14 @@ export class Agent {
     });
     this.summaryManager = new SummaryManager();
     this.summaryPolicy = DEFAULT_SUMMARY_POLICY;
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  getRuntimeConfig(): RuntimeConfig {
+    return this.runtimeConfig;
   }
 
   async initialize(): Promise<void> {
@@ -1382,7 +1399,7 @@ export class Agent {
     try {
       let finalResponse = "";
       let continueLoop = true;
-      const maxIterations = 10;
+      const maxIterations = options?.maxIterations ?? this.runtimeConfig.maxIterations;
       let emptyToolOnlyStreak = 0;
 
       while (continueLoop && iterationCount < maxIterations) {

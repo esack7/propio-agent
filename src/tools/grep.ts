@@ -7,11 +7,18 @@ import {
   truncateText,
 } from "./shared.js";
 
-const GREP_OUTPUT_LIMIT = 50 * 1024;
+export interface GrepToolConfig {
+  readonly outputInlineLimit?: number;
+}
 
 export class GrepTool implements ExecutableTool {
   readonly name = "grep";
   readonly description = "Search file contents recursively.";
+  private readonly outputInlineLimit: number;
+
+  constructor(config?: GrepToolConfig) {
+    this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;
@@ -107,10 +114,10 @@ export class GrepTool implements ExecutableTool {
           matches.push(formatted);
           outputLength += formatted.length + 1;
 
-          if (outputLength > GREP_OUTPUT_LIMIT) {
+          if (outputLength > this.outputInlineLimit) {
             const truncated = truncateText(
               matches.join("\n"),
-              GREP_OUTPUT_LIMIT,
+              this.outputInlineLimit,
               "[Output truncated - exceeded size limit]",
             );
             return truncated.value;

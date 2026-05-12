@@ -66,7 +66,6 @@ const RETRY_LEVELS: RetryLevelConfig[] = [
   { maxRecentTurnsFraction: 1.0, artifactCapFraction: 1.0 },
   { maxRecentTurnsFraction: 0.5, artifactCapFraction: 1.0 },
   { maxRecentTurnsFraction: 0.25, artifactCapFraction: 0.5 },
-  { maxRecentTurnsFraction: 0, artifactCapFraction: 0 },
 ];
 
 // ---------------------------------------------------------------------------

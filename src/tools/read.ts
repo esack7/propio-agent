@@ -3,11 +3,18 @@ import { ExecutableTool } from "./interface.js";
 import { ChatTool } from "../providers/types.js";
 import { normalizeToolPath, readUtf8TextFile, truncateText } from "./shared.js";
 
-const READ_OUTPUT_LIMIT = 50 * 1024;
+export interface ReadToolConfig {
+  readonly outputInlineLimit?: number;
+}
 
 export class ReadTool implements ExecutableTool {
   readonly name = "read";
   readonly description = "Read a text file.";
+  private readonly outputInlineLimit: number;
+
+  constructor(config?: ReadToolConfig) {
+    this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;
@@ -48,7 +55,7 @@ export class ReadTool implements ExecutableTool {
       }
 
       const content = await readUtf8TextFile(path);
-      const truncated = truncateText(content, READ_OUTPUT_LIMIT);
+      const truncated = truncateText(content, this.outputInlineLimit);
 
       return truncated.truncated ? truncated.value : content;
     } catch (error) {
