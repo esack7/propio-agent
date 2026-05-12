@@ -50,6 +50,12 @@ import {
   restoreConversationState,
   SessionMetadata,
 } from "./context/persistence.js";
+import {
+  getDefaultSessionsDir,
+  writeInProgressMarker,
+  clearInProgressMarker,
+  InProgressMarker,
+} from "./sessions/sessionHistory.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -1396,7 +1402,21 @@ export class Agent {
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
+
+    // Get sessions dir for in-progress marker management (available to both try and catch)
+    const sessionsDir = getDefaultSessionsDir();
+
     try {
+      // Write in-progress marker at turn start (Phase 7 crash telemetry)
+      const inProgressMarker: InProgressMarker = {
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        providerName: this.provider.name,
+        modelKey: this.model,
+        turnIndex: iterationCount,
+      };
+      writeInProgressMarker(sessionsDir, this.sessionId, inProgressMarker);
+
       let finalResponse = "";
       let continueLoop = true;
       const maxIterations = options?.maxIterations ?? this.runtimeConfig.maxIterations;
@@ -1519,6 +1539,9 @@ export class Agent {
 
       this.checkAndScheduleSummary();
 
+      // Clear in-progress marker on clean turn completion
+      clearInProgressMarker(sessionsDir, this.sessionId);
+
       return finalResponse;
     } catch (error) {
       this.emitDiagnostic({
@@ -1529,6 +1552,12 @@ export class Agent {
         errorName: error instanceof Error ? error.name : "UnknownError",
         message: error instanceof Error ? error.message : String(error),
       });
+      // Clear marker before rethrowing (so next error doesn't double-clear)
+      try {
+        clearInProgressMarker(sessionsDir, this.sessionId);
+      } catch {
+        // Ignore marker clearing errors
+      }
       throw this.handleProviderError(error);
     }
   }

@@ -12,7 +12,7 @@ const INDEX_FILE = "index.json";
 // ---------------------------------------------------------------------------
 
 export interface SessionIndexEntry {
-  readonly sessionId: string;
+  readonly sessionId?: string;
   readonly snapshotFile: string;
   readonly savedAt: string;
   readonly providerName: string;
@@ -166,6 +166,7 @@ export function rebuildIndex(sessionsDir: string): SessionIndex {
  * Write a session snapshot to disk and update the index.
  * `sessionJson` should be the output of `Agent.exportSession()`.
  * Returns the index entry for the newly written snapshot.
+ * Uses atomic write (temp file + rename) to avoid corruption on mid-write kill.
  */
 export function writeSnapshot(
   sessionsDir: string,
@@ -179,7 +180,12 @@ export function writeSnapshot(
   const ctx = obj.context as Record<string, unknown>;
 
   const snapshotFile = generateSnapshotFileName();
-  fs.writeFileSync(path.join(sessionsDir, snapshotFile), sessionJson, "utf8");
+  const snapshotPath = path.join(sessionsDir, snapshotFile);
+  const tempPath = `${snapshotPath}.tmp`;
+
+  // Atomic write: temp file + rename
+  fs.writeFileSync(tempPath, sessionJson, "utf8");
+  fs.renameSync(tempPath, snapshotPath);
 
   const entry: SessionIndexEntry = {
     sessionId: path.basename(snapshotFile, ".json"),
@@ -205,6 +211,110 @@ export function readSnapshot(
   snapshotFile: string,
 ): string {
   return fs.readFileSync(path.join(sessionsDir, snapshotFile), "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// In-progress markers (crash telemetry)
+// ---------------------------------------------------------------------------
+
+export interface InProgressMarker {
+  readonly pid: number;
+  readonly startedAt: string;
+  readonly providerName: string;
+  readonly modelKey: string;
+  readonly turnIndex: number;
+}
+
+function inProgressMarkerPath(sessionsDir: string, sessionId: string): string {
+  return path.join(sessionsDir, `inprogress-${sessionId}.json`);
+}
+
+/**
+ * Write an in-progress marker to indicate a session is running.
+ * Used to detect incomplete sessions if the process dies.
+ */
+export function writeInProgressMarker(
+  sessionsDir: string,
+  sessionId: string,
+  marker: InProgressMarker,
+): void {
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const markerPath = inProgressMarkerPath(sessionsDir, sessionId);
+  const tempPath = `${markerPath}.tmp`;
+
+  // Atomic write like snapshot
+  fs.writeFileSync(tempPath, JSON.stringify(marker, null, 2), "utf8");
+  fs.renameSync(tempPath, markerPath);
+}
+
+/**
+ * Clear an in-progress marker when the session completes normally.
+ */
+export function clearInProgressMarker(
+  sessionsDir: string,
+  sessionId: string,
+): void {
+  const markerPath = inProgressMarkerPath(sessionsDir, sessionId);
+  if (fs.existsSync(markerPath)) {
+    fs.unlinkSync(markerPath);
+  }
+}
+
+/**
+ * Find stale in-progress markers (processes that died without cleanup).
+ * Returns markers whose process ID is no longer running or are very old.
+ */
+export interface StaleMarker {
+  readonly sessionId: string;
+  readonly marker: InProgressMarker;
+  readonly ageMs: number;
+}
+
+export function findStaleMarkers(sessionsDir: string): StaleMarker[] {
+  if (!fs.existsSync(sessionsDir)) {
+    return [];
+  }
+
+  const staleMarkers: StaleMarker[] = [];
+  const now = Date.now();
+  const MAX_MARKER_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  const files = fs.readdirSync(sessionsDir);
+  for (const file of files) {
+    if (!file.startsWith("inprogress-") || !file.endsWith(".json")) {
+      continue;
+    }
+
+    const sessionId = file.slice("inprogress-".length, -".json".length);
+    try {
+      const content = fs.readFileSync(
+        path.join(sessionsDir, file),
+        "utf8",
+      );
+      const marker = JSON.parse(content) as InProgressMarker;
+
+      const startedAtMs = new Date(marker.startedAt).getTime();
+      const ageMs = now - startedAtMs;
+
+      // Check if process is still running
+      let processRunning = false;
+      try {
+        // On Unix, kill with signal 0 checks if process exists
+        execSync(`kill -0 ${marker.pid}`, { stdio: "ignore" });
+        processRunning = true;
+      } catch {
+        processRunning = false;
+      }
+
+      if (!processRunning || ageMs > MAX_MARKER_AGE_MS) {
+        staleMarkers.push({ sessionId, marker, ageMs });
+      }
+    } catch {
+      // Skip malformed markers
+    }
+  }
+
+  return staleMarkers;
 }
 
 // ---------------------------------------------------------------------------

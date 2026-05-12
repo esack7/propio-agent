@@ -45,7 +45,11 @@ import {
   type PromptPlanLine,
   type MemoryLine,
 } from "./ui/contextInspector.js";
-import { getDefaultSessionsDir } from "./sessions/sessionHistory.js";
+import {
+  getDefaultSessionsDir,
+  findStaleMarkers,
+  clearInProgressMarker,
+} from "./sessions/sessionHistory.js";
 import {
   saveSessionOnExit,
   handleSessionCommand as handleSessionCmd,
@@ -719,6 +723,32 @@ async function main(): Promise<number> {
     if (!ui.isJsonMode()) {
       printStartupBanner(ui);
       ui.command("");
+    }
+
+    // Detect stale in-progress markers from crashed sessions (Phase 7)
+    const sessionsDir = getDefaultSessionsDir();
+    const staleMarkers = findStaleMarkers(sessionsDir);
+    for (const { sessionId, marker, ageMs } of staleMarkers) {
+      const ageHours = Math.round(ageMs / (60 * 60 * 1000));
+      const ageText = ageHours < 24 ? `${ageHours}h ago` : `${Math.round(ageHours / 24)}d ago`;
+
+      if (!ui.isJsonMode()) {
+        ui.warn(
+          `Detected an incomplete session from ${ageText} (${marker.providerName}/${marker.modelKey}, turn ${marker.turnIndex}). Work since the last /exit was not saved.`,
+        );
+      }
+
+      // Emit diagnostic for this crash detection
+      diagnosticLogger.onEvent({
+        type: "mid_turn_crash_detected",
+        provider: marker.providerName,
+        model: marker.modelKey,
+        turnIndex: marker.turnIndex,
+        ageMs,
+      });
+
+      // Clean up the stale marker
+      clearInProgressMarker(sessionsDir, sessionId);
     }
 
     const configPath = getConfigPath();
