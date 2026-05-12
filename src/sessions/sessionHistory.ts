@@ -290,10 +290,7 @@ export function findStaleMarkers(sessionsDir: string): StaleMarker[] {
 
     const sessionId = file.slice("inprogress-".length, -".json".length);
     try {
-      const content = fs.readFileSync(
-        path.join(sessionsDir, file),
-        "utf8",
-      );
+      const content = fs.readFileSync(path.join(sessionsDir, file), "utf8");
       const marker = JSON.parse(content) as InProgressMarker;
 
       const startedAtMs = new Date(marker.startedAt).getTime();

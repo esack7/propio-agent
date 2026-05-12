@@ -52,7 +52,10 @@ function buildSummarizationUserPrompt(
 // Turn serialization (summaries only — never raw artifact bodies)
 // ---------------------------------------------------------------------------
 
-function serializeTurnForSummary(turn: TurnRecord, keepFullToolSummaries: number = 5): string {
+function serializeTurnForSummary(
+  turn: TurnRecord,
+  keepFullToolSummaries: number = 5,
+): string {
   const lines: string[] = [];
   lines.push(`User: ${turn.userMessage.content}`);
 
@@ -156,8 +159,13 @@ export function computeSummaryEligibility(
 // ---------------------------------------------------------------------------
 
 const VALID_SECTION_KEYS = new Set<string>([
-  "narrative", "goals", "constraints", "decisions",
-  "facts", "accomplished", "remaining",
+  "narrative",
+  "goals",
+  "constraints",
+  "decisions",
+  "facts",
+  "accomplished",
+  "remaining",
 ]);
 
 function isRollingSummarySections(value: unknown): boolean {
@@ -182,8 +190,7 @@ function renderSectionsToContent(sections: RollingSummarySections): string {
     ["remaining", "Remaining"],
     ["narrative", "Notes"],
   ];
-  return SECTION_LABELS
-    .filter(([key]) => sections[key] !== undefined)
+  return SECTION_LABELS.filter(([key]) => sections[key] !== undefined)
     .map(([key, label]) => `${label}: ${sections[key]}`)
     .join("\n");
 }
@@ -288,12 +295,16 @@ export class SummaryManager {
 
     try {
       const parsed: unknown = JSON.parse(trimmed);
-      sections = isRollingSummarySections(parsed) ? (parsed as RollingSummarySections) : undefined;
+      sections = isRollingSummarySections(parsed)
+        ? (parsed as RollingSummarySections)
+        : undefined;
     } catch {
       sections = undefined;
     }
 
-    const renderedContent = sections ? renderSectionsToContent(sections) : trimmed;
+    const renderedContent = sections
+      ? renderSectionsToContent(sections)
+      : trimmed;
 
     const summary: RollingSummaryRecord = {
       content: renderedContent,

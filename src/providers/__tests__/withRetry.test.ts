@@ -1,7 +1,10 @@
-import { withRetry, type WithRetryOptions, type RetryContext } from "../withRetry.js";
+import {
+  withRetry,
+  type WithRetryOptions,
+  type RetryContext,
+} from "../withRetry.js";
 
 describe("withRetry", () => {
-
   it("succeeds immediately on first try", async () => {
     const fn = jest.fn().mockResolvedValue("success");
     const result = await withRetry(fn, {

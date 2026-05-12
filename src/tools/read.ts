@@ -39,15 +39,18 @@ export class ReadTool implements ExecutableTool {
             },
             startLine: {
               type: "integer",
-              description: "1-based line number to start reading from (for line-based slicing)",
+              description:
+                "1-based line number to start reading from (for line-based slicing)",
             },
             lineCount: {
               type: "integer",
-              description: "Number of lines to read (max 5000; for line-based slicing)",
+              description:
+                "Number of lines to read (max 5000; for line-based slicing)",
             },
             offset: {
               type: "integer",
-              description: "Byte offset to start reading from (for binary or large files)",
+              description:
+                "Byte offset to start reading from (for binary or large files)",
             },
             limit: {
               type: "integer",

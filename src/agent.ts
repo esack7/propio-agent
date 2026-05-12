@@ -802,6 +802,20 @@ export class Agent {
   private async runSummaryRefresh(
     reason: "turn_cadence" | "context_pressure" | "synchronous_shrink",
   ): Promise<void> {
+    if (
+      this.contextManager.compactionFailures >=
+      this.runtimeConfig.compactionFailureLimit
+    ) {
+      this.emitDiagnostic({
+        type: "compaction_circuit_breaker_tripped",
+        provider: this.provider.name,
+        model: this.model,
+        consecutiveFailures: this.contextManager.compactionFailures,
+        limit: this.runtimeConfig.compactionFailureLimit,
+      });
+      return;
+    }
+
     this.summaryRefreshRunning = true;
     this.summaryDirty = false;
     const generation = this.summaryGeneration;
@@ -844,6 +858,7 @@ export class Agent {
       }
 
       this.contextManager.setRollingSummary(result.summary);
+      this.contextManager.resetCompactionFailures();
 
       this.emitDiagnostic({
         type: "summary_refresh_completed",
@@ -861,6 +876,7 @@ export class Agent {
         errorName: error instanceof Error ? error.name : "UnknownError",
         message: error instanceof Error ? error.message : String(error),
       });
+      this.contextManager.incrementCompactionFailures();
     } finally {
       this.summaryRefreshRunning = false;
 
@@ -1064,6 +1080,7 @@ export class Agent {
       "Do not call tools. Provide the best final answer from the gathered context. If context is insufficient, explain what is missing briefly.";
 
     let retryLevel = 0;
+    let shrinkCount = 0;
 
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
       const plan = this.buildPlan(noToolsInstruction, retryLevel, iteration);
@@ -1079,12 +1096,15 @@ export class Agent {
       try {
         const streamState = { fullResponse: "", chunkCount: 0 };
         this.emitStatus(options, "Streaming response", "response");
-        for await (const event of this.provider.streamChat({
-          model: this.model,
-          messages,
-          signal: abortSignal,
+        for await (const event of this.withStreamIdleWatchdog(
+          this.provider.streamChat({
+            model: this.model,
+            messages,
+            signal: abortSignal,
+            iteration,
+          }),
           iteration,
-        })) {
+        )) {
           const normalizedEvent = this.normalizeAndEmitStreamEvent(
             event,
             options,
@@ -1125,6 +1145,10 @@ export class Agent {
           error instanceof ProviderContextLengthError &&
           retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
         ) {
+          shrinkCount++;
+          if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+            throw error;
+          }
           const shrunk = await this.attemptSynchronousShrink(plan);
           if (shrunk) {
             this.emitDiagnostic({
@@ -1176,13 +1200,16 @@ export class Agent {
 
     this.emitStatus(options, "Streaming response", "response");
 
-    for await (const event of this.provider.streamChat({
-      model: this.model,
-      messages,
-      tools: this.getMergedToolSchemas(allowedTools),
-      signal: options?.abortSignal,
+    for await (const event of this.withStreamIdleWatchdog(
+      this.provider.streamChat({
+        model: this.model,
+        messages,
+        tools: this.getMergedToolSchemas(allowedTools),
+        signal: options?.abortSignal,
+        iteration,
+      }),
       iteration,
-    })) {
+    )) {
       const normalizedEvent = this.normalizeAndEmitStreamEvent(
         event,
         options,
@@ -1217,6 +1244,48 @@ export class Agent {
     };
   }
 
+  private async *withStreamIdleWatchdog(
+    source: AsyncIterable<ChatStreamEvent>,
+    iteration: number,
+  ): AsyncIterable<ChatStreamEvent> {
+    const timeoutMs = this.runtimeConfig.streamIdleTimeoutMs;
+    if (timeoutMs <= 0) {
+      yield* source;
+      return;
+    }
+
+    const iter = source[Symbol.asyncIterator]();
+    try {
+      while (true) {
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            this.emitDiagnostic({
+              type: "stream_idle_aborted",
+              provider: this.provider.name,
+              model: this.model,
+              iteration,
+              timeoutMs,
+            });
+            reject(new Error(`Stream idle timeout after ${timeoutMs}ms`));
+          }, timeoutMs);
+        });
+
+        try {
+          const result = await Promise.race([iter.next(), timeoutPromise]);
+          clearTimeout(timeoutHandle);
+          if (result.done) return;
+          yield result.value;
+        } catch (err) {
+          clearTimeout(timeoutHandle);
+          throw err;
+        }
+      }
+    } finally {
+      await iter.return?.();
+    }
+  }
+
   private maybePersistedResult(result: ArtifactToolResult): ArtifactToolResult {
     if (typeof result.rawContent !== "string" || !this.sessionsDir) {
       return result;
@@ -1225,7 +1294,8 @@ export class Agent {
     const bytes = Buffer.byteLength(result.rawContent, "utf8");
     const overSize = bytes > this.runtimeConfig.toolOutputPersistThreshold;
     const overAggregate =
-      this.pendingToolResultBytes + bytes > this.runtimeConfig.aggregateToolResultsLimit;
+      this.pendingToolResultBytes + bytes >
+      this.runtimeConfig.aggregateToolResultsLimit;
 
     if (!overSize && !overAggregate) {
       this.pendingToolResultBytes += bytes;
@@ -1554,6 +1624,7 @@ export class Agent {
 
     let iterationCount = 0;
     let contextRetryLevel = 0;
+    let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
     const extraUserInstruction =
@@ -1582,7 +1653,8 @@ export class Agent {
 
       let finalResponse = "";
       let continueLoop = true;
-      const maxIterations = options?.maxIterations ?? this.runtimeConfig.maxIterations;
+      const maxIterations =
+        options?.maxIterations ?? this.runtimeConfig.maxIterations;
       let emptyToolOnlyStreak = 0;
 
       while (continueLoop && iterationCount < maxIterations) {
@@ -1683,6 +1755,10 @@ export class Agent {
             streamError instanceof ProviderContextLengthError &&
             contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
           ) {
+            synchronousShrinkCount++;
+            if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+              throw streamError;
+            }
             const shrunk = await this.attemptSynchronousShrink(plan);
             if (shrunk) {
               this.emitDiagnostic({

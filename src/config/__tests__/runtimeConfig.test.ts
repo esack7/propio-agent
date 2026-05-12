@@ -6,10 +6,7 @@ import { loadRuntimeConfig, CLIOverrides } from "../runtimeConfig.js";
 
 describe("RuntimeConfig", () => {
   const originalEnv = process.env;
-  const testSettingsDir = path.join(
-    os.tmpdir(),
-    `propio-test-${Date.now()}`,
-  );
+  const testSettingsDir = path.join(os.tmpdir(), `propio-test-${Date.now()}`);
 
   beforeEach(() => {
     process.env = { ...originalEnv };

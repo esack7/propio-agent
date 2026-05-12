@@ -62,7 +62,10 @@ export class XaiProvider implements LLMProvider {
   readonly name = "xai";
   private readonly model: string;
   private readonly apiKey: string;
-  private readonly retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private readonly retryConfig?: {
+    maxRetries: number;
+    consecutive529Limit: number;
+  };
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
@@ -290,13 +293,16 @@ export class XaiProvider implements LLMProvider {
 
       // Only emit tool_calls when finish_reason is tool_calls
       if (choice.finish_reason === "tool_calls") {
-        const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
-          id: acc.id,
-          function: {
-            name: acc.name || "",
-            arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-          },
-        }));
+        const toolCalls = buildOpenAIStreamToolCalls(
+          toolCallsByIndex,
+          (acc) => ({
+            id: acc.id,
+            function: {
+              name: acc.name || "",
+              arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+            },
+          }),
+        );
         if (toolCalls.length > 0) {
           events.push({ type: "tool_calls", toolCalls });
         }

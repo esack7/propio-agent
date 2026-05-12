@@ -70,7 +70,10 @@ export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
   private readonly model: string;
   private readonly apiKey: string;
-  private readonly retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private readonly retryConfig?: {
+    maxRetries: number;
+    consecutive529Limit: number;
+  };
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {

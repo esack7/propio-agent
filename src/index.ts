@@ -732,7 +732,10 @@ async function main(): Promise<number> {
     const staleMarkers = findStaleMarkers(sessionsDir);
     for (const { sessionId, marker, ageMs } of staleMarkers) {
       const ageHours = Math.round(ageMs / (60 * 60 * 1000));
-      const ageText = ageHours < 24 ? `${ageHours}h ago` : `${Math.round(ageHours / 24)}d ago`;
+      const ageText =
+        ageHours < 24
+          ? `${ageHours}h ago`
+          : `${Math.round(ageHours / 24)}d ago`;
 
       if (!ui.isJsonMode()) {
         ui.warn(
@@ -758,8 +761,11 @@ async function main(): Promise<number> {
     const artifactsRoot = path.join(sessionsDir, "artifacts");
     if (fs.existsSync(artifactsRoot)) {
       const index = readIndex(sessionsDir);
-      const anchoredIds = new Set(index?.map((e) => e.sessionId).filter(Boolean) ?? []);
-      const retentionMs = runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;
+      const anchoredIds = new Set(
+        index?.map((e) => e.sessionId).filter(Boolean) ?? [],
+      );
+      const retentionMs =
+        runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;
 
       for (const dirName of fs.readdirSync(artifactsRoot)) {
         const dirPath = path.join(artifactsRoot, dirName);

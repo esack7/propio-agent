@@ -14,17 +14,20 @@ export interface RetryContext {
 
 export interface WithRetryOptions {
   maxRetries: number;
-  baseDelayMs?: number;         // default 500
-  maxDelayMs?: number;          // default 32_000
+  baseDelayMs?: number; // default 500
+  maxDelayMs?: number; // default 32_000
   isRetryable: (err: unknown) => boolean;
   is529?: (err: unknown) => boolean;
-  consecutive529Limit?: number;  // default 3
+  consecutive529Limit?: number; // default 3
   on529Fallback?: () => void;
-  onFinalRetry?: () => void;    // called before final attempt — may mutate closure state
+  onFinalRetry?: () => void; // called before final attempt — may mutate closure state
   onRetry?: (ctx: RetryContext) => void;
 }
 
-export async function withRetry<T>(fn: () => Promise<T>, opts: WithRetryOptions): Promise<T> {
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  opts: WithRetryOptions,
+): Promise<T> {
   const {
     maxRetries,
     baseDelayMs = 500,
@@ -77,5 +80,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: WithRetryOptions)
   }
 
   // Should never reach here; the loop exhausts all attempts and throws
-  throw new Error("withRetry: exhausted all attempts without success or final throw");
+  throw new Error(
+    "withRetry: exhausted all attempts without success or final throw",
+  );
 }

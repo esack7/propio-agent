@@ -99,7 +99,10 @@ export class OpenRouterProvider implements LLMProvider {
   private readonly debugEchoUpstreamBody?: boolean;
   private readonly debugLoggingEnabled: boolean;
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-  private readonly retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private readonly retryConfig?: {
+    maxRetries: number;
+    consecutive529Limit: number;
+  };
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "anthropic/claude-sonnet-4": 200000,
@@ -574,7 +577,6 @@ export class OpenRouterProvider implements LLMProvider {
     // Emit normalized terminal event (Phase 4.5)
     yield { type: "terminal", stopReason };
   }
-
 
   private async fetchAndValidate(
     request: ChatRequest,

@@ -106,7 +106,12 @@ export interface ReasoningSummaryStreamEvent {
  * Normalized terminal event emitted when stream ends.
  * Maps provider-specific stop reasons to a canonical set.
  */
-export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "error";
+export type StopReason =
+  | "end_turn"
+  | "tool_use"
+  | "max_tokens"
+  | "stop_sequence"
+  | "error";
 
 export interface StreamTerminalEvent {
   type: "terminal";

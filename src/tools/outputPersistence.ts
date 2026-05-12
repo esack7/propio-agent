@@ -31,8 +31,16 @@ function countLines(content: string): number {
   return count;
 }
 
-export function persistToolOutput(params: PersistToolOutputParams): PersistToolOutputResult {
-  const { toolName, content, sessionsDir, sessionId, inlinePreviewBytes = 50 * 1024 } = params;
+export function persistToolOutput(
+  params: PersistToolOutputParams,
+): PersistToolOutputResult {
+  const {
+    toolName,
+    content,
+    sessionsDir,
+    sessionId,
+    inlinePreviewBytes = 50 * 1024,
+  } = params;
   const contentBytes = Buffer.byteLength(content, "utf8");
 
   // Create artifacts directory

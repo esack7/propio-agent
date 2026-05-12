@@ -307,10 +307,28 @@ export class ContextManager {
   private invokedSkills: InvokedSkillRecord[] = [];
   private summaryMaxChars: number;
   private rehydrationMaxChars: number;
+  private compactionFailureCount = 0;
 
-  constructor(config?: { toolResultSummaryMaxChars?: number; rehydrationMaxChars?: number }) {
-    this.summaryMaxChars = config?.toolResultSummaryMaxChars ?? DEFAULT_SUMMARY_MAX_CHARS;
-    this.rehydrationMaxChars = config?.rehydrationMaxChars ?? DEFAULT_REHYDRATION_MAX_CHARS;
+  constructor(config?: {
+    toolResultSummaryMaxChars?: number;
+    rehydrationMaxChars?: number;
+  }) {
+    this.summaryMaxChars =
+      config?.toolResultSummaryMaxChars ?? DEFAULT_SUMMARY_MAX_CHARS;
+    this.rehydrationMaxChars =
+      config?.rehydrationMaxChars ?? DEFAULT_REHYDRATION_MAX_CHARS;
+  }
+
+  incrementCompactionFailures(): void {
+    this.compactionFailureCount++;
+  }
+
+  resetCompactionFailures(): void {
+    this.compactionFailureCount = 0;
+  }
+
+  get compactionFailures(): number {
+    return this.compactionFailureCount;
   }
 
   // -------------------------------------------------------------------
@@ -401,8 +419,10 @@ export class ContextManager {
       // Copy external storage metadata if provided
       if (result.externalStorage) {
         (artifact as any).externalPath = result.externalStorage.externalPath;
-        (artifact as any).externalSizeBytes = result.externalStorage.externalSizeBytes;
-        (artifact as any).externalLineCount = result.externalStorage.externalLineCount;
+        (artifact as any).externalSizeBytes =
+          result.externalStorage.externalSizeBytes;
+        (artifact as any).externalLineCount =
+          result.externalStorage.externalLineCount;
       }
 
       this.artifacts.set(artifactId, artifact);
