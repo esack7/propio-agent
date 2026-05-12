@@ -51,6 +51,7 @@ export function createProvider(
   modelKey?: string,
   onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void,
   debugLoggingEnabled = false,
+  retryConfig?: { maxRetries: number; consecutive529Limit: number },
 ): LLMProvider {
   const model = modelKey || config.defaultModel;
 
@@ -61,11 +62,15 @@ export function createProvider(
       return new OllamaProvider({
         model: model,
         host: (config as OllamaProviderConfig).host,
+        retryConfig,
+        onDiagnosticEvent,
       });
     case "bedrock":
       return new BedrockProvider({
         model: model,
         region: (config as BedrockProviderConfig).region,
+        retryConfig,
+        onDiagnosticEvent,
       });
     case "openrouter": {
       const openRouterConfig = config as OpenRouterProviderConfig;
@@ -79,6 +84,7 @@ export function createProvider(
         debugEchoUpstreamBody: openRouterConfig.debugEchoUpstreamBody,
         debugLoggingEnabled,
         onDiagnosticEvent,
+        retryConfig,
       });
     }
     case "gemini": {
@@ -86,6 +92,8 @@ export function createProvider(
       return new GeminiProvider({
         model,
         apiKey: geminiConfig.apiKey,
+        retryConfig,
+        onDiagnosticEvent,
       });
     }
     case "xai": {
@@ -93,6 +101,8 @@ export function createProvider(
       return new XaiProvider({
         model,
         apiKey: xaiConfig.apiKey,
+        retryConfig,
+        onDiagnosticEvent,
       });
     }
     default:

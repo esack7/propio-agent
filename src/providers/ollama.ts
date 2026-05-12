@@ -10,7 +10,9 @@ import {
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
 /**
  * Ollama implementation of LLMProvider
@@ -19,10 +21,17 @@ export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
   private ollama: Ollama;
   private model: string;
+  private retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 8192;
 
-  constructor(options: { model: string; host?: string }) {
+  constructor(options: {
+    model: string;
+    host?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const isSandbox = process.env.IS_SANDBOX === "true";
 
     // Priority: OLLAMA_HOST (no conversion) > options.host (with conversion) > default (mode-specific)
@@ -31,6 +40,8 @@ export class OllamaProvider implements LLMProvider {
 
     this.ollama = new Ollama({ host });
     this.model = options.model;
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {

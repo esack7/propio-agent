@@ -10,6 +10,7 @@ import {
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
 import {
   accumulateOpenAIStreamToolCall,
@@ -24,6 +25,7 @@ import {
   parseRetryAfterSeconds,
   readSseDataLines,
 } from "./shared.js";
+import { withRetry, type WithRetryOptions } from "./withRetry.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { OpenRouterRoutingConfig } from "./config.js";
 
@@ -97,6 +99,7 @@ export class OpenRouterProvider implements LLMProvider {
   private readonly debugEchoUpstreamBody?: boolean;
   private readonly debugLoggingEnabled: boolean;
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  private readonly retryConfig?: { maxRetries: number; consecutive529Limit: number };
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "anthropic/claude-sonnet-4": 200000,
@@ -125,6 +128,7 @@ export class OpenRouterProvider implements LLMProvider {
     debugEchoUpstreamBody?: boolean;
     debugLoggingEnabled?: boolean;
     onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
   }) {
     const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
@@ -141,6 +145,7 @@ export class OpenRouterProvider implements LLMProvider {
     this.debugEchoUpstreamBody = options.debugEchoUpstreamBody;
     this.debugLoggingEnabled = options.debugLoggingEnabled ?? false;
     this.onDiagnosticEvent = options.onDiagnosticEvent;
+    this.retryConfig = options.retryConfig;
   }
 
   getCapabilities(): ProviderCapabilities {
@@ -570,78 +575,62 @@ export class OpenRouterProvider implements LLMProvider {
     yield { type: "terminal", stopReason };
   }
 
-  private shouldRetryWithoutTools(
+
+  private async fetchAndValidate(
     request: ChatRequest,
-    response: Response,
-  ): boolean {
-    return (
-      Boolean(request.tools && request.tools.length > 0) &&
-      (response.status === 429 || response.status === 503)
-    );
+    dropTools: boolean,
+  ): Promise<Response> {
+    const body = this.buildRequestBody(request, !dropTools);
+    const response = await this.fetchCompletion(body, request.signal);
+    if (!response.ok) {
+      const errorBody = await this.readResponseText(response);
+      throw this.translateError(
+        new Error(errorBody || `HTTP ${response.status}`),
+        response,
+        errorBody,
+      );
+    }
+    return response;
   }
 
-  private emitRetryDiagnostic(request: ChatRequest, response: Response): void {
-    this.emitDiagnostic({
-      type: "provider_retry",
-      provider: this.name,
-      model: request.model || this.model,
-      iteration: request.iteration ?? 0,
-      reason: `OpenRouter upstream HTTP ${response.status}`,
-      disabledTools: true,
-    });
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof ProviderAuthenticationError) return false;
+    if (err instanceof ProviderModelNotFoundError) return false;
+    if (err instanceof ProviderContextLengthError) return false;
+    return err instanceof ProviderError;
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
-      const primaryBody = this.buildRequestBody(request, true);
-      const response = await this.fetchCompletion(primaryBody, request.signal);
+      let dropTools = false;
 
-      if (!response.ok) {
-        const errorBody = await this.readResponseText(response);
-        if (this.shouldRetryWithoutTools(request, response)) {
-          this.emitRetryDiagnostic(request, response);
-          yield {
-            type: "status",
-            status: "Retrying without tools after OpenRouter upstream failure",
-            phase: "provider fallback",
-          };
-
-          const retryBody = this.buildRequestBody(request, false);
-          const retryResponse = await this.fetchCompletion(
-            retryBody,
-            request.signal,
-          );
-          if (!retryResponse.ok) {
-            const retryErrorBody = await this.readResponseText(retryResponse);
-            throw this.translateError(
-              new Error(retryErrorBody || `HTTP ${retryResponse.status}`),
-              retryResponse,
-              retryErrorBody,
-            );
-          }
-
-          yield* this.streamResponse(retryResponse, {
-            parseDsmlToolCalls: Boolean(
-              request.tools && request.tools.length > 0,
-            ),
-            expectUsableOutput: Boolean(
-              request.tools && request.tools.length > 0,
-            ),
-            request,
-          });
-          return;
-        }
-
-        throw this.translateError(
-          new Error(errorBody || `HTTP ${response.status}`),
-          response,
-          errorBody,
-        );
-      }
+      const response = await withRetry(
+        () => this.fetchAndValidate(request, dropTools),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          isRetryable: (err) => this.isRetryableError(err),
+          is529: (err) => err instanceof ProviderCapacityError,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onFinalRetry: () => {
+            dropTools = true;
+          },
+          onRetry: (ctx) =>
+            this.emitDiagnostic({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
+      );
 
       yield* this.streamResponse(response, {
-        parseDsmlToolCalls: Boolean(request.tools && request.tools.length > 0),
-        expectUsableOutput: Boolean(request.tools && request.tools.length > 0),
+        parseDsmlToolCalls: Boolean(request.tools?.length),
+        expectUsableOutput: Boolean(request.tools?.length),
         request,
       });
     } catch (error) {
@@ -781,6 +770,15 @@ export class OpenRouterProvider implements LLMProvider {
       if (response.status === 402) {
         return new ProviderError(
           "Insufficient OpenRouter credits",
+          originalError,
+        );
+      }
+      if (response.status === 529) {
+        const detail = upstreamDetail(true);
+        return new ProviderCapacityError(
+          detail
+            ? `OpenRouter upstream capacity exceeded (${detail})`
+            : "OpenRouter upstream capacity exceeded",
           originalError,
         );
       }

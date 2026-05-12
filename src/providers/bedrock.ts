@@ -15,7 +15,10 @@ import {
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
+import { withRetry } from "./withRetry.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
 /**
  * Bedrock implementation of LLMProvider
@@ -24,6 +27,8 @@ export class BedrockProvider implements LLMProvider {
   readonly name = "bedrock";
   private client: BedrockRuntimeClient;
   private model: string;
+  private retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "anthropic.claude-sonnet-4-20250514-v1:0": 200000,
@@ -37,10 +42,17 @@ export class BedrockProvider implements LLMProvider {
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 200000;
 
-  constructor(options: { model: string; region?: string }) {
+  constructor(options: {
+    model: string;
+    region?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const region = options.region || "us-east-1";
     this.client = new BedrockRuntimeClient({ region });
     this.model = options.model;
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {

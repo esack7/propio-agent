@@ -9,7 +9,9 @@ import {
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
@@ -60,6 +62,8 @@ export class XaiProvider implements LLMProvider {
   readonly name = "xai";
   private readonly model: string;
   private readonly apiKey: string;
+  private readonly retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "grok-4.20-0309-reasoning": 2_000_000,
@@ -71,13 +75,20 @@ export class XaiProvider implements LLMProvider {
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 2_000_000;
 
-  constructor(options: { model: string; apiKey?: string }) {
+  constructor(options: {
+    model: string;
+    apiKey?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
       throw new ProviderAuthenticationError(
         "xAI API key is required. Set XAI_API_KEY or pass apiKey in options.",
       );
     }
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
     this.model = options.model;
     this.apiKey = apiKey;
   }

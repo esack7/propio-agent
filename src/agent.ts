@@ -241,6 +241,10 @@ export class Agent {
       resolvedModelKey,
       this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
       this.diagnosticsEnabled,
+      {
+        maxRetries: this.runtimeConfig.maxRetries,
+        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+      },
     );
     this.model = resolvedModelKey;
 
@@ -526,6 +530,10 @@ export class Agent {
       resolvedModelKey,
       this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
       this.diagnosticsEnabled,
+      {
+        maxRetries: this.runtimeConfig.maxRetries,
+        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+      },
     );
 
     this.resolvedProviderConfig = resolvedProvider;

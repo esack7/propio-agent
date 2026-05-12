@@ -175,6 +175,16 @@ export class ProviderRateLimitError extends ProviderError {
 }
 
 /**
+ * Capacity error for upstream resource exhaustion (e.g., OpenRouter 529)
+ */
+export class ProviderCapacityError extends ProviderError {
+  constructor(message: string, originalError?: Error) {
+    super(message, originalError);
+    this.name = "ProviderCapacityError";
+  }
+}
+
+/**
  * Model not found error
  */
 export class ProviderModelNotFoundError extends ProviderError {

@@ -10,7 +10,9 @@ import {
   ProviderError,
   ProviderModelNotFoundError,
   ProviderRateLimitError,
+  ProviderCapacityError,
 } from "./types.js";
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
@@ -68,6 +70,8 @@ export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
   private readonly model: string;
   private readonly apiKey: string;
+  private readonly retryConfig?: { maxRetries: number; consecutive529Limit: number };
+  private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
     "gemini-3.1-pro-preview": 1_048_576,
@@ -80,7 +84,12 @@ export class GeminiProvider implements LLMProvider {
     "gemini-3.1-flash-lite-preview",
   ]);
 
-  constructor(options: { model: string; apiKey?: string }) {
+  constructor(options: {
+    model: string;
+    apiKey?: string;
+    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  }) {
     const apiKey =
       options.apiKey ??
       process.env.GEMINI_API_KEY ??
@@ -93,6 +102,8 @@ export class GeminiProvider implements LLMProvider {
     }
     this.model = this.validateModel(options.model);
     this.apiKey = apiKey;
+    this.retryConfig = options.retryConfig;
+    this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {
