@@ -22,7 +22,7 @@ Line numbers reflect the state of the repo at the time of writing — verify aga
 
 1. **Mid-turn durability — telemetry first, autosave only if data justifies it.** The feedback recommends a full autosave subsystem (rolling per-session file, async single-flight writes, `cleanExit` flag, launch-time resume prompt, partial-turn rollback, new `/session resume` command). That's ~6 file changes, a new slash command, and new tests — a meaningful complexity bump to address a failure mode (kill -9 / segfault / OOM mid-turn) whose actual frequency is unmeasured. The mature-project pattern explicitly handles durability through circuit breakers + retries + output persistence rather than snapshots, and those layers already cover most of the recoverable failure space.
 
-   Rationale for pushback: build the cheap thing first, measure, decide. Phase 7 is reduced to a **crash telemetry probe**: write a per-session "in-progress" marker at turn start, clear it on clean completion, surface a banner + diagnostic on relaunch if the marker survives. No rolling snapshots, no resume flow, no new commands. The atomic-write fix to `writeSnapshot` (which is good hygiene regardless) stays. The full autosave proposal is captured as a deferred follow-up gated on telemetry data: if mid-turn crashes are observed at rate ≥ X over Y sessions across the user base, ship the full subsystem. Otherwise close it out. This keeps Phase 7 small (one file's worth of changes) and avoids paying for complexity that may never get used.
+   Rationale for pushback: build the cheap thing first, measure, decide. Phase 7 is reduced to a **crash telemetry probe**: write a per-session "in-progress" marker at turn start, clear it on clean completion, surface a banner + diagnostic on relaunch if the marker survives. No rolling snapshots, no resume flow, no new commands. The atomic-write fix to `writeSnapshot` (which is good hygiene regardless) stays. The full autosave proposal is captured as a deferred follow-up gated on locally-observed telemetry data (diagnostics are local to each install — there's no cross-user aggregation channel today). This keeps Phase 7 small (one file's worth of changes) and avoids paying for complexity that may never get used. Phase 7 is honestly labeled "telemetry / deferred" in the scope table — it measures the bottleneck rather than fixing it.
 
 7. **Streak deletion — gate behind a config flag, don't run two authoritative paths in parallel.** The feedback recommends shipping the no-progress detector as a logged-only observation for a release while `MAX_EMPTY_TOOL_ONLY_STREAK` remains authoritative. That's risk-averse but leaves users hitting the streak's known false positives for the entire telemetry window.
 
@@ -47,7 +47,7 @@ These mechanisms are deleted outright. Five candidates from the prior revision a
 3. **Delete silent truncation in `bash.ts`, `read.ts`, `grep.ts`.** Today, output > 50 KB is cut with a marker the model often misses. After Phase 3, the agent layer always persists large outputs and inserts a structured preview. There's no in-tool `truncateText`-then-return-string path left.
 
 **Not deleted (changed from prior revision):**
-- `MAX_EMPTY_TOOL_ONLY_STREAK` — kept until the no-progress detector ships, runs in parallel for one release as a logged-only signal, then deleted in a follow-up.
+- `MAX_EMPTY_TOOL_ONLY_STREAK` — kept only as the fallback branch when `runtimeConfig.useNoProgressDetector === false`. The detector is authoritative by default; both branches are mutually exclusive (never run in parallel). Streak constant, limit, and flag are all deleted in the next release if no regressions are reported.
 - `SUMMARY_MAX_CHARS` — controls per-tool-result summary text, not long-term memory. Becomes a config knob (`toolResultSummaryMaxChars`) with a higher default. The real summary fix targets the rolling summary (Phase 5).
 
 ## Scope (all 10 bottlenecks)
@@ -61,7 +61,7 @@ These mechanisms are deleted outright. Five candidates from the prior revision a
 | 5 | Recent-turn / artifact caps | Configure | Expose `maxRecentTurns`, `artifactInlineCharCap`, `REHYDRATION_MAX_CHARS` via settings + env |
 | 6 | 50 KB tool-output caps | **Delete** + replace | Silent truncation removed; agent/context layer persists; `read` gets slicing |
 | 7 | Bash default timeout 30 s | Tune + configure | Default 120 s, max 600 s; env `PROPIO_BASH_DEFAULT_TIMEOUT_MS` / `_MAX_TIMEOUT_MS` |
-| 8 | No mid-turn checkpointing | **Crash telemetry probe** (autosave deferred) | In-progress marker + banner on relaunch + atomic snapshot write. Full autosave gated on observed crash rate |
+| 8 | No mid-turn checkpointing | **Telemetry / deferred** (does not fix the bottleneck) | In-progress marker + banner on relaunch + atomic snapshot write. Measures whether mid-turn crashes happen often enough to justify the full autosave subsystem |
 | 9 | Thin provider retries | **Delete** bespoke + add general | Pre-stream `withRetry`; explicit semantics for mid-stream and post-emission |
 | 10 | Background summary race | Add circuit breaker | After 3 consecutive failures, disable refresh; stream-idle watchdog (90 s default) |
 
@@ -113,9 +113,16 @@ Create a single source of truth for all operational limits, then thread it throu
 
 **Settings:** new top-level `runtime` object in `~/.propio/settings.json` mirroring `RuntimeConfig` fields.
 
+**Runtime config injection into tools.** Current built-in tools expose `execute(args)` and receive no execution context. Adding a `ToolExecutionContext` argument would touch every tool's signature for a one-time wiring change, which is the wrong shape. Instead, use **constructor injection at tool registration**:
+
+- The tool registry (wherever `bash`, `read`, `grep`, etc. are instantiated and registered) reads `runtimeConfig` and passes the relevant slice to each tool's constructor. E.g. `new BashTool({ defaultTimeoutMs, maxTimeoutMs, outputInlineLimit })`.
+- Tools hold the config slice as a private field and consult it during `execute()`. The `execute(args)` signature stays unchanged.
+- Limits and timeouts don't need to vary per-call, so a per-instance copy is fine. If a future tool genuinely needs per-call overrides (e.g. a CLI flag that bumps the bash timeout for a single command), that's an `args` field, not a context parameter.
+- Persistence threshold and aggregate cap are *not* injected into tools — those live in the agent layer (Phase 3).
+
 ---
 
-### Phase 2 — Loop cap, no-progress detector (parallel-running), output-token recovery
+### Phase 2 — Loop cap, no-progress detector (authoritative behind flag), output-token recovery
 
 **Modify: `src/agent.ts`**
 
@@ -136,45 +143,86 @@ Create a single source of truth for all operational limits, then thread it throu
 5. **Iteration-end diagnostic shape:** when the cap is reached (`max_iterations_reached`, line 1471), include `noProgressDetected: boolean` and the last-5-iteration tool-call histogram.
 
 **Modify: `src/diagnostics.ts`**
-- Add event types: `no_progress_detected_observation`, `output_token_recovery_attempt`, `output_token_recovery_exhausted`, `compaction_circuit_breaker_tripped`, `stream_idle_aborted`, `tool_output_persisted`, `context_pressure_circuit_breaker`, `autosave_written`, `autosave_failed`.
-
-**Follow-up phase (post-release):** delete `MAX_EMPTY_TOOL_ONLY_STREAK` and flip the detector from logged-only to authoritative once data shows it triggers correctly.
+- Add event types: `no_progress_detected`, `output_token_recovery_attempt`, `output_token_recovery_exhausted`, `compaction_circuit_breaker_tripped`, `stream_idle_aborted`, `tool_output_persisted`, `context_pressure_circuit_breaker`, `mid_turn_crash_detected`, `provider_retry`, `provider_stream_error`.
 
 ---
 
-### Phase 3 — Tool output persistence (agent/context layer) + `read` slicing
+### Phase 3 — Tool output persistence (agent layer) + artifact schema extension + `read` slicing
 
-Persistence happens in the agent/context layer, not inside tools. Tools continue to return strings.
+Persistence happens entirely in the agent layer. Tools continue to return strings. The context manager remains the sole owner of `ArtifactRecord` storage but receives both the preview content AND external-storage metadata from the agent. The schema is extended to carry that metadata.
 
-**New file: `src/tools/outputPersistence.ts`**
-- Exports `persistToolOutput({ toolName, content, mediaType, sessionDir, runtimeConfig })` → `{ artifactId, path, sizeBytes, lineCount, preview }`.
-- Storage: `~/.propio/sessions/{workspaceHash}/artifacts/{sessionId}/{toolName}-{timestamp}-{rand}.{ext}`.
-- `preview` = first `runtimeConfig.toolOutputInlineLimit` bytes (default 50 KB), prefixed by a structured header:
+**1. Extend the `ArtifactRecord` schema — modify: `src/context/types.ts`**
+
+Today's `ArtifactRecord` stores inline content only. Add optional external-storage fields so a record can reference a file on disk while keeping the preview text inline:
+
+```ts
+interface ArtifactRecord {
+  id: string;
+  type: ArtifactType;
+  mediaType?: string;
+  createdAt: string;
+  content: string;              // preview text (or full content if small)
+  contentEncoding: "utf8" | "base64";
+  contentSizeChars: number;     // size of `content` field
+  estimatedTokens?: number;
+  referencingTurnIds: string[];
+  // NEW external-storage fields, all optional and backward-compatible:
+  externalPath?: string;        // relative path from sessions dir (e.g. "{sessionId}/bash-…log")
+  externalSizeBytes?: number;   // size of the persisted file
+  externalLineCount?: number;   // line count for text artifacts (helps `read` slicing UX)
+}
+```
+
+When `externalPath` is set, `content` holds the preview block (header + first N bytes) and the full content lives on disk. When unset, `content` is the complete artifact (existing behavior).
+
+**2. Extend persistence round-trip — modify: `src/context/persistence.ts`**
+
+- `serializeSession` / `parseSession` already serialize `ArtifactRecord` fields by name; the new optional fields ride through without a version bump (backward-compatible additive change to V3). Add tests that confirm V3 sessions written by an older binary still parse cleanly when the new fields are absent.
+- Update `PersistedSessionV3` type to include the new optional fields.
+
+**3. Persistence helper — new file: `src/tools/outputPersistence.ts`**
+
+- Exports `persistToolOutput({ toolName, content, mediaType, sessionDir, runtimeConfig })` → `{ artifactId, externalPath, externalSizeBytes, externalLineCount, preview }`.
+- Storage layout: `{sessionDir}/artifacts/{sessionId}/{toolName}-{timestamp}-{rand}.{ext}`. `sessionDir` is passed in by the agent so the helper has no dependency on workspace hashing.
+- `preview` = structured header + first `runtimeConfig.toolOutputInlineLimit` bytes:
   ```
   [output persisted: tool=bash size=2.4MB lines=18432 path=<sessionId>/bash-…log
    preview shows first 50000 bytes; read the full file with the Read tool using startLine/lineCount or offset/limit]
   ```
 - Atomic write via temp-file + rename.
+- Returns enough metadata for the agent to populate the new `ArtifactRecord` fields directly.
 
-**Modify: `src/agent.ts` or `src/context/contextManager.ts` — single persistence call site**
-- Decision: persistence lives in **`Agent.processToolCall()`** (or whichever helper turns a tool's string return into a `ToolInvocationRecord` + result). This keeps the change minimal and respects the existing ownership boundary.
-- Flow: tool returns string → agent measures length → if `> runtimeConfig.toolOutputPersistThreshold`, call `persistToolOutput`, replace the tool result content with the preview block, create the `ArtifactRecord` referencing the file (still in the context manager, as today). If ≤ threshold, pass through unchanged.
-- Tools never see the persistence concept. The current `truncateText` calls in `bash.ts:23–35`-style result construction are deleted from the tool path (silent-truncation removal — Removal #3).
+**4. Single call site — modify: `src/agent.ts`**
 
-**`read` tool slicing — modify: `src/tools/read.ts`**
+- All persistence decisions live in `Agent.processToolCall()` (or equivalent — the helper that turns a tool's string return into a `ToolInvocationRecord` + result).
+- Flow:
+  1. Tool returns a string.
+  2. Agent measures `content.length`.
+  3. **Two reasons to persist**: (a) `content.length > runtimeConfig.toolOutputPersistThreshold`, or (b) the agent's per-turn aggregate counter (see step 5) shows that adding this result would push the total over `runtimeConfig.aggregateToolResultsLimit`.
+  4. If persisting: call `persistToolOutput` to write to disk, replace the in-memory tool-result content with the preview block, and call `ContextManager.recordToolResult(...)` passing the preview content AND the external-storage metadata (`externalPath`, `externalSizeBytes`, `externalLineCount`).
+  5. If not persisting: call `ContextManager.recordToolResult(...)` with content only; external fields are undefined.
+- `ContextManager.recordToolResult(...)` signature gains a single optional `externalStorage?: { externalPath; externalSizeBytes; externalLineCount }` parameter. The context manager stores the values on the `ArtifactRecord`; it never opens the file or interprets the path.
+- Tools never see the persistence concept. The `truncateText` calls in `bash.ts`, `read.ts`, `grep.ts` result construction paths are deleted (silent-truncation removal — Removal #3).
+
+**5. Aggregate cap moves to the agent layer**
+
+- The prior plan placed this in `ContextManager`; the feedback correctly flagged that `ContextManager` doesn't own persistence. Move the bookkeeping to `Agent`: a `pendingToolResultBytes: number` field reset at the start of each assistant turn and incremented as tool results are recorded.
+- Before recording each result, the agent checks whether `pendingToolResultBytes + contentLength > aggregateToolResultsLimit`. If yes, force-persist this result (even if individually under threshold), so the in-message text stays small while the full content remains on disk.
+
+**6. `read` tool slicing — modify: `src/tools/read.ts`**
+
 - Add parameters: `startLine?: number`, `lineCount?: number`, `offset?: number`, `limit?: number`.
 - Line-based (`startLine` + `lineCount`) is the primary interface; byte-based (`offset` + `limit`) is a fallback for binary or very long lines.
 - Validation: `startLine >= 1`; `lineCount >= 1` and ≤ a sensible cap (e.g. 5000 lines); `offset >= 0`; `limit >= 1` and ≤ `runtimeConfig.toolOutputInlineLimit`.
-- Update the tool description so the model knows it can re-read persisted artifact paths with these params. Mention this explicitly in the persistence preview's hint text.
-- Tests:
-  - Read full file (no params) — unchanged behavior.
-  - Read with `startLine: 100, lineCount: 50` returns exactly that range.
-  - Read with `offset` / `limit` returns byte slice.
-  - Read a persisted artifact file written by `outputPersistence` in slices.
-  - Out-of-range params produce a clear error, not silent empty result.
+- Update the tool description so the model knows it can re-read persisted artifact paths with these params. The persistence preview's hint text references the exact param names.
 
-**Aggregate tool-result cap per assistant message**
-- In `src/context/contextManager.ts` (where tool results attach to a turn), track total tool-result chars in the pending assistant message. If total exceeds `runtimeConfig.aggregateToolResultsLimit` (default 200 KB), force-persist additional results even if individually under threshold. Mirrors mature project's `MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200,000`.
+**Tests:**
+- `src/tools/__tests__/outputPersistence.test.ts` (new) — persist helper writes atomically; preview shape; returns expected metadata.
+- `src/__tests__/agent.test.ts` — `processToolCall` persists when over threshold, when aggregate would overflow, never when under both; populates `ArtifactRecord.externalPath` correctly.
+- `src/context/__tests__/persistence.test.ts` — round-trip a session with `externalPath`-bearing artifacts; older V3 sessions without the new fields still parse.
+- `src/context/__tests__/contextManager.test.ts` — `recordToolResult` accepts and stores the optional `externalStorage` metadata.
+- `src/tools/__tests__/read.test.ts` — slicing with `startLine`/`lineCount` and `offset`/`limit`; reads a persisted artifact file in slices; out-of-range params produce a clear error.
+- Integration: write a large tool result, export the session, import it in a fresh agent, confirm the artifact's `externalPath` is intact and `read` can fetch the full content from disk.
 
 **Pruning:** on launch, prune session-artifact directories older than 7 days (configurable). Add to existing startup path in `src/index.ts`.
 
@@ -206,10 +254,11 @@ withRetry<T>(fn: () => Promise<T>, opts: {
 - 529 ladder: after `runtimeConfig.consecutive529FallbackLimit` (default 3) consecutive 529s, call `on529Fallback` and abort.
 - Each retry emits a `provider_retry` diagnostic with attempt count, delay, reason.
 
-**Modify: all providers in `src/providers/`** (`anthropic.ts`, `openai.ts`, `openrouter.ts`)
-- Wrap the *pre-stream* HTTP path with `withRetry`. The streaming consumer is outside the retry boundary.
+**Modify: all providers in `src/providers/`** — current files are `bedrock.ts`, `gemini.ts`, `ollama.ts`, `openrouter.ts`, `xai.ts`.
+- Wrap the *pre-stream* HTTP path with `withRetry` in each provider. The streaming consumer is outside the retry boundary.
 - **Delete `openrouter.ts:561–615`** — bespoke `shouldRetryWithoutTools` + retry-without-tools block. Straight deletion.
-- Move the no-tools-on-final-attempt behavior into `withRetry`'s `onFinalRetry` hook. OpenRouter passes `{ onFinalRetry: () => ({ tools: undefined }) }`; other providers don't.
+- Move the no-tools-on-final-attempt behavior into `withRetry`'s `onFinalRetry` hook. OpenRouter passes `{ onFinalRetry: () => ({ tools: undefined }) }`; other providers omit the hook.
+- Each provider's `isRetryable` predicate should reflect its actual error surface: Bedrock throws AWS SDK errors (check `name` / `$metadata.httpStatusCode`), Gemini surfaces Google API errors with status codes, Ollama returns plain HTTP errors plus connection-refused when the local daemon is down (always retryable), OpenRouter and xAI use OpenAI-style HTTP status codes.
 - Document at each provider call site which retry category applies. Mid-stream errors translate to a `provider_stream_error` diagnostic and bubble.
 
 ---
@@ -219,19 +268,21 @@ withRetry<T>(fn: () => Promise<T>, opts: {
 This phase is small and self-contained. It must land before Phase 2's output-token recovery is wired up.
 
 **Modify: `src/providers/types.ts` (or wherever provider stream events are typed)**
-- Add `StreamTerminalEvent`:
+- Add `StreamTerminalEvent` using the existing `type` discriminator convention:
   ```ts
   type StopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "error";
   interface StreamTerminalEvent {
-    kind: "terminal";
+    type: "terminal";
     stopReason: StopReason;
     rawProviderReason?: string;  // for diagnostics
   }
   ```
-- Each provider's stream consumer maps its native terminal signal to a `StreamTerminalEvent`:
-  - Anthropic: `message_stop` event + `stop_reason` field on the final `message_delta`.
-  - OpenAI: `finish_reason` on the final choice (`"length"` → `max_tokens`, `"stop"` → `end_turn`, `"tool_calls"` → `tool_use`, etc.).
-  - OpenRouter: passthrough of the underlying provider's signal.
+- Each provider's stream consumer maps its native terminal signal to a `StreamTerminalEvent`. Implementer verifies exact field names against current provider source:
+  - **Bedrock** (`bedrock.ts`): per-model varies. For Claude on Bedrock: `stop_reason` ∈ `end_turn`, `max_tokens`, `stop_sequence`, `tool_use` — maps 1:1. For other Bedrock models (Llama, Titan), map their native finish reasons to the same normalized set.
+  - **Gemini** (`gemini.ts`): `finishReason` ∈ `STOP` → `end_turn`, `MAX_TOKENS` → `max_tokens`, `SAFETY` / `RECITATION` / `OTHER` → `error` (with `rawProviderReason` preserved).
+  - **Ollama** (`ollama.ts`): newer versions surface `done_reason` ∈ `stop` → `end_turn`, `length` → `max_tokens`. Older versions only set `done: true` — in that case emit `end_turn` and let `rawProviderReason` be unset.
+  - **OpenRouter** (`openrouter.ts`): passes through OpenAI-style `finish_reason` ∈ `"stop"` → `end_turn`, `"length"` → `max_tokens`, `"tool_calls"` → `tool_use`, `"content_filter"` → `error`.
+  - **xAI** (`xai.ts`): OpenAI-compatible `finish_reason`; same mapping as OpenRouter.
 
 **Modify: `src/agent.ts`**
 - `collectProviderStream` (or its consumer) surfaces the `StreamTerminalEvent` to the loop. The loop uses `stopReason === "max_tokens"` as the trigger for output-token recovery (Phase 2 item 4).
@@ -335,10 +386,12 @@ Bottleneck #8 says a crash mid-turn loses all in-memory progress. The mature-pro
 
 **Telemetry acceptance criteria for the deferred follow-up**
 
-Document in this phase (and in the diagnostics doc) the threshold for promoting telemetry to full autosave:
-- If `mid_turn_crash_detected` fires at a rate ≥ 1 per 100 sessions across instrumented users over one release cycle, ship the full autosave subsystem (the design from the prior plan revision: async rolling file, `cleanExit` flag, launch resume prompt, partial-turn rollback, `/session resume`).
-- Below that threshold, close out the follow-up. The atomic write + telemetry banner are sufficient.
+Diagnostics in propio-agent are emitted locally; there is no cross-user aggregation channel today. The acceptance criterion is therefore framed for local/maintainer observation rather than fleet-wide metrics:
+
+- If maintainers observe `mid_turn_crash_detected` firing repeatedly during their own development runs, or receive user reports of incomplete sessions with the banner showing, ship the full autosave subsystem (async rolling file, `cleanExit` flag, launch resume prompt, partial-turn rollback, `/session resume` command — design from the prior plan revision).
+- If the diagnostic effectively never fires across normal use over one release cycle, close out the follow-up. The atomic write + telemetry banner are sufficient.
 - Document this acceptance criterion in `docs/long-running-bottlenecks.md` so a future contributor isn't tempted to reopen the autosave question without evidence.
+- **This phase explicitly does not fix bottleneck #8.** It measures whether the bottleneck is worth fixing. If a user requests autosave before the criterion is reached, the answer is to point them at the telemetry first.
 
 **What this phase explicitly does NOT include** (deferred until the data justifies it):
 - No `cleanExit` flag in `PersistedSessionV3`.
@@ -399,14 +452,14 @@ Document in this phase (and in the diagnostics doc) the threshold for promoting 
 - `src/tools/__tests__/outputPersistence.test.ts`
 
 **Modified:**
-- `src/agent.ts` (loop cap, no-progress detector authoritative + streak fallback under flag, output-token recovery, circuit breakers, stream watchdog, in-progress marker writes/clears)
-- `src/context/contextManager.ts` (config wiring, compaction circuit breaker, aggregate tool-result cap, persistence call site)
+- `src/agent.ts` (loop cap, no-progress detector authoritative + streak fallback under flag, output-token recovery, tool-output persistence call site, per-turn aggregate counter, circuit breakers, stream watchdog, in-progress marker writes/clears)
+- `src/context/contextManager.ts` (config wiring, compaction circuit breaker, `recordToolResult` accepts optional external-storage metadata; aggregate cap moved to agent layer)
 - `src/context/promptBuilder.ts` (level-3 cliff deletion, circuit breaker abort, structured-summary rendering)
-- `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default)
+- `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default, `ArtifactRecord` external-storage fields)
 - `src/context/summaryManager.ts` (structured summary prompt, selective preservation)
 - `src/context/memoryManager.ts` (`MAX_CONTENT_LENGTH` from config)
-- `src/context/persistence.ts` (no changes in this revision; `cleanExit` / `sessionUuid` deferred with the full autosave proposal)
-- `src/providers/openrouter.ts`, `anthropic.ts`, `openai.ts` (use `withRetry`; emit `StreamTerminalEvent`; delete OpenRouter bespoke path)
+- `src/context/persistence.ts` (round-trip new optional `ArtifactRecord` external-storage fields; `cleanExit` / `sessionUuid` still deferred with the full autosave proposal)
+- `src/providers/bedrock.ts`, `gemini.ts`, `ollama.ts`, `openrouter.ts`, `xai.ts` (use `withRetry`; emit `StreamTerminalEvent`; delete OpenRouter bespoke path)
 - `src/providers/types.ts` (`StreamTerminalEvent`)
 - `src/tools/bash.ts`, `src/tools/read.ts`, `src/tools/grep.ts` (config wiring; tools stay string-returning; `read` gains slicing)
 - `src/sessions/sessionHistory.ts` (atomic writes, in-progress marker helpers)
@@ -428,6 +481,6 @@ Document in this phase (and in the diagnostics doc) the threshold for promoting 
 
 **Deferred follow-ups (next release, gated):**
 - Delete `MAX_EMPTY_TOOL_ONLY_STREAK`, `emptyToolOnlyStreakLimit`, `useNoProgressDetector`, and the streak fallback branch if no regressions reported with the detector authoritative.
-- Full mid-turn autosave subsystem (rolling file, `cleanExit` flag, `/session resume`, partial-turn rollback) if `mid_turn_crash_detected` telemetry shows crash rate ≥ 1 per 100 sessions across one release. Otherwise close out — atomic write + telemetry banner are sufficient.
+- Full mid-turn autosave subsystem (rolling file, `cleanExit` flag, `/session resume`, partial-turn rollback) if maintainers observe `mid_turn_crash_detected` firing repeatedly in their own runs or receive user reports of the banner. Otherwise close out — atomic write + telemetry banner are sufficient.
 
 Net effect: meaningful additions in Phases 4.5 and 5; small additions in Phase 7; deletions in Phases 1, 3, and 4. Phases 2 and 6 are roughly balanced. The revised Phase 7 is roughly 1/4 the size of the prior revision's autosave phase.
