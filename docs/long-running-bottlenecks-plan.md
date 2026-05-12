@@ -77,7 +77,7 @@ Create a single source of truth for all operational limits, then thread it throu
 
 **New file: `src/config/runtimeConfig.ts`**
 - Export `RuntimeConfig` type and `loadRuntimeConfig()` that merges (highest precedence first): CLI flags, env vars, `~/.propio/settings.json`, in-code defaults.
-- Fields: `maxIterations`, `maxRetries`, `bashDefaultTimeoutMs`, `bashMaxTimeoutMs`, `streamIdleTimeoutMs`, `maxRecentTurns`, `artifactInlineCharCap`, `rehydrationMaxChars`, `pinnedMemoryMaxContentLength`, `toolOutputInlineLimit`, `toolOutputPersistThreshold`, `aggregateToolResultsLimit`, `toolResultSummaryMaxChars`, `compactionFailureLimit`, `outputTokenRecoveryLimit`, `consecutive529FallbackLimit`, `useNoProgressDetector`, `emptyToolOnlyStreakLimit`, `rollingSummaryTargetTokens`.
+- Fields: `maxIterations`, `maxRetries`, `bashDefaultTimeoutMs`, `bashMaxTimeoutMs`, `streamIdleTimeoutMs`, `maxRecentTurns`, `artifactInlineCharCap`, `rehydrationMaxChars`, `pinnedMemoryMaxContentLength`, `toolOutputInlineLimit`, `toolOutputPersistThreshold`, `aggregateToolResultsLimit`, `toolResultSummaryMaxChars`, `compactionFailureLimit`, `outputTokenRecoveryLimit`, `consecutive529FallbackLimit`, `useNoProgressDetector`, `emptyToolOnlyStreakLimit`, `rollingSummaryTargetTokens`, `artifactRetentionDays`.
 - No `autosaveEnabled` / `autosaveMaxAgeDays` — autosave is deferred (see Phase 7).
 - Env-var names follow `PROPIO_*` convention. Document in module-level comment listing all envs.
 
@@ -112,6 +112,14 @@ Create a single source of truth for all operational limits, then thread it throu
 - Parse `--max-iterations`, `--max-retries`, `--bash-timeout-ms`, `--stream-idle-timeout-ms` flags; pass into `loadRuntimeConfig({ cliOverrides })`.
 
 **Settings:** new top-level `runtime` object in `~/.propio/settings.json` mirroring `RuntimeConfig` fields.
+
+**Stable runtime session ID.** Today, session IDs are generated only when `writeSnapshot()` creates a snapshot filename. Several downstream changes (Phase 3 artifact paths, Phase 7 in-progress markers, eventual snapshot metadata) need a stable ID available *at turn start*, not just at save time.
+
+- Generate `sessionId` in the `Agent` constructor (UUID v4 or short-random string).
+- Expose it on `Agent` as a readonly field and pass it to any helper that needs to construct artifact paths or marker filenames.
+- When `/exit` calls `writeSnapshot()`, the snapshot filename uses this `sessionId` (rather than generating a fresh one), so artifacts, markers, and the persisted snapshot all share identity.
+- When `Agent.importSession(json)` is called, the imported session's `sessionId` (if present in metadata) replaces the agent's current one for the rest of the process; if absent (legacy snapshots), the current generated ID is kept and a note is logged.
+- Document the relationship in module-level comments on `Agent` and `sessionHistory.ts`: runtime ID is generated once per agent instance and stays stable across turns; the snapshot filename is derived from this ID.
 
 **Runtime config injection into tools.** Current built-in tools expose `execute(args)` and receive no execution context. Adding a `ToolExecutionContext` argument would touch every tool's signature for a one-time wiring change, which is the wrong shape. Instead, use **constructor injection at tool registration**:
 
@@ -153,27 +161,19 @@ Persistence happens entirely in the agent layer. Tools continue to return string
 
 **1. Extend the `ArtifactRecord` schema — modify: `src/context/types.ts`**
 
-Today's `ArtifactRecord` stores inline content only. Add optional external-storage fields so a record can reference a file on disk while keeping the preview text inline:
+Today's runtime `ArtifactRecord` stores inline content (`string | Uint8Array`) without an encoding field — encoding is a persisted-session concern only, handled in `persistence.ts`. Add three optional external-storage fields to the runtime shape; encoding stays where it is.
 
 ```ts
+// Runtime shape — add these three optional fields, leave the rest alone:
 interface ArtifactRecord {
-  id: string;
-  type: ArtifactType;
-  mediaType?: string;
-  createdAt: string;
-  content: string;              // preview text (or full content if small)
-  contentEncoding: "utf8" | "base64";
-  contentSizeChars: number;     // size of `content` field
-  estimatedTokens?: number;
-  referencingTurnIds: string[];
-  // NEW external-storage fields, all optional and backward-compatible:
-  externalPath?: string;        // relative path from sessions dir (e.g. "{sessionId}/bash-…log")
+  // existing runtime fields unchanged …
+  externalPath?: string;        // absolute filesystem path to the persisted file
   externalSizeBytes?: number;   // size of the persisted file
   externalLineCount?: number;   // line count for text artifacts (helps `read` slicing UX)
 }
 ```
 
-When `externalPath` is set, `content` holds the preview block (header + first N bytes) and the full content lives on disk. When unset, `content` is the complete artifact (existing behavior).
+When `externalPath` is set, `content` holds the preview block and the full content lives on disk. When unset, `content` is the complete artifact (existing behavior). The persistence layer (`persistence.ts`) handles encoding conversions for these new fields the same way it does for existing fields — no encoding logic moves into runtime state.
 
 **2. Extend persistence round-trip — modify: `src/context/persistence.ts`**
 
@@ -182,15 +182,16 @@ When `externalPath` is set, `content` holds the preview block (header + first N 
 
 **3. Persistence helper — new file: `src/tools/outputPersistence.ts`**
 
-- Exports `persistToolOutput({ toolName, content, mediaType, sessionDir, runtimeConfig })` → `{ artifactId, externalPath, externalSizeBytes, externalLineCount, preview }`.
-- Storage layout: `{sessionDir}/artifacts/{sessionId}/{toolName}-{timestamp}-{rand}.{ext}`. `sessionDir` is passed in by the agent so the helper has no dependency on workspace hashing.
-- `preview` = structured header + first `runtimeConfig.toolOutputInlineLimit` bytes:
+- Exports `persistToolOutput({ toolName, content, mediaType, sessionDir, sessionId, runtimeConfig })` → `{ externalPath, externalSizeBytes, externalLineCount, preview }`.
+- **Does not return an artifact ID.** `ContextManager.recordToolResult()` retains ownership of artifact ID generation — the helper only returns storage metadata.
+- Storage layout: `{sessionDir}/artifacts/{sessionId}/{toolName}-{timestamp}-{rand}.{ext}`. Both `sessionDir` (the workspace-hashed sessions root) and `sessionId` (the stable runtime ID from Phase 1) are passed in by the agent so the helper has no implicit dependencies.
+- **Path contract:** `externalPath` is an **absolute filesystem path** — what `read` accepts directly with no resolution logic required. The preview header uses the same absolute path so the model can copy-paste it into a `read` call. Example:
   ```
-  [output persisted: tool=bash size=2.4MB lines=18432 path=<sessionId>/bash-…log
+  [output persisted: tool=bash size=2.4MB lines=18432
+   path=/Users/.../propio/sessions/{workspaceHash}/artifacts/{sessionId}/bash-2026-05-12T14-30-45.log
    preview shows first 50000 bytes; read the full file with the Read tool using startLine/lineCount or offset/limit]
   ```
 - Atomic write via temp-file + rename.
-- Returns enough metadata for the agent to populate the new `ArtifactRecord` fields directly.
 
 **4. Single call site — modify: `src/agent.ts`**
 
@@ -217,14 +218,27 @@ When `externalPath` is set, `content` holds the preview block (header + first N 
 - Update the tool description so the model knows it can re-read persisted artifact paths with these params. The persistence preview's hint text references the exact param names.
 
 **Tests:**
-- `src/tools/__tests__/outputPersistence.test.ts` (new) — persist helper writes atomically; preview shape; returns expected metadata.
-- `src/__tests__/agent.test.ts` — `processToolCall` persists when over threshold, when aggregate would overflow, never when under both; populates `ArtifactRecord.externalPath` correctly.
-- `src/context/__tests__/persistence.test.ts` — round-trip a session with `externalPath`-bearing artifacts; older V3 sessions without the new fields still parse.
-- `src/context/__tests__/contextManager.test.ts` — `recordToolResult` accepts and stores the optional `externalStorage` metadata.
-- `src/tools/__tests__/read.test.ts` — slicing with `startLine`/`lineCount` and `offset`/`limit`; reads a persisted artifact file in slices; out-of-range params produce a clear error.
+- `src/tools/__tests__/outputPersistence.test.ts` (new) — persist helper writes atomically; preview shape; returns expected metadata; **does not return an artifact ID** (ownership stays with ContextManager); produces an absolute `externalPath` directly usable by `read`.
+- `src/__tests__/agent.test.ts` — `processToolCall` persists when over threshold, when aggregate would overflow, never when under both; populates `ArtifactRecord.externalPath` correctly; passes stable `sessionId` to the persistence helper.
+- `src/context/__tests__/persistence.test.ts` — round-trip a session with `externalPath`-bearing artifacts; older V3 sessions without the new fields still parse; encoding logic continues to apply only at the persistence boundary, not in runtime state.
+- `src/context/__tests__/contextManager.test.ts` — `recordToolResult` accepts and stores the optional `externalStorage` metadata; assigns the artifact ID itself.
+- `src/tools/__tests__/read.test.ts` — slicing with `startLine`/`lineCount` and `offset`/`limit`; reads a persisted artifact file by its absolute path in slices; out-of-range params produce a clear error; missing-file produces `Artifact file no longer available: …` not a stack trace.
 - Integration: write a large tool result, export the session, import it in a fresh agent, confirm the artifact's `externalPath` is intact and `read` can fetch the full content from disk.
+- Retention: a session with a saved snapshot retains its artifact directory past `artifactRetentionDays`; an in-progress session's artifact dir is pruned after `artifactRetentionDays`; pruning never deletes a directory referenced by a saved snapshot regardless of mtime.
 
-**Pruning:** on launch, prune session-artifact directories older than 7 days (configurable). Add to existing startup path in `src/index.ts`.
+**7. Retention: tie artifact lifetime to session retention**
+
+Naive 7-day pruning would orphan artifacts referenced by older saved snapshots, so importing an old session would succeed but `read` calls on its persisted artifacts would fail. The pruning policy below preserves referential integrity.
+
+- **On launch**, walk `~/.propio/sessions/{workspaceHash}/artifacts/`. For each `{sessionId}/` directory:
+  - If there exists a saved snapshot whose metadata `sessionId === <dir name>`, keep the directory in full (regardless of age).
+  - If no saved snapshot references this `sessionId` AND the directory's mtime is older than `runtimeConfig.artifactRetentionDays` (default 7), delete the directory recursively.
+  - If no snapshot references it AND the directory is newer than the retention window, keep it (in-progress session, may be picked up by autosave-follow-up later).
+- **On `/exit`**: nothing to do for retention — the saved snapshot now anchors its artifact directory automatically.
+- **On `/session delete <id>` (if such a command exists or is added):** also delete the corresponding artifact directory.
+- **Graceful missing-file handling:** `read` returns a clear error like `Artifact file no longer available: {path}` (not a stack trace) when `externalPath` points to a deleted file. `Agent.processToolCall` rehydration logic checks for missing files and surfaces the same error pattern. Document that artifacts referenced by very old snapshots are best-effort if the user has hand-cleaned the artifacts directory.
+
+Add `artifactRetentionDays` to `RuntimeConfig` (Phase 1 list).
 
 ---
 
@@ -369,7 +383,8 @@ Bottleneck #8 says a crash mid-turn loses all in-memory progress. The mature-pro
 **In-progress marker**
 
 **Modify: `src/sessions/sessionHistory.ts`**
-- Add helpers `writeInProgressMarker(sessionsDir, sessionId, metadata)` and `clearInProgressMarker(sessionsDir, sessionId)`. Marker is a tiny JSON file (`inprogress-{sessionId}.json`) holding `{ pid, startedAt, providerName, modelKey, turnIndex }`. Atomic write per above.
+- Add helpers `writeInProgressMarker(sessionsDir, sessionId, metadata)` and `clearInProgressMarker(sessionsDir, sessionId)`. `sessionId` is the stable runtime ID from Phase 1 (Agent constructor), so the marker, the artifact directory, and any eventual snapshot file all share identity.
+- Marker is a tiny JSON file (`inprogress-{sessionId}.json`) holding `{ pid, startedAt, providerName, modelKey, turnIndex }`. Atomic write per above.
 - Add `findStaleMarkers(sessionsDir)`: returns any marker whose `pid` is no longer running (or whose `startedAt` is older than a sanity cap like 7 days). Stale = the prior process died without clearing.
 
 **Modify: `src/agent.ts`**
@@ -426,7 +441,7 @@ Diagnostics in propio-agent are emitted locally; there is no cross-user aggregat
 **Manual / integration checks:**
 1. 30-iteration synthetic scenario: cap engages with `max_iterations_reached` + no-progress histogram.
 2. `bash sleep 60` completes under the 120 s default.
-3. Large `grep -r` (10+ MB): persisted to disk; preview inline; model re-reads with `startLine`/`lineCount`.
+3. Large `grep -r` (10+ MB): persisted to disk; preview inline with absolute path; model re-reads with `startLine`/`lineCount` using the path from the preview directly.
 4. Force a 429 from OpenRouter: pre-stream retry succeeds; verify no retry triggers mid-stream.
 5. Context-length error mid-stream: shrink loop bounded by synchronous-shrink guard; eventual abort with circuit-breaker diagnostic.
 6. Fake provider stream stalled for 90 s: watchdog aborts; failure bubbles (no retry, as designed).
@@ -434,6 +449,8 @@ Diagnostics in propio-agent are emitted locally; there is no cross-user aggregat
 8. Crash mid-turn (kill -9 during bash execution): on relaunch, stale in-progress marker is detected, `mid_turn_crash_detected` diagnostic fires, banner prints, marker is deleted. No resume offered.
 9. Long session with multiple tool calls: structured rolling summary contains goals/decisions/files-touched sections, not just narrative.
 10. `max_tokens` hit on a long assistant turn: continuation recovery fires up to 3 times.
+11. Save a session with a persisted artifact; wait > 7 days simulated (mtime touch); relaunch — artifact directory is preserved (saved snapshot anchors it). Delete the snapshot; relaunch — artifact directory is pruned.
+12. Hand-delete an artifact file referenced by a saved snapshot; import that snapshot; call `read` on the missing path — returns the clear "Artifact file no longer available" error, not a crash.
 
 **Docs to update:**
 - `docs/limits.md` — refresh constants, add env var / settings reference.
@@ -452,7 +469,7 @@ Diagnostics in propio-agent are emitted locally; there is no cross-user aggregat
 - `src/tools/__tests__/outputPersistence.test.ts`
 
 **Modified:**
-- `src/agent.ts` (loop cap, no-progress detector authoritative + streak fallback under flag, output-token recovery, tool-output persistence call site, per-turn aggregate counter, circuit breakers, stream watchdog, in-progress marker writes/clears)
+- `src/agent.ts` (stable runtime `sessionId` field, loop cap, no-progress detector authoritative + streak fallback under flag, output-token recovery, tool-output persistence call site, per-turn aggregate counter, circuit breakers, stream watchdog, in-progress marker writes/clears using stable sessionId)
 - `src/context/contextManager.ts` (config wiring, compaction circuit breaker, `recordToolResult` accepts optional external-storage metadata; aggregate cap moved to agent layer)
 - `src/context/promptBuilder.ts` (level-3 cliff deletion, circuit breaker abort, structured-summary rendering)
 - `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default, `ArtifactRecord` external-storage fields)
@@ -465,7 +482,7 @@ Diagnostics in propio-agent are emitted locally; there is no cross-user aggregat
 - `src/sessions/sessionHistory.ts` (atomic writes, in-progress marker helpers)
 - `src/sessions/sessionCommands.ts` (no changes in this revision; `/session resume` and `--all` deferred with full autosave proposal)
 - `src/diagnostics.ts` (new event types)
-- `src/index.ts` (CLI flags, stale-marker detection on startup, artifact pruning)
+- `src/index.ts` (CLI flags, stale-marker detection on startup, session-aware artifact pruning)
 - `docs/limits.md`, `docs/long-running-bottlenecks.md`, `README.md` / new `docs/configuration.md`
 
 ## Rollout order
