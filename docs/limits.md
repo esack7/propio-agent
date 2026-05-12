@@ -23,7 +23,7 @@ All providers use the shared `withRetry` helper (`src/providers/withRetry.ts`) t
 | Bedrock | `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` | — |
 | xAI / Gemini / Ollama | Provider-specific rate-limit / server errors | — |
 
-`maxRetries` (default 3) and `consecutive529Limit` (default 3) are configurable via `runtimeConfig`.
+`maxRetries` (default 10 from `runtimeConfig`; providers fall back to 3 when constructed without a config) and `consecutive529FallbackLimit` (default 3) are configurable via `runtimeConfig` / `PROPIO_MAX_RETRIES`.
 
 ## Tool execution limits
 

@@ -450,7 +450,6 @@ export class Agent {
     const recentEntries = lastTurn.entries.slice(-lookback);
 
     const seenCallSignatures: string[] = [];
-    const seenArtifactIdsInWindow = new Set<string>();
     let hasAnyAssistantText = false;
 
     for (const entry of recentEntries) {
@@ -467,25 +466,15 @@ export class Agent {
           }
         }
       }
-      if (entry.kind === "tool") {
-        for (const inv of entry.toolInvocations) {
-          seenArtifactIdsInWindow.add(inv.artifactId);
-        }
-      }
     }
 
     if (hasAnyAssistantText) return false;
 
-    // Need at least 3 identical call signatures in the lookback window
+    // Need at least 3 identical call signatures in the lookback window.
+    // Each tool invocation creates a new artifact ID regardless of content, so
+    // artifact IDs cannot distinguish genuine progress from a stuck loop —
+    // the args-key comparison is the authoritative signal.
     if (seenCallSignatures.length < 3) return false;
-
-    // Check whether any new artifacts have appeared outside the lookback window
-    // (i.e., artifacts not referenced by tool entries we already saw)
-    const allArtifactIds = new Set(state.artifacts?.map((a) => a.id) ?? []);
-    const hasNewArtifacts = [...allArtifactIds].some(
-      (id) => !seenArtifactIdsInWindow.has(id),
-    );
-    if (hasNewArtifacts) return false;
 
     // Stuck if every call in the window has the same signature (same tool + same args)
     const uniqueSignatures = new Set(seenCallSignatures);

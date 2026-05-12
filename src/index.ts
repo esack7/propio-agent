@@ -762,7 +762,7 @@ async function main(): Promise<number> {
     if (fs.existsSync(artifactsRoot)) {
       const index = readIndex(sessionsDir);
       const anchoredIds = new Set(
-        index?.entries.map((e) => e.sessionId).filter(Boolean) ?? [],
+        index?.entries.map((e) => e.runtimeSessionId).filter(Boolean) ?? [],
       );
       const retentionMs =
         runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;
