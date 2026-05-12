@@ -1,101 +1,99 @@
-# Feedback on Long-Running Bottlenecks Implementation Plan
+# Re-Review Feedback on Long-Running Bottlenecks Implementation Plan
 
-This is feedback on `docs/long-running-bottlenecks-plan.md` as an implementation plan for addressing the issues cataloged in `docs/long-running-bottlenecks.md`.
+This is feedback on the revised `docs/long-running-bottlenecks-plan.md` as an implementation plan for addressing `docs/long-running-bottlenecks.md`.
 
 ## Overall Assessment
 
-The plan has a strong strategic direction: configurable operational limits, removal of brittle loop heuristics, better provider retry behavior, bounded recovery paths, and persisted large tool outputs are all useful moves for long-running agent work.
+The revised plan is much stronger than the prior version. It correctly moves the long-term-memory work to the rolling-summary layer, keeps tool-output persistence out of individual tools, adds `read` slicing, clarifies streaming retry semantics, and gates output-token recovery on a normalized terminal stream event.
 
-That said, I would revise the plan before implementation. A few sections either do not fully address the original bottleneck or assume APIs and ownership boundaries that the current codebase does not yet have. The highest-risk gaps are around mid-turn durability, rolling-summary quality, tool-output persistence boundaries, and retrying streaming provider calls.
+There are still a few remaining issues to fix before this is implementation-ready. The main risks are artifact persistence/schema ownership, inconsistent no-progress rollout language, provider scope drift, runtime config injection into tools, and the fact that crash telemetry intentionally measures rather than fixes the mid-turn checkpointing bottleneck.
 
-## Key Feedback
+## Findings
 
-### 1. Do not replace mid-turn checkpointing with retries and output persistence alone
+### 1. Persisted tool artifacts still need schema/ownership clarification
 
-`docs/long-running-bottlenecks.md` identifies the lack of mid-turn checkpointing as a durability problem: a crash, fatal provider error, or unrecoverable context error can lose all in-memory progress since the last user message.
+Phase 3 says persistence lives in `Agent.processToolCall()`: the agent measures tool output, persists large content, replaces the tool result with a preview block, and then the context manager creates the `ArtifactRecord` referencing the file.
 
-The plan replaces explicit checkpointing with retry budgets, circuit breakers, and disk-persisted large tool outputs. Those are useful, but they do not preserve the full turn state:
+The current artifact model stores inline content. It does not currently have a file reference or external-storage field. If the agent passes only the preview to the context manager, the artifact will contain only the preview, not the full persisted output.
 
-- Small tool results may never be persisted to disk.
-- Assistant messages, pending tool calls, reasoning state, and current turn metadata remain in memory.
-- Existing session snapshots still happen primarily on explicit exit paths.
+The aggregate tool-result cap has a related issue: the plan says `ContextManager` should force-persist additional results once aggregate tool-result chars exceed the cap, but `ContextManager` does not currently own the persistence layer or session artifact directory.
 
-Recommendation: add a lightweight autosave/checkpoint after important state mutations, especially after assistant responses and tool-result commits. This does not need to be elaborate, but the plan should include a real persistence point for turn state.
+Recommendation:
 
-### 2. The summary fix targets the wrong layer
+- Extend `ArtifactRecord` / persisted artifact schema with explicit external storage metadata, such as `externalPath`, `storageRef`, or `contentLocation`.
+- Decide whether persistence lives entirely in the agent before `recordToolResults()`, or entirely in the context layer with access to a persistence dependency.
+- Avoid splitting the decision across agent and context unless the data contract is explicit.
+- Add tests proving the full persisted output survives session export/import and can be re-read by path.
 
-The plan treats deleting `SUMMARY_MAX_CHARS` and `generateTextSummary()` as the main answer to the undersized-summary bottleneck. In the current code, that constant controls per-tool-result summaries stored on tool invocations, not the rolling long-term session summary.
+### 2. No-progress detector rollout language is contradictory
 
-The rolling summary is governed by `SummaryPolicy.summaryTargetTokens`, and the summary serializer further clips tool invocation summaries before sending them to the summarizer. So removing `generateTextSummary()` may increase prompt bloat without materially improving long-term continuity.
+The revised plan contains three different rollout stories:
 
-Recommendation: revise the summary work to explicitly improve the rolling summary layer. Options include:
+- The review-response section says the no-progress detector is authoritative by default when `runtimeConfig.useNoProgressDetector === true`.
+- The “Not deleted” section says `MAX_EMPTY_TOOL_ONLY_STREAK` runs in parallel for one release as a logged-only signal.
+- Phase 2 later says to flip the detector from logged-only to authoritative once data shows it triggers correctly.
 
-- Raise or configure `summaryTargetTokens`.
-- Make summaries more structured, with sections for goals, constraints, decisions, files touched, test status, and open threads.
-- Adjust the summarization serializer so important tool results are preserved selectively rather than blindly clipped.
-- Keep per-tool-result summaries bounded unless persistence/rehydration semantics are clearly changed.
+These cannot all be true at once.
 
-### 3. Tool-output persistence needs to respect current ownership boundaries
+Recommendation: pick one rollout model and make every section consistent. The cleanest version is:
 
-The plan says tools should persist output and create `ArtifactRecord`s, but current tools return only strings, and artifact records are created centrally by the context manager when tool results are recorded.
+- `useNoProgressDetector: true` means the detector is authoritative.
+- `useNoProgressDetector: false` means the old streak heuristic is authoritative fallback.
+- No parallel logged-only path.
+- Delete the fallback flag and streak branch in the next release if no regressions are reported.
 
-That means the proposed implementation crosses an ownership boundary that does not currently exist. Either the tool interface needs to change deliberately, or persistence should happen in the agent/context layer after tool execution.
+### 3. Provider file list is out of date
 
-Recommendation: choose one clear design:
+The plan references provider files such as `anthropic.ts` and `openai.ts`, but the current repository providers are `bedrock.ts`, `gemini.ts`, `ollama.ts`, `openrouter.ts`, and `xai.ts`.
 
-- Keep tools returning strings, then persist large outputs in `Agent.processToolCall()` or `ContextManager.recordToolResults()`.
-- Or change the tool execution interface to return structured results with optional persisted-output metadata.
+The terminal-event mapping also mentions Anthropic/OpenAI-specific signals. That may be useful conceptually, but implementers need mappings for the providers that actually exist in this repo.
 
-The first option is likely smaller and more consistent with the current architecture.
+Recommendation:
 
-### 4. Add read slicing before relying on persisted-output re-reading
+- Update Phase 4 and Phase 4.5 to list current provider files.
+- Specify terminal stop-reason mapping for Bedrock, Gemini, Ollama, OpenRouter, and xAI.
+- Keep Anthropic/OpenAI examples only if clearly labeled as future/provider-family guidance.
 
-The plan’s preview text tells the model to re-read persisted output with `offset` and `limit`, but the current `read` tool only accepts a `path`.
+### 4. Runtime config injection into tools is underspecified
 
-Recommendation: include `read` enhancements in the same phase as output persistence:
+Phase 1 says `bash`, `read`, and `grep` should read limits from `RuntimeConfig`. Today, built-in tools expose `execute(args)` and receive no runtime config or execution context.
 
-- Add `offset` and `limit`, or preferably line-based `startLine` and `lineCount`.
-- Update the tool description so the model knows how to page through persisted logs.
-- Add tests for reading persisted artifacts in slices.
+Recommendation: specify the wiring mechanism before implementation. Options:
 
-Without this, persisted output helps avoid silent truncation but does not provide a complete workflow for inspecting large logs or search results.
+- Constructor-inject `RuntimeConfig` into built-in tools when they are registered.
+- Add a `ToolExecutionContext` argument to `ExecutableTool.execute()`.
+- Keep tools simple and enforce limits/persistence in the agent layer only.
 
-### 5. Streaming retries need more precise semantics
+Constructor injection is probably the smallest change for timeout and limit defaults.
 
-The shared `withRetry` idea is good, but provider streaming makes retries tricky. If a provider fails after partial output has already been streamed to the user or committed to state, blindly retrying can duplicate text, repeat tool calls, or corrupt the turn.
+### 5. Crash telemetry measures bottleneck #8 but does not fix it
 
-Recommendation: split retry behavior into explicit categories:
+The plan now intentionally defers full autosave and adds an in-progress marker instead. That is a reasonable product tradeoff, but it should be described as “measured/deferred,” not “addressed.”
 
-- Safe retries before any response body chunks are consumed.
-- Optional buffered retries before anything is emitted to the agent/user.
-- No automatic retry after assistant text or tool calls have been surfaced, unless a continuation protocol exists.
+Also, the plan says the follow-up is gated on crash rate “across instrumented users,” but current diagnostics are local/debug-oriented. There is no obvious aggregation channel.
 
-The plan should specify where retries wrap provider calls and how partial stream output is handled.
+Recommendation:
 
-### 6. Output-token recovery needs provider/event model support
+- Mark bottleneck #8 as “telemetry/deferred” in the scope table.
+- Define where crash telemetry is recorded and how the rate is computed.
+- If telemetry is only local, phrase the acceptance criterion as local/project-maintainer observed data, not cross-user instrumentation.
 
-The plan proposes continuation when the provider stream surfaces `max_output_tokens`, but the current stream event model does not expose a terminal stop reason. Some providers may know about `max_tokens` internally, but the agent does not receive that as a normalized event.
+### 6. Stream terminal event should follow existing event discriminators
 
-Recommendation: first add a provider-agnostic terminal stream event or error type that can carry stop reasons such as `max_tokens`. Then implement continuation recovery on top of that event. This keeps the recovery feature from becoming provider-specific glue.
+The proposed `StreamTerminalEvent` uses `kind: "terminal"`, while the existing stream event model uses `type` as the discriminator.
 
-### 7. Be cautious about deleting the empty-tool-only streak before replacement is proven
+Recommendation: use the existing convention:
 
-Deleting the current heuristic is reasonable, but the proposed no-progress detector is more complex than it sounds. “Same tool plus similar args hash,” “new artifacts,” and “new assistant text” can all produce false positives or false negatives.
+```ts
+interface StreamTerminalEvent {
+  type: "terminal";
+  stopReason: StopReason;
+  rawProviderReason?: string;
+}
+```
 
-Recommendation: implement this as a narrowly scoped replacement with good diagnostics and tests. Consider landing it behind configuration or emitting warnings before forcing a no-tools final response.
-
-## Suggested Plan Revisions
-
-Before implementation, I would update the plan to include:
-
-1. A real mid-turn autosave/checkpoint mechanism after assistant and tool-result commits.
-2. A rolling-summary-focused fix, not just deletion of per-tool-result truncation.
-3. A clear ownership decision for output persistence.
-4. `read` slicing support as part of the output-persistence phase.
-5. A streaming-safe retry model that distinguishes pre-stream failures from mid-stream failures.
-6. A normalized terminal stream event for stop reasons before output-token recovery.
-7. More precise tests for no-progress detection and streaming retry behavior.
+This keeps event normalization consistent across providers and the agent loop.
 
 ## Bottom Line
 
-The plan is directionally strong, but it is not yet implementation-ready. With the revisions above, it would better address the original bottlenecks without introducing fragile cross-layer behavior or accidentally solving the wrong problem at the wrong abstraction layer.
+The revised plan is directionally solid and substantially improved. Before implementation, I would revise the persistence/schema section, clean up the no-progress rollout contradiction, update provider scope to match the repo, and clarify runtime-config injection into tools. After those fixes, the plan should be ready to split into implementable phases.
