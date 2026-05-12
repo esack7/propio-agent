@@ -113,13 +113,25 @@ Create a single source of truth for all operational limits, then thread it throu
 
 **Settings:** new top-level `runtime` object in `~/.propio/settings.json` mirroring `RuntimeConfig` fields.
 
-**Stable runtime session ID.** Today, session IDs are generated only when `writeSnapshot()` creates a snapshot filename. Several downstream changes (Phase 3 artifact paths, Phase 7 in-progress markers, eventual snapshot metadata) need a stable ID available *at turn start*, not just at save time.
+**Stable runtime session ID.** Today, session IDs are generated only when `writeSnapshot()` creates a snapshot filename. Several downstream changes (Phase 3 artifact paths, Phase 7 in-progress markers, snapshot metadata for retention) need a stable ID available *at turn start*, not just at save time.
 
 - Generate `sessionId` in the `Agent` constructor (UUID v4 or short-random string).
 - Expose it on `Agent` as a readonly field and pass it to any helper that needs to construct artifact paths or marker filenames.
-- When `/exit` calls `writeSnapshot()`, the snapshot filename uses this `sessionId` (rather than generating a fresh one), so artifacts, markers, and the persisted snapshot all share identity.
-- When `Agent.importSession(json)` is called, the imported session's `sessionId` (if present in metadata) replaces the agent's current one for the rest of the process; if absent (legacy snapshots), the current generated ID is kept and a note is logged.
-- Document the relationship in module-level comments on `Agent` and `sessionHistory.ts`: runtime ID is generated once per agent instance and stays stable across turns; the snapshot filename is derived from this ID.
+- **`sessionId` is not the snapshot filename.** Today's filename format (`{timestamp}-{rand}.json`) supports multiple saves per session and stays unchanged. Instead, `sessionId` is added to `SessionMetadata` so multiple snapshot files can share the same session identity. Retention pruning looks up metadata, not filenames.
+- When `Agent.importSession(json)` is called, the imported session's `sessionId` (if present in metadata) replaces the agent's current one for the rest of the process; if absent (legacy snapshots), the current generated ID is kept and a `legacy_session_no_id` diagnostic is emitted.
+- Document the relationship in module-level comments on `Agent`, `sessionHistory.ts`, and `persistence.ts`: runtime ID is generated once per agent instance and stays stable across turns; saved snapshots reference it in metadata; multiple snapshot files for the same session share the same metadata `sessionId`.
+
+**Session ID persistence — modify: `src/context/persistence.ts`**
+- Add `sessionId?: string` to `SessionMetadata` (optional, additive — backward compatible with V3).
+- `serializeSession()` writes the agent's current `sessionId` into metadata.
+- `parseSession()` reads `sessionId` from metadata if present; legacy snapshots parse cleanly with the field absent.
+- `restoreConversationState()` / `Agent.importSession()`: when metadata has a `sessionId`, surface it back to the agent so the agent can adopt it for the remainder of the process.
+
+**Session index — modify: `src/sessions/sessionHistory.ts`**
+- Add `sessionId?: string` to `SessionIndexEntry`. Populated from snapshot metadata when entries are written or rebuilt.
+- `rebuildIndex()` reads the field from each snapshot. Legacy entries get `undefined`.
+- Retention pruning walks the index (not the snapshot files) to collect all `sessionId` values currently referenced by any saved snapshot. This makes retention O(index size) instead of O(snapshot count × file size).
+- If the index is missing or corrupt, fall back to parsing every snapshot file — same behavior as today's missing-index path.
 
 **Runtime config injection into tools.** Current built-in tools expose `execute(args)` and receive no execution context. Adding a `ToolExecutionContext` argument would touch every tool's signature for a one-time wiring change, which is the wrong shape. Instead, use **constructor injection at tool registration**:
 
@@ -151,7 +163,7 @@ Create a single source of truth for all operational limits, then thread it throu
 5. **Iteration-end diagnostic shape:** when the cap is reached (`max_iterations_reached`, line 1471), include `noProgressDetected: boolean` and the last-5-iteration tool-call histogram.
 
 **Modify: `src/diagnostics.ts`**
-- Add event types: `no_progress_detected`, `output_token_recovery_attempt`, `output_token_recovery_exhausted`, `compaction_circuit_breaker_tripped`, `stream_idle_aborted`, `tool_output_persisted`, `context_pressure_circuit_breaker`, `mid_turn_crash_detected`, `provider_retry`, `provider_stream_error`.
+- Add event types: `no_progress_detected`, `output_token_recovery_attempt`, `output_token_recovery_exhausted`, `compaction_circuit_breaker_tripped`, `stream_idle_aborted`, `tool_output_persisted`, `context_pressure_circuit_breaker`, `mid_turn_crash_detected`, `provider_retry`, `provider_stream_error`, `legacy_session_no_id`.
 
 ---
 
@@ -195,14 +207,15 @@ When `externalPath` is set, `content` holds the preview block and the full conte
 
 **4. Single call site — modify: `src/agent.ts`**
 
-- All persistence decisions live in `Agent.processToolCall()` (or equivalent — the helper that turns a tool's string return into a `ToolInvocationRecord` + result).
-- Flow:
+- All persistence decisions live in the agent's tool-handling path (the helper that turns a tool's string return into a `ToolInvocationRecord` + result, prior to calling `ContextManager.recordToolResults(...)`).
+- Flow, per tool result:
   1. Tool returns a string.
   2. Agent measures `content.length`.
   3. **Two reasons to persist**: (a) `content.length > runtimeConfig.toolOutputPersistThreshold`, or (b) the agent's per-turn aggregate counter (see step 5) shows that adding this result would push the total over `runtimeConfig.aggregateToolResultsLimit`.
-  4. If persisting: call `persistToolOutput` to write to disk, replace the in-memory tool-result content with the preview block, and call `ContextManager.recordToolResult(...)` passing the preview content AND the external-storage metadata (`externalPath`, `externalSizeBytes`, `externalLineCount`).
-  5. If not persisting: call `ContextManager.recordToolResult(...)` with content only; external fields are undefined.
-- `ContextManager.recordToolResult(...)` signature gains a single optional `externalStorage?: { externalPath; externalSizeBytes; externalLineCount }` parameter. The context manager stores the values on the `ArtifactRecord`; it never opens the file or interprets the path.
+  4. If persisting: call `persistToolOutput` to write to disk, replace the in-memory tool-result content with the preview block, and attach the external-storage metadata (`externalPath`, `externalSizeBytes`, `externalLineCount`) to the `ArtifactToolResult` batch entry.
+  5. If not persisting: build the batch entry with content only; external fields are undefined.
+- Batch results are then passed to `ContextManager.recordToolResults(results: ArtifactToolResult[])` as today.
+- **API extension — modify `ArtifactToolResult` input shape** (`src/context/types.ts` or wherever the input type lives, alongside the `ArtifactRecord` field additions): each batch entry gains a single optional `externalStorage?: { externalPath: string; externalSizeBytes: number; externalLineCount?: number }` field. The context manager copies these into the corresponding `ArtifactRecord` it constructs; it never opens the file or interprets the path. This is a strictly additive change to the batch API — no singular helper, no signature change on `recordToolResults`.
 - Tools never see the persistence concept. The `truncateText` calls in `bash.ts`, `read.ts`, `grep.ts` result construction paths are deleted (silent-truncation removal — Removal #3).
 
 **5. Aggregate cap moves to the agent layer**
@@ -220,11 +233,12 @@ When `externalPath` is set, `content` holds the preview block and the full conte
 **Tests:**
 - `src/tools/__tests__/outputPersistence.test.ts` (new) — persist helper writes atomically; preview shape; returns expected metadata; **does not return an artifact ID** (ownership stays with ContextManager); produces an absolute `externalPath` directly usable by `read`.
 - `src/__tests__/agent.test.ts` — `processToolCall` persists when over threshold, when aggregate would overflow, never when under both; populates `ArtifactRecord.externalPath` correctly; passes stable `sessionId` to the persistence helper.
-- `src/context/__tests__/persistence.test.ts` — round-trip a session with `externalPath`-bearing artifacts; older V3 sessions without the new fields still parse; encoding logic continues to apply only at the persistence boundary, not in runtime state.
-- `src/context/__tests__/contextManager.test.ts` — `recordToolResult` accepts and stores the optional `externalStorage` metadata; assigns the artifact ID itself.
+- `src/context/__tests__/persistence.test.ts` — round-trip a session with `externalPath`-bearing artifacts; round-trip `SessionMetadata.sessionId`; older V3 sessions without the new fields still parse cleanly; legacy import emits `legacy_session_no_id` diagnostic; encoding logic continues to apply only at the persistence boundary, not in runtime state.
+- `src/context/__tests__/contextManager.test.ts` — `recordToolResults` (batch) accepts entries with optional `externalStorage` and copies fields onto each constructed `ArtifactRecord`; assigns the artifact ID itself; entries without `externalStorage` behave as today.
 - `src/tools/__tests__/read.test.ts` — slicing with `startLine`/`lineCount` and `offset`/`limit`; reads a persisted artifact file by its absolute path in slices; out-of-range params produce a clear error; missing-file produces `Artifact file no longer available: …` not a stack trace.
 - Integration: write a large tool result, export the session, import it in a fresh agent, confirm the artifact's `externalPath` is intact and `read` can fetch the full content from disk.
-- Retention: a session with a saved snapshot retains its artifact directory past `artifactRetentionDays`; an in-progress session's artifact dir is pruned after `artifactRetentionDays`; pruning never deletes a directory referenced by a saved snapshot regardless of mtime.
+- Retention: a session with a saved snapshot retains its artifact directory past `artifactRetentionDays`; an in-progress session's artifact dir is pruned after `artifactRetentionDays`; pruning never deletes a directory referenced by a saved snapshot regardless of mtime. Retention lookup uses `SessionIndexEntry.sessionId` (verify pruning does *not* parse every snapshot file).
+- Session ID stability: multiple `/exit` saves from the same agent produce snapshot files with distinct filenames but the same metadata `sessionId`. Verify the artifact directory is preserved across all of them.
 
 **7. Retention: tie artifact lifetime to session retention**
 
@@ -472,14 +486,14 @@ Diagnostics in propio-agent are emitted locally; there is no cross-user aggregat
 - `src/agent.ts` (stable runtime `sessionId` field, loop cap, no-progress detector authoritative + streak fallback under flag, output-token recovery, tool-output persistence call site, per-turn aggregate counter, circuit breakers, stream watchdog, in-progress marker writes/clears using stable sessionId)
 - `src/context/contextManager.ts` (config wiring, compaction circuit breaker, `recordToolResult` accepts optional external-storage metadata; aggregate cap moved to agent layer)
 - `src/context/promptBuilder.ts` (level-3 cliff deletion, circuit breaker abort, structured-summary rendering)
-- `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default, `ArtifactRecord` external-storage fields)
+- `src/context/types.ts` (policy overrides, `RollingSummaryRecord` sections, `summaryTargetTokens` default, `ArtifactRecord` external-storage fields, `ArtifactToolResult` optional `externalStorage` input field, `SessionMetadata.sessionId`, `SessionIndexEntry.sessionId`)
 - `src/context/summaryManager.ts` (structured summary prompt, selective preservation)
 - `src/context/memoryManager.ts` (`MAX_CONTENT_LENGTH` from config)
-- `src/context/persistence.ts` (round-trip new optional `ArtifactRecord` external-storage fields; `cleanExit` / `sessionUuid` still deferred with the full autosave proposal)
+- `src/context/persistence.ts` (round-trip new optional `ArtifactRecord` external-storage fields; add optional `SessionMetadata.sessionId` with backward-compatible parse; `cleanExit` / `sessionUuid` still deferred with the full autosave proposal)
 - `src/providers/bedrock.ts`, `gemini.ts`, `ollama.ts`, `openrouter.ts`, `xai.ts` (use `withRetry`; emit `StreamTerminalEvent`; delete OpenRouter bespoke path)
 - `src/providers/types.ts` (`StreamTerminalEvent`)
 - `src/tools/bash.ts`, `src/tools/read.ts`, `src/tools/grep.ts` (config wiring; tools stay string-returning; `read` gains slicing)
-- `src/sessions/sessionHistory.ts` (atomic writes, in-progress marker helpers)
+- `src/sessions/sessionHistory.ts` (atomic writes, in-progress marker helpers, `SessionIndexEntry.sessionId` field for fast retention lookup)
 - `src/sessions/sessionCommands.ts` (no changes in this revision; `/session resume` and `--all` deferred with full autosave proposal)
 - `src/diagnostics.ts` (new event types)
 - `src/index.ts` (CLI flags, stale-marker detection on startup, session-aware artifact pruning)
