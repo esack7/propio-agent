@@ -38,6 +38,7 @@ export interface PromptBuildRequest {
   readonly retryLevel?: number;
   readonly artifactLookup: (id: string) => ArtifactRecord | undefined;
   readonly isCurrentTurnUnresolved: (turnId: string) => boolean;
+  readonly rehydrationMaxChars?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,12 +50,12 @@ const REHYDRATION_MAX_CHARS = 12000;
 // Approximate overhead of the <session_summary> wrapper tags + newlines (or ## Session Summary block)
 const SESSION_SUMMARY_WRAPPER_OVERHEAD = 100;
 
-function capForRehydration(rawContent: string): string {
-  if (rawContent.length <= REHYDRATION_MAX_CHARS) {
+function capForRehydration(rawContent: string, maxChars: number = REHYDRATION_MAX_CHARS): string {
+  if (rawContent.length <= maxChars) {
     return rawContent;
   }
-  const truncated = rawContent.substring(0, REHYDRATION_MAX_CHARS);
-  const omitted = rawContent.length - REHYDRATION_MAX_CHARS;
+  const truncated = rawContent.substring(0, maxChars);
+  const omitted = rawContent.length - maxChars;
   return `${truncated}\n\n[output truncated: ${omitted} chars omitted]`;
 }
 
@@ -639,7 +640,8 @@ export class PromptBuilder {
       return entry.message;
     }
 
-    const effectiveCap = Math.min(artifactCap, REHYDRATION_MAX_CHARS);
+    const rehydrationMax = request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS;
+    const effectiveCap = Math.min(artifactCap, rehydrationMax);
 
     const rehydratedResults = entry.message.toolResults.map((tr, i) => {
       const invocation = entry.toolInvocations![i];
@@ -691,7 +693,7 @@ export class PromptBuilder {
         for (const inv of entry.toolInvocations) {
           const artifact = request.artifactLookup(inv.artifactId);
           if (artifact && typeof artifact.content === "string") {
-            const effectiveCap = Math.min(artifactCap, REHYDRATION_MAX_CHARS);
+            const effectiveCap = Math.min(artifactCap, request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS);
             entryChars += Math.min(artifact.content.length, effectiveCap);
           } else {
             entryChars += inv.resultSummary.length;

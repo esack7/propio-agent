@@ -81,17 +81,23 @@ export class ReadTool implements ExecutableTool {
 
       // Line-based slicing
       if (startLine !== undefined || lineCount !== undefined) {
+        if (startLine !== undefined && startLine < 1) {
+          throw new Error(`startLine must be at least 1 (got ${startLine})`);
+        }
         const lines = content.split("\n");
-        const start = Math.max(0, (startLine ?? 1) - 1);
-        if (start < 0 || start >= lines.length) {
+        const start = (startLine ?? 1) - 1;
+        if (start >= lines.length) {
           throw new Error(
             `startLine ${startLine} is out of range (file has ${lines.length} lines)`,
           );
         }
-        const count = Math.min(lineCount ?? lines.length - start, 5000);
-        if (count < 1) {
+        if (lineCount !== undefined && lineCount < 1) {
           throw new Error("lineCount must be at least 1");
         }
+        if (lineCount !== undefined && lineCount > 5000) {
+          throw new Error(`lineCount ${lineCount} exceeds maximum of 5000`);
+        }
+        const count = lineCount ?? lines.length - start;
         return lines.slice(start, start + count).join("\n");
       }
 
@@ -102,11 +108,14 @@ export class ReadTool implements ExecutableTool {
         if (offsetVal < 0) {
           throw new Error("offset must be non-negative");
         }
-        const limitVal = limit ?? buf.length - offsetVal;
-        if (limitVal < 1) {
+        if (limit !== undefined && limit < 1) {
           throw new Error("limit must be at least 1");
         }
-        const end = Math.min(offsetVal + limitVal, buf.length);
+        const cappedLimit = Math.min(
+          limit ?? buf.length - offsetVal,
+          this.outputInlineLimit,
+        );
+        const end = Math.min(offsetVal + cappedLimit, buf.length);
         return buf.slice(offsetVal, end).toString("utf8");
       }
 
@@ -124,8 +133,16 @@ export class ReadTool implements ExecutableTool {
       if (err instanceof Error && err.message.includes("must be")) {
         throw err;
       }
+      if (err instanceof Error && err.message.includes("exceeds maximum")) {
+        throw err;
+      }
       if ("code" in err && err.code === "ENOENT") {
-        throw new Error(`File not found: ${rawPath}`);
+        const isArtifact =
+          typeof path === "string" && path.includes("/artifacts/");
+        const msg = isArtifact
+          ? `Artifact file no longer available: ${rawPath}`
+          : `File not found: ${rawPath}`;
+        throw new Error(msg);
       }
       if ("code" in err && (err.code === "EACCES" || err.code === "EPERM")) {
         throw new Error(`Permission denied: ${rawPath}`);

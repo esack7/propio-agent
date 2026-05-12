@@ -66,9 +66,36 @@ export class BedrockProvider implements LLMProvider {
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const command = this.createConverseStreamCommand(request);
-      const response = await this.client.send(command, {
-        abortSignal: request.signal,
-      });
+      const response = await withRetry(
+        () => this.client.send(command, { abortSignal: request.signal }),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          baseDelayMs: 500,
+          isRetryable: (err) => {
+            const name = (err as any)?.name ?? "";
+            const msg = err instanceof Error ? err.message : String(err);
+            return (
+              name === "ThrottlingException" ||
+              name === "ServiceUnavailableException" ||
+              name === "InternalServerException" ||
+              msg.includes("rate limit") ||
+              msg.includes("throttl")
+            );
+          },
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
+      );
       const stream = this.getStreamFromResponse(response);
 
       if (!stream) {

@@ -149,6 +149,14 @@ export interface PromptPlanSnapshot {
   readonly plan: PromptPlan;
 }
 
+function stableArgsKey(args: Record<string, unknown> | null | undefined): string {
+  if (!args || typeof args !== "object") return "";
+  return Object.keys(args)
+    .sort()
+    .map((k) => `${k}=${JSON.stringify(args[k])}`)
+    .join("|");
+}
+
 export class Agent {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
@@ -276,7 +284,10 @@ export class Agent {
       ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
     });
     this.summaryManager = new SummaryManager();
-    this.summaryPolicy = DEFAULT_SUMMARY_POLICY;
+    this.summaryPolicy = {
+      ...DEFAULT_SUMMARY_POLICY,
+      summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
+    };
   }
 
 
@@ -425,62 +436,60 @@ export class Agent {
   }
 
   private detectNoProgress(
-    currentToolCalls?: ChatToolCall[],
+    _currentToolCalls?: ChatToolCall[],
     lookback: number = 5,
   ): boolean {
     const state = this.contextManager.getConversationState();
     const turns = state.turns;
 
-    if (turns.length === 0) {
-      return false;
-    }
+    if (turns.length === 0) return false;
 
-    // Look at entries in the most recent turn
     const lastTurn = turns[turns.length - 1];
+    // commitAssistantResponse already ran before this check, so the current
+    // iteration's assistant entry is already in history — read from there only.
     const recentEntries = lastTurn.entries.slice(-lookback);
 
-    // Need at least 3 entries to detect no-progress
-    if (recentEntries.length < 2 && !currentToolCalls?.length) {
-      return false;
-    }
-
-    const recentToolNames: string[] = [];
+    const seenCallSignatures: string[] = [];
+    const seenArtifactIdsInWindow = new Set<string>();
     let hasAnyAssistantText = false;
 
     for (const entry of recentEntries) {
       if (entry.kind === "assistant") {
-        const assistantMessage = entry.message;
-        if (
-          assistantMessage.content &&
-          assistantMessage.content.trim().length > 0
-        ) {
+        if (entry.message.content?.trim().length > 0) {
           hasAnyAssistantText = true;
         }
+        // Collect per-call signatures (tool name + stable args key)
+        if (entry.message.toolCalls?.length) {
+          for (const tc of entry.message.toolCalls) {
+            seenCallSignatures.push(
+              `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
+            );
+          }
+        }
       }
-
-      if (entry.kind === "tool" && (entry.toolInvocations?.length ?? 0) > 0) {
-        for (const invocation of entry.toolInvocations) {
-          recentToolNames.push(invocation.toolName);
+      if (entry.kind === "tool") {
+        for (const inv of entry.toolInvocations) {
+          seenArtifactIdsInWindow.add(inv.artifactId);
         }
       }
     }
 
-    // Include current iteration's tool calls
-    if ((currentToolCalls?.length ?? 0) > 0) {
-      for (const toolCall of currentToolCalls!) {
-        recentToolNames.push(toolCall.function.name);
-      }
-    }
+    if (hasAnyAssistantText) return false;
 
-    // No progress detected when:
-    // 1. No new assistant text in recent iterations
-    // 2. All tool calls are for the same tool (repetitive)
-    // 3. At least 3 tool invocations with this pattern
-    const uniqueToolNames = new Set(recentToolNames);
-    const allToolCallsSame = uniqueToolNames.size === 1;
-    const sufficientIterations = recentToolNames.length >= 3;
+    // Need at least 3 identical call signatures in the lookback window
+    if (seenCallSignatures.length < 3) return false;
 
-    return !hasAnyAssistantText && allToolCallsSame && sufficientIterations;
+    // Check whether any new artifacts have appeared outside the lookback window
+    // (i.e., artifacts not referenced by tool entries we already saw)
+    const allArtifactIds = new Set(state.artifacts?.map((a) => a.id) ?? []);
+    const hasNewArtifacts = [...allArtifactIds].some(
+      (id) => !seenArtifactIdsInWindow.has(id),
+    );
+    if (hasNewArtifacts) return false;
+
+    // Stuck if every call in the window has the same signature (same tool + same args)
+    const uniqueSignatures = new Set(seenCallSignatures);
+    return uniqueSignatures.size === 1;
   }
 
   private synthesizeAgentReasoningSummary(
@@ -946,12 +955,18 @@ export class Agent {
     iteration?: number,
   ): PromptPlan {
     const contextWindowTokens = this.resolveContextWindowTokens();
+    const policy: PromptBudgetPolicy = {
+      ...DEFAULT_BUDGET_POLICY,
+      maxRecentTurns: this.runtimeConfig.maxRecentTurns,
+      artifactInlineCharCap: this.runtimeConfig.artifactInlineCharCap,
+    };
     const plan = this.contextManager.buildPromptPlan(
       this.getEffectiveSystemPrompt(),
       extraUserInstruction,
       {
         contextWindowTokens,
         retryLevel,
+        policy,
       },
     );
     if (iteration != null) {

@@ -836,6 +836,7 @@ export class ContextManager {
       rollingSummarySections: this.rollingSummary?.sections,
       summaryCoveredTurnIds: coveredTurnIds,
       retryLevel: options?.retryLevel,
+      rehydrationMaxChars: this.rehydrationMaxChars,
       artifactLookup: (id: string) => this.artifacts.get(id),
       isCurrentTurnUnresolved: (turnId: string) => {
         const turn = this.turns.find((t) => t.id === turnId);

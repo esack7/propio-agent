@@ -13,6 +13,7 @@ const INDEX_FILE = "index.json";
 
 export interface SessionIndexEntry {
   readonly sessionId?: string;
+  readonly runtimeSessionId?: string;
   readonly snapshotFile: string;
   readonly savedAt: string;
   readonly providerName: string;
@@ -139,6 +140,7 @@ export function rebuildIndex(sessionsDir: string): SessionIndex {
 
       entries.push({
         sessionId: path.basename(file, ".json"),
+        runtimeSessionId: typeof meta.sessionId === "string" ? meta.sessionId : undefined,
         snapshotFile: file,
         savedAt: typeof obj.savedAt === "string" ? obj.savedAt : "",
         providerName:
@@ -188,10 +190,8 @@ export function writeSnapshot(
   fs.renameSync(tempPath, snapshotPath);
 
   const entry: SessionIndexEntry = {
-    sessionId:
-      typeof meta.sessionId === "string"
-        ? meta.sessionId
-        : path.basename(snapshotFile, ".json"),
+    sessionId: path.basename(snapshotFile, ".json"),
+    runtimeSessionId: typeof meta.sessionId === "string" ? meta.sessionId : undefined,
     snapshotFile,
     savedAt: typeof obj.savedAt === "string" ? obj.savedAt : "",
     providerName:

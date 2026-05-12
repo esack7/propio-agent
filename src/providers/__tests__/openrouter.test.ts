@@ -591,7 +591,7 @@ describe("OpenRouterProvider", () => {
       expect(secondBody.tools).toBeUndefined();
     });
 
-    it("should not retry on 429 when no tools are enabled", async () => {
+    it("should retry on 429 even without tools", async () => {
       const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 429,
@@ -601,6 +601,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       await expect(async () => {
@@ -611,10 +612,10 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderRateLimitError);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it("should not retry on 503 when no tools are enabled", async () => {
+    it("should retry on 503 even without tools", async () => {
       const fetchMock = jest.fn().mockResolvedValue({
         ok: false,
         status: 503,
@@ -624,6 +625,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       await expect(async () => {
@@ -634,7 +636,7 @@ describe("OpenRouterProvider", () => {
           // consume
         }
       }).rejects.toThrow(ProviderError);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should throw ProviderAuthenticationError on 401", async () => {
@@ -679,6 +681,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
       await expect(async () => {
         for await (const chunk of provider.streamChat({
@@ -719,6 +722,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       let caughtError: unknown;
@@ -776,6 +780,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
       await expect(async () => {
         for await (const chunk of provider.streamChat({
@@ -807,6 +812,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
       await expect(async () => {
         for await (const chunk of provider.streamChat({
@@ -854,6 +860,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       let caughtError: unknown;
@@ -1077,6 +1084,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
       await expect(async () => {
         for await (const chunk of provider.streamChat({

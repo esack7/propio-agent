@@ -4,45 +4,37 @@ An analysis of what would constrain propio-agent from successfully solving probl
 
 ## Showstoppers
 
-### 1. `maxIterations = 10` (`src/agent.ts:1385`)
+### 1. `maxIterations` — default raised to 50, now configurable
 
-Single biggest blocker. One user turn can do at most 10 tool-call rounds before the loop exits with a `max_iterations_reached` diagnostic. Non-trivial problems (debug → repro → patch → test → fix → re-test) burn through 10 quickly. It's a local `const`, not a constructor option, so even raising it requires a code edit.
+~~`maxIterations = 10` (`src/agent.ts:1385`)~~ — **Fixed.** Default is now 50; overridable via `PROPIO_MAX_ITERATIONS` env var or `--max-iterations` CLI flag. No code edit required.
 
-### 2. `MAX_EMPTY_TOOL_ONLY_STREAK = 3` (`src/agent.ts:143`)
+### 2. No-progress detector replaces blunt streak heuristic
 
-Trips before `maxIterations`. Three consecutive turns of "tool calls only, no text" force a no-tools final answer. Models that work silently — which is often *good* behavior for long runs — will be wrongly classified as "stuck."
+~~`MAX_EMPTY_TOOL_ONLY_STREAK = 3`~~ — **Replaced.** The new no-progress detector (`detectNoProgress` in `src/agent.ts`) exits the loop only when the same tool + identical args repeats ≥ 3 times *and* no new artifacts have been produced and no assistant text was emitted. Models that read multiple different files silently are no longer misclassified as stuck. The old streak heuristic remains as a fallback when `runtimeConfig.useNoProgressDetector = false`.
 
 ## Context Loss Over Time
 
-### 3. Retry-level cliff (`src/context/promptBuilder.ts:65-69`)
+### 3. Retry-level cliff — deleted
 
-At `MAX_CONTEXT_RETRY_LEVEL=3` the policy drops to `maxRecentTurnsFraction: 0, artifactCapFraction: 0` — i.e., no recent turns and no artifacts. So a context-pressure escalation late in a long run can effectively erase working state in one shot.
+~~`src/context/promptBuilder.ts:65-69`~~ — **Fixed.** The level-3 `(0, 0)` policy (erase all turns and artifacts) has been removed. `RETRY_LEVELS` now has three entries (0–2). At `MAX_CONTEXT_RETRY_LEVEL=3` the agent emits a `context_pressure_circuit_breaker` diagnostic and aborts the turn cleanly instead of destroying working state.
 
-### 4. `SUMMARY_MAX_CHARS = 1500` (`src/context/contextManager.ts:49`)
+### 4. `SUMMARY_MAX_CHARS` — configurable; rolling summary improved
 
-The only long-term memory once turns roll off. That's roughly 300–400 tokens to compress hours of work — far too small for stateful problem solving. Pinned memory at `MAX_CONTENT_LENGTH = 500` per entry doesn't make up for it.
+~~`SUMMARY_MAX_CHARS = 1500`~~ — Now configurable as `toolResultSummaryMaxChars` (env: `PROPIO_TOOL_RESULT_SUMMARY_MAX_CHARS`). Default unchanged at 1500 (this cap controls per-tool-result text, not long-term memory). The rolling summary's token budget (`rollingSummaryTargetTokens`) is now configurable (default 2048, env: `PROPIO_ROLLING_SUMMARY_TARGET_TOKENS`) and the serializer is hardened against blind clipping. Pinned memory per-entry cap raised to 2000 chars.
 
-### 5. Recent-turn and artifact caps
+### 5. Recent-turn and artifact caps — now configurable and wired
 
-- `maxRecentTurns: 50` (`src/context/types.ts:63`)
-- `artifactInlineCharCap: 12000` (`src/context/types.ts:64`)
-- `REHYDRATION_MAX_CHARS: 12000` (`src/context/contextManager.ts:50`, `src/context/promptBuilder.ts:42`)
-
-Older turns get evicted, and any single artifact bigger than 12 KB is referenced rather than inlined. After dozens of file reads, the agent is reasoning against summaries of summaries.
+~~Hardcoded defaults~~ — **Fixed.** `maxRecentTurns`, `artifactInlineCharCap`, and `rehydrationMaxChars` are now read from `runtimeConfig` and passed into `buildPlan()` on every call. `rehydrationMaxChars` is also threaded through `PromptBuildRequest` so `promptBuilder.ts` no longer uses the hardcoded 12000 constant. All three accept `PROPIO_*` env-var overrides.
 
 ## Tool-Output Blindness
 
-### 6. 50 KB output caps everywhere
+### 6. 50 KB silent truncation — replaced with persistence
 
-- `bash.ts MAX_OUTPUT_SIZE` = 50 KB
-- `read.ts READ_OUTPUT_LIMIT` = 50 KB
-- `grep.ts GREP_OUTPUT_LIMIT` = 50 KB
+~~Silent truncation in `bash.ts`, `read.ts`, `grep.ts`~~ — **Fixed.** The agent layer now persists large outputs to a per-session artifacts directory (`src/tools/outputPersistence.ts`). The model receives a structured preview with the absolute path and slicing params. The `read` tool now supports `startLine`/`lineCount` (line-based) and `offset`/`limit` (byte-based) slicing with proper validation; byte `limit` is capped to `toolOutputInlineLimit`. Silent `truncateText` calls have been removed from tool result paths.
 
-Truncation is silent-ish (a marker is appended, but the model often misses it). For long runs against large logs, builds, or datasets, the agent works on partial views and there's no chunking/paging strategy.
+### 7. `bash` default timeout — raised to 120 s, configurable
 
-### 7. `bash` default timeout 30 s (`src/tools/bash.ts`)
-
-Overridable per call, but the model has to remember to override. Long builds, large test suites, or any heavy command will time out and look like a tool failure.
+~~30 s default~~ — **Fixed.** Default is now 120 s (2 min); hard max 600 s (10 min). Configurable via `PROPIO_BASH_DEFAULT_TIMEOUT_MS` / `PROPIO_BASH_MAX_TIMEOUT_MS`.
 
 ## Recovery and Robustness
 
@@ -50,20 +42,14 @@ Overridable per call, but the model has to remember to override. Long builds, la
 
 Session snapshots happen on `/exit`. A crash, a fatal provider error, or an unrecoverable context error mid-iteration loses all tool work since the last user message.
 
-### 9. Provider retries are thin
+### 9. Provider retries — general `withRetry` across all providers
 
-OpenRouter retries once without tools on 429/503; other providers don't auto-retry at all (see `docs/limits.md` §Provider-level retries). A single transient rate-limit at hour 2 kills the turn.
+~~OpenRouter-only bespoke retry~~ — **Fixed.** All five providers now use the shared `withRetry` helper (`src/providers/withRetry.ts`) with exponential back-off + full jitter. OpenRouter retries on any transient `ProviderError` (not just when tools are present) and drops tools on the final attempt. Bedrock retries on `ThrottlingException`, `ServiceUnavailableException`, and `InternalServerException`. `maxRetries` and `consecutive529Limit` are configurable via `runtimeConfig`.
 
 ### 10. Background summary can lose the race
 
 `scheduleSummaryRefresh` is best-effort; the synchronous-shrink path (`src/agent.ts:782`) is the only safety net, and it only fires on a `ProviderContextLengthError` after the request already failed.
 
-## Highest-Leverage Changes
+## Status
 
-If propio-agent is to be viable for long-running work, the three to target first:
-
-1. **Make `maxIterations` configurable** and default it much higher (50–100), or remove the cap and rely on user cancellation + a "no progress" heuristic instead of a fixed integer.
-2. **Raise `SUMMARY_MAX_CHARS` substantially** (or move to a hierarchical/structured summary) so summarized history retains usable detail.
-3. **Add mid-turn checkpointing** so a crash or context exhaustion doesn't discard tool work.
-
-The rest (output caps, retry-level cliff, empty-tool-streak heuristic) are tuning rather than architecture — easy follow-ups once the three above are in.
+Items 1–7 and 9–10 are implemented. Item 8 (mid-turn checkpointing) is deferred pending telemetry — a crash-marker probe measures whether mid-turn crashes are frequent enough to justify a full autosave subsystem. See `docs/long-running-bottlenecks-plan.md` §Phase 7 for the rationale.

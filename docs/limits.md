@@ -4,47 +4,56 @@ A catalog of every limit, cap, retry budget, and timeout in propio-agent, groupe
 
 ## Agentic loop limits (`src/agent.ts`)
 
-The most important set — these bound how long the model can spin within a single user turn.
+The most important set — these bound how long the model can spin within a single user turn. All values are now runtime-configurable via env vars, `~/.propio/settings.json`, or CLI flags (see `src/config/runtimeConfig.ts`).
 
-| Constant | Value | Location | Purpose |
+| Knob | Default | Override | Purpose |
 | --- | --- | --- | --- |
-| `maxIterations` | `10` | `src/agent.ts:1385` | Hard cap on tool-call rounds per user turn. When hit, emits a `max_iterations_reached` diagnostic and exits the loop. |
-| `MAX_EMPTY_TOOL_ONLY_STREAK` | `3` | `src/agent.ts:143` | Breaks the loop if the model returns tool calls only (no text) three turns in a row. Detects "stuck in tool-spam" behavior. |
-| `MAX_CONTEXT_RETRY_LEVEL` | `3` | `src/agent.ts:145` | Escalation levels available to `PromptBuilder` for re-trimming context after a token-limit error (used at `agent.ts:967`, `1025`, `1422`). |
-| `MAX_VISIBILITY_PREVIEW_CHARS` | `120` | `src/agent.ts:144` | Truncation cap for tool-arg previews in activity output (display only). |
+| `maxIterations` | `50` | `PROPIO_MAX_ITERATIONS` / `--max-iterations` | Hard cap on tool-call rounds per user turn. Emits `max_iterations_reached` diagnostic when hit. |
+| no-progress detector | enabled | `runtimeConfig.useNoProgressDetector` | Exits the loop when the same tool call (same name + identical args) repeats ≥ 3 times with no new artifacts or assistant text. Fallback: `MAX_EMPTY_TOOL_ONLY_STREAK` (authoritative only when detector is disabled). |
+| `MAX_CONTEXT_RETRY_LEVEL` | `3` | — | Escalation levels for re-trimming context on token-limit errors; level 3 now triggers a `context_pressure_circuit_breaker` abort instead of erasing all turns. |
+| `MAX_VISIBILITY_PREVIEW_CHARS` | `120` | — | Truncation cap for tool-arg previews in activity output (display only). |
 
 ## Provider-level retries
 
-| Behavior | Location | Purpose |
+All providers use the shared `withRetry` helper (`src/providers/withRetry.ts`) to retry transient pre-stream failures with exponential back-off + full jitter. Mid-stream failures and post-emission failures are not auto-retried.
+
+| Provider | Retryable conditions | Extra behavior |
 | --- | --- | --- |
-| OpenRouter tool-disable retry | `src/providers/openrouter.ts` | On 429/503 with tools enabled, retries **once** without tools and emits a `provider_retry` diagnostic (see README §Troubleshooting). |
-| `ProviderRateLimitError` | `src/providers/types.ts:150` | Shared error type with optional retry info; raised by `bedrock.ts:512`, `xai.ts:330`, `gemini.ts:202`, `openrouter.ts:751`. Agent surfaces these but does not auto-retry beyond what each provider does. |
+| OpenRouter | Any `ProviderError` except auth / not-found / context-length | On final retry, drops tools from request (`onFinalRetry`) |
+| Bedrock | `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` | — |
+| xAI / Gemini / Ollama | Provider-specific rate-limit / server errors | — |
+
+`maxRetries` (default 3) and `consecutive529Limit` (default 3) are configurable via `runtimeConfig`.
 
 ## Tool execution limits
 
 ### `bash` tool — `src/tools/bash.ts`
 
-| Constant | Value | Notes |
+| Knob | Default | Override |
 | --- | --- | --- |
-| `DEFAULT_TIMEOUT` | `30000` ms | Overridable per-call via the `timeout` arg. |
-| `MAX_OUTPUT_SIZE` | `50 * 1024` bytes | Applies to stdout and stderr; child buffer is 2× this. Output beyond the cap is truncated with a marker. |
+| `defaultTimeoutMs` | `120000` ms (2 min) | `PROPIO_BASH_DEFAULT_TIMEOUT_MS` |
+| `maxTimeoutMs` | `600000` ms (10 min) | `PROPIO_BASH_MAX_TIMEOUT_MS` |
+| `toolOutputInlineLimit` | `50 KB` | `PROPIO_TOOL_OUTPUT_INLINE_LIMIT` |
+
+Outputs exceeding `toolOutputPersistThreshold` are persisted to a per-session artifacts directory by the agent layer; the tool result contains a structured preview + absolute path for re-reading via the `read` tool.
 
 ### Other tools
 
-| Constant | Value | Location |
+| Tool | Inline limit | Notes |
 | --- | --- | --- |
-| `READ_OUTPUT_LIMIT` | `50 KB` | `src/tools/read.ts:6` |
-| `GREP_OUTPUT_LIMIT` | `50 KB` | `src/tools/grep.ts:10` |
-| `DEFAULT_OUTPUT_LIMIT` | `50 KB` | `src/tools/shared.ts:4` — used by `truncateText()` |
+| `read` | `toolOutputInlineLimit` (50 KB default) | Supports line-based (`startLine`/`lineCount`) and byte-based (`offset`/`limit`) slicing for large files. `limit` is capped to `toolOutputInlineLimit`. |
+| `grep` | `toolOutputInlineLimit` (50 KB default) | — |
 
 ## Context / prompt building (`src/context/`)
 
-| Constant | Value | Location | Purpose |
+| Knob | Default | Override | Purpose |
 | --- | --- | --- | --- |
-| `SUMMARY_MAX_CHARS` | `1500` | `contextManager.ts:49` | Rolling-summary truncation. |
-| `REHYDRATION_MAX_CHARS` | `12000` | `contextManager.ts:50`, `promptBuilder.ts:42` | Cap on inlined tool artifacts pulled back into the prompt. |
-| `PromptBuilder.maxTurns` | computed | `promptBuilder.ts:118` | Turn-window limit; each retry level shrinks it further. |
-| `MAX_CONTENT_LENGTH` | `500` | `memoryManager.ts:23` | Per-entry size cap for pinned memory. |
+| `toolResultSummaryMaxChars` | `1500` | `PROPIO_TOOL_RESULT_SUMMARY_MAX_CHARS` | Per-tool-result summary text cap. |
+| `rehydrationMaxChars` | `12000` | `PROPIO_REHYDRATION_MAX_CHARS` | Cap on inlined tool artifact content pulled back into the prompt. Passed through `PromptBuildRequest` — no longer hardcoded in `promptBuilder.ts`. |
+| `maxRecentTurns` | `50` | `PROPIO_MAX_RECENT_TURNS` | Turn-window limit; each retry level shrinks it further. Wired into `buildPlan()`. |
+| `artifactInlineCharCap` | `12000` | `PROPIO_ARTIFACT_INLINE_CHAR_CAP` | Per-artifact inline size cap. Wired into `buildPlan()`. |
+| `rollingSummaryTargetTokens` | `2048` | `PROPIO_ROLLING_SUMMARY_TARGET_TOKENS` | Soft token cap for generated rolling summaries. |
+| `pinnedMemoryMaxContentLength` | `2000` | `PROPIO_PINNED_MEMORY_MAX_CONTENT_LENGTH` | Per-entry size cap for pinned memory. |
 
 ## MCP (`src/mcp/manager.ts`)
 
@@ -66,4 +75,4 @@ The most important set — these bound how long the model can spin within a sing
 
 ## Tuning notes
 
-If a real run is misbehaving, the dial that matters most is **`maxIterations`** (`agent.ts:1385`) — it is a local `const` rather than a constructor option or config flag, so changing it currently requires a code edit. The 50 KB output caps in `bash`/`read`/`grep` are the next most common tuning points. Everything else is mostly defensive.
+If a real run is misbehaving, the dial that matters most is **`maxIterations`** — raise it with `PROPIO_MAX_ITERATIONS=100` or `--max-iterations 100`. The tool output inline limit and persist threshold are the next most common tuning points (`PROPIO_TOOL_OUTPUT_INLINE_LIMIT`, `PROPIO_TOOL_OUTPUT_PERSIST_THRESHOLD`). All knobs listed above accept env-var overrides without a code edit.

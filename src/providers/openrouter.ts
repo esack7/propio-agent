@@ -596,8 +596,7 @@ export class OpenRouterProvider implements LLMProvider {
     return response;
   }
 
-  private isRetryableError(err: unknown, hasTools: boolean): boolean {
-    if (!hasTools) return false;
+  private isRetryableError(err: unknown): boolean {
     if (err instanceof ProviderAuthenticationError) return false;
     if (err instanceof ProviderModelNotFoundError) return false;
     if (err instanceof ProviderContextLengthError) return false;
@@ -607,14 +606,13 @@ export class OpenRouterProvider implements LLMProvider {
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       let dropTools = false;
-      const hasTools = Boolean(request.tools?.length);
 
       const response = await withRetry(
         () => this.fetchAndValidate(request, dropTools),
         {
           maxRetries: this.retryConfig?.maxRetries ?? 3,
           baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
-          isRetryable: (err) => this.isRetryableError(err, hasTools),
+          isRetryable: (err) => this.isRetryableError(err),
           is529: (err) => err instanceof ProviderCapacityError,
           consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
           onFinalRetry: () => {
