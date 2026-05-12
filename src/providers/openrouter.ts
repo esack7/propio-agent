@@ -102,6 +102,7 @@ export class OpenRouterProvider implements LLMProvider {
   private readonly retryConfig?: {
     maxRetries: number;
     consecutive529Limit: number;
+    baseDelayMs?: number;
   };
 
   private static readonly CONTEXT_WINDOWS: Record<string, number> = {
@@ -131,7 +132,7 @@ export class OpenRouterProvider implements LLMProvider {
     debugEchoUpstreamBody?: boolean;
     debugLoggingEnabled?: boolean;
     onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number };
+    retryConfig?: { maxRetries: number; consecutive529Limit: number; baseDelayMs?: number };
   }) {
     const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
@@ -595,7 +596,8 @@ export class OpenRouterProvider implements LLMProvider {
     return response;
   }
 
-  private isRetryableError(err: unknown): boolean {
+  private isRetryableError(err: unknown, hasTools: boolean): boolean {
+    if (!hasTools) return false;
     if (err instanceof ProviderAuthenticationError) return false;
     if (err instanceof ProviderModelNotFoundError) return false;
     if (err instanceof ProviderContextLengthError) return false;
@@ -605,12 +607,14 @@ export class OpenRouterProvider implements LLMProvider {
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       let dropTools = false;
+      const hasTools = Boolean(request.tools?.length);
 
       const response = await withRetry(
         () => this.fetchAndValidate(request, dropTools),
         {
           maxRetries: this.retryConfig?.maxRetries ?? 3,
-          isRetryable: (err) => this.isRetryableError(err),
+          baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
+          isRetryable: (err) => this.isRetryableError(err, hasTools),
           is529: (err) => err instanceof ProviderCapacityError,
           consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
           onFinalRetry: () => {

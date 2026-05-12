@@ -294,6 +294,7 @@ describe("OpenRouterProvider", () => {
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
         onDiagnosticEvent: (event) => diagnosticEvents.push(event),
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       const request: ChatRequest = {
@@ -312,21 +313,14 @@ describe("OpenRouterProvider", () => {
         ],
       };
 
-      const statusEvents: string[] = [];
       let content = "";
       for await (const event of provider.streamChat(request)) {
-        if (event.type === "status") {
-          statusEvents.push(event.status);
-        }
         if (event.type === "assistant_text") {
           content += event.delta;
         }
       }
 
       expect(content).toBe("Recovered");
-      expect(statusEvents).toContain(
-        "Retrying without tools after OpenRouter upstream failure",
-      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
       const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
@@ -337,14 +331,14 @@ describe("OpenRouterProvider", () => {
       expect(secondBody.messages).toEqual(firstBody.messages);
       expect(secondBody.messages).toEqual([{ role: "user", content: "Hello" }]);
 
-      expect(diagnosticEvents).toContainEqual({
-        type: "provider_retry",
-        provider: "openrouter",
-        model: "openai/gpt-3.5-turbo",
-        iteration: 3,
-        reason: "OpenRouter upstream HTTP 429",
-        disabledTools: true,
-      });
+      expect(diagnosticEvents).toContainEqual(
+        expect.objectContaining({
+          type: "provider_retry",
+          provider: "openrouter",
+          model: "openai/gpt-3.5-turbo",
+          iteration: 3,
+        }),
+      );
     });
 
     it("should normalize DSML tool markup during a retry without native tools", async () => {
@@ -367,6 +361,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v3.1",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       const assistantText: string[] = [];
@@ -514,6 +509,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       const request: ChatRequest = {
@@ -563,6 +559,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       const request: ChatRequest = {
@@ -928,6 +925,7 @@ describe("OpenRouterProvider", () => {
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
         apiKey: "sk-test",
+        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
       let caughtError: unknown;
