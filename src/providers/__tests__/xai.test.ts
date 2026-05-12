@@ -270,6 +270,7 @@ describe("XaiProvider", () => {
       const provider = new XaiProvider({
         model: "grok-4-1-fast-reasoning",
         apiKey: "xai-test",
+        retryConfig: { maxRetries: 0, consecutive529Limit: 1 },
       });
       await expect(async () => {
         for await (const chunk of provider.streamChat({

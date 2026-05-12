@@ -762,7 +762,7 @@ async function main(): Promise<number> {
     if (fs.existsSync(artifactsRoot)) {
       const index = readIndex(sessionsDir);
       const anchoredIds = new Set(
-        index?.map((e) => e.sessionId).filter(Boolean) ?? [],
+        index?.entries.map((e) => e.sessionId).filter(Boolean) ?? [],
       );
       const retentionMs =
         runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;
@@ -801,6 +801,15 @@ When you need to perform actions like reading files, searching code, or executin
 
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
+    const agentRuntimeConfig = loadRuntimeConfig({
+      cliOverrides: {
+        maxIterations: parsedArgs.flags.maxIterations,
+        maxRetries: parsedArgs.flags.maxRetries,
+        bashDefaultTimeoutMs: parsedArgs.flags.bashTimeoutMs,
+        streamIdleTimeoutMs: parsedArgs.flags.streamIdleTimeoutMs,
+      },
+    });
+
     agent = new agentModule.Agent({
       providersConfig,
       mcpConfig,
@@ -809,6 +818,7 @@ Always provide clear, concise responses and summarize what you did after complet
       agentsMdContent,
       diagnosticsEnabled,
       onDiagnosticEvent: diagnosticLogger.onEvent,
+      runtimeConfig: agentRuntimeConfig,
     });
     await agent.initialize();
 

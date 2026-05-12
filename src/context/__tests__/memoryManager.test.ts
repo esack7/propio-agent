@@ -57,14 +57,22 @@ describe("validatePinInput", () => {
     );
   });
 
-  it("rejects content longer than 500 chars", () => {
-    const content = "x".repeat(501);
+  it("rejects content longer than default limit (2000 chars)", () => {
+    const content = "x".repeat(2001);
     expect(() => validatePinInput(pinBase({ content }))).toThrow(
       MemoryValidationError,
     );
     expect(() =>
-      validatePinInput(pinBase({ content: "x".repeat(500) })),
+      validatePinInput(pinBase({ content: "x".repeat(2000) })),
     ).not.toThrow();
+  });
+
+  it("respects a custom maxContentLength when provided", () => {
+    const content = "x".repeat(501);
+    expect(() => validatePinInput(pinBase({ content }), 500)).toThrow(
+      MemoryValidationError,
+    );
+    expect(() => validatePinInput(pinBase({ content }), 2000)).not.toThrow();
   });
 
   it("rejects content with code fences", () => {
@@ -202,8 +210,11 @@ describe("validateUpdateInput", () => {
     );
   });
 
-  it("rejects oversized content", () => {
-    expect(() => validateUpdateInput({ content: "y".repeat(501) })).toThrow(
+  it("rejects oversized content (default limit 2000 chars)", () => {
+    expect(() => validateUpdateInput({ content: "y".repeat(2001) })).toThrow(
+      MemoryValidationError,
+    );
+    expect(() => validateUpdateInput({ content: "y".repeat(501) }, 500)).toThrow(
       MemoryValidationError,
     );
   });

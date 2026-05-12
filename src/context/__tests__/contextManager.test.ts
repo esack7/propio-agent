@@ -1776,9 +1776,22 @@ describe("ContextManager", () => {
       ).toThrow(MemoryValidationError);
     });
 
-    it("oversized content is rejected", () => {
+    it("oversized content is rejected (default limit 2000 chars)", () => {
       expect(() =>
         manager.pinFact({
+          kind: "fact",
+          content: "x".repeat(2001),
+          source: userSource,
+        }),
+      ).toThrow(MemoryValidationError);
+    });
+
+    it("oversized content is rejected with custom limit", () => {
+      const limitedManager = new ContextManager({
+        pinnedMemoryMaxContentLength: 500,
+      });
+      expect(() =>
+        limitedManager.pinFact({
           kind: "fact",
           content: "x".repeat(501),
           source: userSource,

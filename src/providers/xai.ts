@@ -12,6 +12,7 @@ import {
   ProviderCapacityError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
+import { withRetry } from "./withRetry.js";
 import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
@@ -179,12 +180,35 @@ export class XaiProvider implements LLMProvider {
     throw lastError ?? new ProviderError("xAI request failed");
   }
 
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof ProviderContextLengthError) return false;
+    if (err instanceof ProviderAuthenticationError) return false;
+    if (err instanceof ProviderModelNotFoundError) return false;
+    return err instanceof ProviderError;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const body = this.createChatCompletionRequestBody(request);
-      const response = await this.createChatCompletionResponse(
-        body,
-        request.signal,
+      const response = await withRetry(
+        () => this.createChatCompletionResponse(body, request.signal),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          isRetryable: (err) => this.isRetryableError(err),
+          is529: (err) => err instanceof ProviderCapacityError,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
       );
 
       const reader = this.getResponseReader(response);

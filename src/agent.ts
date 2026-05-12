@@ -195,6 +195,7 @@ export class Agent {
       homeDir?: string;
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+      runtimeConfig?: RuntimeConfig;
     } = {} as any,
   ) {
     if (!options.providersConfig) {
@@ -227,7 +228,7 @@ export class Agent {
     };
 
     this.sessionId = randomUUID();
-    this.runtimeConfig = loadRuntimeConfig();
+    this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
 
     const resolvedProvider = resolveProvider(config, options.providerName);
     const resolvedModelKey = resolveModelKey(
@@ -251,6 +252,7 @@ export class Agent {
     this.contextManager = new ContextManager({
       toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
       rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
+      pinnedMemoryMaxContentLength: this.runtimeConfig.pinnedMemoryMaxContentLength,
     });
     this.toolRegistry = createDefaultToolRegistry({
       runtimeConfig: this.runtimeConfig,
@@ -277,13 +279,7 @@ export class Agent {
     this.summaryPolicy = DEFAULT_SUMMARY_POLICY;
   }
 
-  getSessionId(): string {
-    return this.sessionId;
-  }
 
-  getRuntimeConfig(): RuntimeConfig {
-    return this.runtimeConfig;
-  }
 
   async initialize(): Promise<void> {
     await this.mcpManager.initialize();
@@ -462,7 +458,7 @@ export class Agent {
         }
       }
 
-      if (entry.kind === "tool" && entry.toolInvocations?.length > 0) {
+      if (entry.kind === "tool" && (entry.toolInvocations?.length ?? 0) > 0) {
         for (const invocation of entry.toolInvocations) {
           recentToolNames.push(invocation.toolName);
         }
@@ -470,8 +466,8 @@ export class Agent {
     }
 
     // Include current iteration's tool calls
-    if (currentToolCalls?.length > 0) {
-      for (const toolCall of currentToolCalls) {
+    if ((currentToolCalls?.length ?? 0) > 0) {
+      for (const toolCall of currentToolCalls!) {
         recentToolNames.push(toolCall.function.name);
       }
     }
@@ -1141,36 +1137,49 @@ export class Agent {
 
         return streamState.fullResponse;
       } catch (error) {
-        if (
-          error instanceof ProviderContextLengthError &&
-          retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
-        ) {
-          shrinkCount++;
-          if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-            throw error;
-          }
-          const shrunk = await this.attemptSynchronousShrink(plan);
-          if (shrunk) {
+        if (error instanceof ProviderContextLengthError) {
+          if (retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
+            shrinkCount++;
+            if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+              this.emitDiagnostic({
+                type: "context_pressure_circuit_breaker",
+                provider: this.provider.name,
+                model: this.model,
+                iteration,
+                retryLevel,
+              });
+              throw error;
+            }
+            const shrunk = await this.attemptSynchronousShrink(plan);
+            if (shrunk) {
+              this.emitDiagnostic({
+                type: "provider_error",
+                provider: this.provider.name,
+                model: this.model,
+                iteration,
+                errorName: "ProviderContextLengthError",
+                message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
+              });
+              continue;
+            }
+            retryLevel++;
             this.emitDiagnostic({
               type: "provider_error",
               provider: this.provider.name,
               model: this.model,
               iteration,
               errorName: "ProviderContextLengthError",
-              message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
+              message: `Context length exceeded, retrying at level ${retryLevel}`,
             });
             continue;
           }
-          retryLevel++;
           this.emitDiagnostic({
-            type: "provider_error",
+            type: "context_pressure_circuit_breaker",
             provider: this.provider.name,
             model: this.model,
             iteration,
-            errorName: "ProviderContextLengthError",
-            message: `Context length exceeded, retrying at level ${retryLevel}`,
+            retryLevel,
           });
-          continue;
         }
         throw error;
       }
@@ -1737,7 +1746,7 @@ export class Agent {
                 toolCalls = continuationResult.toolCalls;
                 reasoningContent = continuationResult.reasoningContent;
               }
-              currentStopReason = continuationResult.stopReason;
+              currentStopReason = continuationResult.stopReason ?? currentStopReason;
             }
 
             if (currentStopReason === "max_tokens") {
@@ -1751,38 +1760,51 @@ export class Agent {
             }
           }
         } catch (streamError) {
-          if (
-            streamError instanceof ProviderContextLengthError &&
-            contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL
-          ) {
-            synchronousShrinkCount++;
-            if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-              throw streamError;
-            }
-            const shrunk = await this.attemptSynchronousShrink(plan);
-            if (shrunk) {
+          if (streamError instanceof ProviderContextLengthError) {
+            if (contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
+              synchronousShrinkCount++;
+              if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+                this.emitDiagnostic({
+                  type: "context_pressure_circuit_breaker",
+                  provider: this.provider.name,
+                  model: this.model,
+                  iteration: iterationCount,
+                  retryLevel: contextRetryLevel,
+                });
+                throw streamError;
+              }
+              const shrunk = await this.attemptSynchronousShrink(plan);
+              if (shrunk) {
+                this.emitDiagnostic({
+                  type: "provider_error",
+                  provider: this.provider.name,
+                  model: this.model,
+                  iteration: iterationCount,
+                  errorName: "ProviderContextLengthError",
+                  message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+                });
+                iterationCount--;
+                continue;
+              }
+              contextRetryLevel++;
               this.emitDiagnostic({
                 type: "provider_error",
                 provider: this.provider.name,
                 model: this.model,
                 iteration: iterationCount,
                 errorName: "ProviderContextLengthError",
-                message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+                message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
               });
               iterationCount--;
               continue;
             }
-            contextRetryLevel++;
             this.emitDiagnostic({
-              type: "provider_error",
+              type: "context_pressure_circuit_breaker",
               provider: this.provider.name,
               model: this.model,
               iteration: iterationCount,
-              errorName: "ProviderContextLengthError",
-              message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
+              retryLevel: contextRetryLevel,
             });
-            iterationCount--;
-            continue;
           }
           throw streamError;
         }
@@ -1936,7 +1958,6 @@ export class Agent {
         type: "legacy_session_no_id",
         provider: this.provider.name,
         model: this.model,
-        iteration: 0,
       });
     }
 

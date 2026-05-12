@@ -233,26 +233,8 @@ function toMutableArtifactRecord(artifact: ArtifactRecord): MutableArtifact {
 // Summary generation
 // ---------------------------------------------------------------------------
 
-function generateTextSummary(text: string): string {
-  if (text.length <= SUMMARY_MAX_CHARS) {
-    return text;
-  }
-  const truncated = text.substring(0, SUMMARY_MAX_CHARS);
-  const omitted = text.length - SUMMARY_MAX_CHARS;
-  return `${truncated}\n\n[... ${omitted} more chars truncated]`;
-}
-
 function generateBinarySummary(byteLength: number, mediaType: string): string {
   return `[binary content: ${byteLength} bytes, ${mediaType}]`;
-}
-
-function capForRehydration(rawContent: string): string {
-  if (rawContent.length <= REHYDRATION_MAX_CHARS) {
-    return rawContent;
-  }
-  const truncated = rawContent.substring(0, REHYDRATION_MAX_CHARS);
-  const omitted = rawContent.length - REHYDRATION_MAX_CHARS;
-  return `${truncated}\n\n[output truncated: ${omitted} chars omitted]`;
 }
 
 function resolveMediaType(result: ArtifactToolResult): string {
@@ -307,16 +289,20 @@ export class ContextManager {
   private invokedSkills: InvokedSkillRecord[] = [];
   private summaryMaxChars: number;
   private rehydrationMaxChars: number;
+  private pinnedMemoryMaxContentLength: number;
   private compactionFailureCount = 0;
 
   constructor(config?: {
     toolResultSummaryMaxChars?: number;
     rehydrationMaxChars?: number;
+    pinnedMemoryMaxContentLength?: number;
   }) {
     this.summaryMaxChars =
       config?.toolResultSummaryMaxChars ?? DEFAULT_SUMMARY_MAX_CHARS;
     this.rehydrationMaxChars =
       config?.rehydrationMaxChars ?? DEFAULT_REHYDRATION_MAX_CHARS;
+    this.pinnedMemoryMaxContentLength =
+      config?.pinnedMemoryMaxContentLength ?? 2000;
   }
 
   incrementCompactionFailures(): void {
@@ -646,7 +632,7 @@ export class ContextManager {
    * Returns the newly created record's ID.
    */
   pinFact(input: PinFactInput): string {
-    validatePinInput(input);
+    validatePinInput(input, this.pinnedMemoryMaxContentLength);
 
     if (
       isDuplicateActive(
@@ -701,7 +687,7 @@ export class ContextManager {
    * record's ID.
    */
   updateMemory(id: string, input: UpdateMemoryInput): string {
-    validateUpdateInput(input);
+    validateUpdateInput(input, this.pinnedMemoryMaxContentLength);
 
     const idx = this.pinnedMemory.findIndex((r) => r.id === id);
     if (idx === -1) {

@@ -13,6 +13,7 @@ import {
   ProviderCapacityError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
+import { withRetry } from "./withRetry.js";
 
 /**
  * Ollama implementation of LLMProvider
@@ -73,6 +74,12 @@ export class OllamaProvider implements LLMProvider {
     return configuredHost;
   }
 
+  private isRetryableError(err: unknown): boolean {
+    if (err instanceof ProviderContextLengthError) return false;
+    if (err instanceof ProviderModelNotFoundError) return false;
+    return err instanceof ProviderError;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       if (request.signal?.aborted) {
@@ -88,12 +95,32 @@ export class OllamaProvider implements LLMProvider {
         this.chatToolToOllamaTool(tool),
       );
 
-      const response = await this.ollama.chat({
-        model: request.model || this.model,
-        messages,
-        stream: true,
-        ...(tools && { tools }),
-      });
+      const response = await withRetry(
+        () =>
+          this.ollama.chat({
+            model: request.model || this.model,
+            messages,
+            stream: true,
+            ...(tools && { tools }),
+          }),
+        {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          isRetryable: (err) => this.isRetryableError(err),
+          is529: (err) => err instanceof ProviderCapacityError,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          onRetry: (ctx) =>
+            this.onDiagnosticEvent?.({
+              type: "provider_retry",
+              provider: this.name,
+              model: request.model || this.model,
+              iteration: request.iteration ?? 0,
+              reason:
+                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+              attemptNumber: ctx.attempt + 1,
+              delayMs: ctx.delayMs,
+            }),
+        },
+      );
 
       let lastToolCalls: ChatToolCall[] | undefined;
       let stopReason: any = "end_turn";

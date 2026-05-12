@@ -20,7 +20,7 @@ const VALID_ORIGINS = new Set<MemoryOrigin>([
   "tool",
   "application",
 ]);
-const MAX_CONTENT_LENGTH = 500;
+const DEFAULT_MAX_CONTENT_LENGTH = 2000;
 const CODE_FENCE_PATTERN = /```/;
 const MULTILINE_THRESHOLD = 5;
 
@@ -31,7 +31,10 @@ export class MemoryValidationError extends Error {
   }
 }
 
-export function validatePinInput(input: PinFactInput): void {
+export function validatePinInput(
+  input: PinFactInput,
+  maxContentLength = DEFAULT_MAX_CONTENT_LENGTH,
+): void {
   if (!VALID_KINDS.has(input.kind)) {
     throw new MemoryValidationError(
       `Invalid memory kind "${input.kind}"; must be one of: fact, constraint, decision`,
@@ -54,9 +57,9 @@ export function validatePinInput(input: PinFactInput): void {
     throw new MemoryValidationError("Memory content must not be empty");
   }
 
-  if (input.content.length > MAX_CONTENT_LENGTH) {
+  if (input.content.length > maxContentLength) {
     throw new MemoryValidationError(
-      `Memory content exceeds ${MAX_CONTENT_LENGTH} chars (got ${input.content.length}); pin concise facts, not raw dumps`,
+      `Memory content exceeds ${maxContentLength} chars (got ${input.content.length}); pin concise facts, not raw dumps`,
     );
   }
 
@@ -99,7 +102,10 @@ function validateSource(source: unknown, label: string): void {
   }
 }
 
-export function validateUpdateInput(input: UpdateMemoryInput): void {
+export function validateUpdateInput(
+  input: UpdateMemoryInput,
+  maxContentLength = DEFAULT_MAX_CONTENT_LENGTH,
+): void {
   if (input.rationale !== undefined && typeof input.rationale !== "string") {
     throw new MemoryValidationError("rationale must be a string if provided");
   }
@@ -107,9 +113,9 @@ export function validateUpdateInput(input: UpdateMemoryInput): void {
     if (input.content.trim().length === 0) {
       throw new MemoryValidationError("Updated content must not be empty");
     }
-    if (input.content.length > MAX_CONTENT_LENGTH) {
+    if (input.content.length > maxContentLength) {
       throw new MemoryValidationError(
-        `Updated content exceeds ${MAX_CONTENT_LENGTH} chars (got ${input.content.length})`,
+        `Updated content exceeds ${maxContentLength} chars (got ${input.content.length})`,
       );
     }
     if (CODE_FENCE_PATTERN.test(input.content)) {
