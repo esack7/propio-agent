@@ -144,9 +144,14 @@ export class TerminalUi {
     }
 
     if (this.plain || !this.writer.getStderrStream().isTTY) {
-      return new PassthroughStreamer((token) => {
-        this.writeAssistant(token);
-      });
+      return new PassthroughStreamer(
+        (token) => {
+          this.writeAssistant(token);
+        },
+        () => {
+          this.newline();
+        },
+      );
     }
 
     return new MarkdownStreamer(this.writer.getStderrStream());
