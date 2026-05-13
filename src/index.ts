@@ -797,7 +797,6 @@ async function main(): Promise<number> {
         ),
       ]);
 
-
     const agentRuntimeConfig = loadRuntimeConfig({
       cliOverrides: {
         maxIterations: parsedArgs.flags.maxIterations,

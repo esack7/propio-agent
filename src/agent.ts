@@ -149,7 +149,9 @@ export interface PromptPlanSnapshot {
   readonly plan: PromptPlan;
 }
 
-function stableArgsKey(args: Record<string, unknown> | null | undefined): string {
+function stableArgsKey(
+  args: Record<string, unknown> | null | undefined,
+): string {
   if (!args || typeof args !== "object") return "";
   return Object.keys(args)
     .sort()
@@ -260,7 +262,8 @@ export class Agent {
     this.contextManager = new ContextManager({
       toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
       rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
-      pinnedMemoryMaxContentLength: this.runtimeConfig.pinnedMemoryMaxContentLength,
+      pinnedMemoryMaxContentLength:
+        this.runtimeConfig.pinnedMemoryMaxContentLength,
     });
     this.toolRegistry = createDefaultToolRegistry({
       runtimeConfig: this.runtimeConfig,
@@ -289,8 +292,6 @@ export class Agent {
       summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
     };
   }
-
-
 
   async initialize(): Promise<void> {
     await this.mcpManager.initialize();
@@ -1460,6 +1461,36 @@ export class Agent {
     return artifactToolResult;
   }
 
+  private async finalizeWithNoToolsResponse(
+    onToken: (token: string) => void,
+    options: AgentStreamOptions | undefined,
+    iterationCount: number,
+    emptyToolOnlyStreak: number,
+    emptyResponseErrorMessage: string,
+  ): Promise<{
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+  }> {
+    this.contextManager.removeLastUnresolvedAssistantMessage();
+
+    const finalResponse = await this.requestFinalResponseWithoutTools(
+      onToken,
+      options?.abortSignal,
+      iterationCount + 1,
+      options,
+    );
+    if (finalResponse.trim().length === 0) {
+      throw new Error(emptyResponseErrorMessage);
+    }
+
+    return {
+      finalResponse,
+      continueLoop: false,
+      emptyToolOnlyStreak,
+    };
+  }
+
   private async handleChatTurnResponse(
     fullResponse: string,
     toolCalls: ChatToolCall[] | undefined,
@@ -1539,25 +1570,13 @@ export class Agent {
             lookbackIterations: 5,
           });
 
-          this.contextManager.removeLastUnresolvedAssistantMessage();
-
-          const finalResponse = await this.requestFinalResponseWithoutTools(
+          return this.finalizeWithNoToolsResponse(
             onToken,
-            options?.abortSignal,
-            iterationCount + 1,
             options,
+            iterationCount,
+            nextEmptyToolOnlyStreak,
+            "Stopped after no-progress detection with no final assistant response.",
           );
-          if (finalResponse.trim().length === 0) {
-            throw new Error(
-              "Stopped after no-progress detection with no final assistant response.",
-            );
-          }
-
-          return {
-            finalResponse,
-            continueLoop: false,
-            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-          };
         }
       } else {
         // Fallback to empty tool-only streak when detector is disabled (deprecated)
@@ -1572,25 +1591,13 @@ export class Agent {
             action: "fallback_no_tools",
           });
 
-          this.contextManager.removeLastUnresolvedAssistantMessage();
-
-          const finalResponse = await this.requestFinalResponseWithoutTools(
+          return this.finalizeWithNoToolsResponse(
             onToken,
-            options?.abortSignal,
-            iterationCount + 1,
             options,
+            iterationCount,
+            nextEmptyToolOnlyStreak,
+            "Stopped after repeated empty tool-calling turns with no final assistant response.",
           );
-          if (finalResponse.trim().length === 0) {
-            throw new Error(
-              "Stopped after repeated empty tool-calling turns with no final assistant response.",
-            );
-          }
-
-          return {
-            finalResponse,
-            continueLoop: false,
-            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-          };
         }
       }
 
@@ -1750,7 +1757,8 @@ export class Agent {
                 toolCalls = continuationResult.toolCalls;
                 reasoningContent = continuationResult.reasoningContent;
               }
-              currentStopReason = continuationResult.stopReason ?? currentStopReason;
+              currentStopReason =
+                continuationResult.stopReason ?? currentStopReason;
             }
 
             if (currentStopReason === "max_tokens") {

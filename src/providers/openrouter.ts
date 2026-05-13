@@ -132,7 +132,11 @@ export class OpenRouterProvider implements LLMProvider {
     debugEchoUpstreamBody?: boolean;
     debugLoggingEnabled?: boolean;
     onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number; baseDelayMs?: number };
+    retryConfig?: {
+      maxRetries: number;
+      consecutive529Limit: number;
+      baseDelayMs?: number;
+    };
   }) {
     const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
