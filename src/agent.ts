@@ -1471,6 +1471,7 @@ export class Agent {
     finalResponse: string;
     continueLoop: boolean;
     emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
   }> {
     this.contextManager.removeLastUnresolvedAssistantMessage();
 
@@ -1488,6 +1489,7 @@ export class Agent {
       finalResponse,
       continueLoop: false,
       emptyToolOnlyStreak,
+      hasFinalAssistantResponse: true,
     };
   }
 
@@ -1505,6 +1507,7 @@ export class Agent {
     finalResponse: string;
     continueLoop: boolean;
     emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
   }> {
     const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
       ...toolCall,
@@ -1617,6 +1620,7 @@ export class Agent {
         finalResponse: fullResponse,
         continueLoop: true,
         emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+        hasFinalAssistantResponse: false,
       };
     }
 
@@ -1625,6 +1629,7 @@ export class Agent {
       finalResponse: fullResponse,
       continueLoop: false,
       emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      hasFinalAssistantResponse: true,
     };
   }
 
@@ -1673,6 +1678,7 @@ export class Agent {
 
       let finalResponse = "";
       let continueLoop = true;
+      let hasFinalAssistantResponse = false;
       const maxIterations =
         options?.maxIterations ?? this.runtimeConfig.maxIterations;
       let emptyToolOnlyStreak = 0;
@@ -1836,18 +1842,37 @@ export class Agent {
         finalResponse = turnResult.finalResponse;
         continueLoop = turnResult.continueLoop;
         emptyToolOnlyStreak = turnResult.emptyToolOnlyStreak;
+        hasFinalAssistantResponse = turnResult.hasFinalAssistantResponse;
       }
 
       if (continueLoop && iterationCount >= maxIterations) {
+        const failedTools = Array.from(
+          new Set(
+            toolExecutionEvents
+              .filter((event) => event.failed)
+              .map((event) => event.name),
+          ),
+        );
+        const failedToolCount = toolExecutionEvents.filter(
+          (event) => event.failed,
+        ).length;
         this.emitDiagnostic({
           type: "max_iterations_reached",
           provider: this.provider.name,
           model: this.model,
           maxIterations,
+          iterationsCompleted: iterationCount,
+          pendingToolCalls: toolCalls?.length ?? 0,
+          failedToolCount,
+          failedTools,
         });
-        if (finalResponse.trim().length === 0) {
+        if (!hasFinalAssistantResponse || finalResponse.trim().length === 0) {
+          const failedToolsSuffix =
+            failedTools.length > 0
+              ? ` Failed tools: ${failedTools.join(", ")}.`
+              : "";
           throw new Error(
-            "Stopped after reaching max iterations without a final assistant response.",
+            `Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.${failedToolsSuffix}`,
           );
         }
       }

@@ -257,6 +257,14 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "turn_complete", durationMs });
   }
 
+  turnFailed(durationMs: number): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "turn_failed", durationMs });
+  }
+
   info(text: string): void {
     if (this.json) {
       return;
@@ -463,6 +471,9 @@ export class TerminalUi {
         break;
       case "turn_complete":
         this.transcript.turnComplete(entry.durationMs);
+        break;
+      case "turn_failed":
+        this.transcript.turnFailed(entry.durationMs);
         break;
       case "json":
         this.transcript.writeJson(entry.value);

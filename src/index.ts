@@ -172,20 +172,29 @@ async function readStdinInput(): Promise<string> {
   });
 }
 
-async function runNonInteractiveSession(
+export interface NonInteractiveSessionDeps {
+  readonly stdinIsTTY?: boolean;
+  readonly readInput?: () => Promise<string>;
+}
+
+export async function runNonInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,
   setCurrentAbortController: (controller: AbortController | null) => void,
   visibility: VisibilityOptions,
+  deps: NonInteractiveSessionDeps = {},
 ): Promise<number> {
-  if (process.stdin.isTTY) {
+  const stdinIsTTY = deps.stdinIsTTY ?? process.stdin.isTTY;
+  const readInput = deps.readInput ?? readStdinInput;
+
+  if (stdinIsTTY) {
     ui.error(
       "Non-interactive mode requires stdin input. Pipe a prompt or run without --no-interactive.",
     );
     return 1;
   }
 
-  const stdinInput = (await readStdinInput()).trim();
+  const stdinInput = (await readInput()).trim();
   if (!stdinInput) {
     ui.error("No input provided on stdin.");
     return 1;
@@ -313,7 +322,7 @@ async function runInteractiveTurn(
       `${options.errorPrefix}${error instanceof Error ? error.message : "Unknown error"}`,
     );
     ui.command("");
-    ui.turnComplete(Date.now() - turnStartedAtMs);
+    ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
     setCurrentAbortController(null);
   }
