@@ -328,6 +328,10 @@ describe("createPromptComposer", () => {
     });
 
     await flush();
+    expect(renderFooter).not.toHaveBeenCalled();
+    expect(stripAnsiControls(harness.takeOutput())).toContain(
+      "Enter to send | ? help | Ctrl+O tools: shown\nName? ",
+    );
 
     harness.inputStream.emit("keypress", "\u000f", {
       name: "o",
@@ -336,8 +340,12 @@ describe("createPromptComposer", () => {
       shift: false,
     });
 
-    expect(renderFooter).toHaveBeenLastCalledWith(
-      "Enter to send | ? help | Ctrl+O tools: hidden",
+    const toggleOutput = stripAnsiControls(harness.takeOutput());
+    expect(toggleOutput).toContain(
+      "Enter to send | ? help | Ctrl+O tools: hidden\nName? ",
+    );
+    expect(toggleOutput).not.toContain(
+      "Enter to send | ? help | Ctrl+O tools: shown",
     );
     expect(renderState).toHaveBeenLastCalledWith(
       expect.objectContaining({

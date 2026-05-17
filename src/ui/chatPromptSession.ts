@@ -21,10 +21,12 @@ import {
 } from "./typeahead.js";
 import { openPromptEditor, type PromptEditorRunner } from "./promptEditor.js";
 import { watchTerminalResize } from "./terminalWriter.js";
+import { formatSubtle } from "./formatting.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
   cursor: number;
+  footer: string | null;
   historySearch?: ReturnType<typeof getHistorySearchSummary>;
   typeahead?: TypeaheadSummary;
   multiline?: boolean;
@@ -35,7 +37,7 @@ export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
   submit(text: string): void;
   interrupt(): void;
-  toggleToolCalls?: () => void;
+  toggleToolCalls?: () => string | null | undefined;
   close(): void;
 }
 
@@ -360,6 +362,7 @@ function buildPromptLayout(
   promptText: string,
   buffer: string,
   cursor: number,
+  footer: string | undefined,
   statusLine: string | null,
   outputStream: NodeJS.WriteStream,
 ): PromptLayout {
@@ -369,8 +372,9 @@ function buildPromptLayout(
     : Number.POSITIVE_INFINITY;
   const indent = " ".repeat(promptWidth);
   const logicalLines = buffer.split("\n");
-  const lines: string[] = [];
-  let cursorRow = 0;
+  const lines: string[] = footer ? [formatSubtle(footer)] : [];
+  const footerRows = lines.length;
+  let cursorRow = footerRows;
   let cursorCol = promptWidth;
   let consumedCharacters = 0;
   let renderedRows = 0;
@@ -409,7 +413,7 @@ function buildPromptLayout(
       const columnInSegment = getDisplayWidth(
         line.slice(segment.start, lineCursorOffset),
       );
-      cursorRow = renderedRows + segmentIndex;
+      cursorRow = footerRows + renderedRows + segmentIndex;
       cursorCol = promptWidth + columnInSegment;
     }
 
@@ -425,7 +429,7 @@ function buildPromptLayout(
     lines,
     cursorRow,
     cursorCol,
-    totalRows: renderedRows + (statusLine ? 1 : 0),
+    totalRows: footerRows + renderedRows + (statusLine ? 1 : 0),
   };
 }
 
@@ -434,6 +438,7 @@ function renderPromptFrame(
   promptText: string,
   buffer: string,
   cursor: number,
+  footer: string | undefined,
   searchState: HistorySearchState | null,
   typeaheadState: TypeaheadState | null,
   editorStatus: string | undefined,
@@ -456,10 +461,10 @@ function renderPromptFrame(
     );
 
     return {
-      lines: [line],
-      cursorRow: 0,
+      lines: footer ? [formatSubtle(footer), line] : [line],
+      cursorRow: footer ? 1 : 0,
       cursorCol: cursorPosition,
-      totalRows: 1,
+      totalRows: footer ? 2 : 1,
     };
   }
 
@@ -473,6 +478,7 @@ function renderPromptFrame(
     promptText,
     buffer,
     cursor,
+    footer,
     statusLine,
     outputStream,
   );
@@ -522,6 +528,7 @@ export function createChatPromptSession(
   let rawModeEnabled = false;
   let active = true;
   let lastLayout: PromptLayout | null = null;
+  let activeFooter = request.footer;
 
   const render = (): void => {
     const layout = renderPromptFrame(
@@ -529,6 +536,7 @@ export function createChatPromptSession(
       request.promptText,
       buffer,
       cursor,
+      activeFooter,
       searchState,
       typeaheadState,
       editorStatus,
@@ -537,6 +545,7 @@ export function createChatPromptSession(
     callbacks.render({
       buffer,
       cursor,
+      footer: activeFooter ?? null,
       historySearch: searchState
         ? getHistorySearchSummary(searchState)
         : undefined,
@@ -1176,7 +1185,11 @@ export function createChatPromptSession(
     }
 
     if (key.name === "o" && key.ctrl) {
-      callbacks.toggleToolCalls?.();
+      const nextFooter = callbacks.toggleToolCalls?.();
+      if (nextFooter !== undefined) {
+        activeFooter = nextFooter ?? undefined;
+        render();
+      }
       return;
     }
 

@@ -179,6 +179,7 @@ export function createPromptComposer(
       ...currentState,
       buffer: state.buffer,
       cursor: state.cursor,
+      footer: state.footer ?? undefined,
       historySearch: state.historySearch
         ? { ...state.historySearch }
         : undefined,
@@ -193,19 +194,6 @@ export function createPromptComposer(
     };
 
     options.renderState?.(clonePromptState(currentState));
-  };
-
-  const updateActiveFooter = (footer: string): void => {
-    if (!currentState) {
-      return;
-    }
-
-    currentState = {
-      ...currentState,
-      footer,
-    };
-    options.renderState?.(clonePromptState(currentState));
-    options.renderFooter?.(footer);
   };
 
   const settlePending = (result: PromptResult): void => {
@@ -280,7 +268,7 @@ export function createPromptComposer(
       isCustomChat: request.mode === "chat" && useCustomChatPrompt,
     };
 
-    if (request.footer && options.renderFooter) {
+    if (request.footer && options.renderFooter && !activePrompt.isCustomChat) {
       options.renderFooter(request.footer);
     }
 
@@ -309,10 +297,7 @@ export function createPromptComposer(
               process.kill(process.pid, "SIGINT");
             },
             toggleToolCalls: () => {
-              const footer = options.onToggleToolCalls?.();
-              if (footer) {
-                updateActiveFooter(footer);
-              }
+              return options.onToggleToolCalls?.();
             },
             close,
           },
