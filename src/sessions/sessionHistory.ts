@@ -339,7 +339,11 @@ function parseSnapshotObject(parsed: unknown): {
   }
 
   const snapshot = parsed;
-  if (snapshot.version !== 1 && snapshot.version !== 2) {
+  if (
+    snapshot.version !== 1 &&
+    snapshot.version !== 2 &&
+    snapshot.version !== 3
+  ) {
     return null;
   }
 
