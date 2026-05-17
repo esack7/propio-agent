@@ -110,6 +110,10 @@ export type AgentDiagnosticEvent =
       provider: string;
       model: string;
       maxIterations: number;
+      iterationsCompleted?: number;
+      pendingToolCalls?: number;
+      failedToolCount?: number;
+      failedTools?: string[];
     }
   | {
       type: "tool_loop_detected";

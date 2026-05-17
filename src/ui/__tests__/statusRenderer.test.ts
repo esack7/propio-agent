@@ -1,42 +1,27 @@
-import { StatusRenderer } from "../statusRenderer.js";
+import { StatusRenderer, type SpinnerFactory } from "../statusRenderer.js";
+import { createMockSpinner, createMockStream } from "./testUtils.js";
 
-function createMockStream(
-  isTTY = true,
-): NodeJS.WriteStream & { chunks: string[] } {
-  const chunks: string[] = [];
-
-  return {
-    chunks,
-    columns: 80,
-    isTTY,
-    write: (chunk: string | Uint8Array) => {
-      chunks.push(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
-      return true;
-    },
-  } as unknown as NodeJS.WriteStream & { chunks: string[] };
+function createRenderer(
+  stream: NodeJS.WriteStream,
+  createSpinner: SpinnerFactory,
+  fallbackInfo: (text: string) => void = jest.fn(),
+): StatusRenderer {
+  return new StatusRenderer({
+    stream,
+    style: (text) => text,
+    interactive: true,
+    plain: false,
+    json: false,
+    fallbackInfo,
+    createSpinner,
+  });
 }
 
 describe("StatusRenderer", () => {
   it("creates and updates a spinner for active status output", () => {
     const stream = createMockStream();
-    const spinner = {
-      start: jest.fn(),
-      setPhase: jest.fn(),
-      setText: jest.fn(),
-      succeed: jest.fn(),
-      fail: jest.fn(),
-      stop: jest.fn(),
-    };
-    const createSpinner = jest.fn(() => spinner);
-    const renderer = new StatusRenderer({
-      stream,
-      style: (text) => text,
-      interactive: true,
-      plain: false,
-      json: false,
-      fallbackInfo: jest.fn(),
-      createSpinner,
-    });
+    const { spinner, createSpinner } = createMockSpinner();
+    const renderer = createRenderer(stream, createSpinner);
 
     renderer.status("Working", "tool call");
     renderer.status("Still working");
@@ -55,24 +40,8 @@ describe("StatusRenderer", () => {
 
   it("formats progress and clears active spinners on completion", () => {
     const stream = createMockStream();
-    const spinner = {
-      start: jest.fn(),
-      setPhase: jest.fn(),
-      setText: jest.fn(),
-      succeed: jest.fn(),
-      fail: jest.fn(),
-      stop: jest.fn(),
-    };
-    const createSpinner = jest.fn(() => spinner);
-    const renderer = new StatusRenderer({
-      stream,
-      style: (text) => text,
-      interactive: true,
-      plain: false,
-      json: false,
-      fallbackInfo: jest.fn(),
-      createSpinner,
-    });
+    const { spinner, createSpinner } = createMockSpinner();
+    const renderer = createRenderer(stream, createSpinner);
 
     renderer.progress(2, 4, "Downloading");
     renderer.succeed("Done");
@@ -84,24 +53,8 @@ describe("StatusRenderer", () => {
 
   it("fails an active spinner without duplicating the failure symbol", () => {
     const stream = createMockStream();
-    const spinner = {
-      start: jest.fn(),
-      setPhase: jest.fn(),
-      setText: jest.fn(),
-      succeed: jest.fn(),
-      fail: jest.fn(),
-      stop: jest.fn(),
-    };
-    const createSpinner = jest.fn(() => spinner);
-    const renderer = new StatusRenderer({
-      stream,
-      style: (text) => text,
-      interactive: true,
-      plain: false,
-      json: false,
-      fallbackInfo: jest.fn(),
-      createSpinner,
-    });
+    const { spinner, createSpinner } = createMockSpinner();
+    const renderer = createRenderer(stream, createSpinner);
 
     renderer.status("Working");
     renderer.fail("Failed");
@@ -115,15 +68,7 @@ describe("StatusRenderer", () => {
     const stream = createMockStream(false);
     const fallbackInfo = jest.fn();
     const createSpinner = jest.fn();
-    const renderer = new StatusRenderer({
-      stream,
-      style: (text) => text,
-      interactive: true,
-      plain: false,
-      json: false,
-      fallbackInfo,
-      createSpinner,
-    });
+    const renderer = createRenderer(stream, createSpinner, fallbackInfo);
 
     renderer.progress(1, 2, "Downloading");
 

@@ -214,9 +214,9 @@ describe("validateUpdateInput", () => {
     expect(() => validateUpdateInput({ content: "y".repeat(2001) })).toThrow(
       MemoryValidationError,
     );
-    expect(() => validateUpdateInput({ content: "y".repeat(501) }, 500)).toThrow(
-      MemoryValidationError,
-    );
+    expect(() =>
+      validateUpdateInput({ content: "y".repeat(501) }, 500),
+    ).toThrow(MemoryValidationError);
   });
 
   it("rejects code fences in content", () => {

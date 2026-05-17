@@ -144,9 +144,14 @@ export class TerminalUi {
     }
 
     if (this.plain || !this.writer.getStderrStream().isTTY) {
-      return new PassthroughStreamer((token) => {
-        this.writeAssistant(token);
-      });
+      return new PassthroughStreamer(
+        (token) => {
+          this.writeAssistant(token);
+        },
+        () => {
+          this.newline();
+        },
+      );
     }
 
     return new MarkdownStreamer(this.writer.getStderrStream());
@@ -250,6 +255,14 @@ export class TerminalUi {
     }
 
     this.appendTranscriptEntry({ kind: "turn_complete", durationMs });
+  }
+
+  turnFailed(durationMs: number): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "turn_failed", durationMs });
   }
 
   info(text: string): void {
@@ -458,6 +471,9 @@ export class TerminalUi {
         break;
       case "turn_complete":
         this.transcript.turnComplete(entry.durationMs);
+        break;
+      case "turn_failed":
+        this.transcript.turnFailed(entry.durationMs);
         break;
       case "json":
         this.transcript.writeJson(entry.value);

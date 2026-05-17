@@ -426,6 +426,12 @@ export class MarkdownStreamer implements Streamer {
   flush(): void {
     this.cancelThrottle();
     this.renderFinal();
+    if (
+      this.committedOutput.length > 0 &&
+      !this.committedOutput.endsWith("\n")
+    ) {
+      this.stderr.write("\n");
+    }
     this.buffer = "";
     this.committedOutput = "";
   }
@@ -604,20 +610,27 @@ export class MarkdownStreamer implements Streamer {
  * Used for plain-text modes.
  */
 export class PassthroughStreamer implements Streamer {
-  private readonly writeCallback: (token: string) => void;
+  private lastPushedChar = "";
 
-  constructor(writeCallback: (token: string) => void) {
-    this.writeCallback = writeCallback;
-  }
+  constructor(
+    private readonly writeCallback: (token: string) => void,
+    private readonly newlineCallback?: () => void,
+  ) {}
 
   // fallow-ignore-next-line unused-class-member
   push(token: string): void {
-    this.writeCallback(token);
+    if (token.length > 0) {
+      this.lastPushedChar = token[token.length - 1];
+      this.writeCallback(token);
+    }
   }
 
   // fallow-ignore-next-line unused-class-member
   flush(): void {
-    // No-op
+    if (this.lastPushedChar && this.lastPushedChar !== "\n") {
+      this.newlineCallback?.();
+      this.lastPushedChar = "\n";
+    }
   }
 
   // fallow-ignore-next-line unused-class-member

@@ -25,6 +25,7 @@ export type TranscriptEntry =
       source: "agent" | "provider";
     }
   | { kind: "turn_complete"; durationMs: number }
+  | { kind: "turn_failed"; durationMs: number }
   | { kind: "json"; value: unknown };
 
 export type EphemeralStatus =

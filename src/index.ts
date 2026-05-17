@@ -14,6 +14,7 @@ import {
   discoverAgentsMdFilesAsync,
   loadAgentsMdContentAsync,
 } from "./agentsMd.js";
+import { defaultSystemPrompt } from "./defaultSystemPrompt.js";
 import { setColorEnabled } from "./ui/textColors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { showModelMenu } from "./ui/modelMenu.js";
@@ -33,6 +34,7 @@ import {
   isHelpCommand,
   getIdleFooterText,
 } from "./ui/slashCommands.js";
+import { createToolCallVisibilityState } from "./ui/toolCallVisibility.js";
 import {
   createDefaultTypeaheadProviders,
   createSkillCommandTypeaheadProvider,
@@ -171,20 +173,29 @@ async function readStdinInput(): Promise<string> {
   });
 }
 
-async function runNonInteractiveSession(
+export interface NonInteractiveSessionDeps {
+  readonly stdinIsTTY?: boolean;
+  readonly readInput?: () => Promise<string>;
+}
+
+export async function runNonInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,
   setCurrentAbortController: (controller: AbortController | null) => void,
   visibility: VisibilityOptions,
+  deps: NonInteractiveSessionDeps = {},
 ): Promise<number> {
-  if (process.stdin.isTTY) {
+  const stdinIsTTY = deps.stdinIsTTY ?? process.stdin.isTTY;
+  const readInput = deps.readInput ?? readStdinInput;
+
+  if (stdinIsTTY) {
     ui.error(
       "Non-interactive mode requires stdin input. Pipe a prompt or run without --no-interactive.",
     );
     return 1;
   }
 
-  const stdinInput = (await readStdinInput()).trim();
+  const stdinInput = (await readInput()).trim();
   if (!stdinInput) {
     ui.error("No input provided on stdin.");
     return 1;
@@ -270,7 +281,7 @@ interface InteractiveSubmissionContext {
   configPath: string;
   setCurrentAbortController: (controller: AbortController | null) => void;
   shouldExit: () => boolean;
-  visibility: VisibilityOptions;
+  getVisibility: () => VisibilityOptions;
 }
 
 async function runInteractiveTurn(
@@ -281,7 +292,8 @@ async function runInteractiveTurn(
     errorPrefix: string;
   },
 ): Promise<number | null> {
-  const { agent, ui, setCurrentAbortController, visibility } = context;
+  const { agent, ui, setCurrentAbortController } = context;
+  const visibility = context.getVisibility();
   const abortController = new AbortController();
   const turnStartedAtMs = Date.now();
   setCurrentAbortController(abortController);
@@ -312,7 +324,7 @@ async function runInteractiveTurn(
       `${options.errorPrefix}${error instanceof Error ? error.message : "Unknown error"}`,
     );
     ui.command("");
-    ui.turnComplete(Date.now() - turnStartedAtMs);
+    ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
     setCurrentAbortController(null);
   }
@@ -568,6 +580,7 @@ async function runInteractiveSession(
   shouldExit: () => boolean,
   visibility: VisibilityOptions,
 ): Promise<number> {
+  const visibilityState = createToolCallVisibilityState(visibility);
   const typeaheadProviders = [
     ...createDefaultTypeaheadProviders(process.cwd()),
     createSkillCommandTypeaheadProvider(() => agent.listUserInvocableSkills()),
@@ -579,6 +592,10 @@ async function runInteractiveSession(
     typeaheadProviders,
     renderFooter: (footer) => {
       ui.idleFooter(footer);
+    },
+    onToggleToolCalls: () => {
+      const snapshot = visibilityState.toggleToolCalls();
+      return getIdleFooterText(snapshot.showToolCalls);
     },
     renderState: (state) => {
       ui.setPromptState(state);
@@ -602,7 +619,7 @@ async function runInteractiveSession(
       const nextInput = await composer.compose({
         mode: "chat",
         promptText: ui.chatPrompt(),
-        footer: getIdleFooterText(),
+        footer: getIdleFooterText(visibilityState.getSnapshot().showToolCalls),
       });
 
       if (nextInput.status === "closed") {
@@ -626,7 +643,7 @@ async function runInteractiveSession(
         configPath,
         setCurrentAbortController,
         shouldExit,
-        visibility,
+        getVisibility: () => visibilityState.getSnapshot(),
       });
       if (exitCode !== null) {
         return exitCode;
@@ -665,6 +682,7 @@ async function main(): Promise<number> {
   const showTrace = parsedArgs.flags.showTrace;
   const visibility: VisibilityOptions = {
     showActivity: parsedArgs.flags.showActivity || showTrace,
+    showToolCalls: true,
     showStatus: parsedArgs.flags.showStatus || showTrace,
     showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
     showContextStats: parsedArgs.flags.showContextStats,
@@ -795,12 +813,6 @@ async function main(): Promise<number> {
           loadAgentsMdContentAsync(agentsMdFiles),
         ),
       ]);
-
-    const defaultSystemPrompt = `You are a helpful AI coding assistant with access to tools. Use the tools available to you to complete user requests effectively.
-
-When you need to perform actions like reading files, searching code, or executing commands, use the appropriate tool by making a function call. You will receive the tool results and can use that information to continue helping the user.
-
-Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
     const agentRuntimeConfig = loadRuntimeConfig({
       cliOverrides: {

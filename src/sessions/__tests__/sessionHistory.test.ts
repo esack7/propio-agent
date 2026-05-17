@@ -32,7 +32,7 @@ function freshDir(): string {
 
 function minimalSessionJson(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    version: 2,
+    version: overrides.version ?? 2,
     savedAt: overrides.savedAt ?? new Date().toISOString(),
     metadata: {
       providerName: overrides.providerName ?? "test-provider",
@@ -56,6 +56,9 @@ function minimalSessionJson(overrides: Record<string, unknown> = {}): string {
       turns: overrides.turns ?? [],
       artifacts: [],
       pinnedMemory: [],
+      ...(overrides.invokedSkills !== undefined
+        ? { invokedSkills: overrides.invokedSkills }
+        : {}),
       ...(overrides.rollingSummary !== undefined
         ? { rollingSummary: overrides.rollingSummary }
         : {}),
@@ -183,6 +186,37 @@ describe("sessionHistory", () => {
       writeSnapshot(dir, minimalSessionJson());
 
       expect(fs.existsSync(dir)).toBe(true);
+    });
+
+    it("should accept current v3 snapshots with invoked skills", () => {
+      const dir = freshDir();
+      const entry = writeSnapshot(
+        dir,
+        minimalSessionJson({
+          version: 3,
+          turns: [makeTurn("t1", "used a skill")],
+          invokedSkills: [
+            {
+              name: "review",
+              source: "project",
+              skillRoot: "/repo/.propio/skills/review",
+              skillFile: "/repo/.propio/skills/review/SKILL.md",
+              content: "Skill body.",
+              invokedAt: "2026-03-29T10:00:00.000Z",
+              scope: {
+                invocationSource: "user",
+                skillName: "review",
+                skillRoot: "/repo/.propio/skills/review",
+                skillFile: "/repo/.propio/skills/review/SKILL.md",
+              },
+            },
+          ],
+        }),
+      );
+
+      expect(entry.turnCount).toBe(1);
+      expect(entry.providerName).toBe("test-provider");
+      expect(readIndex(dir)!.entries[0].snapshotFile).toBe(entry.snapshotFile);
     });
   });
 

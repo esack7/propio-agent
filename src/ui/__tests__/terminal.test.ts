@@ -285,6 +285,24 @@ describe("TerminalUi", () => {
     expect(output).toContain("Turn complete in 4.2s");
   });
 
+  it("renders failed turn lines without calling them complete", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.turnFailed(4200);
+
+    const output = stderr.chunks.join("");
+    expect(output).toContain("Turn failed in 4.2s");
+    expect(output).not.toContain("Turn complete");
+  });
+
   it("renders retained overlays in interactive TTY mode", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
@@ -357,10 +375,10 @@ describe("TerminalUi", () => {
       createPromptState({
         mode: "chat",
         promptText: "❯ ",
-        footer: "Enter to send | ? help",
+        footer: "Enter to send | ? help | Ctrl+O tools: shown",
       }),
     );
-    ui.idleFooter("Enter to send | ? help");
+    ui.idleFooter("Enter to send | ? help | Ctrl+O tools: shown");
     stderr.chunks.length = 0;
 
     stderr.columns = 40;
@@ -368,13 +386,13 @@ describe("TerminalUi", () => {
     stderr.emit("resize");
 
     expect(stripAnsi(stderr.chunks.join(""))).not.toContain(
-      "Enter to send | ? help",
+      "Enter to send | ? help | Ctrl+O tools: shown",
     );
 
     ui.cleanup();
   });
 
-  it("suppresses idle footer and turn completion in JSON mode", () => {
+  it("suppresses idle footer and turn result lines in JSON mode", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
     const ui = new TerminalUi({
@@ -387,12 +405,13 @@ describe("TerminalUi", () => {
 
     ui.idleFooter("ignored");
     ui.turnComplete(1200);
+    ui.turnFailed(1200);
 
     expect(stderr.chunks.join("")).toBe("");
     expect(stdout.chunks.join("")).toBe("");
   });
 
-  it("suppresses idle footer and turn completion in non-interactive mode", () => {
+  it("suppresses idle footer and turn result lines in non-interactive mode", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
     const ui = new TerminalUi({
@@ -405,6 +424,7 @@ describe("TerminalUi", () => {
 
     ui.idleFooter("ignored");
     ui.turnComplete(1200);
+    ui.turnFailed(1200);
 
     expect(stderr.chunks.join("")).toBe("");
     expect(stdout.chunks.join("")).toBe("");

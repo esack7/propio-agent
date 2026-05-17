@@ -176,7 +176,14 @@ describe("Agent Integration Tests", () => {
   describe("Tool execution", () => {
     it("should handle tool execution errors gracefully", async () => {
       const mockProvider = new MockIntegrationProvider("test");
+      let callCount = 0;
       mockProvider.streamChat = async function* () {
+        callCount++;
+        if (callCount > 1) {
+          yield { delta: "Recovered after the tool error." };
+          return;
+        }
+
         yield {
           delta: "Calling tool",
           toolCalls: [
@@ -193,8 +200,10 @@ describe("Agent Integration Tests", () => {
       const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
       (agent as any).provider = mockProvider;
 
-      // Should not throw, but add error message to context
-      await expect(agent.streamChat("Test", () => {})).resolves.toBeDefined();
+      // Tool errors remain recoverable when the model provides a final answer.
+      await expect(agent.streamChat("Test", () => {})).resolves.toBe(
+        "Recovered after the tool error.",
+      );
 
       const context = agent.getContext();
       const toolMessage = context.find((m) => m.role === "tool");

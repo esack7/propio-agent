@@ -82,6 +82,10 @@ function transcriptEntriesEqual(
       return (
         right.kind === "turn_complete" && left.durationMs === right.durationMs
       );
+    case "turn_failed":
+      return (
+        right.kind === "turn_failed" && left.durationMs === right.durationMs
+      );
     case "json":
       return right.kind === "json" && left.value === right.value;
   }
@@ -245,6 +249,9 @@ export class ReplRenderer {
       case "turn_complete":
         this.options.transcriptRenderer.turnComplete(entry.durationMs);
         break;
+      case "turn_failed":
+        this.options.transcriptRenderer.turnFailed(entry.durationMs);
+        break;
       case "json":
         this.options.transcriptRenderer.writeJson(entry.value);
         break;
@@ -357,6 +364,12 @@ function countOverlayLines(
       case "turn_complete":
         count += countWrittenStderrLines(
           `Turn complete in ${(Math.max(0, entry.durationMs) / 1000).toFixed(1)}s`,
+          writer,
+        );
+        break;
+      case "turn_failed":
+        count += countWrittenStderrLines(
+          `Turn failed in ${(Math.max(0, entry.durationMs) / 1000).toFixed(1)}s`,
           writer,
         );
         break;

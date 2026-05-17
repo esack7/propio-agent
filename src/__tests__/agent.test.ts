@@ -1519,6 +1519,83 @@ describe("Agent with Multi-Provider Configuration", () => {
       ).toBe(true);
     });
 
+    type MaxIterationsDiagnostic = Extract<
+      AgentDiagnosticEvent,
+      { type: "max_iterations_reached" }
+    >;
+
+    const findMaxIterationsDiagnostic = (
+      events: AgentDiagnosticEvent[],
+    ): MaxIterationsDiagnostic | undefined =>
+      events.find(
+        (event): event is MaxIterationsDiagnostic =>
+          event.type === "max_iterations_reached",
+      );
+
+    class VaryingTool implements ExecutableTool {
+      readonly name = "varying_tool";
+      readonly description = "No-op tool with changing arguments.";
+
+      getSchema() {
+        return {
+          type: "function" as const,
+          function: {
+            name: "varying_tool",
+            description: "No-op tool with changing arguments",
+            parameters: {
+              type: "object",
+              properties: {
+                index: { type: "number" },
+              },
+            },
+          },
+        };
+      }
+
+      async execute(): Promise<string> {
+        return "ok";
+      }
+    }
+
+    class RepeatingToolCallProvider implements LLMProvider {
+      name = "repeating-tool-call-provider";
+      streamChatCalls: ChatRequest[] = [];
+
+      constructor(
+        private readonly toolName: string,
+        private readonly finalAnswerAfterFirstToolCall?: string,
+      ) {}
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+        this.streamChatCalls.push(request);
+        if (
+          this.finalAnswerAfterFirstToolCall &&
+          this.streamChatCalls.length > 1
+        ) {
+          yield { delta: this.finalAnswerAfterFirstToolCall };
+          return;
+        }
+
+        yield { delta: `Partial ${this.streamChatCalls.length}.` };
+        yield {
+          delta: "",
+          toolCalls: [
+            {
+              id: `call-${this.streamChatCalls.length}`,
+              function: {
+                name: this.toolName,
+                arguments: { index: this.streamChatCalls.length },
+              },
+            },
+          ],
+        };
+      }
+    }
+
     it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
       class LoopTool implements ExecutableTool {
         readonly name = "loop_tool";
@@ -1652,6 +1729,87 @@ describe("Agent with Multi-Provider Configuration", () => {
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
         /Stopped after .* no final assistant response\./,
       );
+    });
+
+    it("should reject when max iterations are reached with partial text and pending tool calls", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const provider = new RepeatingToolCallProvider("varying_tool");
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      agent.addTool(new VaryingTool());
+      (agent as any).provider = provider;
+
+      await expect(
+        agent.streamChat("hello", () => {}, { maxIterations: 2 }),
+      ).rejects.toThrow(
+        "Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.",
+      );
+
+      const maxEvent = findMaxIterationsDiagnostic(events);
+      expect(maxEvent).toBeDefined();
+      expect(maxEvent?.iterationsCompleted).toBe(2);
+      expect(maxEvent?.pendingToolCalls).toBe(1);
+      expect(maxEvent?.failedToolCount).toBe(0);
+      expect(maxEvent?.failedTools).toEqual([]);
+    });
+
+    it("should include failed tool details when max iterations stop an incomplete turn", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      (agent as any).provider = new RepeatingToolCallProvider("missing_tool");
+
+      await expect(
+        agent.streamChat("hello", () => {}, { maxIterations: 2 }),
+      ).rejects.toThrow("Failed tools: missing_tool.");
+
+      const maxEvent = findMaxIterationsDiagnostic(events);
+      expect(maxEvent).toBeDefined();
+      expect(maxEvent?.iterationsCompleted).toBe(2);
+      expect(maxEvent?.pendingToolCalls).toBe(1);
+      expect(maxEvent?.failedToolCount).toBe(2);
+      expect(maxEvent?.failedTools).toEqual(["missing_tool"]);
+    });
+
+    it("should still resolve when a failed tool is followed by a final answer", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const provider = new RepeatingToolCallProvider(
+        "missing_tool",
+        "Recovered with a final answer.",
+      );
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      (agent as any).provider = provider;
+
+      const response = await agent.streamChat("hello", () => {});
+
+      expect(response).toBe("Recovered with a final answer.");
+      expect(provider.streamChatCalls).toHaveLength(2);
+      expect(
+        events.some(
+          (event) =>
+            event.type === "tool_execution_finished" &&
+            event.status === "tool_not_found",
+        ),
+      ).toBe(true);
+      expect(
+        events.some((event) => event.type === "max_iterations_reached"),
+      ).toBe(false);
     });
 
     it("should emit context_snapshot and enriched request_started for normal request", async () => {

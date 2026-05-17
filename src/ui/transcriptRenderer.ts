@@ -161,4 +161,18 @@ export class TranscriptRenderer {
       ),
     );
   }
+
+  turnFailed(durationMs: number): void {
+    if (this.options.json || !this.options.interactive) {
+      return;
+    }
+
+    this.options.clearStatus();
+    this.options.writer.writeStderrLine(
+      this.options.style(
+        `Turn failed in ${formatDurationSeconds(durationMs)}`,
+        formatSubtle,
+      ),
+    );
+  }
 }

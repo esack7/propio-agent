@@ -57,6 +57,7 @@ export interface PromptComposerOptions {
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
   renderState?: (state: PromptState | null) => void;
+  onToggleToolCalls?: () => string | null | undefined;
   historyStore?: PromptHistoryStore;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -178,6 +179,7 @@ export function createPromptComposer(
       ...currentState,
       buffer: state.buffer,
       cursor: state.cursor,
+      footer: state.footer ?? undefined,
       historySearch: state.historySearch
         ? { ...state.historySearch }
         : undefined,
@@ -266,7 +268,7 @@ export function createPromptComposer(
       isCustomChat: request.mode === "chat" && useCustomChatPrompt,
     };
 
-    if (request.footer && options.renderFooter) {
+    if (request.footer && options.renderFooter && !activePrompt.isCustomChat) {
       options.renderFooter(request.footer);
     }
 
@@ -293,6 +295,9 @@ export function createPromptComposer(
             interrupt: () => {
               setCloseReason("interrupted");
               process.kill(process.pid, "SIGINT");
+            },
+            toggleToolCalls: () => {
+              return options.onToggleToolCalls?.();
             },
             close,
           },
