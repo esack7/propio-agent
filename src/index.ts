@@ -34,6 +34,7 @@ import {
   isHelpCommand,
   getIdleFooterText,
 } from "./ui/slashCommands.js";
+import { createToolCallVisibilityState } from "./ui/toolCallVisibility.js";
 import {
   createDefaultTypeaheadProviders,
   createSkillCommandTypeaheadProvider,
@@ -280,7 +281,7 @@ interface InteractiveSubmissionContext {
   configPath: string;
   setCurrentAbortController: (controller: AbortController | null) => void;
   shouldExit: () => boolean;
-  visibility: VisibilityOptions;
+  getVisibility: () => VisibilityOptions;
 }
 
 async function runInteractiveTurn(
@@ -291,7 +292,8 @@ async function runInteractiveTurn(
     errorPrefix: string;
   },
 ): Promise<number | null> {
-  const { agent, ui, setCurrentAbortController, visibility } = context;
+  const { agent, ui, setCurrentAbortController } = context;
+  const visibility = context.getVisibility();
   const abortController = new AbortController();
   const turnStartedAtMs = Date.now();
   setCurrentAbortController(abortController);
@@ -578,6 +580,7 @@ async function runInteractiveSession(
   shouldExit: () => boolean,
   visibility: VisibilityOptions,
 ): Promise<number> {
+  const visibilityState = createToolCallVisibilityState(visibility);
   const typeaheadProviders = [
     ...createDefaultTypeaheadProviders(process.cwd()),
     createSkillCommandTypeaheadProvider(() => agent.listUserInvocableSkills()),
@@ -589,6 +592,10 @@ async function runInteractiveSession(
     typeaheadProviders,
     renderFooter: (footer) => {
       ui.idleFooter(footer);
+    },
+    onToggleToolCalls: () => {
+      const snapshot = visibilityState.toggleToolCalls();
+      return getIdleFooterText(snapshot.showToolCalls);
     },
     renderState: (state) => {
       ui.setPromptState(state);
@@ -612,7 +619,7 @@ async function runInteractiveSession(
       const nextInput = await composer.compose({
         mode: "chat",
         promptText: ui.chatPrompt(),
-        footer: getIdleFooterText(),
+        footer: getIdleFooterText(visibilityState.getSnapshot().showToolCalls),
       });
 
       if (nextInput.status === "closed") {
@@ -636,7 +643,7 @@ async function runInteractiveSession(
         configPath,
         setCurrentAbortController,
         shouldExit,
-        visibility,
+        getVisibility: () => visibilityState.getSnapshot(),
       });
       if (exitCode !== null) {
         return exitCode;
@@ -675,6 +682,7 @@ async function main(): Promise<number> {
   const showTrace = parsedArgs.flags.showTrace;
   const visibility: VisibilityOptions = {
     showActivity: parsedArgs.flags.showActivity || showTrace,
+    showToolCalls: true,
     showStatus: parsedArgs.flags.showStatus || showTrace,
     showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
     showContextStats: parsedArgs.flags.showContextStats,

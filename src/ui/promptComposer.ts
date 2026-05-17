@@ -57,6 +57,7 @@ export interface PromptComposerOptions {
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
   renderState?: (state: PromptState | null) => void;
+  onToggleToolCalls?: () => string | null | undefined;
   historyStore?: PromptHistoryStore;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -194,6 +195,19 @@ export function createPromptComposer(
     options.renderState?.(clonePromptState(currentState));
   };
 
+  const updateActiveFooter = (footer: string): void => {
+    if (!currentState) {
+      return;
+    }
+
+    currentState = {
+      ...currentState,
+      footer,
+    };
+    options.renderState?.(clonePromptState(currentState));
+    options.renderFooter?.(footer);
+  };
+
   const settlePending = (result: PromptResult): void => {
     if (!pendingResolve) {
       return;
@@ -293,6 +307,12 @@ export function createPromptComposer(
             interrupt: () => {
               setCloseReason("interrupted");
               process.kill(process.pid, "SIGINT");
+            },
+            toggleToolCalls: () => {
+              const footer = options.onToggleToolCalls?.();
+              if (footer) {
+                updateActiveFooter(footer);
+              }
             },
             close,
           },

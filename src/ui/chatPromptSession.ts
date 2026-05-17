@@ -35,6 +35,7 @@ export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
   submit(text: string): void;
   interrupt(): void;
+  toggleToolCalls?: () => void;
   close(): void;
 }
 
@@ -1172,6 +1173,11 @@ export function createChatPromptSession(
         openEditor();
         return;
       }
+    }
+
+    if (key.name === "o" && key.ctrl) {
+      callbacks.toggleToolCalls?.();
+      return;
     }
 
     if (key.name === "x" && key.ctrl) {

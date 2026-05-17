@@ -131,6 +131,10 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
     style: "info",
   });
   lines.push({
+    text: formatLabelLine("Ctrl+O", "toggle tool output"),
+    style: "info",
+  });
+  lines.push({
     text: formatLabelLine("Ctrl+X Ctrl+E", "open the editor"),
     style: "info",
   });
@@ -146,8 +150,10 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
   return lines;
 }
 
-export function getIdleFooterText(): string {
-  return "Enter to send | ? help";
+export function getIdleFooterText(showToolCalls = true): string {
+  return `Enter to send | ? help | Ctrl+O tools: ${
+    showToolCalls ? "shown" : "hidden"
+  }`;
 }
 
 export function isHelpCommand(input: string): boolean {

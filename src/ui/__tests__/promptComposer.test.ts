@@ -5,6 +5,7 @@ import * as path from "path";
 import * as readline from "readline";
 import { createPromptComposer } from "../promptComposer.js";
 import { createPromptHistoryStore } from "../promptHistory.js";
+import { getIdleFooterText } from "../slashCommands.js";
 import type { PromptEditorRunner } from "../promptEditor.js";
 
 jest.setTimeout(10000);
@@ -20,6 +21,7 @@ function stripAnsiControls(text: string): string {
 function createHarness(options?: {
   renderFooter?: (footer: string) => void;
   renderState?: (state: unknown) => void;
+  onToggleToolCalls?: () => string | null | undefined;
 }) {
   const inputStream = new PassThrough();
   const outputStream = new PassThrough();
@@ -30,6 +32,7 @@ function createHarness(options?: {
     output: outputStream as unknown as NodeJS.WriteStream,
     renderFooter: options?.renderFooter,
     renderState: options?.renderState as ((state: unknown) => void) | undefined,
+    onToggleToolCalls: options?.onToggleToolCalls,
   });
 
   return {
@@ -107,6 +110,9 @@ function createTtyHarness(options?: {
     load(): readonly string[];
     record(text: string): void;
   };
+  renderFooter?: (footer: string) => void;
+  renderState?: (state: unknown) => void;
+  onToggleToolCalls?: () => string | null | undefined;
   workspaceRoot?: string;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -151,6 +157,9 @@ function createTtyHarness(options?: {
     enableTypeahead: options?.enableTypeahead,
     editorRunner: options?.editorRunner,
     editorEnv: options?.editorEnv,
+    renderFooter: options?.renderFooter,
+    renderState: options?.renderState as ((state: unknown) => void) | undefined,
+    onToggleToolCalls: options?.onToggleToolCalls,
   });
 
   const emitKeypress = (
@@ -293,6 +302,49 @@ describe("createPromptComposer", () => {
       status: "submitted",
       text: "alice",
     });
+
+    harness.composer.close();
+  });
+
+  it("updates the active footer when tool calls are toggled", async () => {
+    const renderFooter = jest.fn();
+    const renderState = jest.fn();
+    let showToolCalls = true;
+    const harness = createTtyHarness({
+      renderFooter,
+      renderState,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      onToggleToolCalls: () => {
+        showToolCalls = !showToolCalls;
+        return getIdleFooterText(showToolCalls);
+      },
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: getIdleFooterText(showToolCalls),
+    });
+
+    await flush();
+
+    harness.inputStream.emit("keypress", "\u000f", {
+      name: "o",
+      ctrl: true,
+      meta: false,
+      shift: false,
+    });
+
+    expect(renderFooter).toHaveBeenLastCalledWith(
+      "Enter to send | ? help | Ctrl+O tools: hidden",
+    );
+    expect(renderState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        buffer: "",
+        footer: "Enter to send | ? help | Ctrl+O tools: hidden",
+      }),
+    );
 
     harness.composer.close();
   });

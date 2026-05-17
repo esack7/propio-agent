@@ -58,6 +58,7 @@ describe("index non-interactive session", () => {
       },
       {
         showActivity: false,
+        showToolCalls: true,
         showStatus: false,
         showReasoningSummary: false,
         showContextStats: false,

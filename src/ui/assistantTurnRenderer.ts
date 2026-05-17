@@ -3,6 +3,7 @@ import type {
   AgentVisibilityEvent,
   TurnReasoningSummary,
 } from "../agent.js";
+import type { ToolExecutionStatus } from "../tools/types.js";
 import {
   formatContextStats,
   formatPromptPlanCompact,
@@ -11,6 +12,7 @@ import { TerminalUi } from "./terminal.js";
 
 export interface AssistantTurnVisibilityOptions {
   showActivity: boolean;
+  showToolCalls: boolean;
   showStatus: boolean;
   showReasoningSummary: boolean;
   showContextStats: boolean;
@@ -27,12 +29,22 @@ export interface AssistantTurnResult {
   reasoningSummary?: TurnReasoningSummary;
 }
 
+const HIDDEN_TOOL_STATUS_MIN_VISIBLE_MS = 300;
+
 function previewToolResult(result: string, maxLength = 70): string {
   const compact = result.replace(/\s+/g, " ").trim();
   if (compact.length <= maxLength) {
     return compact;
   }
   return `${compact.substring(0, maxLength)}...`;
+}
+
+function sleepSync(ms: number): void {
+  if (ms <= 0) {
+    return;
+  }
+
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 export async function streamAssistantTurn(
@@ -44,6 +56,8 @@ export async function streamAssistantTurn(
 ): Promise<AssistantTurnResult> {
   const mdStream = ui.createMarkdownStream();
   const latestActivityLabelByToolName = new Map<string, string>();
+  let hiddenToolStatusActive = false;
+  let hiddenToolStatusStartedAtMs = 0;
 
   if (!ui.isJsonMode()) {
     ui.beginAssistantResponse();
@@ -51,6 +65,18 @@ export async function streamAssistantTurn(
 
   const resolveActivityLabel = (toolName: string): string =>
     latestActivityLabelByToolName.get(toolName) ?? toolName;
+
+  const clearHiddenToolStatus = (): void => {
+    if (!hiddenToolStatusActive) {
+      return;
+    }
+
+    const visibleForMs = Date.now() - hiddenToolStatusStartedAtMs;
+    const remainingVisibleMs = HIDDEN_TOOL_STATUS_MIN_VISIBLE_MS - visibleForMs;
+    sleepSync(remainingVisibleMs);
+    hiddenToolStatusActive = false;
+    ui.done();
+  };
 
   const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
     if (event.type === "status") {
@@ -66,6 +92,18 @@ export async function streamAssistantTurn(
       event.type === "tool_finished" ||
       event.type === "tool_failed"
     ) {
+      if (!visibility.showToolCalls) {
+        if (event.type === "tool_started") {
+          if (!hiddenToolStatusActive) {
+            mdStream.flush();
+            hiddenToolStatusActive = true;
+            hiddenToolStatusStartedAtMs = Date.now();
+            ui.status("Working", "tool call");
+          }
+        }
+        return;
+      }
+
       latestActivityLabelByToolName.set(event.toolName, event.activityLabel);
 
       if (!visibility.showActivity) {
@@ -102,42 +140,63 @@ export async function streamAssistantTurn(
     }
   };
 
-  const useLegacyToolCallbacks = !visibility.showActivity;
+  const shouldRenderLegacyToolCallbacks =
+    visibility.showToolCalls && !visibility.showActivity;
+  const toolCallbacks = shouldRenderLegacyToolCallbacks
+    ? {
+        onToolStart: (toolName: string) => {
+          mdStream.flush();
+          // Keep a durable transcript line so tool progress is visible
+          // even when spinner frames are transient.
+          const activityLabel = resolveActivityLabel(toolName);
+          ui.info(`Starting ${activityLabel}...`);
+          ui.status(`Executing ${activityLabel}...`, "tool call");
+        },
+        onToolEnd: (
+          toolName: string,
+          result: string,
+          status: ToolExecutionStatus,
+        ) => {
+          const summary = previewToolResult(result);
+          const activityLabel = resolveActivityLabel(toolName);
+          if (status !== "success") {
+            ui.error(`${activityLabel} failed: ${summary}`);
+            return;
+          }
+          ui.success(`${activityLabel} completed: ${summary}`);
+        },
+      }
+    : {
+        onToolStart: (_toolName: string) => {
+          /* Intentionally blank: suppress fallback token noise. */
+        },
+        onToolEnd: (
+          _toolName: string,
+          _result: string,
+          _status: ToolExecutionStatus,
+        ) => {
+          /* Intentionally blank: suppress fallback token noise. */
+        },
+      };
 
   const response = await agent.streamChat(
     userInput,
     (token) => {
       if (!ui.isJsonMode()) {
+        if (token.trim().length > 0) {
+          clearHiddenToolStatus();
+        }
         mdStream.push(token);
       }
     },
     {
       abortSignal,
       onEvent: renderVisibilityEvent,
-      ...(useLegacyToolCallbacks
-        ? {
-            onToolStart: (toolName: string) => {
-              mdStream.flush();
-              // Keep a durable transcript line so tool progress is visible
-              // even when spinner frames are transient.
-              const activityLabel = resolveActivityLabel(toolName);
-              ui.info(`Starting ${activityLabel}...`);
-              ui.status(`Executing ${activityLabel}...`, "tool call");
-            },
-            onToolEnd: (toolName: string, result: string, status) => {
-              const summary = previewToolResult(result);
-              const activityLabel = resolveActivityLabel(toolName);
-              if (status !== "success") {
-                ui.error(`${activityLabel} failed: ${summary}`);
-                return;
-              }
-              ui.success(`${activityLabel} completed: ${summary}`);
-            },
-          }
-        : {}),
+      ...toolCallbacks,
     },
   );
 
+  clearHiddenToolStatus();
   mdStream.finish();
   ui.done();
 
