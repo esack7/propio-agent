@@ -2,7 +2,6 @@ const CLI_FLAG_SANDBOX = "--sandbox";
 const CLI_FLAG_JSON = "--json";
 const CLI_FLAG_PLAIN = "--plain";
 const CLI_FLAG_NO_INTERACTIVE = "--no-interactive";
-const CLI_FLAG_SHOW_ACTIVITY = "--show-activity";
 const CLI_FLAG_SHOW_STATUS = "--show-status";
 const CLI_FLAG_SHOW_REASONING_SUMMARY = "--show-reasoning-summary";
 const CLI_FLAG_SHOW_TRACE = "--show-trace";
@@ -23,7 +22,6 @@ export interface ParsedCliArgs {
     json: boolean;
     plain: boolean;
     noInteractive: boolean;
-    showActivity: boolean;
     showStatus: boolean;
     showReasoningSummary: boolean;
     showContextStats: boolean;
@@ -49,7 +47,6 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     json: false,
     plain: false,
     noInteractive: false,
-    showActivity: false,
     showStatus: false,
     showReasoningSummary: false,
     showContextStats: false,
@@ -76,8 +73,6 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       flags.plain = true;
     } else if (arg === CLI_FLAG_NO_INTERACTIVE) {
       flags.noInteractive = true;
-    } else if (arg === CLI_FLAG_SHOW_ACTIVITY) {
-      flags.showActivity = true;
     } else if (arg === CLI_FLAG_SHOW_STATUS) {
       flags.showStatus = true;
     } else if (arg === CLI_FLAG_SHOW_REASONING_SUMMARY) {

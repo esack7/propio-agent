@@ -1,6 +1,7 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -22,6 +23,40 @@ export class BashTool implements ExecutableTool {
     this.defaultTimeoutMs = config?.defaultTimeoutMs ?? 120000;
     this.maxTimeoutMs = config?.maxTimeoutMs ?? 600000;
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const cmd = input.command;
+        return typeof cmd === "string" && cmd.length > 0 ? cmd : null;
+      },
+      renderResult(result) {
+        try {
+          const parsed = JSON.parse(result) as {
+            exit_code?: number;
+            stdout?: string;
+            stderr?: string;
+          };
+          const exit = parsed.exit_code ?? "?";
+          if (exit !== 0) {
+            const stderr = (parsed.stderr ?? "").replace(/\s+/g, " ").trim();
+            if (stderr.length > 0) {
+              const preview =
+                stderr.length > 60 ? `${stderr.slice(0, 60)}...` : stderr;
+              return `Exit ${exit}: ${preview}`;
+            }
+            return `Exit ${exit}`;
+          }
+          const lines = (parsed.stdout ?? "")
+            .split("\n")
+            .filter((l) => l.trim().length > 0).length;
+          return lines > 0 ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})` : "Exit 0";
+        } catch {
+          return null;
+        }
+      },
+    };
   }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {

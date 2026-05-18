@@ -3,15 +3,14 @@ import type {
   AgentVisibilityEvent,
   TurnReasoningSummary,
 } from "../agent.js";
-import type { ToolExecutionStatus } from "../tools/types.js";
 import {
   formatContextStats,
   formatPromptPlanCompact,
 } from "./contextInspector.js";
 import { TerminalUi } from "./terminal.js";
+import type { ToolCallView } from "./toolCallView.js";
 
 export interface AssistantTurnVisibilityOptions {
-  showActivity: boolean;
   showToolCalls: boolean;
   showStatus: boolean;
   showReasoningSummary: boolean;
@@ -31,14 +30,6 @@ export interface AssistantTurnResult {
 
 const HIDDEN_TOOL_STATUS_MIN_VISIBLE_MS = 300;
 
-function previewToolResult(result: string, maxLength = 70): string {
-  const compact = result.replace(/\s+/g, " ").trim();
-  if (compact.length <= maxLength) {
-    return compact;
-  }
-  return `${compact.substring(0, maxLength)}...`;
-}
-
 function sleepSync(ms: number): void {
   if (ms <= 0) {
     return;
@@ -55,16 +46,13 @@ export async function streamAssistantTurn(
   visibility: AssistantTurnVisibilityOptions,
 ): Promise<AssistantTurnResult> {
   const mdStream = ui.createMarkdownStream();
-  const latestActivityLabelByToolName = new Map<string, string>();
+  const useLabelByCallId = new Map<string, string>();
   let hiddenToolStatusActive = false;
   let hiddenToolStatusStartedAtMs = 0;
 
   if (!ui.isJsonMode()) {
     ui.beginAssistantResponse();
   }
-
-  const resolveActivityLabel = (toolName: string): string =>
-    latestActivityLabelByToolName.get(toolName) ?? toolName;
 
   const clearHiddenToolStatus = (): void => {
     if (!hiddenToolStatusActive) {
@@ -104,29 +92,50 @@ export async function streamAssistantTurn(
         return;
       }
 
-      latestActivityLabelByToolName.set(event.toolName, event.activityLabel);
-
-      if (!visibility.showActivity) {
-        return;
-      }
-
-      mdStream.flush();
       if (event.type === "tool_started") {
-        ui.traceActivity(`Starting ${event.activityLabel}`);
+        const toolLabel =
+          event.toolName.charAt(0).toUpperCase() + event.toolName.slice(1);
+        const useLabel =
+          event.useLabel != null
+            ? `${toolLabel} ${event.useLabel}`
+            : event.activityLabel;
+        useLabelByCallId.set(event.toolCallId, useLabel);
+        mdStream.flush();
+        const runningView: ToolCallView = {
+          id: event.toolCallId,
+          toolName: event.toolName,
+          status: "running",
+          useLabel,
+          resultLabel: null,
+        };
+        ui.upsertToolCallView(runningView);
         return;
       }
 
       if (event.type === "tool_finished") {
-        ui.traceActivity(
-          `Finished ${event.activityLabel}: ${event.resultPreview}`,
-        );
+        const useLabel =
+          useLabelByCallId.get(event.toolCallId) ?? event.activityLabel;
+        const successView: ToolCallView = {
+          id: event.toolCallId,
+          toolName: event.toolName,
+          status: "success",
+          useLabel,
+          resultLabel: event.resultPreview,
+        };
+        ui.upsertToolCallView(successView);
         return;
       }
 
-      ui.traceActivity(
-        `Failed ${event.activityLabel}: ${event.resultPreview}`,
-        "error",
-      );
+      const useLabel =
+        useLabelByCallId.get(event.toolCallId) ?? event.activityLabel;
+      const errorView: ToolCallView = {
+        id: event.toolCallId,
+        toolName: event.toolName,
+        status: "error",
+        useLabel,
+        resultLabel: event.resultPreview,
+      };
+      ui.upsertToolCallView(errorView);
       return;
     }
 
@@ -139,45 +148,6 @@ export async function streamAssistantTurn(
       return;
     }
   };
-
-  const shouldRenderLegacyToolCallbacks =
-    visibility.showToolCalls && !visibility.showActivity;
-  const toolCallbacks = shouldRenderLegacyToolCallbacks
-    ? {
-        onToolStart: (toolName: string) => {
-          mdStream.flush();
-          // Keep a durable transcript line so tool progress is visible
-          // even when spinner frames are transient.
-          const activityLabel = resolveActivityLabel(toolName);
-          ui.info(`Starting ${activityLabel}...`);
-          ui.status(`Executing ${activityLabel}...`, "tool call");
-        },
-        onToolEnd: (
-          toolName: string,
-          result: string,
-          status: ToolExecutionStatus,
-        ) => {
-          const summary = previewToolResult(result);
-          const activityLabel = resolveActivityLabel(toolName);
-          if (status !== "success") {
-            ui.error(`${activityLabel} failed: ${summary}`);
-            return;
-          }
-          ui.success(`${activityLabel} completed: ${summary}`);
-        },
-      }
-    : {
-        onToolStart: (_toolName: string) => {
-          /* Intentionally blank: suppress fallback token noise. */
-        },
-        onToolEnd: (
-          _toolName: string,
-          _result: string,
-          _status: ToolExecutionStatus,
-        ) => {
-          /* Intentionally blank: suppress fallback token noise. */
-        },
-      };
 
   const response = await agent.streamChat(
     userInput,
@@ -192,7 +162,6 @@ export async function streamAssistantTurn(
     {
       abortSignal,
       onEvent: renderVisibilityEvent,
-      ...toolCallbacks,
     },
   );
 

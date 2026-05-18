@@ -1,5 +1,6 @@
 import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import { normalizeToolPath, readUtf8TextFile } from "./shared.js";
 
@@ -14,6 +15,19 @@ export class ReadTool implements ExecutableTool {
 
   constructor(config?: ReadToolConfig) {
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const path = input.path;
+        return typeof path === "string" && path.length > 0 ? path : null;
+      },
+      renderResult(result) {
+        const lineCount = result.split("\n").length;
+        return `Read ${lineCount} line${lineCount === 1 ? "" : "s"}`;
+      },
+    };
   }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {

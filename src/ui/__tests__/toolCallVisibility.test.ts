@@ -3,7 +3,6 @@ import { createToolCallVisibilityState } from "../toolCallVisibility.js";
 describe("toolCallVisibility", () => {
   it("defaults to showing tool calls while preserving baseline visibility flags", () => {
     const baseline = {
-      showActivity: true,
       showStatus: false,
       showReasoningSummary: true,
       showContextStats: false,
@@ -17,7 +16,6 @@ describe("toolCallVisibility", () => {
       showToolCalls: true,
     });
     expect(baseline).toEqual({
-      showActivity: true,
       showStatus: false,
       showReasoningSummary: true,
       showContextStats: false,
@@ -27,7 +25,6 @@ describe("toolCallVisibility", () => {
 
   it("toggles tool calls without mutating the baseline snapshot", () => {
     const baseline = {
-      showActivity: false,
       showStatus: true,
       showReasoningSummary: false,
       showContextStats: true,

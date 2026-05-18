@@ -1,11 +1,31 @@
 import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import { formatFileType, normalizeToolPath } from "./shared.js";
 
 export class LsTool implements ExecutableTool {
   readonly name = "ls";
   readonly description = "List directory contents.";
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const path = input.path;
+        return typeof path === "string" && path.length > 0 ? path : null;
+      },
+      renderResult(result) {
+        if (result === "Directory is empty") {
+          return "Empty directory";
+        }
+        const lines = result
+          .trim()
+          .split("\n")
+          .filter((l) => l.length > 0);
+        return `${lines.length} item${lines.length === 1 ? "" : "s"}`;
+      },
+    };
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;

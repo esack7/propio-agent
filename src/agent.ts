@@ -43,7 +43,6 @@ import {
   PinFactInput,
   UpdateMemoryInput,
 } from "./context/types.js";
-import { ToolExecutionStatus } from "./tools/types.js";
 import { SummaryManager } from "./context/summaryManager.js";
 import {
   serializeSession,
@@ -84,6 +83,8 @@ export type AgentVisibilityEvent =
       toolName: string;
       toolCallId: string;
       activityLabel: string;
+      useLabel: string | null;
+      args: Record<string, unknown>;
       argumentChars: number;
       argumentPreview: string;
     }
@@ -121,12 +122,6 @@ type AgentEventOptions = {
 };
 
 type AgentToolOptions = AgentEventOptions & {
-  readonly onToolStart?: (toolName: string) => void;
-  readonly onToolEnd?: (
-    toolName: string,
-    result: string,
-    status: ToolExecutionStatus,
-  ) => void;
   readonly abortSignal?: AbortSignal;
 };
 
@@ -1393,6 +1388,10 @@ export class Agent {
       toolName,
       toolCallId,
       activityLabel,
+      useLabel: this.toolRegistry.hasTool(toolName)
+        ? this.toolRegistry.renderInvocationUse(toolName, args ?? {})
+        : null,
+      args: args ?? {},
       argumentChars: serializedArgs.length,
       argumentPreview: this.toPreview(serializedArgs),
     });
@@ -1405,12 +1404,6 @@ export class Agent {
       toolCallId,
       argsChars: serializedArgs.length,
     });
-
-    if (options?.onToolStart) {
-      options.onToolStart(toolName);
-    } else {
-      onToken(`[Executing tool: ${toolName}]\n`);
-    }
 
     const execResult = await this.executeToolWithStatus(
       toolName,
@@ -1442,21 +1435,17 @@ export class Agent {
       status: failed ? "error" : "success",
     };
 
+    const resultPreview =
+      !failed && this.toolRegistry.hasTool(toolName)
+        ? this.toolRegistry.renderInvocationResult(toolName, args ?? {}, result)
+        : this.toPreview(result);
     this.emitVisibilityEvent(options, {
       type: failed ? "tool_failed" : "tool_finished",
       toolName,
       toolCallId,
       activityLabel,
-      resultPreview: this.toPreview(result),
+      resultPreview,
     });
-
-    if (options?.onToolEnd) {
-      options.onToolEnd(toolName, result, execResult.status);
-    } else {
-      onToken(
-        `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
-      );
-    }
 
     return artifactToolResult;
   }

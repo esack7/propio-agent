@@ -1,5 +1,4 @@
 export interface ToolCallVisibilityBaseline {
-  readonly showActivity: boolean;
   readonly showStatus: boolean;
   readonly showReasoningSummary: boolean;
   readonly showContextStats: boolean;

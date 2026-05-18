@@ -78,11 +78,10 @@ Options:
   --json              Emit only JSON response payloads on stdout
   --plain             Disable ANSI color styling and spinner animation
   --no-interactive    Disable prompts/spinners and read one prompt from stdin
-  --show-activity     Show normalized tool activity events (started/finished/failed)
   --show-status       Show high-level agent lifecycle status updates
   --show-reasoning-summary
                       Show a concise reasoning summary after each turn
-  --show-trace        Enable --show-activity, --show-status, and --show-reasoning-summary
+  --show-trace        Enable --show-status and --show-reasoning-summary
   --show-context-stats
                       Print compact context stats after each turn
   --show-prompt-plan  Print prompt plan summary each time a request is built
@@ -681,7 +680,6 @@ async function main(): Promise<number> {
   const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
   const showTrace = parsedArgs.flags.showTrace;
   const visibility: VisibilityOptions = {
-    showActivity: parsedArgs.flags.showActivity || showTrace,
     showToolCalls: true,
     showStatus: parsedArgs.flags.showStatus || showTrace,
     showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,

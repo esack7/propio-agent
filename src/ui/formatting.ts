@@ -34,7 +34,7 @@ function formatInputPlaceholder(text: string): string {
   return textColors.inputPlaceholder(text);
 }
 
-function formatToolExecution(toolName: string): string {
+export function formatToolExecution(toolName: string): string {
   return statusColors.tool(`${symbols.bullet} ${toolName}`);
 }
 

@@ -1,5 +1,6 @@
 import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import {
   normalizeToolPath,
@@ -11,6 +12,18 @@ import {
 export class EditTool implements ExecutableTool {
   readonly name = "edit";
   readonly description = "Edit a file - replace text.";
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const path = input.path;
+        return typeof path === "string" && path.length > 0 ? path : null;
+      },
+      renderResult(result) {
+        return result;
+      },
+    };
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;

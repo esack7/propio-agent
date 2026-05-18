@@ -4,7 +4,6 @@ import type {
   TurnReasoningSummary,
 } from "../../agent.js";
 import type { ConversationState } from "../../context/types.js";
-import type { ToolExecutionStatus } from "../../tools/types.js";
 import {
   streamAssistantTurn,
   type AssistantTurnAgent,
@@ -15,14 +14,7 @@ import { createTtyTestStream, stripAnsi } from "./ttyTestStream.js";
 
 type ScriptStep =
   | { type: "token"; value: string }
-  | { type: "event"; value: AgentVisibilityEvent }
-  | { type: "tool_start"; toolName: string }
-  | {
-      type: "tool_end";
-      toolName: string;
-      result: string;
-      status: ToolExecutionStatus;
-    };
+  | { type: "event"; value: AgentVisibilityEvent };
 
 class ScriptedAssistantTurnAgent implements AssistantTurnAgent {
   constructor(
@@ -38,12 +30,6 @@ class ScriptedAssistantTurnAgent implements AssistantTurnAgent {
     _userInput: string,
     onToken: (token: string) => void,
     callbacks?: {
-      onToolStart?: (toolName: string) => void;
-      onToolEnd?: (
-        toolName: string,
-        result: string,
-        status: ToolExecutionStatus,
-      ) => void;
       onEvent?: (event: AgentVisibilityEvent) => void;
       abortSignal?: AbortSignal;
     },
@@ -59,82 +45,10 @@ class ScriptedAssistantTurnAgent implements AssistantTurnAgent {
         case "event":
           callbacks?.onEvent?.(step.value);
           break;
-        case "tool_start":
-          callbacks?.onToolStart?.(step.toolName);
-          break;
-        case "tool_end":
-          callbacks?.onToolEnd?.(step.toolName, step.result, step.status);
-          break;
       }
     }
 
     return this.options.response ?? response;
-  }
-
-  getLastTurnReasoningSummary(): TurnReasoningSummary | null {
-    return this.options.reasoningSummary ?? null;
-  }
-
-  getConversationState(): ConversationState {
-    return this.options.conversationState ?? emptyConversationState();
-  }
-}
-
-class FallbackNoiseAssistantTurnAgent implements AssistantTurnAgent {
-  constructor(
-    private readonly options: {
-      response?: string;
-      reasoningSummary?: TurnReasoningSummary | null;
-      conversationState?: ConversationState;
-    } = {},
-  ) {}
-
-  async streamChat(
-    _userInput: string,
-    onToken: (token: string) => void,
-    callbacks?: {
-      onToolStart?: (toolName: string) => void;
-      onToolEnd?: (
-        toolName: string,
-        result: string,
-        status: ToolExecutionStatus,
-      ) => void;
-      onEvent?: (event: AgentVisibilityEvent) => void;
-      abortSignal?: AbortSignal;
-    },
-  ): Promise<string> {
-    onToken("Prelude.");
-    callbacks?.onEvent?.({
-      type: "tool_started",
-      toolName: "read",
-      toolCallId: "tool_1",
-      activityLabel: "Reading package.json",
-      argumentChars: 12,
-      argumentPreview: '{"path":"package.json"}',
-    });
-
-    if (callbacks?.onToolStart) {
-      callbacks.onToolStart("read");
-    } else {
-      onToken("[Executing tool: read]\n");
-    }
-
-    callbacks?.onEvent?.({
-      type: "tool_finished",
-      toolName: "read",
-      toolCallId: "tool_1",
-      activityLabel: "Reading package.json",
-      resultPreview: "package content",
-    });
-
-    if (callbacks?.onToolEnd) {
-      callbacks.onToolEnd("read", "package content", "success");
-    } else {
-      onToken("[Tool result: package content]\n");
-    }
-
-    onToken("Tail.");
-    return this.options.response ?? "Prelude.Tail.";
   }
 
   getLastTurnReasoningSummary(): TurnReasoningSummary | null {
@@ -200,7 +114,6 @@ function createPromptPlanSnapshot(): PromptPlanSnapshot {
 }
 
 const defaultVisibility: AssistantTurnVisibilityOptions = {
-  showActivity: false,
   showToolCalls: true,
   showStatus: false,
   showReasoningSummary: false,
@@ -268,6 +181,7 @@ describe("streamAssistantTurn", () => {
           toolName: "read",
           toolCallId: "tool_1",
           activityLabel: 'Reading src for "streamChat"',
+          args: {},
           argumentChars: 12,
           argumentPreview: '{"q":"x"}',
         },
@@ -300,33 +214,52 @@ describe("streamAssistantTurn", () => {
       "activity test",
       ui,
       new AbortController().signal,
-      { ...defaultVisibility, showActivity: true },
+      defaultVisibility,
     );
 
     const output = normalizeOutput(stderr.chunks);
 
     expect(output.indexOf("Alpha.")).toBeGreaterThan(-1);
     expect(
-      output.indexOf('Activity: Starting Reading src for "streamChat"'),
+      output.indexOf('Reading src for "streamChat"'),
     ).toBeGreaterThan(output.indexOf("Alpha."));
     expect(output.indexOf("Beta.")).toBeGreaterThan(
-      output.indexOf('Activity: Starting Reading src for "streamChat"'),
+      output.indexOf('Reading src for "streamChat"'),
     );
-    expect(output).toContain(
-      'Activity: Finished Reading src for "streamChat": match found',
-    );
-    expect(output).toContain(
-      'Activity: Failed Searching src for "missing": no matches',
-    );
-    expect(output).not.toContain("Starting read...");
-    expect(output).not.toContain("read completed:");
+    expect(output).toContain("match found");
+    expect(output).toContain("no matches");
   });
 
-  it("suppresses fallback tool token noise when tool calls are hidden", async () => {
+  it("shows working spinner when tool calls are hidden", async () => {
     const { ui, stderr } = createUi();
     const statusSpy = jest.spyOn(ui, "status");
     const doneSpy = jest.spyOn(ui, "done");
-    const agent = new FallbackNoiseAssistantTurnAgent();
+    const agent = new ScriptedAssistantTurnAgent([
+      { type: "token", value: "Prelude." },
+      {
+        type: "event",
+        value: {
+          type: "tool_started",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          args: {},
+          argumentChars: 12,
+          argumentPreview: '{"path":"package.json"}',
+        },
+      },
+      {
+        type: "event",
+        value: {
+          type: "tool_finished",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          resultPreview: "package content",
+        },
+      },
+      { type: "token", value: "Tail." },
+    ]);
 
     await streamAssistantTurn(
       agent,
@@ -342,9 +275,8 @@ describe("streamAssistantTurn", () => {
     expect(output).toContain("Tail.");
     expect(statusSpy).toHaveBeenCalledWith("Working", "tool call");
     expect(doneSpy).toHaveBeenCalledTimes(2);
-    expect(output).not.toContain("[Executing tool:");
-    expect(output).not.toContain("[Tool result:");
     expect(output).not.toContain("Starting read...");
+    expect(output).not.toContain("completed:");
   });
 
   it("keeps the hidden tool spinner active through consecutive tool calls in the same turn", async () => {
@@ -360,11 +292,11 @@ describe("streamAssistantTurn", () => {
           toolName: "read",
           toolCallId: "tool_1",
           activityLabel: "Reading package.json",
+          args: {},
           argumentChars: 12,
           argumentPreview: '{"path":"package.json"}',
         },
       },
-      { type: "tool_start", toolName: "read" },
       {
         type: "event",
         value: {
@@ -382,11 +314,11 @@ describe("streamAssistantTurn", () => {
           toolName: "grep",
           toolCallId: "tool_2",
           activityLabel: 'Searching src for "missing"',
+          args: {},
           argumentChars: 16,
           argumentPreview: '{"pattern":"missing"}',
         },
       },
-      { type: "tool_start", toolName: "grep" },
       {
         type: "event",
         value: {
@@ -428,11 +360,11 @@ describe("streamAssistantTurn", () => {
           toolName: "read",
           toolCallId: "tool_1",
           activityLabel: "Reading package.json",
+          args: {},
           argumentChars: 12,
           argumentPreview: '{"path":"package.json"}',
         },
       },
-      { type: "tool_start", toolName: "read" },
       {
         type: "event",
         value: {
@@ -451,11 +383,11 @@ describe("streamAssistantTurn", () => {
           toolName: "grep",
           toolCallId: "tool_2",
           activityLabel: 'Searching src for "missing"',
+          args: {},
           argumentChars: 16,
           argumentPreview: '{"pattern":"missing"}',
         },
       },
-      { type: "tool_start", toolName: "grep" },
       {
         type: "event",
         value: {
@@ -500,11 +432,11 @@ describe("streamAssistantTurn", () => {
           toolName: "read",
           toolCallId: "tool_1",
           activityLabel: "Reading package.json",
+          args: {},
           argumentChars: 12,
           argumentPreview: '{"path":"package.json"}',
         },
       },
-      { type: "tool_start", toolName: "read" },
       {
         type: "event",
         value: {
@@ -523,11 +455,11 @@ describe("streamAssistantTurn", () => {
           toolName: "grep",
           toolCallId: "tool_2",
           activityLabel: 'Searching src for "missing"',
+          args: {},
           argumentChars: 16,
           argumentPreview: '{"pattern":"missing"}',
         },
       },
-      { type: "tool_start", toolName: "grep" },
       {
         type: "event",
         value: {
@@ -558,32 +490,46 @@ describe("streamAssistantTurn", () => {
     expect(doneSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps activity traces visible without fallback tool token noise", async () => {
+  it("renders tool start and completion via visibility events", async () => {
     const { ui, stderr } = createUi();
-    const agent = new FallbackNoiseAssistantTurnAgent();
+    const agent = new ScriptedAssistantTurnAgent([
+      { type: "token", value: "Using a tool." },
+      {
+        type: "event",
+        value: {
+          type: "tool_started",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          args: {},
+          argumentChars: 12,
+          argumentPreview: '{"path":"package.json"}',
+        },
+      },
+      {
+        type: "event",
+        value: {
+          type: "tool_finished",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          resultPreview: "package content",
+        },
+      },
+    ]);
 
     await streamAssistantTurn(
       agent,
-      "activity tool test",
+      "tool test",
       ui,
       new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showToolCalls: true,
-        showActivity: true,
-      },
+      defaultVisibility,
     );
 
     const output = normalizeOutput(stderr.chunks);
 
-    expect(output).toContain("Prelude.");
-    expect(output).toContain("Activity: Starting Reading package.json");
-    expect(output).toContain(
-      "Activity: Finished Reading package.json: package content",
-    );
-    expect(output).not.toContain("[Executing tool:");
-    expect(output).not.toContain("[Tool result:");
-    expect(output).not.toContain("Starting read...");
+    expect(output).toContain("Reading package.json");
+    expect(output).toContain("package content");
   });
 
   it("suppresses all tool call UI when tool calls are hidden", async () => {
@@ -597,11 +543,11 @@ describe("streamAssistantTurn", () => {
           toolName: "read",
           toolCallId: "tool_1",
           activityLabel: 'Reading src for "streamChat"',
+          args: {},
           argumentChars: 12,
           argumentPreview: '{"q":"x"}',
         },
       },
-      { type: "tool_start", toolName: "read" },
       {
         type: "event",
         value: {
@@ -612,12 +558,6 @@ describe("streamAssistantTurn", () => {
           resultPreview: "match found",
         },
       },
-      {
-        type: "tool_end",
-        toolName: "read",
-        result: "This result should stay hidden.",
-        status: "success",
-      },
     ]);
 
     await streamAssistantTurn(
@@ -625,101 +565,17 @@ describe("streamAssistantTurn", () => {
       "activity hidden test",
       ui,
       new AbortController().signal,
-      { ...defaultVisibility, showActivity: true, showToolCalls: false },
+      { ...defaultVisibility, showToolCalls: false },
     );
 
     const output = normalizeOutput(stderr.chunks);
 
     expect(output).toContain("Alpha.");
-    expect(output).not.toContain("Activity: Starting");
-    expect(output).not.toContain("Starting read...");
-    expect(output).not.toContain("completed:");
+    expect(output).not.toContain("Reading src");
+    expect(output).not.toContain("match found");
   });
 
-  it("renders rich tool labels in legacy callback output when visibility events are available", async () => {
-    const { ui, stderr } = createUi();
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Using a tool." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
-        },
-      },
-      { type: "tool_start", toolName: "read" },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "package content",
-        },
-      },
-      {
-        type: "tool_end",
-        toolName: "read",
-        result:
-          "This is a long result payload that will be summarized in output.",
-        status: "success",
-      },
-    ]);
-
-    await streamAssistantTurn(
-      agent,
-      "legacy tool test",
-      ui,
-      new AbortController().signal,
-      defaultVisibility,
-    );
-
-    const output = normalizeOutput(stderr.chunks);
-
-    expect(output).toContain("Starting Reading package.json...");
-    expect(output).toContain("Executing Reading package.json...");
-    expect(output).toContain(
-      "Reading package.json completed: This is a long result payload",
-    );
-    expect(output).not.toContain("Starting read...");
-    expect(output).not.toContain("read completed:");
-  });
-
-  it("falls back to raw tool names when visibility events are missing", async () => {
-    const { ui, stderr } = createUi();
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Using a tool." },
-      { type: "tool_start", toolName: "read" },
-      {
-        type: "tool_end",
-        toolName: "read",
-        result:
-          "This is a long result payload that will be summarized in output.",
-        status: "success",
-      },
-    ]);
-
-    await streamAssistantTurn(
-      agent,
-      "legacy tool test",
-      ui,
-      new AbortController().signal,
-      defaultVisibility,
-    );
-
-    const output = normalizeOutput(stderr.chunks);
-
-    expect(output).toContain("Starting read...");
-    expect(output).toContain("Executing read...");
-    expect(output).toContain("read completed: This is a long result payload");
-  });
-
-  it("uses the rich label for failed tools in legacy callback output", async () => {
+  it("renders failed tool activity via visibility events", async () => {
     const { ui, stderr } = createUi();
     const agent = new ScriptedAssistantTurnAgent([
       { type: "token", value: "Using a tool." },
@@ -730,11 +586,11 @@ describe("streamAssistantTurn", () => {
           toolName: "grep",
           toolCallId: "tool_9",
           activityLabel: 'Searching src for "missing"',
+          args: {},
           argumentChars: 16,
           argumentPreview: '{"pattern":"missing"}',
         },
       },
-      { type: "tool_start", toolName: "grep" },
       {
         type: "event",
         value: {
@@ -744,12 +600,6 @@ describe("streamAssistantTurn", () => {
           activityLabel: 'Searching src for "missing"',
           resultPreview: "No matches found.",
         },
-      },
-      {
-        type: "tool_end",
-        toolName: "grep",
-        result: "No matches found.",
-        status: "error",
       },
     ]);
 
@@ -763,11 +613,8 @@ describe("streamAssistantTurn", () => {
 
     const output = normalizeOutput(stderr.chunks);
 
-    expect(output).toContain('Starting Searching src for "missing"...');
-    expect(output).toContain('Executing Searching src for "missing"...');
-    expect(output).toContain(
-      'Searching src for "missing" failed: No matches found.',
-    );
+    expect(output).toContain('Searching src for "missing"');
+    expect(output).toContain("No matches found.");
   });
 
   it("renders prompt-plan output on its own line after flushing assistant content", async () => {
@@ -879,7 +726,6 @@ describe("streamAssistantTurn", () => {
         showReasoningSummary: true,
         showContextStats: true,
         showStatus: true,
-        showActivity: true,
         showPromptPlan: true,
       },
     );

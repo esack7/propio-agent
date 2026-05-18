@@ -17,6 +17,7 @@ import {
   type ReplAppMode,
   type TranscriptEntry,
 } from "./replUi.js";
+import type { ToolCallView } from "./toolCallView.js";
 import type { PromptState } from "./promptState.js";
 
 export interface TerminalUiOptions {
@@ -195,6 +196,31 @@ export class TerminalUi {
     this.statusRenderer.status(text, phase);
   }
 
+  upsertToolCallView(view: ToolCallView): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.upsertToolCallView(view);
+      return;
+    }
+
+    if (view.status === "running") {
+      this.appendTranscriptEntry({ kind: "info", text: `◆ ${view.useLabel}` });
+    } else if (view.status === "success") {
+      const text = view.resultLabel
+        ? `${view.useLabel} — ${view.resultLabel}`
+        : view.useLabel;
+      this.appendTranscriptEntry({ kind: "success", text });
+    } else {
+      const text = view.resultLabel
+        ? `${view.useLabel} — ${view.resultLabel}`
+        : view.useLabel;
+      this.appendTranscriptEntry({ kind: "error", text });
+    }
+  }
+
   traceStatus(text: string): void {
     if (this.json) {
       return;
@@ -206,22 +232,6 @@ export class TerminalUi {
     }
 
     this.appendTranscriptEntry({ kind: "subtle", text: `Status: ${text}` });
-  }
-
-  traceActivity(text: string, level: "info" | "error" = "info"): void {
-    if (this.json) {
-      return;
-    }
-
-    if (this.retainedStore) {
-      this.retainedStore.setActivity({ text, level });
-      return;
-    }
-
-    this.appendTranscriptEntry({
-      kind: level === "error" ? "error" : "info",
-      text: `Activity: ${text}`,
-    });
   }
 
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
@@ -305,7 +315,6 @@ export class TerminalUi {
     if (this.statusRenderer.succeed(text)) {
       if (this.retainedStore) {
         this.retainedStore.setStatus(null);
-        this.retainedStore.setActivity(null);
       }
       return;
     }
@@ -321,7 +330,6 @@ export class TerminalUi {
     if (this.statusRenderer.fail(text)) {
       if (this.retainedStore) {
         this.retainedStore.setStatus(null);
-        this.retainedStore.setActivity(null);
       }
       return;
     }
@@ -329,6 +337,7 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "error", text });
   }
 
+  // fallow-ignore-next-line unused-class-member
   progress(current: number, total: number, label?: string): void {
     if (this.json) {
       return;
@@ -347,6 +356,7 @@ export class TerminalUi {
     this.statusRenderer.progress(current, total, label);
   }
 
+  // fallow-ignore-next-line unused-class-member
   section(title: string): void {
     if (this.json) {
       return;
@@ -355,6 +365,7 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "section", text: title });
   }
 
+  // fallow-ignore-next-line unused-class-member
   indent(text: string): void {
     if (this.json) {
       return;
@@ -413,7 +424,7 @@ export class TerminalUi {
   private clearStatusIfNeeded(): void {
     if (this.retainedStore) {
       const state = this.retainedStore.getState();
-      if (state.status || state.activity) {
+      if (state.status) {
         this.retainedStore.clearEphemeralSurfaces();
       }
       return;

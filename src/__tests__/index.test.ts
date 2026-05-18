@@ -57,7 +57,6 @@ describe("index non-interactive session", () => {
         currentAbortController = controller;
       },
       {
-        showActivity: false,
         showToolCalls: true,
         showStatus: false,
         showReasoningSummary: false,

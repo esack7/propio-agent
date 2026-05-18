@@ -63,21 +63,6 @@ export class TranscriptRenderer {
     );
   }
 
-  traceStatus(text: string): void {
-    this.options.clearStatus();
-    this.options.writer.writeStderrLine(
-      this.options.style(`Status: ${text}`, formatSubtle),
-    );
-  }
-
-  traceActivity(text: string, level: "info" | "error" = "info"): void {
-    this.options.clearStatus();
-    const formatter = level === "error" ? formatError : formatInfo;
-    this.options.writer.writeStderrLine(
-      this.options.style(`Activity: ${text}`, formatter),
-    );
-  }
-
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
     this.options.clearStatus();
     this.options.writer.writeStderrLine("");
