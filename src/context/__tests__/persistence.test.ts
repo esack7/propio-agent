@@ -17,72 +17,13 @@ import {
 } from "../types.js";
 import { Buffer } from "buffer";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function toolResult(
-  toolCallId: string,
-  toolName: string,
-  rawContent: string | Uint8Array,
-  status: "success" | "error" = "success",
-  mediaType?: string,
-): ArtifactToolResult {
-  return { toolCallId, toolName, rawContent, status, mediaType };
-}
-
-const TEST_METADATA: SessionMetadata = {
-  providerName: "test-provider",
-  modelKey: "test-model",
-  systemPrompt: "You are a test assistant.",
-  promptBudgetPolicy: DEFAULT_BUDGET_POLICY,
-  summaryPolicy: DEFAULT_SUMMARY_POLICY,
-  contextWindowTokens: 128000,
-};
-
-function buildPopulatedManager(): ContextManager {
-  const manager = new ContextManager();
-
-  // Turn 1: completed with text tool artifact
-  manager.beginUserTurn("Read the config file");
-  manager.commitAssistantResponse("Sure, reading now", [
-    {
-      id: "tc-1",
-      function: { name: "read", arguments: { path: "config.json" } },
-    },
-  ]);
-  manager.recordToolResults([
-    toolResult("tc-1", "read", '{"key": "value", "port": 3000}'),
-  ]);
-  manager.commitAssistantResponse("The config has key=value and port=3000.");
-
-  // Turn 2: completed with multiple tool calls
-  manager.beginUserTurn("List the project files");
-  manager.commitAssistantResponse("Listing...", [
-    { id: "tc-2", function: { name: "ls", arguments: { path: "." } } },
-    { id: "tc-3", function: { name: "ls", arguments: { path: "src" } } },
-  ]);
-  manager.recordToolResults([
-    toolResult("tc-2", "ls", "package.json\nsrc/\ntsconfig.json"),
-    toolResult("tc-3", "ls", "index.ts\nagent.ts"),
-  ]);
-  manager.commitAssistantResponse("Found 5 files across root and src.");
-
-  return manager;
-}
-
-function roundTrip(manager: ContextManager): ConversationState {
-  const state = manager.getConversationState();
-  const json = serializeSession(state, TEST_METADATA);
-  const parsed = parseSession(json);
-  return restoreConversationState(parsed);
-}
-
-function roundTripState(state: ConversationState): ConversationState {
-  const json = serializeSession(state, TEST_METADATA);
-  const parsed = parseSession(json);
-  return restoreConversationState(parsed);
-}
+import {
+  toolResult,
+  TEST_METADATA,
+  buildPopulatedManager,
+  roundTrip,
+  roundTripState,
+} from "./testHelpers.js";
 
 // ---------------------------------------------------------------------------
 // Tests

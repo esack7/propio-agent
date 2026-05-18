@@ -15,6 +15,12 @@ import {
 import { LLMProvider } from "../../providers/interface.js";
 import { ChatRequest, ChatStreamEvent } from "../../providers/types.js";
 
+import {
+  makeTurn as makeTurnBase,
+  makeAssistantEntry,
+  makeToolEntry as makeToolEntryBase,
+} from "./testHelpers.js";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -25,45 +31,21 @@ function makeTurn(opts: {
   entries?: TurnEntry[];
   completedAt?: string;
 }): TurnRecord {
-  return {
-    id: opts.id,
-    startedAt: "2026-01-01T00:00:00Z",
+  return makeTurnBase({
+    ...opts,
     completedAt: opts.completedAt ?? "2026-01-01T00:01:00Z",
-    importance: "normal",
-    userMessage: { role: "user", content: opts.userMessage },
-    entries: opts.entries ?? [],
-  };
-}
-
-function makeAssistantEntry(content: string): TurnEntry {
-  return {
-    kind: "assistant",
-    createdAt: "2026-01-01T00:00:01Z",
-    message: { role: "assistant", content },
-  };
+  });
 }
 
 function makeToolEntry(toolName: string, resultSummary: string): TurnEntry {
-  return {
-    kind: "tool",
-    createdAt: "2026-01-01T00:00:02Z",
-    message: {
-      role: "tool",
-      content: "",
-      toolResults: [{ toolCallId: "tc-1", toolName, content: resultSummary }],
+  return makeToolEntryBase([
+    {
+      toolCallId: "tc-1",
+      toolName,
+      content: resultSummary,
+      artifactId: "art-1",
     },
-    toolInvocations: [
-      {
-        toolCallId: "tc-1",
-        toolName,
-        status: "success" as const,
-        resultSummary,
-        artifactId: "art-1",
-        mediaType: "text/plain",
-        contentSizeChars: resultSummary.length,
-      },
-    ],
-  };
+  ]);
 }
 
 function makeSummary(

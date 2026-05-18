@@ -45,11 +45,7 @@ export interface ContextOverviewLine {
   readonly style: "info" | "subtle" | "section";
 }
 
-export function formatContextOverview(
-  state: ConversationState,
-): ContextOverviewLine[] {
-  const lines: ContextOverviewLine[] = [];
-
+function formatStatsSection(state: ConversationState): ContextOverviewLine[] {
   const preambleCount = state.preamble.length;
   const turnCount = state.turns.length;
   const artifactCount = state.artifacts.length;
@@ -57,35 +53,26 @@ export function formatContextOverview(
     (r) => r.lifecycle === "active",
   );
   const invokedSkillCount = state.invokedSkills?.length ?? 0;
-
   let preambleTokens = 0;
-  for (const msg of state.preamble) {
+  for (const msg of state.preamble)
     preambleTokens += estimateTokens(estimateMessageChars(msg));
-  }
-
   let turnTokens = 0;
   for (const turn of state.turns) {
     if (turn.estimatedTokens != null) turnTokens += turn.estimatedTokens;
   }
-
   const totalEstimatedTokens = preambleTokens + turnTokens;
   const summaryTokens = state.rollingSummary?.estimatedTokens ?? 0;
 
-  lines.push({
-    text: "Context Overview",
-    style: "section",
-  });
-
+  const lines: ContextOverviewLine[] = [
+    { text: "Context Overview", style: "section" },
+  ];
   if (preambleCount > 0) {
     lines.push({
       text: `  Preamble: ${preambleCount} ${plural(preambleCount, "message")}`,
       style: "info",
     });
   }
-  lines.push({
-    text: `  Turns: ${turnCount}`,
-    style: "info",
-  });
+  lines.push({ text: `  Turns: ${turnCount}`, style: "info" });
   lines.push({
     text: `  Estimated conversation tokens: ~${totalEstimatedTokens} (estimated, stored conversation)`,
     style: "info",
@@ -94,69 +81,69 @@ export function formatContextOverview(
     text: `  Rolling summary: ${state.rollingSummary ? `~${summaryTokens} tokens (estimated), covering ${state.rollingSummary.coveredTurnIds.length} ${plural(state.rollingSummary.coveredTurnIds.length, "turn")}` : "none"}`,
     style: "info",
   });
-  lines.push({
-    text: `  Artifacts: ${artifactCount}`,
-    style: "info",
-  });
+  lines.push({ text: `  Artifacts: ${artifactCount}`, style: "info" });
   lines.push({
     text: `  Pinned memory: ${activePinned.length} active ${plural(activePinned.length, "record")}`,
     style: "info",
   });
-  lines.push({
-    text: `  Invoked skills: ${invokedSkillCount}`,
-    style: "info",
-  });
+  lines.push({ text: `  Invoked skills: ${invokedSkillCount}`, style: "info" });
+  return lines;
+}
 
-  if (preambleCount > 0) {
-    lines.push({ text: "", style: "subtle" });
-    lines.push({ text: "Preamble", style: "section" });
+function formatPreambleSection(
+  preamble: ConversationState["preamble"],
+): ContextOverviewLine[] {
+  const lines: ContextOverviewLine[] = [
+    { text: "", style: "subtle" },
+    { text: "Preamble", style: "section" },
+  ];
+  for (const msg of preamble) {
+    lines.push({
+      text: `  ${msg.role.toUpperCase()}: ${previewText(msg.content)}`,
+      style: "info",
+    });
+  }
+  return lines;
+}
 
-    for (const msg of state.preamble) {
-      const preview = previewText(msg.content);
-      lines.push({
-        text: `  ${msg.role.toUpperCase()}: ${preview}`,
-        style: "info",
-      });
+function formatTurnsSection(
+  turns: ConversationState["turns"],
+): ContextOverviewLine[] {
+  const lines: ContextOverviewLine[] = [
+    { text: "", style: "subtle" },
+    { text: "Turns", style: "section" },
+  ];
+  for (const turn of turns) {
+    const status = turn.completedAt ? "completed" : "in-progress";
+    lines.push({
+      text: `  [${status}] ${previewText(turn.userMessage.content)}`,
+      style: "info",
+    });
+    const details: string[] = [];
+    const entryInfo = formatTurnEntrySummary(turn.entries);
+    if (entryInfo) details.push(entryInfo);
+    if (turn.importance !== "normal")
+      details.push(`importance=${turn.importance}`);
+    if (turn.estimatedTokens != null)
+      details.push(`~${turn.estimatedTokens} tokens (est.)`);
+    if (turn.entries.some(hasArtifactReference)) {
+      const artIds = collectArtifactIds(turn.entries);
+      details.push(`${artIds.length} ${plural(artIds.length, "artifact")}`);
+    }
+    if (details.length > 0) {
+      lines.push({ text: `    ${details.join(" | ")}`, style: "subtle" });
     }
   }
+  return lines;
+}
 
-  if (turnCount > 0) {
-    lines.push({ text: "", style: "subtle" });
-    lines.push({ text: "Turns", style: "section" });
-
-    for (const turn of state.turns) {
-      const status = turn.completedAt ? "completed" : "in-progress";
-      const userPreview = previewText(turn.userMessage.content);
-      const entryInfo = formatTurnEntrySummary(turn.entries);
-      const tokenLabel =
-        turn.estimatedTokens != null
-          ? ` ~${turn.estimatedTokens} tokens (est.)`
-          : "";
-
-      lines.push({
-        text: `  [${status}] ${userPreview}`,
-        style: "info",
-      });
-
-      const details: string[] = [];
-      if (entryInfo) details.push(entryInfo);
-      if (turn.importance !== "normal")
-        details.push(`importance=${turn.importance}`);
-      if (tokenLabel) details.push(tokenLabel.trim());
-      if (turn.entries.some(hasArtifactReference)) {
-        const artIds = collectArtifactIds(turn.entries);
-        details.push(`${artIds.length} ${plural(artIds.length, "artifact")}`);
-      }
-
-      if (details.length > 0) {
-        lines.push({
-          text: `    ${details.join(" | ")}`,
-          style: "subtle",
-        });
-      }
-    }
-  }
-
+export function formatContextOverview(
+  state: ConversationState,
+): ContextOverviewLine[] {
+  const lines = formatStatsSection(state);
+  if (state.preamble.length > 0)
+    lines.push(...formatPreambleSection(state.preamble));
+  if (state.turns.length > 0) lines.push(...formatTurnsSection(state.turns));
   return lines;
 }
 

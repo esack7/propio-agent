@@ -11,16 +11,9 @@ import { ChatMessage, ChatRequest } from "../types.js";
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
 
-function createSseStream(chunks: string[]): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(new TextEncoder().encode(chunk));
-      }
-      controller.close();
-    },
-  });
-}
+import { OpenRouterTestFixture } from "./openrouterTestHelpers.js";
+
+const createSseStream = OpenRouterTestFixture.createSseStream;
 
 describe("GeminiProvider", () => {
   beforeEach(() => {

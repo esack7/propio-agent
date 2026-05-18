@@ -656,6 +656,55 @@ async function runInteractiveSession(
   }
 }
 
+function handleStaleMarkers(
+  sessionsDir: string,
+  ui: TerminalUi,
+  diagnosticLogger: { onEvent: (event: AgentDiagnosticEvent) => void },
+): void {
+  const staleMarkers = findStaleMarkers(sessionsDir);
+  for (const { sessionId, marker, ageMs } of staleMarkers) {
+    const ageHours = Math.round(ageMs / (60 * 60 * 1000));
+    const ageText =
+      ageHours < 24 ? `${ageHours}h ago` : `${Math.round(ageHours / 24)}d ago`;
+    if (!ui.isJsonMode()) {
+      ui.warn(
+        `Detected an incomplete session from ${ageText} (${marker.providerName}/${marker.modelKey}, turn ${marker.turnIndex}). Work since the last /exit was not saved.`,
+      );
+    }
+    diagnosticLogger.onEvent({
+      type: "mid_turn_crash_detected",
+      provider: marker.providerName,
+      model: marker.modelKey,
+      turnIndex: marker.turnIndex,
+      ageMs,
+    });
+    clearInProgressMarker(sessionsDir, sessionId);
+  }
+}
+
+function pruneStaleArtifacts(sessionsDir: string, retentionDays: number): void {
+  const artifactsRoot = path.join(sessionsDir, "artifacts");
+  if (!fs.existsSync(artifactsRoot)) return;
+  const index = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir);
+  const anchoredIds = new Set(
+    index.entries.map((e) => e.runtimeSessionId).filter(Boolean) ?? [],
+  );
+  const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
+  for (const dirName of fs.readdirSync(artifactsRoot)) {
+    const dirPath = path.join(artifactsRoot, dirName);
+    try {
+      if (!fs.statSync(dirPath).isDirectory()) continue;
+      if (anchoredIds.has(dirName)) continue;
+      const mtime = fs.statSync(dirPath).mtimeMs;
+      if (Date.now() - mtime > retentionMs) {
+        fs.rmSync(dirPath, { recursive: true, force: true });
+      }
+    } catch {
+      continue;
+    }
+  }
+}
+
 async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
   const parsedArgs = parseCliArgs(rawArgs);
@@ -744,61 +793,10 @@ async function main(): Promise<number> {
       ui.command("");
     }
 
-    // Detect stale in-progress markers from crashed sessions (Phase 7)
     const sessionsDir = getDefaultSessionsDir();
-    const staleMarkers = findStaleMarkers(sessionsDir);
-    for (const { sessionId, marker, ageMs } of staleMarkers) {
-      const ageHours = Math.round(ageMs / (60 * 60 * 1000));
-      const ageText =
-        ageHours < 24
-          ? `${ageHours}h ago`
-          : `${Math.round(ageHours / 24)}d ago`;
-
-      if (!ui.isJsonMode()) {
-        ui.warn(
-          `Detected an incomplete session from ${ageText} (${marker.providerName}/${marker.modelKey}, turn ${marker.turnIndex}). Work since the last /exit was not saved.`,
-        );
-      }
-
-      // Emit diagnostic for this crash detection
-      diagnosticLogger.onEvent({
-        type: "mid_turn_crash_detected",
-        provider: marker.providerName,
-        model: marker.modelKey,
-        turnIndex: marker.turnIndex,
-        ageMs,
-      });
-
-      // Clean up the stale marker
-      clearInProgressMarker(sessionsDir, sessionId);
-    }
-
-    // Artifact retention: prune artifact dirs not anchored to any saved snapshot
+    handleStaleMarkers(sessionsDir, ui, diagnosticLogger);
     const runtimeConfig = loadRuntimeConfig();
-    const artifactsRoot = path.join(sessionsDir, "artifacts");
-    if (fs.existsSync(artifactsRoot)) {
-      const index = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir);
-      const anchoredIds = new Set(
-        index.entries.map((e) => e.runtimeSessionId).filter(Boolean) ?? [],
-      );
-      const retentionMs =
-        runtimeConfig.artifactRetentionDays * 24 * 60 * 60 * 1000;
-
-      for (const dirName of fs.readdirSync(artifactsRoot)) {
-        const dirPath = path.join(artifactsRoot, dirName);
-        try {
-          if (!fs.statSync(dirPath).isDirectory()) continue;
-          if (anchoredIds.has(dirName)) continue;
-
-          const mtime = fs.statSync(dirPath).mtimeMs;
-          if (Date.now() - mtime > retentionMs) {
-            fs.rmSync(dirPath, { recursive: true, force: true });
-          }
-        } catch {
-          continue;
-        }
-      }
-    }
+    pruneStaleArtifacts(sessionsDir, runtimeConfig.artifactRetentionDays);
 
     const configPath = getConfigPath();
     const mcpConfigPath = getMcpConfigPath();

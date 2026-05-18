@@ -339,6 +339,44 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     return { remainingBuffer, events, sawUsableOutput };
   }
 
+  private mapOpenRouterFinishReason(finishReason: string): string {
+    if (finishReason === "length") return "max_tokens";
+    if (finishReason === "stop") return "end_turn";
+    if (finishReason === "tool_calls") return "tool_use";
+    if (finishReason === "content_filter") return "error";
+    return "end_turn";
+  }
+
+  private flushDsmlBuffer(
+    contentBuffer: string,
+    reasoningContent: string,
+  ): {
+    events: ChatStreamEvent[];
+    remainingBuffer: string;
+    sawUsableOutput: boolean;
+  } {
+    const consumed = this.consumeDsmlBuffer(contentBuffer);
+    const events: ChatStreamEvent[] = consumed.events.map((event) => {
+      if (
+        "type" in event &&
+        event.type === "tool_calls" &&
+        reasoningContent.length > 0
+      ) {
+        return {
+          type: "tool_calls" as const,
+          toolCalls: event.toolCalls,
+          reasoningContent,
+        };
+      }
+      return event;
+    });
+    return {
+      events,
+      remainingBuffer: consumed.remainingBuffer,
+      sawUsableOutput: consumed.sawUsableOutput,
+    };
+  }
+
   private async *streamResponse(
     response: Response,
     options: {
@@ -385,17 +423,8 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       const choice = chunk?.choices?.[0];
       if (!choice?.delta) continue;
 
-      // Capture stop reason and map from OpenAI-style to normalized StopReason
       if (choice.finish_reason) {
-        if (choice.finish_reason === "length") {
-          stopReason = "max_tokens";
-        } else if (choice.finish_reason === "stop") {
-          stopReason = "end_turn";
-        } else if (choice.finish_reason === "tool_calls") {
-          stopReason = "tool_use";
-        } else if (choice.finish_reason === "content_filter") {
-          stopReason = "error";
-        }
+        stopReason = this.mapOpenRouterFinishReason(choice.finish_reason);
       }
 
       const delta = choice.delta;
@@ -406,24 +435,10 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       if (delta.content != null && delta.content !== "") {
         if (options.parseDsmlToolCalls) {
           contentBuffer += delta.content;
-          const consumed = this.consumeDsmlBuffer(contentBuffer);
-          contentBuffer = consumed.remainingBuffer;
-          for (const event of consumed.events) {
-            if (
-              "type" in event &&
-              event.type === "tool_calls" &&
-              reasoningContent.length > 0
-            ) {
-              yield {
-                type: "tool_calls",
-                toolCalls: event.toolCalls,
-                reasoningContent,
-              };
-              continue;
-            }
-            yield event;
-          }
-          sawUsableOutput ||= consumed.sawUsableOutput;
+          const flushed = this.flushDsmlBuffer(contentBuffer, reasoningContent);
+          contentBuffer = flushed.remainingBuffer;
+          for (const event of flushed.events) yield event;
+          sawUsableOutput ||= flushed.sawUsableOutput;
         } else {
           yield { type: "assistant_text", delta: delta.content };
           if (delta.content.trim().length > 0) {
@@ -465,24 +480,9 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     }
 
     if (options.parseDsmlToolCalls && contentBuffer.length > 0) {
-      const consumed = this.consumeDsmlBuffer(contentBuffer);
-      contentBuffer = consumed.remainingBuffer;
-      for (const event of consumed.events) {
-        if (
-          "type" in event &&
-          event.type === "tool_calls" &&
-          reasoningContent.length > 0
-        ) {
-          yield {
-            type: "tool_calls",
-            toolCalls: event.toolCalls,
-            reasoningContent,
-          };
-          continue;
-        }
-        yield event;
-      }
-      sawUsableOutput ||= consumed.sawUsableOutput;
+      const flushed = this.flushDsmlBuffer(contentBuffer, reasoningContent);
+      for (const event of flushed.events) yield event;
+      sawUsableOutput ||= flushed.sawUsableOutput;
     }
 
     if (options.expectUsableOutput && !sawUsableOutput) {
@@ -617,6 +617,103 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     return details;
   }
 
+  private buildUpstreamDetail(
+    errorInfo: {
+      message?: string;
+      providerName?: string;
+      retryAfterSeconds?: number;
+    },
+    includeRetryAfter: boolean,
+  ): string | undefined {
+    const details: string[] = [];
+    const parts: string[] = [];
+    if (typeof errorInfo.providerName === "string")
+      parts.push(errorInfo.providerName);
+    if (typeof errorInfo.message === "string") parts.push(errorInfo.message);
+    if (parts.length > 0) details.push(parts.join(": "));
+    if (includeRetryAfter && typeof errorInfo.retryAfterSeconds === "number") {
+      details.push(`retry after ${errorInfo.retryAfterSeconds}s`);
+    }
+    return details.length > 0 ? details.join("; ") : undefined;
+  }
+
+  private translateHttpStatusError(
+    response: Response,
+    errorInfo: {
+      message?: string;
+      providerName?: string;
+      retryAfterSeconds?: number;
+    },
+    originalError: Error,
+  ): ProviderError | null {
+    const detail = (includeRetryAfter: boolean) =>
+      this.buildUpstreamDetail(errorInfo, includeRetryAfter);
+
+    if (
+      response.status === 400 &&
+      isContextLengthError(originalError.message)
+    ) {
+      return new ProviderContextLengthError(
+        `Context length exceeded: ${originalError.message}`,
+        originalError,
+      );
+    }
+    if (response.status === 401) {
+      return new ProviderAuthenticationError(
+        "Invalid OpenRouter API key",
+        originalError,
+      );
+    }
+    if (response.status === 429) {
+      const retryAfter = response.headers?.get("retry-after");
+      const retryAfterSeconds =
+        errorInfo.retryAfterSeconds ?? parseRetryAfterSeconds(retryAfter);
+      const d = detail(true);
+      return new ProviderRateLimitError(
+        d
+          ? `OpenRouter rate limit exceeded (${d})`
+          : "OpenRouter rate limit exceeded",
+        Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
+        originalError,
+      );
+    }
+    if (response.status === 404) {
+      return new ProviderModelNotFoundError(
+        this.model,
+        `Model not found: ${this.model}`,
+        originalError,
+      );
+    }
+    if (response.status === 402) {
+      return new ProviderError(
+        "Insufficient OpenRouter credits",
+        originalError,
+      );
+    }
+    if (response.status === 529) {
+      const d = detail(true);
+      return new ProviderCapacityError(
+        d
+          ? `OpenRouter upstream capacity exceeded (${d})`
+          : "OpenRouter upstream capacity exceeded",
+        originalError,
+      );
+    }
+    if (response.status === 503) {
+      const d = detail(true);
+      return new ProviderError(
+        d
+          ? `OpenRouter upstream provider unavailable (${d})`
+          : "OpenRouter service error",
+        originalError,
+      );
+    }
+    if (response.status >= 500 && response.status < 600) {
+      return new ProviderError("OpenRouter service error", originalError);
+    }
+    return null;
+  }
+
   protected translateError(
     error: unknown,
     response?: Response,
@@ -626,105 +723,23 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       error instanceof Error ? error : new Error(String(error));
     if (response) {
       const errorInfo = this.parseOpenRouterErrorBody(responseBody);
-      const upstreamDetail = (
-        includeRetryAfter: boolean,
-      ): string | undefined => {
-        const details: string[] = [];
-        const upstreamMessageParts: string[] = [];
-        if (typeof errorInfo.providerName === "string") {
-          upstreamMessageParts.push(errorInfo.providerName);
-        }
-        if (typeof errorInfo.message === "string") {
-          upstreamMessageParts.push(errorInfo.message);
-        }
-        if (upstreamMessageParts.length > 0) {
-          details.push(upstreamMessageParts.join(": "));
-        }
-        if (
-          includeRetryAfter &&
-          typeof errorInfo.retryAfterSeconds === "number"
-        ) {
-          details.push(`retry after ${errorInfo.retryAfterSeconds}s`);
-        }
-        return details.length > 0 ? details.join("; ") : undefined;
-      };
-      if (
-        response.status === 400 &&
-        isContextLengthError(originalError.message)
-      ) {
-        return new ProviderContextLengthError(
-          `Context length exceeded: ${originalError.message}`,
-          originalError,
-        );
-      }
-      if (response.status === 401) {
-        return new ProviderAuthenticationError(
-          "Invalid OpenRouter API key",
-          originalError,
-        );
-      }
-      if (response.status === 429) {
-        const retryAfter = response.headers?.get("retry-after");
-        const retryAfterSeconds =
-          errorInfo.retryAfterSeconds ?? parseRetryAfterSeconds(retryAfter);
-        const detail = upstreamDetail(true);
-        const message = detail
-          ? `OpenRouter rate limit exceeded (${detail})`
-          : "OpenRouter rate limit exceeded";
-        return new ProviderRateLimitError(
-          message,
-          Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
-          originalError,
-        );
-      }
-      if (response.status === 404) {
-        return new ProviderModelNotFoundError(
-          this.model,
-          `Model not found: ${this.model}`,
-          originalError,
-        );
-      }
-      if (response.status === 402) {
-        return new ProviderError(
-          "Insufficient OpenRouter credits",
-          originalError,
-        );
-      }
-      if (response.status === 529) {
-        const detail = upstreamDetail(true);
-        return new ProviderCapacityError(
-          detail
-            ? `OpenRouter upstream capacity exceeded (${detail})`
-            : "OpenRouter upstream capacity exceeded",
-          originalError,
-        );
-      }
-      if (response.status === 503) {
-        const detail = upstreamDetail(true);
-        return new ProviderError(
-          detail
-            ? `OpenRouter upstream provider unavailable (${detail})`
-            : "OpenRouter service error",
-          originalError,
-        );
-      }
-      if (response.status >= 500 && response.status < 600) {
-        return new ProviderError("OpenRouter service error", originalError);
-      }
+      const statusError = this.translateHttpStatusError(
+        response,
+        errorInfo,
+        originalError,
+      );
+      if (statusError) return statusError;
     }
     const msg = originalError.message;
-
     if (isContextLengthError(msg)) {
       return new ProviderContextLengthError(
         `Context length exceeded: ${msg}`,
         originalError,
       );
     }
-
     if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
       return new ProviderError("Request cancelled", originalError);
     }
-
     if (msg && isAbortOrTransportError(msg)) {
       return new ProviderError(
         "Failed to connect to OpenRouter API",

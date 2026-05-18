@@ -3,138 +3,15 @@ import {
   PromptPlan,
   PromptBudgetPolicy,
   DEFAULT_BUDGET_POLICY,
-  ConversationState,
-  TurnRecord,
-  TurnEntry,
-  ArtifactRecord,
-  PinnedMemoryRecord,
 } from "../types.js";
-import { ChatMessage } from "../../providers/types.js";
-import { estimateTokens } from "../../diagnostics.js";
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-function makeTurn(opts: {
-  id: string;
-  userMessage: string;
-  entries?: TurnEntry[];
-  completedAt?: string;
-  importance?: "low" | "normal" | "high";
-}): TurnRecord {
-  return {
-    id: opts.id,
-    startedAt: "2026-01-01T00:00:00Z",
-    completedAt: opts.completedAt,
-    importance: opts.importance ?? "normal",
-    userMessage: { role: "user", content: opts.userMessage },
-    entries: opts.entries ?? [],
-  };
-}
-
-function makeAssistantEntry(content: string): TurnEntry {
-  return {
-    kind: "assistant",
-    createdAt: "2026-01-01T00:00:01Z",
-    message: { role: "assistant", content },
-  };
-}
-
-function makeToolEntry(
-  toolResults: Array<{
-    toolCallId: string;
-    toolName: string;
-    content: string;
-    artifactId: string;
-  }>,
-): TurnEntry {
-  return {
-    kind: "tool",
-    createdAt: "2026-01-01T00:00:02Z",
-    message: {
-      role: "tool",
-      content: "",
-      toolResults: toolResults.map((tr) => ({
-        toolCallId: tr.toolCallId,
-        toolName: tr.toolName,
-        content: tr.content,
-      })),
-    },
-    toolInvocations: toolResults.map((tr) => ({
-      toolCallId: tr.toolCallId,
-      toolName: tr.toolName,
-      status: "success" as const,
-      resultSummary: tr.content,
-      artifactId: tr.artifactId,
-      mediaType: "text/plain",
-      contentSizeChars: tr.content.length,
-    })),
-  };
-}
-
-function makeArtifact(
-  id: string,
-  content: string,
-  turnIds: string[] = [],
-): ArtifactRecord {
-  return {
-    id,
-    type: "tool_result",
-    mediaType: "text/plain",
-    createdAt: "2026-01-01T00:00:00Z",
-    content,
-    contentSizeChars: content.length,
-    estimatedTokens: estimateTokens(content.length),
-    referencingTurnIds: turnIds,
-  };
-}
-
-function makeState(opts?: {
-  preamble?: ChatMessage[];
-  turns?: TurnRecord[];
-  artifacts?: ArtifactRecord[];
-  pinnedMemory?: ReadonlyArray<PinnedMemoryRecord>;
-}): ConversationState {
-  return {
-    preamble: opts?.preamble ?? [],
-    turns: opts?.turns ?? [],
-    artifacts: opts?.artifacts ?? [],
-    pinnedMemory: opts?.pinnedMemory ?? [],
-  };
-}
-
-function makeRequest(opts: {
-  systemPrompt?: string;
-  state?: ConversationState;
-  contextWindowTokens?: number;
-  policy?: PromptBudgetPolicy;
-  extraUserInstruction?: string;
-  rollingSummary?: string;
-  summaryCoveredTurnIds?: ReadonlySet<string>;
-  retryLevel?: number;
-  artifacts?: Map<string, ArtifactRecord>;
-  pinnedMemoryBlock?: string;
-}): PromptBuildRequest {
-  const artifacts = opts.artifacts ?? new Map();
-  const state = opts.state ?? makeState();
-  return {
-    systemPrompt: opts.systemPrompt ?? "You are a helpful assistant.",
-    pinnedMemoryBlock: opts.pinnedMemoryBlock,
-    conversationState: state,
-    contextWindowTokens: opts.contextWindowTokens ?? 128000,
-    policy: opts.policy ?? DEFAULT_BUDGET_POLICY,
-    extraUserInstruction: opts.extraUserInstruction,
-    rollingSummary: opts.rollingSummary,
-    summaryCoveredTurnIds: opts.summaryCoveredTurnIds,
-    retryLevel: opts.retryLevel,
-    artifactLookup: (id: string) => artifacts.get(id),
-    isCurrentTurnUnresolved: (turnId: string) => {
-      const turn = state.turns.find((t) => t.id === turnId);
-      return turn != null && !turn.completedAt;
-    },
-  };
-}
+import {
+  makeTurn,
+  makeAssistantEntry,
+  makeToolEntry,
+  makeArtifact,
+  makeState,
+  makeRequest,
+} from "./testHelpers.js";
 
 // ---------------------------------------------------------------------------
 // Tests
