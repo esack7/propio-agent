@@ -1,9 +1,7 @@
-import { LLMProvider, ProviderCapabilities } from "./interface.js";
+import { ProviderCapabilities } from "./interface.js";
 import {
-  ChatMessage,
   ChatRequest,
   ChatStreamEvent,
-  ChatTool,
   ChatToolCall,
   ProviderError,
   ProviderAuthenticationError,
@@ -16,8 +14,6 @@ import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
   buildOpenAIStreamToolCalls,
-  applyOpenAIMessageCore,
-  createOpenAIToolDefinition,
   isAbortOrTransportError,
   isContextLengthError,
   parseJsonMaybe,
@@ -25,9 +21,10 @@ import {
   parseRetryAfterSeconds,
   readSseDataLines,
 } from "./shared.js";
-import { withRetry, type WithRetryOptions } from "./withRetry.js";
+import { withRetry } from "./withRetry.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { OpenRouterRoutingConfig } from "./config.js";
+import { OpenAiCompatibleProvider } from "./openAiCompatibleProvider.js";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DSML_TOOL_CALL_START_TOKENS = [
@@ -62,33 +59,10 @@ interface OpenRouterErrorEnvelope {
   };
 }
 
-/** OpenAI-compatible message format for API request */
-interface OpenAIMessage {
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  reasoning_content?: string;
-  tool_calls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
-}
-
-/** OpenAI-compatible tool format */
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: object;
-  };
-}
-
 /**
  * OpenRouter implementation of LLMProvider using native fetch and OpenAI-compatible API.
  */
-export class OpenRouterProvider implements LLMProvider {
+export class OpenRouterProvider extends OpenAiCompatibleProvider {
   readonly name = "openrouter";
   private readonly model: string;
   private readonly apiKey: string;
@@ -138,6 +112,7 @@ export class OpenRouterProvider implements LLMProvider {
       baseDelayMs?: number;
     };
   }) {
+    super();
     const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
       throw new ProviderAuthenticationError(
@@ -162,65 +137,6 @@ export class OpenRouterProvider implements LLMProvider {
         OpenRouterProvider.CONTEXT_WINDOWS[this.model] ??
         OpenRouterProvider.DEFAULT_CONTEXT_WINDOW,
     };
-  }
-
-  /**
-   * Expands batched tool results into individual tool messages.
-   * OpenAI/OpenRouter expects one message per tool result with tool_call_id.
-   */
-  private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
-    const role = msg.role as OpenAIMessage["role"];
-    const out: OpenAIMessage = { role, content: msg.content ?? "" };
-    return applyOpenAIMessageCore(out, msg);
-  }
-
-  private openAIMessageToChatMessage(msg: {
-    role?: string;
-    content?: string | null;
-    reasoning_content?: string | null;
-    tool_calls?: Array<{
-      id?: string;
-      type?: string;
-      function?: { name?: string; arguments?: string };
-    }>;
-  }): ChatMessage {
-    const content = msg.content ?? "";
-    const toolCalls: ChatToolCall[] = [];
-    if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-      for (const tc of msg.tool_calls) {
-        const fn = tc.function;
-        let args: Record<string, unknown> = {};
-        if (fn?.arguments) {
-          try {
-            args =
-              typeof fn.arguments === "string"
-                ? JSON.parse(fn.arguments)
-                : fn.arguments;
-          } catch {
-            args = { raw: fn.arguments };
-          }
-        }
-        toolCalls.push({
-          id: tc.id,
-          function: {
-            name: fn?.name ?? "",
-            arguments: args as Record<string, any>,
-          },
-        });
-      }
-    }
-    const chatMsg: ChatMessage = { role: "assistant", content };
-    if (msg.reasoning_content != null) {
-      chatMsg.reasoningContent = msg.reasoning_content;
-    }
-    if (toolCalls.length > 0) {
-      chatMsg.toolCalls = toolCalls;
-    }
-    return chatMsg;
-  }
-
-  private chatToolToOpenAITool(tool: ChatTool): OpenAITool {
-    return createOpenAIToolDefinition(tool);
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -600,13 +516,6 @@ export class OpenRouterProvider implements LLMProvider {
     return response;
   }
 
-  private isRetryableError(err: unknown): boolean {
-    if (err instanceof ProviderAuthenticationError) return false;
-    if (err instanceof ProviderModelNotFoundError) return false;
-    if (err instanceof ProviderContextLengthError) return false;
-    return err instanceof ProviderError;
-  }
-
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       let dropTools = false;
@@ -708,7 +617,7 @@ export class OpenRouterProvider implements LLMProvider {
     return details;
   }
 
-  private translateError(
+  protected translateError(
     error: unknown,
     response?: Response,
     responseBody?: string,

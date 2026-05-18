@@ -14,6 +14,11 @@ import { ProvidersConfig } from "../providers/config.js";
 import { ExecutableTool } from "../tools/interface.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
+import {
+  testProvidersConfig as sharedTestProvidersConfig,
+  createTestAgent,
+  createMockTool,
+} from "./testHelpers.js";
 
 const require = createRequire(import.meta.url);
 const fs = require("fs") as typeof import("fs");
@@ -1283,28 +1288,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     }
 
     it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
-      class LoopTool implements ExecutableTool {
-        readonly name = "loop_tool";
-        readonly description = "No-op loop tool for testing.";
-
-        getSchema() {
-          return {
-            type: "function" as const,
-            function: {
-              name: "loop_tool",
-              description: "No-op loop tool for testing",
-              parameters: {
-                type: "object",
-                properties: {},
-              },
-            },
-          };
-        }
-
-        async execute(): Promise<string> {
-          return "loop-ok";
-        }
-      }
+      const loopTool = createMockTool({
+        name: "loop_tool",
+        description: "No-op loop tool for testing.",
+        execute: async () => "loop-ok",
+      });
 
       class LoopingProvider implements LLMProvider {
         name = "looping-provider";
@@ -1341,7 +1329,7 @@ describe("Agent with Multi-Provider Configuration", () => {
           events.push(event);
         },
       });
-      agent.addTool(new LoopTool());
+      agent.addTool(loopTool);
       (agent as any).provider = provider;
 
       const response = await agent.streamChat("hello", () => {});
@@ -1359,28 +1347,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should throw a clear error when loop fallback also returns empty", async () => {
-      class LoopTool implements ExecutableTool {
-        readonly name = "loop_tool";
-        readonly description = "No-op loop tool for testing.";
-
-        getSchema() {
-          return {
-            type: "function" as const,
-            function: {
-              name: "loop_tool",
-              description: "No-op loop tool for testing",
-              parameters: {
-                type: "object",
-                properties: {},
-              },
-            },
-          };
-        }
-
-        async execute(): Promise<string> {
-          return "loop-ok";
-        }
-      }
+      const loopTool2 = createMockTool({
+        name: "loop_tool",
+        description: "No-op loop tool for testing.",
+        execute: async () => "loop-ok",
+      });
 
       class EmptyLoopingProvider implements LLMProvider {
         name = "empty-looping-provider";
@@ -1409,7 +1380,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
       });
-      agent.addTool(new LoopTool());
+      agent.addTool(loopTool2);
       (agent as any).provider = new EmptyLoopingProvider();
 
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(

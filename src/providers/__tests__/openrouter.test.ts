@@ -77,17 +77,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":"Hello back"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
       const provider = new OpenRouterProvider({
@@ -124,22 +116,11 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":"Ok"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest
         .fn()
         .mockImplementation((_url: string, init?: RequestInit) => {
           capturedBody = init?.body ? JSON.parse(init.body as string) : null;
-          return Promise.resolve({
-            ok: true,
-            body: stream,
-          });
+          return Promise.resolve({ ok: true, body: createSseStream(chunks) });
         });
 
       const provider = new OpenRouterProvider({
@@ -182,22 +163,11 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest
         .fn()
         .mockImplementation((_url: string, init?: RequestInit) => {
           capturedBody = init?.body ? JSON.parse(init.body as string) : null;
-          return Promise.resolve({
-            ok: true,
-            body: stream,
-          });
+          return Promise.resolve({ ok: true, body: createSseStream(chunks) });
         });
 
       const provider = new OpenRouterProvider({
@@ -236,17 +206,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
       const provider = new OpenRouterProvider({
@@ -1114,17 +1076,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
       const provider = new OpenRouterProvider({
@@ -1150,17 +1104,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
       const provider = new OpenRouterProvider({
@@ -1276,17 +1222,9 @@ describe("OpenRouterProvider", () => {
         "data: [DONE]\n\n",
         'data: {"choices":[{"delta":{"content":"ignored"}}]}\n\n',
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest
         .fn()
-        .mockResolvedValue({ ok: true, body: stream });
+        .mockResolvedValue({ ok: true, body: createSseStream(chunks) });
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -1308,17 +1246,9 @@ describe("OpenRouterProvider", () => {
         "data: not-json\n\n",
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest
         .fn()
-        .mockResolvedValue({ ok: true, body: stream });
+        .mockResolvedValue({ ok: true, body: createSseStream(chunks) });
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -1336,16 +1266,10 @@ describe("OpenRouterProvider", () => {
 
     it("should expand batched tool results into individual messages", async () => {
       const chunks = ['data: {"choices":[{"delta":{"content":"Done"}}]}\n\n'];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(chunks),
       });
-
-      const mockFetch = jest.fn().mockResolvedValue({ ok: true, body: stream });
       globalThis.fetch = mockFetch;
 
       const provider = new OpenRouterProvider({

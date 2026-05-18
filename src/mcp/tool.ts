@@ -59,6 +59,7 @@ export class McpExecutableTool implements ManagedMcpTool {
     return await this.invoke(args);
   }
 
+  // fallow-ignore-next-line unused-class-member
   async execute(args: Record<string, unknown>): Promise<string> {
     const result = await this.executeWithStatus(args);
     if (result.status === "success") {

@@ -272,6 +272,31 @@ export class GeminiProvider implements LLMProvider {
     return err instanceof ProviderError;
   }
 
+  private mapFinishReason(finishReason: string): string {
+    if (finishReason === "MAX_TOKENS") return "max_tokens";
+    if (finishReason === "STOP") return "end_turn";
+    if (finishReason === "TOOL_CALLS") return "tool_use";
+    if (
+      finishReason === "SAFETY" ||
+      finishReason === "RECITATION" ||
+      finishReason === "OTHER"
+    )
+      return "error";
+    return "end_turn";
+  }
+
+  private extractThoughtSignature(toolCall: {
+    extra_content?: { google?: { thought_signature?: string } };
+    thought_signature?: string;
+    thoughtSignature?: string;
+  }): string | undefined {
+    return (
+      toolCall.extra_content?.google?.thought_signature ??
+      toolCall.thought_signature ??
+      toolCall.thoughtSignature
+    );
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const effectiveModel = this.validateModel(request.model || this.model);
@@ -384,21 +409,8 @@ export class GeminiProvider implements LLMProvider {
         const choice = chunk?.choices?.[0];
         if (!choice?.delta) continue;
 
-        // Capture stop reason and map from Gemini to normalized StopReason
         if (choice.finish_reason) {
-          if (choice.finish_reason === "MAX_TOKENS") {
-            stopReason = "max_tokens";
-          } else if (choice.finish_reason === "STOP") {
-            stopReason = "end_turn";
-          } else if (choice.finish_reason === "TOOL_CALLS") {
-            stopReason = "tool_use";
-          } else if (
-            choice.finish_reason === "SAFETY" ||
-            choice.finish_reason === "RECITATION" ||
-            choice.finish_reason === "OTHER"
-          ) {
-            stopReason = "error";
-          }
+          stopReason = this.mapFinishReason(choice.finish_reason);
         }
 
         const delta = choice.delta;
@@ -413,10 +425,7 @@ export class GeminiProvider implements LLMProvider {
               name: "",
               argsString: "",
             }));
-            const thoughtSignature =
-              tc.extra_content?.google?.thought_signature ??
-              tc.thought_signature ??
-              tc.thoughtSignature;
+            const thoughtSignature = this.extractThoughtSignature(tc);
             const idx = tc.index ?? 0;
             const acc = toolCallsByIndex.get(idx);
             if (acc && thoughtSignature && !acc.thoughtSignature) {

@@ -1,9 +1,7 @@
-import { LLMProvider, ProviderCapabilities } from "./interface.js";
+import { ProviderCapabilities } from "./interface.js";
 import {
-  ChatMessage,
   ChatRequest,
   ChatStreamEvent,
-  ChatTool,
   ProviderError,
   ProviderAuthenticationError,
   ProviderRateLimitError,
@@ -17,8 +15,6 @@ import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
   buildOpenAIStreamToolCalls,
-  applyOpenAIMessageCore,
-  createOpenAIToolDefinition,
   isAbortOrTransportError,
   isContextLengthError,
   parseJsonMaybe,
@@ -27,6 +23,7 @@ import {
   parseRetryAfterSeconds,
   readSseDataLines,
 } from "./shared.js";
+import { OpenAiCompatibleProvider } from "./openAiCompatibleProvider.js";
 
 const XAI_API_URLS = [
   "https://api.x.ai/v1/chat/completions",
@@ -34,32 +31,10 @@ const XAI_API_URLS = [
   "https://eu-west-1.api.x.ai/v1/chat/completions",
 ] as const;
 
-/** OpenAI-compatible message format for API request */
-interface OpenAIMessage {
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  tool_calls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
-}
-
-/** OpenAI-compatible tool format */
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: object;
-  };
-}
-
 /**
  * xAI (Grok) implementation of LLMProvider using the OpenAI-compatible API at api.x.ai.
  */
-export class XaiProvider implements LLMProvider {
+export class XaiProvider extends OpenAiCompatibleProvider {
   readonly name = "xai";
   private readonly model: string;
   private readonly apiKey: string;
@@ -85,6 +60,7 @@ export class XaiProvider implements LLMProvider {
     retryConfig?: { maxRetries: number; consecutive529Limit: number };
     onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
   }) {
+    super();
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
       throw new ProviderAuthenticationError(
@@ -103,16 +79,6 @@ export class XaiProvider implements LLMProvider {
         XaiProvider.CONTEXT_WINDOWS[this.model] ??
         XaiProvider.DEFAULT_CONTEXT_WINDOW,
     };
-  }
-
-  private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
-    const role = msg.role as OpenAIMessage["role"];
-    const out: OpenAIMessage = { role, content: msg.content ?? "" };
-    return applyOpenAIMessageCore(out, msg);
-  }
-
-  private chatToolToOpenAITool(tool: ChatTool): OpenAITool {
-    return createOpenAIToolDefinition(tool);
   }
 
   private shouldRetryEndpoint(status?: number): boolean {
@@ -178,13 +144,6 @@ export class XaiProvider implements LLMProvider {
     }
 
     throw lastError ?? new ProviderError("xAI request failed");
-  }
-
-  private isRetryableError(err: unknown): boolean {
-    if (err instanceof ProviderContextLengthError) return false;
-    if (err instanceof ProviderAuthenticationError) return false;
-    if (err instanceof ProviderModelNotFoundError) return false;
-    return err instanceof ProviderError;
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
@@ -336,22 +295,7 @@ export class XaiProvider implements LLMProvider {
     return { events, stopReason };
   }
 
-  private isContextLengthError(message: string): boolean {
-    const lower = message.toLowerCase();
-    return (
-      lower.includes("context length") ||
-      lower.includes("context window") ||
-      lower.includes("maximum context") ||
-      lower.includes("token limit") ||
-      lower.includes("too many tokens") ||
-      lower.includes("input is too long") ||
-      lower.includes("prompt is too long") ||
-      lower.includes("exceeds the model") ||
-      lower.includes("reduce your prompt")
-    );
-  }
-
-  private translateError(error: unknown, response?: Response): ProviderError {
+  protected translateError(error: unknown, response?: Response): ProviderError {
     const originalError =
       error instanceof Error ? error : new Error(String(error));
     const normalizedMessage = normalizeErrorMessage(originalError.message);

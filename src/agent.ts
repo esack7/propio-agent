@@ -1639,6 +1639,190 @@ export class Agent {
     };
   }
 
+  private async handleMaxTokensRecovery(
+    initialResult: {
+      fullResponse: string;
+      toolCalls?: ChatToolCall[];
+      reasoningContent?: string;
+      stopReason?: string;
+    },
+    messages: ChatMessage[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<{
+    fullResponse: string;
+    toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
+  }> {
+    let { fullResponse, toolCalls, reasoningContent } = initialResult;
+
+    if (
+      initialResult.stopReason !== "max_tokens" ||
+      this.runtimeConfig.outputTokenRecoveryLimit <= 0
+    ) {
+      return { fullResponse, toolCalls, reasoningContent };
+    }
+
+    let recoveryAttempts = 0;
+    let currentStopReason = initialResult.stopReason;
+
+    while (
+      recoveryAttempts < this.runtimeConfig.outputTokenRecoveryLimit &&
+      currentStopReason === "max_tokens"
+    ) {
+      recoveryAttempts++;
+      this.emitDiagnostic({
+        type: "output_token_recovery_attempt",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        attemptNumber: recoveryAttempts,
+      });
+
+      const continuationMessages = [...messages];
+      if (fullResponse.trim().length > 0) {
+        continuationMessages.push({ role: "assistant", content: fullResponse });
+      }
+      continuationMessages.push({
+        role: "user",
+        content:
+          "Continue with more detail if needed. If the response is complete, just reply with a period.",
+      });
+
+      const continuationResult = await this.collectProviderStream(
+        continuationMessages,
+        allowedTools,
+        iterationCount,
+        options,
+        onToken,
+      );
+
+      fullResponse += continuationResult.fullResponse;
+      if (continuationResult.toolCalls) {
+        toolCalls = continuationResult.toolCalls;
+        reasoningContent = continuationResult.reasoningContent;
+      }
+      currentStopReason = continuationResult.stopReason ?? currentStopReason;
+    }
+
+    if (currentStopReason === "max_tokens") {
+      this.emitDiagnostic({
+        type: "output_token_recovery_exhausted",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        maxAttempts: this.runtimeConfig.outputTokenRecoveryLimit,
+      });
+    }
+
+    return { fullResponse, toolCalls, reasoningContent };
+  }
+
+  private async handleContextLengthError(
+    plan: PromptPlan,
+    contextRetryLevel: number,
+    synchronousShrinkCount: number,
+    iterationCount: number,
+  ): Promise<
+    | { action: "rethrow" }
+    | {
+        action: "retry";
+        contextRetryLevel: number;
+        synchronousShrinkCount: number;
+      }
+  > {
+    if (contextRetryLevel >= Agent.MAX_CONTEXT_RETRY_LEVEL) {
+      this.emitDiagnostic({
+        type: "context_pressure_circuit_breaker",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        retryLevel: contextRetryLevel,
+      });
+      return { action: "rethrow" };
+    }
+
+    synchronousShrinkCount++;
+    if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+      this.emitDiagnostic({
+        type: "context_pressure_circuit_breaker",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        retryLevel: contextRetryLevel,
+      });
+      return { action: "rethrow" };
+    }
+
+    const shrunk = await this.attemptSynchronousShrink(plan);
+    if (shrunk) {
+      this.emitDiagnostic({
+        type: "provider_error",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        errorName: "ProviderContextLengthError",
+        message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+      });
+      return { action: "retry", contextRetryLevel, synchronousShrinkCount };
+    }
+
+    contextRetryLevel++;
+    this.emitDiagnostic({
+      type: "provider_error",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      errorName: "ProviderContextLengthError",
+      message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
+    });
+    return { action: "retry", contextRetryLevel, synchronousShrinkCount };
+  }
+
+  private validateTurnCompletion(
+    continueLoop: boolean,
+    iterationCount: number,
+    maxIterations: number,
+    toolCalls: ChatToolCall[] | undefined,
+    hasFinalAssistantResponse: boolean,
+    finalResponse: string,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): void {
+    if (!continueLoop || iterationCount < maxIterations) return;
+
+    const failedTools = Array.from(
+      new Set(
+        toolExecutionEvents
+          .filter((event) => event.failed)
+          .map((event) => event.name),
+      ),
+    );
+    const failedToolCount = toolExecutionEvents.filter(
+      (event) => event.failed,
+    ).length;
+    this.emitDiagnostic({
+      type: "max_iterations_reached",
+      provider: this.provider.name,
+      model: this.model,
+      maxIterations,
+      iterationsCompleted: iterationCount,
+      pendingToolCalls: toolCalls?.length ?? 0,
+      failedToolCount,
+      failedTools,
+    });
+    if (!hasFinalAssistantResponse || finalResponse.trim().length === 0) {
+      const failedToolsSuffix =
+        failedTools.length > 0
+          ? ` Failed tools: ${failedTools.join(", ")}.`
+          : "";
+      throw new Error(
+        `Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.${failedToolsSuffix}`,
+      );
+    }
+  }
+
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
@@ -1716,121 +1900,33 @@ export class Agent {
             options,
             onToken,
           );
-          fullResponse = streamResult.fullResponse;
-          toolCalls = streamResult.toolCalls;
-          reasoningContent = streamResult.reasoningContent;
           providerReasoningSummary = streamResult.providerReasoningSummary;
-
-          // Output-token recovery: attempt continuation if stopped due to max_tokens
-          if (
-            streamResult.stopReason === "max_tokens" &&
-            this.runtimeConfig.outputTokenRecoveryLimit > 0
-          ) {
-            let recoveryAttempts = 0;
-            let currentStopReason = streamResult.stopReason;
-
-            while (
-              recoveryAttempts < this.runtimeConfig.outputTokenRecoveryLimit &&
-              currentStopReason === "max_tokens"
-            ) {
-              recoveryAttempts++;
-              this.emitDiagnostic({
-                type: "output_token_recovery_attempt",
-                provider: this.provider.name,
-                model: this.model,
-                iteration: iterationCount,
-                attemptNumber: recoveryAttempts,
-              });
-
-              // Continue with a request for more tokens
-              const continuationMessages = [...messages];
-              if (fullResponse.trim().length > 0) {
-                continuationMessages.push({
-                  role: "assistant",
-                  content: fullResponse,
-                });
-              }
-              continuationMessages.push({
-                role: "user",
-                content:
-                  "Continue with more detail if needed. If the response is complete, just reply with a period.",
-              });
-
-              const continuationResult = await this.collectProviderStream(
-                continuationMessages,
-                allowedTools,
-                iterationCount,
-                options,
-                onToken,
-              );
-
-              fullResponse += continuationResult.fullResponse;
-              if (continuationResult.toolCalls) {
-                toolCalls = continuationResult.toolCalls;
-                reasoningContent = continuationResult.reasoningContent;
-              }
-              currentStopReason =
-                continuationResult.stopReason ?? currentStopReason;
-            }
-
-            if (currentStopReason === "max_tokens") {
-              this.emitDiagnostic({
-                type: "output_token_recovery_exhausted",
-                provider: this.provider.name,
-                model: this.model,
-                iteration: iterationCount,
-                maxAttempts: this.runtimeConfig.outputTokenRecoveryLimit,
-              });
-            }
-          }
+          const recovered = await this.handleMaxTokensRecovery(
+            streamResult,
+            messages,
+            allowedTools,
+            iterationCount,
+            options,
+            onToken,
+          );
+          fullResponse = recovered.fullResponse;
+          toolCalls = recovered.toolCalls;
+          reasoningContent = recovered.reasoningContent;
         } catch (streamError) {
-          if (streamError instanceof ProviderContextLengthError) {
-            if (contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
-              synchronousShrinkCount++;
-              if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-                this.emitDiagnostic({
-                  type: "context_pressure_circuit_breaker",
-                  provider: this.provider.name,
-                  model: this.model,
-                  iteration: iterationCount,
-                  retryLevel: contextRetryLevel,
-                });
-                throw streamError;
-              }
-              const shrunk = await this.attemptSynchronousShrink(plan);
-              if (shrunk) {
-                this.emitDiagnostic({
-                  type: "provider_error",
-                  provider: this.provider.name,
-                  model: this.model,
-                  iteration: iterationCount,
-                  errorName: "ProviderContextLengthError",
-                  message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
-                });
-                iterationCount--;
-                continue;
-              }
-              contextRetryLevel++;
-              this.emitDiagnostic({
-                type: "provider_error",
-                provider: this.provider.name,
-                model: this.model,
-                iteration: iterationCount,
-                errorName: "ProviderContextLengthError",
-                message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
-              });
-              iterationCount--;
-              continue;
-            }
-            this.emitDiagnostic({
-              type: "context_pressure_circuit_breaker",
-              provider: this.provider.name,
-              model: this.model,
-              iteration: iterationCount,
-              retryLevel: contextRetryLevel,
-            });
+          if (!(streamError instanceof ProviderContextLengthError)) {
+            throw streamError;
           }
-          throw streamError;
+          const retryAction = await this.handleContextLengthError(
+            plan,
+            contextRetryLevel,
+            synchronousShrinkCount,
+            iterationCount,
+          );
+          if (retryAction.action === "rethrow") throw streamError;
+          contextRetryLevel = retryAction.contextRetryLevel;
+          synchronousShrinkCount = retryAction.synchronousShrinkCount;
+          iterationCount--;
+          continue;
         }
 
         contextRetryLevel = 0;
@@ -1851,37 +1947,15 @@ export class Agent {
         hasFinalAssistantResponse = turnResult.hasFinalAssistantResponse;
       }
 
-      if (continueLoop && iterationCount >= maxIterations) {
-        const failedTools = Array.from(
-          new Set(
-            toolExecutionEvents
-              .filter((event) => event.failed)
-              .map((event) => event.name),
-          ),
-        );
-        const failedToolCount = toolExecutionEvents.filter(
-          (event) => event.failed,
-        ).length;
-        this.emitDiagnostic({
-          type: "max_iterations_reached",
-          provider: this.provider.name,
-          model: this.model,
-          maxIterations,
-          iterationsCompleted: iterationCount,
-          pendingToolCalls: toolCalls?.length ?? 0,
-          failedToolCount,
-          failedTools,
-        });
-        if (!hasFinalAssistantResponse || finalResponse.trim().length === 0) {
-          const failedToolsSuffix =
-            failedTools.length > 0
-              ? ` Failed tools: ${failedTools.join(", ")}.`
-              : "";
-          throw new Error(
-            `Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.${failedToolsSuffix}`,
-          );
-        }
-      }
+      this.validateTurnCompletion(
+        continueLoop,
+        iterationCount,
+        maxIterations,
+        toolCalls,
+        hasFinalAssistantResponse,
+        finalResponse,
+        toolExecutionEvents,
+      );
 
       const agentSummary = this.synthesizeAgentReasoningSummary(
         iterationCount,

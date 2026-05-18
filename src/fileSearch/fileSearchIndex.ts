@@ -2,9 +2,9 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
-export type FileSearchEntryKind = "file" | "directory";
+type FileSearchEntryKind = "file" | "directory";
 
-export interface FileSearchEntry {
+interface FileSearchEntry {
   readonly path: string;
   readonly lowerPath: string;
   readonly kind: FileSearchEntryKind;
@@ -361,10 +361,6 @@ export class FileSearchIndex {
       });
 
     return this.buildPromise;
-  }
-
-  getEntries(): readonly FileSearchEntry[] {
-    return this.entries;
   }
 
   search(query: string, limit = 20): FileSearchMatch[] {
