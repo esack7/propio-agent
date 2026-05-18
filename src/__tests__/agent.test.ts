@@ -2553,7 +2553,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const finished = events.filter((e) => e.type === "tool_finished");
 
       expect(finished).toHaveLength(1);
-      expect(finished[0]).toMatchObject({ type: "tool_finished", toolName: "read" });
+      expect(finished[0]).toMatchObject({
+        type: "tool_finished",
+        toolName: "read",
+      });
     });
 
     it("emits tool_failed for a disabled tool", async () => {
@@ -2568,7 +2571,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const failed = events.filter((e) => e.type === "tool_failed");
 
       expect(failed).toHaveLength(1);
-      expect(failed[0]).toMatchObject({ type: "tool_failed", toolName: "grep" });
+      expect(failed[0]).toMatchObject({
+        type: "tool_failed",
+        toolName: "grep",
+      });
     });
 
     it("emits tool_failed for a missing tool", async () => {
@@ -2582,7 +2588,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const failed = events.filter((e) => e.type === "tool_failed");
 
       expect(failed).toHaveLength(1);
-      expect(failed[0]).toMatchObject({ type: "tool_failed", toolName: "nonexistent_tool_xyz" });
+      expect(failed[0]).toMatchObject({
+        type: "tool_failed",
+        toolName: "nonexistent_tool_xyz",
+      });
     });
   });
 });

@@ -340,21 +340,20 @@ Start the agent and type messages at the prompt. Session context is maintained a
 
 ### CLI flags
 
-| Flag                       | Description                                           |
-| -------------------------- | ----------------------------------------------------- |
-| `--help`, `-h`             | Show CLI help                                         |
-| `--sandbox`                | Run in Docker sandbox mode                            |
-| `--json`                   | Read one prompt from stdin, print JSON to stdout      |
-| `--plain`                  | Disable ANSI colors and spinner                       |
-| `--no-interactive`         | Disable prompts/spinners, read one prompt from stdin  |
-| `--show-activity`          | Show tool start/finish/failure activity events        |
-| `--show-status`            | Show high-level agent status updates                  |
-| `--show-reasoning-summary` | Show the turn reasoning summary after each response   |
-| `--show-trace`             | Enable activity, status, and reasoning summary output |
-| `--show-context-stats`     | Print compact context stats after each turn           |
-| `--show-prompt-plan`       | Print a compact prompt-plan summary for each request  |
-| `--debug-llm`              | Emit provider diagnostics to stderr                   |
-| `--debug-llm-file <path>`  | Append provider diagnostics to a file                 |
+| Flag                       | Description                                          |
+| -------------------------- | ---------------------------------------------------- |
+| `--help`, `-h`             | Show CLI help                                        |
+| `--sandbox`                | Run in Docker sandbox mode                           |
+| `--json`                   | Read one prompt from stdin, print JSON to stdout     |
+| `--plain`                  | Disable ANSI colors and spinner                      |
+| `--no-interactive`         | Disable prompts/spinners, read one prompt from stdin |
+| `--show-status`            | Show high-level agent status updates                 |
+| `--show-reasoning-summary` | Show the turn reasoning summary after each response  |
+| `--show-trace`             | Enable status and reasoning summary output           |
+| `--show-context-stats`     | Print compact context stats after each turn          |
+| `--show-prompt-plan`       | Print a compact prompt-plan summary for each request |
+| `--debug-llm`              | Emit provider diagnostics to stderr                  |
+| `--debug-llm-file <path>`  | Append provider diagnostics to a file                |
 
 ```bash
 # One-shot non-interactive

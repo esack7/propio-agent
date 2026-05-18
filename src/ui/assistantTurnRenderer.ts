@@ -155,6 +155,7 @@ export async function streamAssistantTurn(
       if (!ui.isJsonMode()) {
         if (token.trim().length > 0) {
           clearHiddenToolStatus();
+          ui.clearEphemeralSurfaces();
         }
         mdStream.push(token);
       }

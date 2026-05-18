@@ -51,7 +51,9 @@ export class BashTool implements ExecutableTool {
           const lines = (parsed.stdout ?? "")
             .split("\n")
             .filter((l) => l.trim().length > 0).length;
-          return lines > 0 ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})` : "Exit 0";
+          return lines > 0
+            ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})`
+            : "Exit 0";
         } catch {
           return null;
         }

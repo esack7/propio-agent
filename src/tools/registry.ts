@@ -175,7 +175,10 @@ export class ToolRegistry {
     return `${compact.slice(0, 120)}...`;
   }
 
-  renderInvocationUse(name: string, args: Record<string, unknown>): string | null {
+  renderInvocationUse(
+    name: string,
+    args: Record<string, unknown>,
+  ): string | null {
     const tool = this.tools.get(name);
     const adapter = tool?.getDisplayAdapter?.();
     if (adapter) {

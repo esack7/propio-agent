@@ -240,5 +240,4 @@ export class ReplUiStore {
   upsertToolCallView(view: ToolCallView): void {
     this.dispatch({ type: "upsertToolCallView", view });
   }
-
 }

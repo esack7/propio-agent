@@ -220,9 +220,9 @@ describe("streamAssistantTurn", () => {
     const output = normalizeOutput(stderr.chunks);
 
     expect(output.indexOf("Alpha.")).toBeGreaterThan(-1);
-    expect(
-      output.indexOf('Reading src for "streamChat"'),
-    ).toBeGreaterThan(output.indexOf("Alpha."));
+    expect(output.indexOf('Reading src for "streamChat"')).toBeGreaterThan(
+      output.indexOf("Alpha."),
+    );
     expect(output.indexOf("Beta.")).toBeGreaterThan(
       output.indexOf('Reading src for "streamChat"'),
     );
@@ -530,6 +530,53 @@ describe("streamAssistantTurn", () => {
 
     expect(output).toContain("Reading package.json");
     expect(output).toContain("package content");
+  });
+
+  it("clears retained tool call output before assistant text resumes", async () => {
+    const { ui, stderr } = createUi();
+    const agent = new ScriptedAssistantTurnAgent([
+      { type: "token", value: "Prelude." },
+      {
+        type: "event",
+        value: {
+          type: "tool_started",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          useLabel: "package.json",
+          args: {},
+          argumentChars: 12,
+          argumentPreview: '{"path":"package.json"}',
+        },
+      },
+      {
+        type: "event",
+        value: {
+          type: "tool_finished",
+          toolName: "read",
+          toolCallId: "tool_1",
+          activityLabel: "Reading package.json",
+          resultPreview: "Read 1 line",
+        },
+      },
+      { type: "token", value: "Final answer." },
+    ]);
+
+    await streamAssistantTurn(
+      agent,
+      "tool text resume test",
+      ui,
+      new AbortController().signal,
+      defaultVisibility,
+    );
+    ui.turnComplete(1000);
+
+    const rawOutput = stderr.chunks.join("");
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(output).toContain("Final answer.");
+    expect(output).toContain("Turn complete in 1.0s");
+    expect(rawOutput).not.toContain("Final answer.\x1b[1G\x1b[2K");
   });
 
   it("suppresses all tool call UI when tool calls are hidden", async () => {

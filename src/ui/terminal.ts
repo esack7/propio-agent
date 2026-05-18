@@ -414,6 +414,18 @@ export class TerminalUi {
     this.clearStatusIfNeeded();
   }
 
+  clearEphemeralSurfaces(): void {
+    if (this.retainedStore) {
+      const state = this.retainedStore.getState();
+      if (state.status || state.toolCallViews.size > 0) {
+        this.retainedStore.clearEphemeralSurfaces();
+      }
+      return;
+    }
+
+    this.statusRenderer.clear();
+  }
+
   cleanup(): void {
     this.done();
     this.newline();
