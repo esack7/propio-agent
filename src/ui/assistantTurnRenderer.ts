@@ -28,16 +28,6 @@ export interface AssistantTurnResult {
   reasoningSummary?: TurnReasoningSummary;
 }
 
-const HIDDEN_TOOL_STATUS_MIN_VISIBLE_MS = 300;
-
-function sleepSync(ms: number): void {
-  if (ms <= 0) {
-    return;
-  }
-
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 export async function streamAssistantTurn(
   agent: AssistantTurnAgent,
   userInput: string,
@@ -48,7 +38,6 @@ export async function streamAssistantTurn(
   const mdStream = ui.createMarkdownStream();
   const useLabelByCallId = new Map<string, string>();
   let hiddenToolStatusActive = false;
-  let hiddenToolStatusStartedAtMs = 0;
 
   if (!ui.isJsonMode()) {
     ui.beginAssistantResponse();
@@ -59,9 +48,6 @@ export async function streamAssistantTurn(
       return;
     }
 
-    const visibleForMs = Date.now() - hiddenToolStatusStartedAtMs;
-    const remainingVisibleMs = HIDDEN_TOOL_STATUS_MIN_VISIBLE_MS - visibleForMs;
-    sleepSync(remainingVisibleMs);
     hiddenToolStatusActive = false;
     ui.done();
   };
@@ -85,7 +71,6 @@ export async function streamAssistantTurn(
           if (!hiddenToolStatusActive) {
             mdStream.flush();
             hiddenToolStatusActive = true;
-            hiddenToolStatusStartedAtMs = Date.now();
             ui.status("Working", "tool call");
           }
         }

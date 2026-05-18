@@ -25,7 +25,10 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
-import type { ToolExecutionResult } from "./tools/types.js";
+import type {
+  ToolExecutionResult,
+  ToolExecutionStatus,
+} from "./tools/types.js";
 import { persistToolOutput } from "./tools/outputPersistence.js";
 import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
@@ -122,6 +125,18 @@ type AgentEventOptions = {
 };
 
 type AgentToolOptions = AgentEventOptions & {
+  /**
+   * @deprecated Use onEvent with the tool_started event instead.
+   */
+  readonly onToolStart?: (toolName: string) => void;
+  /**
+   * @deprecated Use onEvent with tool_finished/tool_failed events instead.
+   */
+  readonly onToolEnd?: (
+    toolName: string,
+    result: string,
+    status: ToolExecutionStatus,
+  ) => void;
   readonly abortSignal?: AbortSignal;
 };
 
@@ -1404,6 +1419,7 @@ export class Agent {
       toolCallId,
       argsChars: serializedArgs.length,
     });
+    options?.onToolStart?.(toolName);
 
     const execResult = await this.executeToolWithStatus(
       toolName,
@@ -1446,6 +1462,7 @@ export class Agent {
       activityLabel,
       resultPreview,
     });
+    options?.onToolEnd?.(toolName, result, execResult.status);
 
     return artifactToolResult;
   }

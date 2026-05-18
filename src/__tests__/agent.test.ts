@@ -1026,6 +1026,36 @@ describe("Agent with Multi-Provider Configuration", () => {
         }),
       ).rejects.toThrow("Request cancelled");
     });
+
+    it("should still invoke deprecated onToolStart callback", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+
+      await agent.streamChat("Test", jest.fn(), { onToolStart });
+
+      expect(onToolStart).toHaveBeenCalledTimes(1);
+      expect(onToolStart).toHaveBeenCalledWith("read");
+    });
+
+    it("should still invoke deprecated onToolEnd callback", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolEnd = jest.fn();
+
+      await agent.streamChat("Test", jest.fn(), { onToolEnd });
+
+      expect(onToolEnd).toHaveBeenCalledTimes(1);
+      expect(onToolEnd).toHaveBeenCalledWith(
+        "read",
+        expect.any(String),
+        "success",
+      );
+    });
   });
 
   describe("Tool result context limits", () => {
