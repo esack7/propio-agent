@@ -297,6 +297,34 @@ export class GeminiProvider implements LLMProvider {
     );
   }
 
+  private async fetchGeminiStream(
+    body: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<Response> {
+    const res = await fetch(GEMINI_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      let errorBody = "";
+      try {
+        errorBody = await res.text();
+      } catch {
+        /* ignore read failures */
+      }
+      throw this.translateError(
+        new Error(errorBody || `HTTP ${res.status}`),
+        res,
+      );
+    }
+    return res;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       const effectiveModel = this.validateModel(request.model || this.model);
@@ -308,30 +336,7 @@ export class GeminiProvider implements LLMProvider {
       });
 
       const response = await withRetry(
-        async () => {
-          const res = await fetch(GEMINI_API_URL, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${this.apiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(body),
-            signal: request.signal,
-          });
-          if (!res.ok) {
-            let errorBody = "";
-            try {
-              errorBody = await res.text();
-            } catch {
-              // ignore read failures
-            }
-            throw this.translateError(
-              new Error(errorBody || `HTTP ${res.status}`),
-              res,
-            );
-          }
-          return res;
-        },
+        () => this.fetchGeminiStream(body, request.signal),
         {
           maxRetries: this.retryConfig?.maxRetries ?? 3,
           isRetryable: (err) => this.isRetryableError(err),

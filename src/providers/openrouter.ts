@@ -339,6 +339,28 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     return { remainingBuffer, events, sawUsableOutput };
   }
 
+  private buildStructuredToolCallsEvent(
+    toolCallsByIndex: Map<
+      number,
+      { id?: string; name: string; argsString: string }
+    >,
+    reasoningContent: string,
+  ): ChatStreamEvent | null {
+    const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
+      id: acc.id,
+      function: {
+        name: acc.name || "",
+        arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+      },
+    }));
+    if (toolCalls.length === 0) return null;
+    return {
+      type: "tool_calls",
+      toolCalls,
+      ...(reasoningContent.length > 0 ? { reasoningContent } : {}),
+    };
+  }
+
   private mapOpenRouterFinishReason(finishReason: string): string {
     if (finishReason === "length") return "max_tokens";
     if (finishReason === "stop") return "end_turn";
@@ -428,11 +450,9 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       }
 
       const delta = choice.delta;
-      if (delta.reasoning_content != null && delta.reasoning_content !== "") {
-        reasoningContent += delta.reasoning_content;
-      }
+      if (delta.reasoning_content) reasoningContent += delta.reasoning_content;
 
-      if (delta.content != null && delta.content !== "") {
+      if (delta.content) {
         if (options.parseDsmlToolCalls) {
           contentBuffer += delta.content;
           const flushed = this.flushDsmlBuffer(contentBuffer, reasoningContent);
@@ -441,13 +461,11 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
           sawUsableOutput ||= flushed.sawUsableOutput;
         } else {
           yield { type: "assistant_text", delta: delta.content };
-          if (delta.content.trim().length > 0) {
-            sawUsableOutput = true;
-          }
+          if (delta.content.trim()) sawUsableOutput = true;
         }
       }
 
-      if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
+      if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           accumulateOpenAIStreamToolCall(
             tc,
@@ -458,22 +476,12 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       }
 
       if (choice.finish_reason === "tool_calls") {
-        const toolCalls = buildOpenAIStreamToolCalls(
+        const event = this.buildStructuredToolCallsEvent(
           structuredToolCallsByIndex,
-          (acc) => ({
-            id: acc.id,
-            function: {
-              name: acc.name || "",
-              arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-            },
-          }),
+          reasoningContent,
         );
-        if (toolCalls.length > 0) {
-          yield {
-            type: "tool_calls",
-            toolCalls,
-            ...(reasoningContent.length > 0 ? { reasoningContent } : {}),
-          };
+        if (event) {
+          yield event;
           sawUsableOutput = true;
         }
       }

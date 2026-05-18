@@ -121,6 +121,78 @@ const defaultVisibility: AssistantTurnVisibilityOptions = {
   showPromptPlan: false,
 };
 
+function toolStartedStep(
+  toolName: string,
+  toolCallId: string,
+  activityLabel: string,
+  argumentPreview = "",
+): ScriptStep {
+  return {
+    type: "event",
+    value: {
+      type: "tool_started",
+      toolName,
+      toolCallId,
+      activityLabel,
+      args: {},
+      argumentChars: argumentPreview.length,
+      argumentPreview,
+    },
+  };
+}
+
+function toolFinishedStep(
+  toolName: string,
+  toolCallId: string,
+  activityLabel: string,
+  resultPreview: string,
+): ScriptStep {
+  return {
+    type: "event",
+    value: {
+      type: "tool_finished",
+      toolName,
+      toolCallId,
+      activityLabel,
+      resultPreview,
+    },
+  };
+}
+
+function readPackageJsonSteps(): ScriptStep[] {
+  return [
+    toolStartedStep(
+      "read",
+      "tool_1",
+      "Reading package.json",
+      '{"path":"package.json"}',
+    ),
+    toolFinishedStep(
+      "read",
+      "tool_1",
+      "Reading package.json",
+      "package content",
+    ),
+  ];
+}
+
+function grepMissingSteps(): ScriptStep[] {
+  return [
+    toolStartedStep(
+      "grep",
+      "tool_2",
+      'Searching src for "missing"',
+      '{"pattern":"missing"}',
+    ),
+    toolFinishedStep(
+      "grep",
+      "tool_2",
+      'Searching src for "missing"',
+      "no matches",
+    ),
+  ];
+}
+
 describe("streamAssistantTurn", () => {
   it("renders streamed assistant tokens and preserves turn completion output", async () => {
     const { ui, stderr } = createUi();
@@ -236,28 +308,7 @@ describe("streamAssistantTurn", () => {
     const doneSpy = jest.spyOn(ui, "done");
     const agent = new ScriptedAssistantTurnAgent([
       { type: "token", value: "Prelude." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          args: {},
-          argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "package content",
-        },
-      },
+      ...readPackageJsonSteps(),
       { type: "token", value: "Tail." },
     ]);
 
@@ -266,7 +317,10 @@ describe("streamAssistantTurn", () => {
       "hidden tool test",
       ui,
       new AbortController().signal,
-      { ...defaultVisibility, showToolCalls: false },
+      {
+        ...defaultVisibility,
+        showToolCalls: false,
+      },
     );
 
     const output = normalizeOutput(stderr.chunks);
@@ -285,50 +339,8 @@ describe("streamAssistantTurn", () => {
     const doneSpy = jest.spyOn(ui, "done");
     const agent = new ScriptedAssistantTurnAgent([
       { type: "token", value: "Prelude." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          args: {},
-          argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "package content",
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "grep",
-          toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          args: {},
-          argumentChars: 16,
-          argumentPreview: '{"pattern":"missing"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "grep",
-          toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          resultPreview: "no matches",
-        },
-      },
+      ...readPackageJsonSteps(),
+      ...grepMissingSteps(),
     ]);
 
     await streamAssistantTurn(
@@ -336,7 +348,10 @@ describe("streamAssistantTurn", () => {
       "hidden tool loop test",
       ui,
       new AbortController().signal,
-      { ...defaultVisibility, showToolCalls: false },
+      {
+        ...defaultVisibility,
+        showToolCalls: false,
+      },
     );
 
     const output = normalizeOutput(stderr.chunks);
@@ -353,51 +368,9 @@ describe("streamAssistantTurn", () => {
     const doneSpy = jest.spyOn(ui, "done");
     const agent = new ScriptedAssistantTurnAgent([
       { type: "token", value: "Prelude." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          args: {},
-          argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "package content",
-        },
-      },
+      ...readPackageJsonSteps(),
       { type: "token", value: " Need one more check." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "grep",
-          toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          args: {},
-          argumentChars: 16,
-          argumentPreview: '{"pattern":"missing"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "grep",
-          toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          resultPreview: "no matches",
-        },
-      },
+      ...grepMissingSteps(),
       { type: "token", value: " Done." },
     ]);
 
@@ -406,7 +379,10 @@ describe("streamAssistantTurn", () => {
       "hidden tool loop test",
       ui,
       new AbortController().signal,
-      { ...defaultVisibility, showToolCalls: false },
+      {
+        ...defaultVisibility,
+        showToolCalls: false,
+      },
     );
 
     const output = normalizeOutput(stderr.chunks);
@@ -425,51 +401,9 @@ describe("streamAssistantTurn", () => {
     const doneSpy = jest.spyOn(ui, "done");
     const agent = new ScriptedAssistantTurnAgent([
       { type: "token", value: "Prelude." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          args: {},
-          argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "package content",
-        },
-      },
+      ...readPackageJsonSteps(),
       { type: "token", value: "\n" },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "grep",
-          toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          args: {},
-          argumentChars: 16,
-          argumentPreview: '{"pattern":"missing"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "grep",
-          toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          resultPreview: "no matches",
-        },
-      },
+      ...grepMissingSteps(),
       { type: "token", value: " Done." },
     ]);
 
@@ -478,7 +412,10 @@ describe("streamAssistantTurn", () => {
       "hidden structural newline test",
       ui,
       new AbortController().signal,
-      { ...defaultVisibility, showToolCalls: false },
+      {
+        ...defaultVisibility,
+        showToolCalls: false,
+      },
     );
 
     const output = normalizeOutput(stderr.chunks);

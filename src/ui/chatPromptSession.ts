@@ -1250,12 +1250,7 @@ export function createChatPromptSession(
       }
       return true;
     }
-    if (key.name === "g" && key.ctrl) {
-      if (searchState) cancelSearch();
-      else if (typeaheadState) cancelTypeahead(true);
-      return true;
-    }
-    if (key.name === "escape") {
+    if ((key.name === "g" && key.ctrl) || key.name === "escape") {
       if (searchState) cancelSearch();
       else if (typeaheadState) cancelTypeahead(true);
       return true;

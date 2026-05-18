@@ -8,6 +8,7 @@ import {
 } from "../types.js";
 import { ChatRequest, ChatMessage } from "../types.js";
 import { AgentDiagnosticEvent } from "../../diagnostics.js";
+import { OpenRouterTestFixture } from "./openrouterTestHelpers.js";
 
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
@@ -733,66 +734,42 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should throw ProviderError on 402", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 402,
-      });
+      const fetchMock = jest.fn().mockResolvedValue({ ok: false, status: 402 });
       globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
+      const provider = OpenRouterTestFixture.createProvider(
+        "openai/gpt-3.5-turbo",
+        "sk-test",
+        { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
+      );
+      await OpenRouterTestFixture.expectStreamChatToThrow(
+        provider,
+        ProviderError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(/Insufficient OpenRouter credits/);
+      await OpenRouterTestFixture.expectStreamChatToThrow(
+        provider,
+        /Insufficient OpenRouter credits/,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should throw ProviderError on 5xx", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-      });
+      const fetchMock = jest.fn().mockResolvedValue({ ok: false, status: 503 });
       globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
+      const provider = OpenRouterTestFixture.createProvider(
+        "openai/gpt-3.5-turbo",
+        "sk-test",
+        { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
+      );
+      await OpenRouterTestFixture.expectStreamChatToThrow(
+        provider,
+        ProviderError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(/OpenRouter service error/);
+      await OpenRouterTestFixture.expectStreamChatToThrow(
+        provider,
+        /OpenRouter service error/,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
