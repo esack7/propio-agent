@@ -1,6 +1,7 @@
 import fg from "fast-glob";
 import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import { normalizeToolPath } from "./shared.js";
 
@@ -15,6 +16,31 @@ function recursivePattern(pattern: string): string {
 export class FindTool implements ExecutableTool {
   readonly name = "find";
   readonly description = "Find files by name or glob.";
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const path = input.path;
+        const pattern = input.pattern;
+        if (typeof pattern === "string" && pattern.length > 0) {
+          return typeof path === "string" && path.length > 0
+            ? `${pattern} in ${path}`
+            : pattern;
+        }
+        return null;
+      },
+      renderResult(result) {
+        if (result.startsWith("No files found")) {
+          return "No files found";
+        }
+        const files = result
+          .trim()
+          .split("\n")
+          .filter((l) => l.length > 0);
+        return `Found ${files.length} file${files.length === 1 ? "" : "s"}`;
+      },
+    };
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;

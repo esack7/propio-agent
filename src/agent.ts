@@ -25,7 +25,10 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
-import type { ToolExecutionResult } from "./tools/types.js";
+import type {
+  ToolExecutionResult,
+  ToolExecutionStatus,
+} from "./tools/types.js";
 import { persistToolOutput } from "./tools/outputPersistence.js";
 import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
@@ -43,7 +46,6 @@ import {
   PinFactInput,
   UpdateMemoryInput,
 } from "./context/types.js";
-import { ToolExecutionStatus } from "./tools/types.js";
 import { SummaryManager } from "./context/summaryManager.js";
 import {
   serializeSession,
@@ -84,6 +86,8 @@ export type AgentVisibilityEvent =
       toolName: string;
       toolCallId: string;
       activityLabel: string;
+      useLabel: string | null;
+      args: Record<string, unknown>;
       argumentChars: number;
       argumentPreview: string;
     }
@@ -121,7 +125,13 @@ type AgentEventOptions = {
 };
 
 type AgentToolOptions = AgentEventOptions & {
+  /**
+   * @deprecated Use onEvent with the tool_started event instead.
+   */
   readonly onToolStart?: (toolName: string) => void;
+  /**
+   * @deprecated Use onEvent with tool_finished/tool_failed events instead.
+   */
   readonly onToolEnd?: (
     toolName: string,
     result: string,
@@ -149,7 +159,9 @@ export interface PromptPlanSnapshot {
   readonly plan: PromptPlan;
 }
 
-function stableArgsKey(args: Record<string, unknown> | null | undefined): string {
+function stableArgsKey(
+  args: Record<string, unknown> | null | undefined,
+): string {
   if (!args || typeof args !== "object") return "";
   return Object.keys(args)
     .sort()
@@ -260,7 +272,8 @@ export class Agent {
     this.contextManager = new ContextManager({
       toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
       rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
-      pinnedMemoryMaxContentLength: this.runtimeConfig.pinnedMemoryMaxContentLength,
+      pinnedMemoryMaxContentLength:
+        this.runtimeConfig.pinnedMemoryMaxContentLength,
     });
     this.toolRegistry = createDefaultToolRegistry({
       runtimeConfig: this.runtimeConfig,
@@ -289,8 +302,6 @@ export class Agent {
       summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
     };
   }
-
-
 
   async initialize(): Promise<void> {
     await this.mcpManager.initialize();
@@ -1392,6 +1403,10 @@ export class Agent {
       toolName,
       toolCallId,
       activityLabel,
+      useLabel: this.toolRegistry.hasTool(toolName)
+        ? this.toolRegistry.renderInvocationUse(toolName, args ?? {})
+        : null,
+      args: args ?? {},
       argumentChars: serializedArgs.length,
       argumentPreview: this.toPreview(serializedArgs),
     });
@@ -1404,12 +1419,7 @@ export class Agent {
       toolCallId,
       argsChars: serializedArgs.length,
     });
-
-    if (options?.onToolStart) {
-      options.onToolStart(toolName);
-    } else {
-      onToken(`[Executing tool: ${toolName}]\n`);
-    }
+    options?.onToolStart?.(toolName);
 
     const execResult = await this.executeToolWithStatus(
       toolName,
@@ -1441,23 +1451,52 @@ export class Agent {
       status: failed ? "error" : "success",
     };
 
+    const resultPreview =
+      !failed && this.toolRegistry.hasTool(toolName)
+        ? this.toolRegistry.renderInvocationResult(toolName, args ?? {}, result)
+        : this.toPreview(result);
     this.emitVisibilityEvent(options, {
       type: failed ? "tool_failed" : "tool_finished",
       toolName,
       toolCallId,
       activityLabel,
-      resultPreview: this.toPreview(result),
+      resultPreview,
     });
-
-    if (options?.onToolEnd) {
-      options.onToolEnd(toolName, result, execResult.status);
-    } else {
-      onToken(
-        `[Tool result: ${result.substring(0, 100)}${result.length > 100 ? "..." : ""}]\n`,
-      );
-    }
+    options?.onToolEnd?.(toolName, result, execResult.status);
 
     return artifactToolResult;
+  }
+
+  private async finalizeWithNoToolsResponse(
+    onToken: (token: string) => void,
+    options: AgentStreamOptions | undefined,
+    iterationCount: number,
+    emptyToolOnlyStreak: number,
+    emptyResponseErrorMessage: string,
+  ): Promise<{
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
+  }> {
+    this.contextManager.removeLastUnresolvedAssistantMessage();
+
+    const finalResponse = await this.requestFinalResponseWithoutTools(
+      onToken,
+      options?.abortSignal,
+      iterationCount + 1,
+      options,
+    );
+    if (finalResponse.trim().length === 0) {
+      throw new Error(emptyResponseErrorMessage);
+    }
+
+    return {
+      finalResponse,
+      continueLoop: false,
+      emptyToolOnlyStreak,
+      hasFinalAssistantResponse: true,
+    };
   }
 
   private async handleChatTurnResponse(
@@ -1474,6 +1513,7 @@ export class Agent {
     finalResponse: string;
     continueLoop: boolean;
     emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
   }> {
     const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
       ...toolCall,
@@ -1539,25 +1579,13 @@ export class Agent {
             lookbackIterations: 5,
           });
 
-          this.contextManager.removeLastUnresolvedAssistantMessage();
-
-          const finalResponse = await this.requestFinalResponseWithoutTools(
+          return this.finalizeWithNoToolsResponse(
             onToken,
-            options?.abortSignal,
-            iterationCount + 1,
             options,
+            iterationCount,
+            nextEmptyToolOnlyStreak,
+            "Stopped after no-progress detection with no final assistant response.",
           );
-          if (finalResponse.trim().length === 0) {
-            throw new Error(
-              "Stopped after no-progress detection with no final assistant response.",
-            );
-          }
-
-          return {
-            finalResponse,
-            continueLoop: false,
-            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-          };
         }
       } else {
         // Fallback to empty tool-only streak when detector is disabled (deprecated)
@@ -1572,25 +1600,13 @@ export class Agent {
             action: "fallback_no_tools",
           });
 
-          this.contextManager.removeLastUnresolvedAssistantMessage();
-
-          const finalResponse = await this.requestFinalResponseWithoutTools(
+          return this.finalizeWithNoToolsResponse(
             onToken,
-            options?.abortSignal,
-            iterationCount + 1,
             options,
+            iterationCount,
+            nextEmptyToolOnlyStreak,
+            "Stopped after repeated empty tool-calling turns with no final assistant response.",
           );
-          if (finalResponse.trim().length === 0) {
-            throw new Error(
-              "Stopped after repeated empty tool-calling turns with no final assistant response.",
-            );
-          }
-
-          return {
-            finalResponse,
-            continueLoop: false,
-            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-          };
         }
       }
 
@@ -1610,6 +1626,7 @@ export class Agent {
         finalResponse: fullResponse,
         continueLoop: true,
         emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+        hasFinalAssistantResponse: false,
       };
     }
 
@@ -1618,6 +1635,7 @@ export class Agent {
       finalResponse: fullResponse,
       continueLoop: false,
       emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      hasFinalAssistantResponse: true,
     };
   }
 
@@ -1666,6 +1684,7 @@ export class Agent {
 
       let finalResponse = "";
       let continueLoop = true;
+      let hasFinalAssistantResponse = false;
       const maxIterations =
         options?.maxIterations ?? this.runtimeConfig.maxIterations;
       let emptyToolOnlyStreak = 0;
@@ -1750,7 +1769,8 @@ export class Agent {
                 toolCalls = continuationResult.toolCalls;
                 reasoningContent = continuationResult.reasoningContent;
               }
-              currentStopReason = continuationResult.stopReason ?? currentStopReason;
+              currentStopReason =
+                continuationResult.stopReason ?? currentStopReason;
             }
 
             if (currentStopReason === "max_tokens") {
@@ -1828,18 +1848,37 @@ export class Agent {
         finalResponse = turnResult.finalResponse;
         continueLoop = turnResult.continueLoop;
         emptyToolOnlyStreak = turnResult.emptyToolOnlyStreak;
+        hasFinalAssistantResponse = turnResult.hasFinalAssistantResponse;
       }
 
       if (continueLoop && iterationCount >= maxIterations) {
+        const failedTools = Array.from(
+          new Set(
+            toolExecutionEvents
+              .filter((event) => event.failed)
+              .map((event) => event.name),
+          ),
+        );
+        const failedToolCount = toolExecutionEvents.filter(
+          (event) => event.failed,
+        ).length;
         this.emitDiagnostic({
           type: "max_iterations_reached",
           provider: this.provider.name,
           model: this.model,
           maxIterations,
+          iterationsCompleted: iterationCount,
+          pendingToolCalls: toolCalls?.length ?? 0,
+          failedToolCount,
+          failedTools,
         });
-        if (finalResponse.trim().length === 0) {
+        if (!hasFinalAssistantResponse || finalResponse.trim().length === 0) {
+          const failedToolsSuffix =
+            failedTools.length > 0
+              ? ` Failed tools: ${failedTools.join(", ")}.`
+              : "";
           throw new Error(
-            "Stopped after reaching max iterations without a final assistant response.",
+            `Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.${failedToolsSuffix}`,
           );
         }
       }

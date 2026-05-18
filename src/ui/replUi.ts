@@ -1,4 +1,5 @@
 import { clonePromptState, type PromptState } from "./promptState.js";
+import type { ToolCallView } from "./toolCallView.js";
 
 export type ReplAppMode =
   | "idle"
@@ -25,16 +26,12 @@ export type TranscriptEntry =
       source: "agent" | "provider";
     }
   | { kind: "turn_complete"; durationMs: number }
+  | { kind: "turn_failed"; durationMs: number }
   | { kind: "json"; value: unknown };
 
 export type EphemeralStatus =
   | { kind: "status"; text: string; phase?: string }
   | { kind: "progress"; current: number; total: number; label?: string };
-
-export interface ToolActivityState {
-  text: string;
-  level: "info" | "error";
-}
 
 export interface OverlayState {
   kind: "help" | "tools" | "custom";
@@ -45,22 +42,23 @@ export interface ReplUiState {
   transcript: readonly TranscriptEntry[];
   prompt: PromptState | null;
   status: EphemeralStatus | null;
-  activity: ToolActivityState | null;
   footer: string | null;
   mode: ReplAppMode;
   overlay: OverlayState | null;
+  toolCallViews: ReadonlyMap<string, ToolCallView>;
+  toolCallViewsVersion: number;
 }
 
 export type ReplUiAction =
   | { type: "appendTranscriptEntry"; entry: TranscriptEntry }
   | { type: "setPrompt"; prompt: PromptState | null }
   | { type: "setStatus"; status: EphemeralStatus | null }
-  | { type: "setActivity"; activity: ToolActivityState | null }
   | { type: "setFooter"; footer: string | null }
   | { type: "setMode"; mode: ReplAppMode }
   | { type: "openOverlay"; overlay: OverlayState }
   | { type: "closeOverlay" }
-  | { type: "clearEphemeralSurfaces" };
+  | { type: "clearEphemeralSurfaces" }
+  | { type: "upsertToolCallView"; view: ToolCallView };
 
 function cloneOverlayState(overlay: OverlayState | null): OverlayState | null {
   if (!overlay) {
@@ -78,10 +76,11 @@ function cloneState(state: ReplUiState): ReplUiState {
     transcript: state.transcript.map((entry) => ({ ...entry })),
     prompt: state.prompt ? clonePromptState(state.prompt) : null,
     status: state.status ? { ...state.status } : null,
-    activity: state.activity ? { ...state.activity } : null,
     footer: state.footer,
     mode: state.mode,
     overlay: cloneOverlayState(state.overlay),
+    toolCallViews: new Map(state.toolCallViews),
+    toolCallViewsVersion: state.toolCallViewsVersion,
   };
 }
 
@@ -98,10 +97,11 @@ export class ReplUiStore {
         ? clonePromptState(initialState.prompt)
         : null,
       status: initialState.status ? { ...initialState.status } : null,
-      activity: initialState.activity ? { ...initialState.activity } : null,
       footer: initialState.footer ?? null,
       mode: initialState.mode ?? "idle",
       overlay: cloneOverlayState(initialState.overlay ?? null),
+      toolCallViews: new Map(),
+      toolCallViewsVersion: 0,
     };
   }
 
@@ -122,7 +122,6 @@ export class ReplUiStore {
         this.state = {
           ...this.state,
           status: null,
-          activity: null,
           transcript: [...this.state.transcript, { ...action.entry }],
         };
         break;
@@ -138,17 +137,10 @@ export class ReplUiStore {
           status: action.status ? { ...action.status } : null,
         };
         break;
-      case "setActivity":
-        this.state = {
-          ...this.state,
-          activity: action.activity ? { ...action.activity } : null,
-        };
-        break;
       case "setFooter":
         this.state = {
           ...this.state,
           status: null,
-          activity: null,
           footer: action.footer,
         };
         break;
@@ -162,7 +154,6 @@ export class ReplUiStore {
         this.state = {
           ...this.state,
           status: null,
-          activity: null,
           overlay: cloneOverlayState(action.overlay),
         };
         break;
@@ -176,9 +167,37 @@ export class ReplUiStore {
         this.state = {
           ...this.state,
           status: null,
-          activity: null,
+          toolCallViews: new Map(),
+          toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
         };
         break;
+      case "upsertToolCallView": {
+        let base = this.state.toolCallViews;
+        const existing = base.get(action.view.id);
+        if (
+          existing &&
+          existing.status === action.view.status &&
+          existing.useLabel === action.view.useLabel &&
+          existing.resultLabel === action.view.resultLabel
+        ) {
+          break;
+        }
+        if (
+          action.view.status === "running" &&
+          base.size > 0 &&
+          [...base.values()].every((v) => v.status !== "running")
+        ) {
+          base = new Map();
+        }
+        const newViews = new Map(base);
+        newViews.set(action.view.id, action.view);
+        this.state = {
+          ...this.state,
+          toolCallViews: newViews,
+          toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
+        };
+        break;
+      }
     }
 
     for (const listener of this.listeners) {
@@ -196,10 +215,6 @@ export class ReplUiStore {
 
   setStatus(status: EphemeralStatus | null): void {
     this.dispatch({ type: "setStatus", status });
-  }
-
-  setActivity(activity: ToolActivityState | null): void {
-    this.dispatch({ type: "setActivity", activity });
   }
 
   setFooter(footer: string | null): void {
@@ -220,5 +235,9 @@ export class ReplUiStore {
 
   clearEphemeralSurfaces(): void {
     this.dispatch({ type: "clearEphemeralSurfaces" });
+  }
+
+  upsertToolCallView(view: ToolCallView): void {
+    this.dispatch({ type: "upsertToolCallView", view });
   }
 }

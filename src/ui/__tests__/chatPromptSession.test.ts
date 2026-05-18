@@ -97,6 +97,163 @@ describe("chatPromptSession", () => {
     }
   });
 
+  it("invokes the tool-call toggle callback on Ctrl+O without changing the buffer", () => {
+    const inputStream = new PassThrough();
+    const outputStream = new PassThrough();
+    let latestState: ChatPromptSessionState | undefined;
+    const toggleToolCalls = jest.fn();
+
+    (
+      inputStream as NodeJS.ReadStream & {
+        setRawMode: (mode: boolean) => void;
+      }
+    ).setRawMode = () => {};
+    (
+      outputStream as NodeJS.WriteStream & {
+        isTTY: boolean;
+        columns: number;
+      }
+    ).isTTY = false;
+    (
+      outputStream as NodeJS.WriteStream & {
+        isTTY: boolean;
+        columns: number;
+      }
+    ).columns = 80;
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream: outputStream as unknown as NodeJS.WriteStream,
+      request: {
+        promptText: ">",
+        mode: "chat",
+      },
+      historySnapshot: [],
+      enableTypeahead: true,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [],
+      callbacks: {
+        render: (state) => {
+          latestState = state;
+        },
+        submit: () => {
+          /* no-op */
+        },
+        interrupt: () => {
+          /* no-op */
+        },
+        toggleToolCalls,
+        close: () => {
+          /* no-op */
+        },
+      },
+    });
+
+    try {
+      inputStream.emit("keypress", undefined, {
+        name: "o",
+        ctrl: true,
+        meta: false,
+        shift: false,
+      });
+
+      expect(toggleToolCalls).toHaveBeenCalledTimes(1);
+      expect(latestState).toMatchObject({
+        buffer: "",
+        cursor: 0,
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("clears a pending Ctrl+X editor chord before handling Ctrl+O", () => {
+    const inputStream = new PassThrough();
+    const outputStream = new PassThrough();
+    let latestState: ChatPromptSessionState | undefined;
+    const toggleToolCalls = jest.fn();
+    const editorRunner = jest.fn(() => ({ status: 0, signal: null }));
+
+    (
+      inputStream as NodeJS.ReadStream & {
+        setRawMode: (mode: boolean) => void;
+      }
+    ).setRawMode = () => {};
+    (
+      outputStream as NodeJS.WriteStream & {
+        isTTY: boolean;
+        columns: number;
+      }
+    ).isTTY = false;
+    (
+      outputStream as NodeJS.WriteStream & {
+        isTTY: boolean;
+        columns: number;
+      }
+    ).columns = 80;
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream: outputStream as unknown as NodeJS.WriteStream,
+      request: {
+        promptText: ">",
+        mode: "chat",
+      },
+      historySnapshot: [],
+      enableTypeahead: false,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [],
+      editorRunner: editorRunner as never,
+      callbacks: {
+        render: (state) => {
+          latestState = state;
+        },
+        submit: () => {
+          /* no-op */
+        },
+        interrupt: () => {
+          /* no-op */
+        },
+        toggleToolCalls,
+        close: () => {
+          /* no-op */
+        },
+      },
+    });
+
+    try {
+      inputStream.emit("keypress", undefined, {
+        name: "x",
+        ctrl: true,
+        meta: false,
+        shift: false,
+      });
+      inputStream.emit("keypress", undefined, {
+        name: "o",
+        ctrl: true,
+        meta: false,
+        shift: false,
+      });
+      inputStream.emit("keypress", undefined, {
+        name: "e",
+        ctrl: true,
+        meta: false,
+        shift: false,
+      });
+
+      expect(toggleToolCalls).toHaveBeenCalledTimes(1);
+      expect(editorRunner).not.toHaveBeenCalled();
+      expect(latestState).toMatchObject({
+        buffer: "",
+        cursor: 0,
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
   it("retries mention typeahead when the first search has no matches", () => {
     jest.useFakeTimers();
 

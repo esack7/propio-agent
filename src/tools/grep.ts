@@ -1,4 +1,5 @@
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import {
   collectFilesForSearch,
@@ -17,6 +18,34 @@ export class GrepTool implements ExecutableTool {
 
   constructor(config?: GrepToolConfig) {
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+  }
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const pattern = input.pattern;
+        const path = input.path;
+        if (typeof pattern === "string" && typeof path === "string") {
+          return `${JSON.stringify(pattern)} in ${path}`;
+        }
+        return typeof pattern === "string" ? JSON.stringify(pattern) : null;
+      },
+      renderResult(result) {
+        if (result.startsWith("No matches found")) {
+          return "No matches";
+        }
+        const lines = result
+          .trim()
+          .split("\n")
+          .filter((l) => l.length > 0);
+        const fileSet = new Set(lines.map((l) => l.split(":")[0]));
+        const matchCount = lines.length;
+        const fileCount = fileSet.size;
+        const matchLabel = matchCount === 1 ? "match" : "matches";
+        const fileLabel = fileCount === 1 ? "1 file" : `${fileCount} files`;
+        return `Found ${matchCount} ${matchLabel} in ${fileLabel}`;
+      },
+    };
   }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {

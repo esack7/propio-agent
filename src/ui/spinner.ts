@@ -18,10 +18,14 @@ export class OperationSpinner {
   private startedAtMs: number | null = null;
   private elapsedTimerId: NodeJS.Timeout | null = null;
 
+  private static shouldEnableByDefault(): boolean {
+    return process.env.NODE_ENV !== "test" && !process.env.JEST_WORKER_ID;
+  }
+
   constructor(text: string, options: OperationSpinnerOptions = {}) {
     this.baseText = text;
     this.phase = options.phase ?? null;
-    this.enabled = options.enabled ?? true;
+    this.enabled = options.enabled ?? OperationSpinner.shouldEnableByDefault();
     this.showElapsed = options.showElapsed ?? true;
     this.elapsedUpdateIntervalMs = options.elapsedUpdateIntervalMs ?? 1000;
     this.spinner = yoctoSpinner({
@@ -31,11 +35,11 @@ export class OperationSpinner {
   }
 
   start(): void {
+    this.startedAtMs = Date.now();
     if (!this.enabled) {
       return;
     }
 
-    this.startedAtMs = Date.now();
     this.refreshText();
     this.startElapsedTicker();
     this.spinner.start();

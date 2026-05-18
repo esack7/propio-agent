@@ -122,33 +122,19 @@ export function rebuildIndex(sessionsDir: string): SessionIndex {
   for (const file of files) {
     try {
       const content = fs.readFileSync(path.join(sessionsDir, file), "utf8");
-      const parsed: unknown = JSON.parse(content);
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        Array.isArray(parsed)
-      ) {
+      const parsedSnapshot = parseSnapshotObject(JSON.parse(content));
+      if (!parsedSnapshot) {
         continue;
       }
-      const obj = parsed as Record<string, unknown>;
-      if (obj.version !== 1 && obj.version !== 2) continue;
-      if (typeof obj.metadata !== "object" || obj.metadata === null) continue;
-      if (typeof obj.context !== "object" || obj.context === null) continue;
 
-      const meta = obj.metadata as Record<string, unknown>;
-      const ctx = obj.context as Record<string, unknown>;
-
-      entries.push({
-        sessionId: path.basename(file, ".json"),
-        runtimeSessionId: typeof meta.sessionId === "string" ? meta.sessionId : undefined,
-        snapshotFile: file,
-        savedAt: typeof obj.savedAt === "string" ? obj.savedAt : "",
-        providerName:
-          typeof meta.providerName === "string" ? meta.providerName : "",
-        modelKey: typeof meta.modelKey === "string" ? meta.modelKey : "",
-        turnCount: Array.isArray(ctx.turns) ? ctx.turns.length : 0,
-        hasRollingSummary: ctx.rollingSummary !== undefined,
-      });
+      entries.push(
+        toSessionIndexEntry(
+          file,
+          parsedSnapshot.snapshot,
+          parsedSnapshot.metadata,
+          parsedSnapshot.context,
+        ),
+      );
     } catch {
       // skip malformed files
     }
@@ -176,10 +162,10 @@ export function writeSnapshot(
 ): SessionIndexEntry {
   fs.mkdirSync(sessionsDir, { recursive: true });
 
-  const parsed: unknown = JSON.parse(sessionJson);
-  const obj = parsed as Record<string, unknown>;
-  const meta = obj.metadata as Record<string, unknown>;
-  const ctx = obj.context as Record<string, unknown>;
+  const parsedSnapshot = parseSnapshotObject(JSON.parse(sessionJson));
+  if (!parsedSnapshot) {
+    throw new Error("Invalid session snapshot format");
+  }
 
   const snapshotFile = generateSnapshotFileName();
   const snapshotPath = path.join(sessionsDir, snapshotFile);
@@ -189,17 +175,12 @@ export function writeSnapshot(
   fs.writeFileSync(tempPath, sessionJson, "utf8");
   fs.renameSync(tempPath, snapshotPath);
 
-  const entry: SessionIndexEntry = {
-    sessionId: path.basename(snapshotFile, ".json"),
-    runtimeSessionId: typeof meta.sessionId === "string" ? meta.sessionId : undefined,
+  const entry: SessionIndexEntry = toSessionIndexEntry(
     snapshotFile,
-    savedAt: typeof obj.savedAt === "string" ? obj.savedAt : "",
-    providerName:
-      typeof meta.providerName === "string" ? meta.providerName : "",
-    modelKey: typeof meta.modelKey === "string" ? meta.modelKey : "",
-    turnCount: Array.isArray(ctx.turns) ? ctx.turns.length : 0,
-    hasRollingSummary: ctx.rollingSummary !== undefined,
-  };
+    parsedSnapshot.snapshot,
+    parsedSnapshot.metadata,
+    parsedSnapshot.context,
+  );
 
   const existing = readIndex(sessionsDir);
   const currentEntries = existing ? [...existing.entries] : [];
@@ -342,4 +323,55 @@ export function resolveSessionById(
 ): SessionIndexEntry | null {
   const sessions = listSessions(sessionsDir);
   return sessions.find((s) => s.sessionId === sessionId) ?? null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseSnapshotObject(parsed: unknown): {
+  snapshot: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  context: Record<string, unknown>;
+} | null {
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  const snapshot = parsed;
+  if (
+    snapshot.version !== 1 &&
+    snapshot.version !== 2 &&
+    snapshot.version !== 3
+  ) {
+    return null;
+  }
+
+  const metadata = snapshot.metadata;
+  const context = snapshot.context;
+  if (!isRecord(metadata) || !isRecord(context)) {
+    return null;
+  }
+
+  return { snapshot, metadata, context };
+}
+
+function toSessionIndexEntry(
+  snapshotFile: string,
+  snapshot: Record<string, unknown>,
+  metadata: Record<string, unknown>,
+  context: Record<string, unknown>,
+): SessionIndexEntry {
+  return {
+    sessionId: path.basename(snapshotFile, ".json"),
+    runtimeSessionId:
+      typeof metadata.sessionId === "string" ? metadata.sessionId : undefined,
+    snapshotFile,
+    savedAt: typeof snapshot.savedAt === "string" ? snapshot.savedAt : "",
+    providerName:
+      typeof metadata.providerName === "string" ? metadata.providerName : "",
+    modelKey: typeof metadata.modelKey === "string" ? metadata.modelKey : "",
+    turnCount: Array.isArray(context.turns) ? context.turns.length : 0,
+    hasRollingSummary: context.rollingSummary !== undefined,
+  };
 }

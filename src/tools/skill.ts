@@ -1,5 +1,6 @@
 import { ChatTool } from "../providers/types.js";
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 
 export interface SkillToolInvoker {
   invokeSkill(
@@ -16,6 +17,18 @@ export class SkillTool implements ExecutableTool {
   readonly description = "Activate a loaded inline skill.";
 
   constructor(private readonly invoker: SkillToolInvoker) {}
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const name = input.name;
+        return typeof name === "string" && name.length > 0 ? name : null;
+      },
+      renderResult(result) {
+        return result;
+      },
+    };
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const name = args.name;

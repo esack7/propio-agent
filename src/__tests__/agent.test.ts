@@ -12,7 +12,6 @@ import {
 } from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
 import { ExecutableTool } from "../tools/interface.js";
-import type { ToolExecutionStatus } from "../tools/types.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
 
@@ -956,7 +955,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
-  describe("streamChat with Tool Lifecycle Callbacks", () => {
+  describe("streamChat with tool execution via onEvent", () => {
     /**
      * Mock Provider that yields tool calls and then a final response
      */
@@ -999,349 +998,6 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     }
 
-    it("should invoke onToolStart callback when tool execution begins (if provided)", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolStart = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolStart });
-
-      expect(onToolStart).toHaveBeenCalledWith("read");
-      expect(onToolStart).toHaveBeenCalledTimes(1);
-    });
-
-    it("should invoke onToolEnd callback when tool execution completes (if provided)", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolEnd });
-
-      expect(onToolEnd).toHaveBeenCalled();
-      expect(onToolEnd).toHaveBeenCalledWith(
-        "read",
-        expect.any(String),
-        "success",
-      );
-      expect(onToolEnd).toHaveBeenCalledTimes(1);
-    });
-
-    it("should invoke both onToolStart and onToolEnd callbacks", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolStart = jest.fn();
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, {
-        onToolStart,
-        onToolEnd,
-      });
-
-      expect(onToolStart).toHaveBeenCalledWith("read");
-      expect(onToolStart).toHaveBeenCalledTimes(1);
-      expect(onToolEnd).toHaveBeenCalledWith(
-        "read",
-        expect.any(String),
-        "success",
-      );
-      expect(onToolEnd).toHaveBeenCalledTimes(1);
-    });
-
-    it("should suppress bracketed tool status messages when both callbacks are provided", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolStart = jest.fn();
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, {
-        onToolStart,
-        onToolEnd,
-      });
-
-      // Check that bracketed tool messages were not sent to onToken
-      const toolMessageCalls = onToken.mock.calls
-        .map((call) => call[0])
-        .filter(
-          (token) =>
-            token.includes("[Executing tool:") ||
-            token.includes("[Tool result:"),
-        );
-      expect(toolMessageCalls).toHaveLength(0);
-    });
-
-    it("should use onToken for tool status when callbacks are not provided (backward compatible)", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken);
-
-      // Should have bracketed tool messages
-      const toolMessageCalls = onToken.mock.calls
-        .map((call) => call[0])
-        .filter(
-          (token) =>
-            token.includes("[Executing tool:") ||
-            token.includes("[Tool result:"),
-        );
-      expect(toolMessageCalls.length).toBeGreaterThan(0);
-    });
-
-    it("should use onToken for tool results when only onToolStart is provided", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolStart = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolStart });
-
-      // Should NOT have [Executing tool:] message (handled by callback)
-      const executingMessages = onToken.mock.calls
-        .map((call) => call[0])
-        .filter((token) => token.includes("[Executing tool:"));
-      expect(executingMessages).toHaveLength(0);
-
-      // Should HAVE [Tool result:] message (no callback for onToolEnd)
-      const resultMessages = onToken.mock.calls
-        .map((call) => call[0])
-        .filter((token) => token.includes("[Tool result:"));
-      expect(resultMessages.length).toBeGreaterThan(0);
-    });
-
-    it("should use onToken for tool execution start when only onToolEnd is provided", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolEnd });
-
-      // Should HAVE [Executing tool:] message (no callback for onToolStart)
-      const executingMessages = onToken.mock.calls
-        .map((call) => call[0])
-        .filter((token) => token.includes("[Executing tool:"));
-      expect(executingMessages.length).toBeGreaterThan(0);
-
-      // Should NOT have [Tool result:] message (handled by callback)
-      const resultMessages = onToken.mock.calls
-        .map((call) => call[0])
-        .filter((token) => token.includes("[Tool result:"));
-      expect(resultMessages).toHaveLength(0);
-    });
-
-    it("should invoke tool callbacks correctly for multiple tool executions", async () => {
-      /**
-       * Mock Provider that yields multiple tool calls and then a final response
-       */
-      class MockProviderWithMultipleTools implements LLMProvider {
-        name = "mock-multi-tools";
-        streamChatCalls: ChatRequest[] = [];
-        callCount = 0;
-
-        getCapabilities() {
-          return { contextWindowTokens: 128000 };
-        }
-
-        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
-          this.streamChatCalls.push(request);
-          this.callCount++;
-
-          if (this.callCount === 1) {
-            // First call: provide multiple tool calls
-            yield { delta: "Testing" };
-            yield {
-              delta: "",
-              toolCalls: [
-                {
-                  id: "call-1",
-                  function: {
-                    name: "tool_one",
-                    arguments: {},
-                  },
-                },
-                {
-                  id: "call-2",
-                  function: {
-                    name: "tool_two",
-                    arguments: {},
-                  },
-                },
-              ],
-            };
-          } else {
-            // Subsequent calls: return final response
-            yield { delta: "Finished" };
-          }
-        }
-      }
-
-      const mockProvider = new MockProviderWithMultipleTools();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolStart = jest.fn();
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, {
-        onToolStart,
-        onToolEnd,
-      });
-
-      // Should be called for each tool
-      expect(onToolStart).toHaveBeenCalledTimes(2);
-      expect(onToolStart).toHaveBeenNthCalledWith(1, "tool_one");
-      expect(onToolStart).toHaveBeenNthCalledWith(2, "tool_two");
-
-      expect(onToolEnd).toHaveBeenCalledTimes(2);
-      expect(onToolEnd).toHaveBeenNthCalledWith(
-        1,
-        "tool_one",
-        expect.any(String),
-        "tool_not_found",
-      );
-      expect(onToolEnd).toHaveBeenNthCalledWith(
-        2,
-        "tool_two",
-        expect.any(String),
-        "tool_not_found",
-      );
-    });
-
-    it("should pass correct tool result string to onToolEnd callback", async () => {
-      const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolEnd });
-
-      expect(onToolEnd).toHaveBeenCalled();
-      const callArgs = onToolEnd.mock.calls[0];
-      const result = callArgs[1];
-      const status = callArgs[2] as ToolExecutionStatus;
-
-      // Result should be a string
-      expect(typeof result).toBe("string");
-      // Result should not be empty
-      expect(result.length).toBeGreaterThan(0);
-      expect(status).toBe("success");
-    });
-
-    it("should pass 'tool_disabled' status in onToolEnd when tool is disabled", async () => {
-      class DisabledToolProvider extends MockProviderWithToolCalls {
-        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
-          this.streamChatCalls.push(request);
-          this.callCount++;
-
-          if (this.callCount === 1) {
-            yield { delta: "Testing disabled tool" };
-            yield {
-              delta: "",
-              toolCalls: [
-                {
-                  id: "call-1",
-                  function: {
-                    name: "grep",
-                    arguments: { path: ".", pattern: "needle" },
-                  },
-                },
-              ],
-            };
-          } else {
-            yield { delta: "Done" };
-          }
-        }
-      }
-
-      const mockProvider = new DisabledToolProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-      agent.disableTool("grep");
-
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolEnd });
-
-      expect(onToolEnd).toHaveBeenCalledTimes(1);
-      expect(onToolEnd).toHaveBeenCalledWith(
-        "grep",
-        expect.stringContaining("not available"),
-        "tool_disabled",
-      );
-    });
-
-    it("should pass 'tool_not_found' status in onToolEnd when tool does not exist", async () => {
-      class MockProviderUnknownTool implements LLMProvider {
-        name = "mock-unknown-tool";
-        streamChatCalls: ChatRequest[] = [];
-        callCount = 0;
-
-        getCapabilities() {
-          return { contextWindowTokens: 128000 };
-        }
-
-        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
-          this.streamChatCalls.push(request);
-          this.callCount++;
-
-          if (this.callCount === 1) {
-            yield {
-              delta: "",
-              toolCalls: [
-                {
-                  id: "call-unknown",
-                  function: {
-                    name: "nonexistent_tool_xyz",
-                    arguments: {},
-                  },
-                },
-              ],
-            };
-          } else {
-            yield { delta: "Done" };
-          }
-        }
-      }
-
-      const mockProvider = new MockProviderUnknownTool();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      const onToolEnd = jest.fn();
-      const onToken = jest.fn();
-
-      await agent.streamChat("Test", onToken, { onToolEnd });
-
-      expect(onToolEnd).toHaveBeenCalledTimes(1);
-      expect(onToolEnd).toHaveBeenCalledWith(
-        "nonexistent_tool_xyz",
-        expect.any(String),
-        "tool_not_found",
-      );
-    });
-
     it("should pass abortSignal to provider streamChat requests", async () => {
       const mockProvider = new MockProviderWithToolCalls();
       const agent = new Agent({ providersConfig: testProvidersConfig });
@@ -1369,6 +1025,36 @@ describe("Agent with Multi-Provider Configuration", () => {
           abortSignal: controller.signal,
         }),
       ).rejects.toThrow("Request cancelled");
+    });
+
+    it("should still invoke deprecated onToolStart callback", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolStart = jest.fn();
+
+      await agent.streamChat("Test", jest.fn(), { onToolStart });
+
+      expect(onToolStart).toHaveBeenCalledTimes(1);
+      expect(onToolStart).toHaveBeenCalledWith("read");
+    });
+
+    it("should still invoke deprecated onToolEnd callback", async () => {
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      (agent as any).provider = mockProvider;
+
+      const onToolEnd = jest.fn();
+
+      await agent.streamChat("Test", jest.fn(), { onToolEnd });
+
+      expect(onToolEnd).toHaveBeenCalledTimes(1);
+      expect(onToolEnd).toHaveBeenCalledWith(
+        "read",
+        expect.any(String),
+        "success",
+      );
     });
   });
 
@@ -1519,6 +1205,83 @@ describe("Agent with Multi-Provider Configuration", () => {
       ).toBe(true);
     });
 
+    type MaxIterationsDiagnostic = Extract<
+      AgentDiagnosticEvent,
+      { type: "max_iterations_reached" }
+    >;
+
+    const findMaxIterationsDiagnostic = (
+      events: AgentDiagnosticEvent[],
+    ): MaxIterationsDiagnostic | undefined =>
+      events.find(
+        (event): event is MaxIterationsDiagnostic =>
+          event.type === "max_iterations_reached",
+      );
+
+    class VaryingTool implements ExecutableTool {
+      readonly name = "varying_tool";
+      readonly description = "No-op tool with changing arguments.";
+
+      getSchema() {
+        return {
+          type: "function" as const,
+          function: {
+            name: "varying_tool",
+            description: "No-op tool with changing arguments",
+            parameters: {
+              type: "object",
+              properties: {
+                index: { type: "number" },
+              },
+            },
+          },
+        };
+      }
+
+      async execute(): Promise<string> {
+        return "ok";
+      }
+    }
+
+    class RepeatingToolCallProvider implements LLMProvider {
+      name = "repeating-tool-call-provider";
+      streamChatCalls: ChatRequest[] = [];
+
+      constructor(
+        private readonly toolName: string,
+        private readonly finalAnswerAfterFirstToolCall?: string,
+      ) {}
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+        this.streamChatCalls.push(request);
+        if (
+          this.finalAnswerAfterFirstToolCall &&
+          this.streamChatCalls.length > 1
+        ) {
+          yield { delta: this.finalAnswerAfterFirstToolCall };
+          return;
+        }
+
+        yield { delta: `Partial ${this.streamChatCalls.length}.` };
+        yield {
+          delta: "",
+          toolCalls: [
+            {
+              id: `call-${this.streamChatCalls.length}`,
+              function: {
+                name: this.toolName,
+                arguments: { index: this.streamChatCalls.length },
+              },
+            },
+          ],
+        };
+      }
+    }
+
     it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
       class LoopTool implements ExecutableTool {
         readonly name = "loop_tool";
@@ -1652,6 +1415,87 @@ describe("Agent with Multi-Provider Configuration", () => {
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
         /Stopped after .* no final assistant response\./,
       );
+    });
+
+    it("should reject when max iterations are reached with partial text and pending tool calls", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const provider = new RepeatingToolCallProvider("varying_tool");
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      agent.addTool(new VaryingTool());
+      (agent as any).provider = provider;
+
+      await expect(
+        agent.streamChat("hello", () => {}, { maxIterations: 2 }),
+      ).rejects.toThrow(
+        "Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.",
+      );
+
+      const maxEvent = findMaxIterationsDiagnostic(events);
+      expect(maxEvent).toBeDefined();
+      expect(maxEvent?.iterationsCompleted).toBe(2);
+      expect(maxEvent?.pendingToolCalls).toBe(1);
+      expect(maxEvent?.failedToolCount).toBe(0);
+      expect(maxEvent?.failedTools).toEqual([]);
+    });
+
+    it("should include failed tool details when max iterations stop an incomplete turn", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      (agent as any).provider = new RepeatingToolCallProvider("missing_tool");
+
+      await expect(
+        agent.streamChat("hello", () => {}, { maxIterations: 2 }),
+      ).rejects.toThrow("Failed tools: missing_tool.");
+
+      const maxEvent = findMaxIterationsDiagnostic(events);
+      expect(maxEvent).toBeDefined();
+      expect(maxEvent?.iterationsCompleted).toBe(2);
+      expect(maxEvent?.pendingToolCalls).toBe(1);
+      expect(maxEvent?.failedToolCount).toBe(2);
+      expect(maxEvent?.failedTools).toEqual(["missing_tool"]);
+    });
+
+    it("should still resolve when a failed tool is followed by a final answer", async () => {
+      const events: AgentDiagnosticEvent[] = [];
+      const provider = new RepeatingToolCallProvider(
+        "missing_tool",
+        "Recovered with a final answer.",
+      );
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => {
+          events.push(event);
+        },
+      });
+      (agent as any).provider = provider;
+
+      const response = await agent.streamChat("hello", () => {});
+
+      expect(response).toBe("Recovered with a final answer.");
+      expect(provider.streamChatCalls).toHaveLength(2);
+      expect(
+        events.some(
+          (event) =>
+            event.type === "tool_execution_finished" &&
+            event.status === "tool_not_found",
+        ),
+      ).toBe(true);
+      expect(
+        events.some((event) => event.type === "max_iterations_reached"),
+      ).toBe(false);
     });
 
     it("should emit context_snapshot and enriched request_started for normal request", async () => {
@@ -2680,7 +2524,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
-  describe("Default (non-show-activity) UI rendering path", () => {
+  describe("Tool visibility event rendering path", () => {
     class SingleToolCallProvider implements LLMProvider {
       name = "ui-path-mock";
       private callCount = 0;
@@ -2717,41 +2561,35 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     }
 
-    function runWithLegacyCallbacks(
+    function collectEvents(
       agent: Agent,
       userMessage: string,
-    ): Promise<{
-      renders: Array<{ type: "success" | "error"; text: string }>;
-    }> {
-      const renders: Array<{ type: "success" | "error"; text: string }> = [];
+    ): Promise<AgentVisibilityEvent[]> {
+      const events: AgentVisibilityEvent[] = [];
       return agent
         .streamChat(userMessage, () => {}, {
-          onToolStart: () => {},
-          onToolEnd: (_toolName, result, status) => {
-            if (status !== "success") {
-              renders.push({ type: "error", text: `${_toolName} failed` });
-            } else {
-              renders.push({ type: "success", text: `${_toolName} completed` });
-            }
-          },
+          onEvent: (event) => events.push(event),
         })
-        .then(() => ({ renders }));
+        .then(() => events);
     }
 
-    it("should render success for a working tool", async () => {
+    it("emits tool_finished for a working tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new SingleToolCallProvider("read", {
         path: "package.json",
       });
 
-      const { renders } = await runWithLegacyCallbacks(agent, "list files");
+      const events = await collectEvents(agent, "list files");
+      const finished = events.filter((e) => e.type === "tool_finished");
 
-      expect(renders).toHaveLength(1);
-      expect(renders[0].type).toBe("success");
-      expect(renders[0].text).toContain("read");
+      expect(finished).toHaveLength(1);
+      expect(finished[0]).toMatchObject({
+        type: "tool_finished",
+        toolName: "read",
+      });
     });
 
-    it("should render failure for a disabled tool", async () => {
+    it("emits tool_failed for a disabled tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       agent.disableTool("grep");
       (agent as any).provider = new SingleToolCallProvider("grep", {
@@ -2759,24 +2597,31 @@ describe("Agent with Multi-Provider Configuration", () => {
         pattern: "needle",
       });
 
-      const { renders } = await runWithLegacyCallbacks(agent, "list files");
+      const events = await collectEvents(agent, "list files");
+      const failed = events.filter((e) => e.type === "tool_failed");
 
-      expect(renders).toHaveLength(1);
-      expect(renders[0].type).toBe("error");
-      expect(renders[0].text).toContain("grep");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toMatchObject({
+        type: "tool_failed",
+        toolName: "grep",
+      });
     });
 
-    it("should render failure for a missing tool", async () => {
+    it("emits tool_failed for a missing tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new SingleToolCallProvider(
         "nonexistent_tool_xyz",
+        {},
       );
 
-      const { renders } = await runWithLegacyCallbacks(agent, "run tool");
+      const events = await collectEvents(agent, "run tool");
+      const failed = events.filter((e) => e.type === "tool_failed");
 
-      expect(renders).toHaveLength(1);
-      expect(renders[0].type).toBe("error");
-      expect(renders[0].text).toContain("nonexistent_tool_xyz");
+      expect(failed).toHaveLength(1);
+      expect(failed[0]).toMatchObject({
+        type: "tool_failed",
+        toolName: "nonexistent_tool_xyz",
+      });
     });
   });
 });

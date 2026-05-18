@@ -1,4 +1,5 @@
 import { ChatTool } from "../providers/types.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 
 /**
  * ExecutableTool interface bundles tool schema and execution logic.
@@ -32,6 +33,13 @@ export interface ExecutableTool {
    * Used by the interactive UI to render activity without parsing arguments.
    */
   getInvocationLabel?(args: Record<string, unknown>): string | undefined;
+
+  /**
+   * Returns a display adapter for human-facing rendering of tool invocations.
+   * The adapter summarizes tool use and results in a compact UI-friendly form,
+   * independent of the full content sent to the model.
+   */
+  getDisplayAdapter?(): ToolDisplayAdapter;
 
   /**
    * Executes the tool logic with the provided arguments.

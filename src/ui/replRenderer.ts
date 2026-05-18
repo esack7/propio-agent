@@ -5,10 +5,15 @@ import type { TerminalWriter } from "./terminalWriter.js";
 import type {
   EphemeralStatus,
   OverlayState,
-  ToolActivityState,
   ReplUiState,
   TranscriptEntry,
 } from "./replUi.js";
+import type { ToolCallView } from "./toolCallView.js";
+import {
+  formatToolExecution,
+  formatSuccess,
+  formatError,
+} from "./formatting.js";
 
 export interface ReplRendererOptions {
   writer: TerminalWriter;
@@ -82,6 +87,10 @@ function transcriptEntriesEqual(
       return (
         right.kind === "turn_complete" && left.durationMs === right.durationMs
       );
+    case "turn_failed":
+      return (
+        right.kind === "turn_failed" && left.durationMs === right.durationMs
+      );
     case "json":
       return right.kind === "json" && left.value === right.value;
   }
@@ -108,19 +117,6 @@ function overlaysEqual(
   );
 }
 
-function activitiesEqual(
-  left: ToolActivityState | null,
-  right: ToolActivityState | null,
-): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.text === right.text &&
-      left.level === right.level)
-  );
-}
-
 export class ReplRenderer {
   private previousState: ReplUiState | null = null;
   private renderedBottomLineCount = 0;
@@ -142,7 +138,7 @@ export class ReplRenderer {
     const transcriptAppended =
       nextState.transcript.length > previousTranscriptLength;
     const bottomSignatureChanged =
-      !activitiesEqual(previousState?.activity ?? null, nextState.activity) ||
+      previousState?.toolCallViewsVersion !== nextState.toolCallViewsVersion ||
       previousState?.footer !== nextState.footer ||
       !overlaysEqual(previousState?.overlay ?? null, nextState.overlay);
     const shouldClearBottomZone =
@@ -245,6 +241,9 @@ export class ReplRenderer {
       case "turn_complete":
         this.options.transcriptRenderer.turnComplete(entry.durationMs);
         break;
+      case "turn_failed":
+        this.options.transcriptRenderer.turnFailed(entry.durationMs);
+        break;
       case "json":
         this.options.transcriptRenderer.writeJson(entry.value);
         break;
@@ -271,8 +270,9 @@ export class ReplRenderer {
   private renderBottomZone(state: ReplUiState): number {
     let renderedLines = 0;
 
-    if (state.activity) {
-      const text = `Activity: ${state.activity.text}`;
+    const lastToolCallView = lastMapValue(state.toolCallViews);
+    if (lastToolCallView) {
+      const text = renderToolCallViewText(lastToolCallView);
       this.options.writer.writeStderrLine(text);
       renderedLines += countWrittenStderrLines(text, this.options.writer);
     }
@@ -300,9 +300,10 @@ function countBottomZoneLines(
 ): number {
   let count = 0;
 
-  if (state.activity) {
+  const lastToolCallView = lastMapValue(state.toolCallViews);
+  if (lastToolCallView) {
     count += countWrittenStderrLines(
-      `Activity: ${state.activity.text}`,
+      renderToolCallViewText(lastToolCallView),
       writer,
     );
   }
@@ -360,6 +361,12 @@ function countOverlayLines(
           writer,
         );
         break;
+      case "turn_failed":
+        count += countWrittenStderrLines(
+          `Turn failed in ${(Math.max(0, entry.durationMs) / 1000).toFixed(1)}s`,
+          writer,
+        );
+        break;
       case "json":
         count += countWrittenStderrLines(
           JSON.stringify(entry.value, null, 2),
@@ -378,4 +385,22 @@ function countWrittenStderrLines(text: string, writer: TerminalWriter): number {
   );
   const trimmed = fitted.endsWith("\n") ? fitted.slice(0, -1) : fitted;
   return Math.max(1, trimmed.split("\n").length);
+}
+
+function lastMapValue<V>(map: ReadonlyMap<string, V>): V | undefined {
+  let last: V | undefined;
+  for (const v of map.values()) {
+    last = v;
+  }
+  return last;
+}
+
+function renderToolCallViewText(view: ToolCallView): string {
+  if (view.status === "running") {
+    return formatToolExecution(view.useLabel);
+  }
+  const label = view.resultLabel
+    ? `${view.useLabel} — ${view.resultLabel}`
+    : view.useLabel;
+  return view.status === "success" ? formatSuccess(label) : formatError(label);
 }

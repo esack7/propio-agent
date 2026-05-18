@@ -5,6 +5,7 @@ import * as path from "path";
 import * as readline from "readline";
 import { createPromptComposer } from "../promptComposer.js";
 import { createPromptHistoryStore } from "../promptHistory.js";
+import { getIdleFooterText } from "../slashCommands.js";
 import type { PromptEditorRunner } from "../promptEditor.js";
 
 jest.setTimeout(10000);
@@ -20,6 +21,7 @@ function stripAnsiControls(text: string): string {
 function createHarness(options?: {
   renderFooter?: (footer: string) => void;
   renderState?: (state: unknown) => void;
+  onToggleToolCalls?: () => string | null | undefined;
 }) {
   const inputStream = new PassThrough();
   const outputStream = new PassThrough();
@@ -30,6 +32,7 @@ function createHarness(options?: {
     output: outputStream as unknown as NodeJS.WriteStream,
     renderFooter: options?.renderFooter,
     renderState: options?.renderState as ((state: unknown) => void) | undefined,
+    onToggleToolCalls: options?.onToggleToolCalls,
   });
 
   return {
@@ -107,6 +110,9 @@ function createTtyHarness(options?: {
     load(): readonly string[];
     record(text: string): void;
   };
+  renderFooter?: (footer: string) => void;
+  renderState?: (state: unknown) => void;
+  onToggleToolCalls?: () => string | null | undefined;
   workspaceRoot?: string;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -151,6 +157,9 @@ function createTtyHarness(options?: {
     enableTypeahead: options?.enableTypeahead,
     editorRunner: options?.editorRunner,
     editorEnv: options?.editorEnv,
+    renderFooter: options?.renderFooter,
+    renderState: options?.renderState as ((state: unknown) => void) | undefined,
+    onToggleToolCalls: options?.onToggleToolCalls,
   });
 
   const emitKeypress = (
@@ -297,6 +306,99 @@ describe("createPromptComposer", () => {
     harness.composer.close();
   });
 
+  it("updates the active footer when tool calls are toggled", async () => {
+    const renderFooter = jest.fn();
+    const renderState = jest.fn();
+    let showToolCalls = true;
+    const harness = createTtyHarness({
+      renderFooter,
+      renderState,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      onToggleToolCalls: () => {
+        showToolCalls = !showToolCalls;
+        return getIdleFooterText(showToolCalls);
+      },
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: getIdleFooterText(showToolCalls),
+    });
+
+    await flush();
+    expect(renderFooter).not.toHaveBeenCalled();
+    expect(stripAnsiControls(harness.takeOutput())).toContain(
+      "Enter to send | ? help | Ctrl+O tools: shown\nName? ",
+    );
+
+    harness.inputStream.emit("keypress", "\u000f", {
+      name: "o",
+      ctrl: true,
+      meta: false,
+      shift: false,
+    });
+
+    const toggleOutput = stripAnsiControls(harness.takeOutput());
+    expect(toggleOutput).toContain(
+      "Enter to send | ? help | Ctrl+O tools: hidden\nName? ",
+    );
+    expect(toggleOutput).not.toContain(
+      "Enter to send | ? help | Ctrl+O tools: shown",
+    );
+    expect(renderState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        buffer: "",
+        footer: "Enter to send | ? help | Ctrl+O tools: hidden",
+      }),
+    );
+
+    harness.composer.close();
+  });
+
+  it("wraps the active footer before repainting narrow chat prompts", async () => {
+    let showToolCalls = true;
+    const harness = createTtyHarness({
+      columns: 40,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      onToggleToolCalls: () => {
+        showToolCalls = !showToolCalls;
+        return getIdleFooterText(showToolCalls);
+      },
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: getIdleFooterText(showToolCalls),
+    });
+
+    await flush();
+    expect(stripAnsiControls(harness.takeOutput())).toContain(
+      "Enter to send | ? help | Ctrl+O tools:\nshown\nName? ",
+    );
+
+    harness.inputStream.emit("keypress", "\u000f", {
+      name: "o",
+      ctrl: true,
+      meta: false,
+      shift: false,
+    });
+
+    const toggleOutput = stripAnsiControls(harness.takeOutput());
+    expect(toggleOutput).toContain(
+      "Enter to send | ? help | Ctrl+O tools:\nhidden\nName? ",
+    );
+    expect(toggleOutput).not.toContain("shown\nName? ");
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+  });
+
   it("repaints the active chat prompt when terminal columns change", async () => {
     const harness = createTtyHarness({
       enableReverseHistorySearch: false,
@@ -320,6 +422,45 @@ describe("createPromptComposer", () => {
     expect(output).toMatch(/\u001b\[(?:0)?J/);
     expect(output).toContain("> alpha beta");
     expect(output).toContain("  gamma delta");
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+  });
+
+  it("clears reflowed footer rows when terminal columns change", async () => {
+    const harness = createTtyHarness({
+      columns: 80,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: getIdleFooterText(true),
+    });
+    await flush();
+    harness.takeOutput();
+
+    (harness.outputStream as NodeJS.WriteStream).columns = 20;
+    harness.outputStream.emit("resize");
+
+    const narrowOutput = harness.takeOutput();
+    expect(narrowOutput).toContain("\u001b[3A");
+    expect(stripAnsiControls(narrowOutput)).toContain(
+      "Enter to send | ?\nhelp | Ctrl+O\ntools: shown\nName? ",
+    );
+
+    (harness.outputStream as NodeJS.WriteStream).columns = 80;
+    harness.outputStream.emit("resize");
+
+    const wideOutput = harness.takeOutput();
+    expect(wideOutput).toContain("\u001b[3A");
+    expect(stripAnsiControls(wideOutput)).toContain(
+      "Enter to send | ? help | Ctrl+O tools: shown\nName? ",
+    );
 
     harness.composer.close();
     await expect(prompt).resolves.toEqual({

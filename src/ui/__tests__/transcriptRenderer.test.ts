@@ -47,4 +47,18 @@ describe("TranscriptRenderer", () => {
 
     expect(events).toEqual(["line:Turn complete in 4.2s"]);
   });
+
+  it("renders failed turns as durable transcript output", () => {
+    const events: string[] = [];
+    const renderer = new TranscriptRenderer({
+      writer: createWriter(events),
+      style: (text) => text,
+      clearStatus: jest.fn(),
+      interactive: true,
+    });
+
+    renderer.turnFailed(4200);
+
+    expect(events).toEqual(["line:Turn failed in 4.2s"]);
+  });
 });

@@ -50,7 +50,10 @@ const REHYDRATION_MAX_CHARS = 12000;
 // Approximate overhead of the <session_summary> wrapper tags + newlines (or ## Session Summary block)
 const SESSION_SUMMARY_WRAPPER_OVERHEAD = 100;
 
-function capForRehydration(rawContent: string, maxChars: number = REHYDRATION_MAX_CHARS): string {
+function capForRehydration(
+  rawContent: string,
+  maxChars: number = REHYDRATION_MAX_CHARS,
+): string {
   if (rawContent.length <= maxChars) {
     return rawContent;
   }
@@ -116,6 +119,33 @@ export class PromptBuilder {
       return lines.join("\n\n");
     }
     return `<session_summary>\n${request.rollingSummary}\n</session_summary>`;
+  }
+
+  private finalizePlan(
+    messages: ChatMessage[],
+    request: PromptBuildRequest,
+    includedTurnIds: string[],
+    includedArtifactIds: string[],
+    omittedTurnIds: string[],
+    usedRollingSummary: boolean,
+    retryLevel: number,
+  ): PromptPlan {
+    if (request.extraUserInstruction) {
+      messages.push({ role: "user", content: request.extraUserInstruction });
+    }
+
+    const metrics = measureMessages(messages);
+
+    return {
+      messages,
+      estimatedPromptTokens: metrics.estimatedTokens,
+      reservedOutputTokens: request.policy.reservedOutputTokens,
+      includedTurnIds,
+      includedArtifactIds,
+      omittedTurnIds,
+      usedRollingSummary,
+      retryLevel,
+    };
   }
 
   buildPlan(request: PromptBuildRequest): PromptPlan {
@@ -480,22 +510,15 @@ export class PromptBuilder {
       );
     }
 
-    if (request.extraUserInstruction) {
-      messages.push({ role: "user", content: request.extraUserInstruction });
-    }
-
-    const metrics = measureMessages(messages);
-
-    return {
+    return this.finalizePlan(
       messages,
-      estimatedPromptTokens: metrics.estimatedTokens,
-      reservedOutputTokens: request.policy.reservedOutputTokens,
+      request,
       includedTurnIds,
       includedArtifactIds,
       omittedTurnIds,
       usedRollingSummary,
-      retryLevel: request.retryLevel ?? 0,
-    };
+      request.retryLevel ?? 0,
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -535,22 +558,15 @@ export class PromptBuilder {
       );
     }
 
-    if (request.extraUserInstruction) {
-      messages.push({ role: "user", content: request.extraUserInstruction });
-    }
-
-    const metrics = measureMessages(messages);
-
-    return {
+    return this.finalizePlan(
       messages,
-      estimatedPromptTokens: metrics.estimatedTokens,
-      reservedOutputTokens: request.policy.reservedOutputTokens,
+      request,
       includedTurnIds,
       includedArtifactIds,
       omittedTurnIds,
-      usedRollingSummary: false,
-      retryLevel: 3,
-    };
+      false,
+      3,
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -567,14 +583,50 @@ export class PromptBuilder {
   ): void {
     messages.push(turn.userMessage);
 
-    const lastAssistantIdx = isCurrentTurn
+    const unresolvedAfterIndex = isCurrentTurn
       ? findLastAssistantEntryIndex(turn.entries)
-      : -1;
+      : null;
+
+    this.appendTurnEntries(
+      messages,
+      turn,
+      request,
+      artifactCap,
+      includedArtifactIds,
+      unresolvedAfterIndex,
+    );
+  }
+
+  private appendCurrentTurnMessages(
+    messages: ChatMessage[],
+    turn: TurnRecord,
+    request: PromptBuildRequest,
+    artifactCap: number,
+    includedArtifactIds: string[],
+  ): void {
+    this.appendTurnEntries(
+      messages,
+      turn,
+      request,
+      artifactCap,
+      includedArtifactIds,
+      findLastAssistantEntryIndex(turn.entries),
+    );
+  }
+
+  private appendTurnEntries(
+    messages: ChatMessage[],
+    turn: TurnRecord,
+    request: PromptBuildRequest,
+    artifactCap: number,
+    includedArtifactIds: string[],
+    unresolvedAfterIndex: number | null,
+  ): void {
     for (let i = 0; i < turn.entries.length; i++) {
       const entry = turn.entries[i];
       const isUnresolved =
-        isCurrentTurn &&
-        i > lastAssistantIdx &&
+        unresolvedAfterIndex !== null &&
+        i > unresolvedAfterIndex &&
         entry.kind === "tool" &&
         "toolInvocations" in entry;
 
@@ -590,36 +642,6 @@ export class PromptBuilder {
         // Resolved/completed tool entries use summary content only;
         // their artifact IDs are NOT recorded in includedArtifactIds
         // because the raw artifact body is not inlined into the payload.
-        messages.push(entry.message);
-      }
-    }
-  }
-
-  private appendCurrentTurnMessages(
-    messages: ChatMessage[],
-    turn: TurnRecord,
-    request: PromptBuildRequest,
-    artifactCap: number,
-    includedArtifactIds: string[],
-  ): void {
-    const lastAssistantIdx = findLastAssistantEntryIndex(turn.entries);
-
-    for (let i = 0; i < turn.entries.length; i++) {
-      const entry = turn.entries[i];
-      const isUnresolved =
-        i > lastAssistantIdx &&
-        entry.kind === "tool" &&
-        "toolInvocations" in entry;
-
-      if (isUnresolved) {
-        const rehydrated = this.rehydrateToolMessage(
-          entry,
-          request,
-          artifactCap,
-          includedArtifactIds,
-        );
-        messages.push(rehydrated);
-      } else {
         messages.push(entry.message);
       }
     }
@@ -693,7 +715,10 @@ export class PromptBuilder {
         for (const inv of entry.toolInvocations) {
           const artifact = request.artifactLookup(inv.artifactId);
           if (artifact && typeof artifact.content === "string") {
-            const effectiveCap = Math.min(artifactCap, request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS);
+            const effectiveCap = Math.min(
+              artifactCap,
+              request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS,
+            );
             entryChars += Math.min(artifact.content.length, effectiveCap);
           } else {
             entryChars += inv.resultSummary.length;

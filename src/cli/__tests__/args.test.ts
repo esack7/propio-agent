@@ -28,7 +28,6 @@ describe("cli args parsing", () => {
       "--json",
       "--plain",
       "--no-interactive",
-      "--show-activity",
       "--show-status",
       "--show-reasoning-summary",
       "--show-trace",
@@ -41,7 +40,6 @@ describe("cli args parsing", () => {
     expect(parsed.flags.json).toBe(true);
     expect(parsed.flags.plain).toBe(true);
     expect(parsed.flags.noInteractive).toBe(true);
-    expect(parsed.flags.showActivity).toBe(true);
     expect(parsed.flags.showStatus).toBe(true);
     expect(parsed.flags.showReasoningSummary).toBe(true);
     expect(parsed.flags.showTrace).toBe(true);
@@ -51,7 +49,6 @@ describe("cli args parsing", () => {
       "--json",
       "--plain",
       "--no-interactive",
-      "--show-activity",
       "--show-status",
       "--show-reasoning-summary",
       "--show-trace",

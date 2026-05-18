@@ -2,7 +2,6 @@ const CLI_FLAG_SANDBOX = "--sandbox";
 const CLI_FLAG_JSON = "--json";
 const CLI_FLAG_PLAIN = "--plain";
 const CLI_FLAG_NO_INTERACTIVE = "--no-interactive";
-const CLI_FLAG_SHOW_ACTIVITY = "--show-activity";
 const CLI_FLAG_SHOW_STATUS = "--show-status";
 const CLI_FLAG_SHOW_REASONING_SUMMARY = "--show-reasoning-summary";
 const CLI_FLAG_SHOW_TRACE = "--show-trace";
@@ -23,7 +22,6 @@ export interface ParsedCliArgs {
     json: boolean;
     plain: boolean;
     noInteractive: boolean;
-    showActivity: boolean;
     showStatus: boolean;
     showReasoningSummary: boolean;
     showContextStats: boolean;
@@ -49,7 +47,6 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     json: false,
     plain: false,
     noInteractive: false,
-    showActivity: false,
     showStatus: false,
     showReasoningSummary: false,
     showContextStats: false,
@@ -76,8 +73,6 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       flags.plain = true;
     } else if (arg === CLI_FLAG_NO_INTERACTIVE) {
       flags.noInteractive = true;
-    } else if (arg === CLI_FLAG_SHOW_ACTIVITY) {
-      flags.showActivity = true;
     } else if (arg === CLI_FLAG_SHOW_STATUS) {
       flags.showStatus = true;
     } else if (arg === CLI_FLAG_SHOW_REASONING_SUMMARY) {
@@ -108,9 +103,14 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     } else if (arg === CLI_FLAG_HELP || arg === CLI_FLAG_HELP_SHORT) {
       flags.help = true;
     } else if (arg.startsWith(`${CLI_FLAG_MAX_ITERATIONS}=`)) {
-      const val = parseInt(arg.substring(CLI_FLAG_MAX_ITERATIONS.length + 1), 10);
+      const val = parseInt(
+        arg.substring(CLI_FLAG_MAX_ITERATIONS.length + 1),
+        10,
+      );
       if (isNaN(val) || val < 1) {
-        parseErrors.push(`${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`);
+        parseErrors.push(
+          `${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`,
+        );
       } else {
         flags.maxIterations = val;
       }
@@ -118,7 +118,9 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       const next = args[i + 1];
       const val = next ? parseInt(next, 10) : NaN;
       if (isNaN(val) || val < 1) {
-        parseErrors.push(`${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`);
+        parseErrors.push(
+          `${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`,
+        );
       } else {
         flags.maxIterations = val;
         i++;
@@ -126,7 +128,9 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     } else if (arg.startsWith(`${CLI_FLAG_MAX_RETRIES}=`)) {
       const val = parseInt(arg.substring(CLI_FLAG_MAX_RETRIES.length + 1), 10);
       if (isNaN(val) || val < 0) {
-        parseErrors.push(`${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`);
+        parseErrors.push(
+          `${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`,
+        );
       } else {
         flags.maxRetries = val;
       }
@@ -134,15 +138,22 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       const next = args[i + 1];
       const val = next ? parseInt(next, 10) : NaN;
       if (isNaN(val) || val < 0) {
-        parseErrors.push(`${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`);
+        parseErrors.push(
+          `${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`,
+        );
       } else {
         flags.maxRetries = val;
         i++;
       }
     } else if (arg.startsWith(`${CLI_FLAG_BASH_TIMEOUT_MS}=`)) {
-      const val = parseInt(arg.substring(CLI_FLAG_BASH_TIMEOUT_MS.length + 1), 10);
+      const val = parseInt(
+        arg.substring(CLI_FLAG_BASH_TIMEOUT_MS.length + 1),
+        10,
+      );
       if (isNaN(val) || val < 1) {
-        parseErrors.push(`${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`);
+        parseErrors.push(
+          `${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`,
+        );
       } else {
         flags.bashTimeoutMs = val;
       }
@@ -150,15 +161,22 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       const next = args[i + 1];
       const val = next ? parseInt(next, 10) : NaN;
       if (isNaN(val) || val < 1) {
-        parseErrors.push(`${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`);
+        parseErrors.push(
+          `${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`,
+        );
       } else {
         flags.bashTimeoutMs = val;
         i++;
       }
     } else if (arg.startsWith(`${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS}=`)) {
-      const val = parseInt(arg.substring(CLI_FLAG_STREAM_IDLE_TIMEOUT_MS.length + 1), 10);
+      const val = parseInt(
+        arg.substring(CLI_FLAG_STREAM_IDLE_TIMEOUT_MS.length + 1),
+        10,
+      );
       if (isNaN(val) || val < 1) {
-        parseErrors.push(`${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`);
+        parseErrors.push(
+          `${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`,
+        );
       } else {
         flags.streamIdleTimeoutMs = val;
       }
@@ -166,7 +184,9 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       const next = args[i + 1];
       const val = next ? parseInt(next, 10) : NaN;
       if (isNaN(val) || val < 1) {
-        parseErrors.push(`${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`);
+        parseErrors.push(
+          `${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`,
+        );
       } else {
         flags.streamIdleTimeoutMs = val;
         i++;

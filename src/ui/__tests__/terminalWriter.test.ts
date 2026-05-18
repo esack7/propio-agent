@@ -3,22 +3,7 @@ import {
   wrapTextToWidth,
   TerminalWriter,
 } from "../terminalWriter.js";
-
-function createMockStream(
-  isTTY = true,
-): NodeJS.WriteStream & { chunks: string[] } {
-  const chunks: string[] = [];
-
-  return {
-    chunks,
-    columns: 80,
-    isTTY,
-    write: (chunk: string | Uint8Array) => {
-      chunks.push(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
-      return true;
-    },
-  } as unknown as NodeJS.WriteStream & { chunks: string[] };
-}
+import { createMockStream } from "./testUtils.js";
 
 describe("TerminalWriter", () => {
   it("wraps ANSI-colored lines by visible width", () => {

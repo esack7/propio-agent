@@ -7,15 +7,6 @@ import { OperationSpinner } from "./spinner.js";
 
 type StyleFn = (text: string, formatter: (value: string) => string) => string;
 
-interface SpinnerLike {
-  start(): void;
-  setPhase(phase: string | null): void;
-  setText(text: string): void;
-  succeed(message: string): void;
-  fail(message: string): void;
-  stop(): void;
-}
-
 interface SpinnerOptions {
   enabled?: boolean;
   stream?: NodeJS.WriteStream;
@@ -25,7 +16,7 @@ interface SpinnerOptions {
 export type SpinnerFactory = (
   text: string,
   options: SpinnerOptions,
-) => SpinnerLike;
+) => OperationSpinner;
 
 export interface StatusRendererOptions {
   stream: NodeJS.WriteStream;
@@ -38,7 +29,7 @@ export interface StatusRendererOptions {
 }
 
 export class StatusRenderer {
-  private spinner: SpinnerLike | null = null;
+  private spinner: OperationSpinner | null = null;
 
   constructor(private readonly options: StatusRendererOptions) {}
 
@@ -108,7 +99,7 @@ export class StatusRenderer {
     return true;
   }
 
-  private createSpinner(text: string, phase?: string): SpinnerLike {
+  private createSpinner(text: string, phase?: string): OperationSpinner {
     const factory =
       this.options.createSpinner ??
       ((spinnerText: string, spinnerOptions: SpinnerOptions) =>

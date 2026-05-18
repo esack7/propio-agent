@@ -17,6 +17,7 @@ import {
   type ReplAppMode,
   type TranscriptEntry,
 } from "./replUi.js";
+import type { ToolCallView } from "./toolCallView.js";
 import type { PromptState } from "./promptState.js";
 
 export interface TerminalUiOptions {
@@ -144,9 +145,14 @@ export class TerminalUi {
     }
 
     if (this.plain || !this.writer.getStderrStream().isTTY) {
-      return new PassthroughStreamer((token) => {
-        this.writeAssistant(token);
-      });
+      return new PassthroughStreamer(
+        (token) => {
+          this.writeAssistant(token);
+        },
+        () => {
+          this.newline();
+        },
+      );
     }
 
     return new MarkdownStreamer(this.writer.getStderrStream());
@@ -190,6 +196,31 @@ export class TerminalUi {
     this.statusRenderer.status(text, phase);
   }
 
+  upsertToolCallView(view: ToolCallView): void {
+    if (this.json) {
+      return;
+    }
+
+    if (this.retainedStore) {
+      this.retainedStore.upsertToolCallView(view);
+      return;
+    }
+
+    if (view.status === "running") {
+      this.appendTranscriptEntry({ kind: "info", text: `◆ ${view.useLabel}` });
+    } else if (view.status === "success") {
+      const text = view.resultLabel
+        ? `${view.useLabel} — ${view.resultLabel}`
+        : view.useLabel;
+      this.appendTranscriptEntry({ kind: "success", text });
+    } else {
+      const text = view.resultLabel
+        ? `${view.useLabel} — ${view.resultLabel}`
+        : view.useLabel;
+      this.appendTranscriptEntry({ kind: "error", text });
+    }
+  }
+
   traceStatus(text: string): void {
     if (this.json) {
       return;
@@ -201,22 +232,6 @@ export class TerminalUi {
     }
 
     this.appendTranscriptEntry({ kind: "subtle", text: `Status: ${text}` });
-  }
-
-  traceActivity(text: string, level: "info" | "error" = "info"): void {
-    if (this.json) {
-      return;
-    }
-
-    if (this.retainedStore) {
-      this.retainedStore.setActivity({ text, level });
-      return;
-    }
-
-    this.appendTranscriptEntry({
-      kind: level === "error" ? "error" : "info",
-      text: `Activity: ${text}`,
-    });
   }
 
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
@@ -250,6 +265,14 @@ export class TerminalUi {
     }
 
     this.appendTranscriptEntry({ kind: "turn_complete", durationMs });
+  }
+
+  turnFailed(durationMs: number): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "turn_failed", durationMs });
   }
 
   info(text: string): void {
@@ -292,7 +315,6 @@ export class TerminalUi {
     if (this.statusRenderer.succeed(text)) {
       if (this.retainedStore) {
         this.retainedStore.setStatus(null);
-        this.retainedStore.setActivity(null);
       }
       return;
     }
@@ -308,7 +330,6 @@ export class TerminalUi {
     if (this.statusRenderer.fail(text)) {
       if (this.retainedStore) {
         this.retainedStore.setStatus(null);
-        this.retainedStore.setActivity(null);
       }
       return;
     }
@@ -316,6 +337,7 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "error", text });
   }
 
+  // fallow-ignore-next-line unused-class-member
   progress(current: number, total: number, label?: string): void {
     if (this.json) {
       return;
@@ -334,6 +356,7 @@ export class TerminalUi {
     this.statusRenderer.progress(current, total, label);
   }
 
+  // fallow-ignore-next-line unused-class-member
   section(title: string): void {
     if (this.json) {
       return;
@@ -342,6 +365,7 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "section", text: title });
   }
 
+  // fallow-ignore-next-line unused-class-member
   indent(text: string): void {
     if (this.json) {
       return;
@@ -390,6 +414,18 @@ export class TerminalUi {
     this.clearStatusIfNeeded();
   }
 
+  clearEphemeralSurfaces(): void {
+    if (this.retainedStore) {
+      const state = this.retainedStore.getState();
+      if (state.status || state.toolCallViews.size > 0) {
+        this.retainedStore.clearEphemeralSurfaces();
+      }
+      return;
+    }
+
+    this.statusRenderer.clear();
+  }
+
   cleanup(): void {
     this.done();
     this.newline();
@@ -400,7 +436,7 @@ export class TerminalUi {
   private clearStatusIfNeeded(): void {
     if (this.retainedStore) {
       const state = this.retainedStore.getState();
-      if (state.status || state.activity) {
+      if (state.status) {
         this.retainedStore.clearEphemeralSurfaces();
       }
       return;
@@ -458,6 +494,9 @@ export class TerminalUi {
         break;
       case "turn_complete":
         this.transcript.turnComplete(entry.durationMs);
+        break;
+      case "turn_failed":
+        this.transcript.turnFailed(entry.durationMs);
         break;
       case "json":
         this.transcript.writeJson(entry.value);

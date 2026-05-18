@@ -79,7 +79,6 @@ describe("ReplUiStore", () => {
       text: "Working",
       phase: "tool call",
     });
-    store.setActivity({ text: "Reading files", level: "info" });
     store.setFooter("Idle footer");
     store.appendTranscriptEntry({ kind: "info", text: "hello" });
     store.openOverlay({
@@ -96,7 +95,6 @@ describe("ReplUiStore", () => {
         footer: "Idle footer",
       }),
       status: null,
-      activity: null,
       footer: "Idle footer",
       transcript: [{ kind: "info", text: "hello" }],
       overlay: {
@@ -136,9 +134,15 @@ describe("ReplRenderer", () => {
       phase: "tool call",
     });
 
-    store.setActivity({ text: "Reading files", level: "info" });
+    store.upsertToolCallView({
+      id: "tc-1",
+      toolName: "read",
+      status: "running",
+      useLabel: "Reading files",
+      resultLabel: null,
+    });
     renderer.flush(store.getState());
-    expect(stderr.chunks.join("")).toContain("Activity: Reading files");
+    expect(stderr.chunks.join("")).toContain("Reading files");
 
     store.appendTranscriptEntry({
       kind: "reasoning_summary",
@@ -182,10 +186,17 @@ describe("ReplRenderer", () => {
     store.setStatus({ kind: "status", text: "Working", phase: "tool call" });
     renderer.flush(store.getState());
 
-    store.setActivity({ text: "Reading files", level: "info" });
+    const view = {
+      id: "tc-1",
+      toolName: "read",
+      status: "running" as const,
+      useLabel: "Reading files",
+      resultLabel: null,
+    };
+    store.upsertToolCallView(view);
     renderer.flush(store.getState());
 
-    store.setActivity({ text: "Reading files", level: "info" });
+    store.upsertToolCallView(view);
     renderer.flush(store.getState());
 
     expect(spinner.start).toHaveBeenCalledTimes(1);

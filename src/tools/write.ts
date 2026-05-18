@@ -1,4 +1,5 @@
 import { ExecutableTool } from "./interface.js";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import {
   normalizeToolPath,
@@ -9,6 +10,18 @@ import {
 export class WriteTool implements ExecutableTool {
   readonly name = "write";
   readonly description = "Write a file atomically.";
+
+  getDisplayAdapter(): ToolDisplayAdapter {
+    return {
+      renderUse(input) {
+        const path = input.path;
+        return typeof path === "string" && path.length > 0 ? path : null;
+      },
+      renderResult(result) {
+        return result;
+      },
+    };
+  }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     const path = args.path;
