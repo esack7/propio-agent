@@ -358,6 +358,67 @@ interface PromptLayout {
   totalRows: number;
 }
 
+interface PhysicalCursorPosition {
+  row: number;
+  col: number;
+}
+
+function getTerminalColumns(outputStream: NodeJS.WriteStream): number {
+  return Math.max(1, outputStream.columns ?? 80);
+}
+
+function countPhysicalRows(line: string, columns: number): number {
+  const width = getDisplayWidth(line);
+  return Math.max(1, Math.ceil(width / columns));
+}
+
+function getLayoutCursorPosition(
+  layout: PromptLayout,
+  outputStream: NodeJS.WriteStream,
+): PhysicalCursorPosition {
+  const columns = getTerminalColumns(outputStream);
+  const cursorLine = layout.lines[layout.cursorRow] ?? "";
+  const cursorCol = Math.min(layout.cursorCol, getDisplayWidth(cursorLine));
+  const previousRows = layout.lines
+    .slice(0, layout.cursorRow)
+    .reduce((count, line) => count + countPhysicalRows(line, columns), 0);
+
+  return {
+    row: previousRows + Math.floor(cursorCol / columns),
+    col: cursorCol % columns,
+  };
+}
+
+function getLayoutEndRow(
+  layout: PromptLayout,
+  outputStream: NodeJS.WriteStream,
+): number {
+  const columns = getTerminalColumns(outputStream);
+  const totalRows = layout.lines.reduce(
+    (count, line) => count + countPhysicalRows(line, columns),
+    0,
+  );
+  return Math.max(0, totalRows - 1);
+}
+
+function formatFooterLines(
+  footer: string | undefined,
+  outputStream: NodeJS.WriteStream,
+): string[] {
+  if (!footer) {
+    return [];
+  }
+
+  const maxLineWidth = getPromptStatusLineWidth(outputStream);
+  return footer
+    .split(/\r\n|\r|\n/)
+    .flatMap((line) =>
+      wrapLineByWidth(line, maxLineWidth).map((segment) =>
+        formatSubtle(segment.text.trimEnd()),
+      ),
+    );
+}
+
 function buildPromptLayout(
   promptText: string,
   buffer: string,
@@ -372,7 +433,7 @@ function buildPromptLayout(
     : Number.POSITIVE_INFINITY;
   const indent = " ".repeat(promptWidth);
   const logicalLines = buffer.split("\n");
-  const lines: string[] = footer ? [formatSubtle(footer)] : [];
+  const lines = formatFooterLines(footer, outputStream);
   const footerRows = lines.length;
   let cursorRow = footerRows;
   let cursorCol = promptWidth;
@@ -460,11 +521,12 @@ function renderPromptFrame(
       getDisplayWidth(line),
     );
 
+    const footerLines = formatFooterLines(footer, outputStream);
     return {
-      lines: footer ? [formatSubtle(footer), line] : [line],
-      cursorRow: footer ? 1 : 0,
+      lines: [...footerLines, line],
+      cursorRow: footerLines.length,
       cursorCol: cursorPosition,
-      totalRows: footer ? 2 : 1,
+      totalRows: footerLines.length + 1,
     };
   }
 
@@ -559,11 +621,11 @@ export function createChatPromptSession(
     if (outputStream.isTTY) {
       if (lastLayout) {
         try {
-          readline.moveCursor(
+          const previousCursor = getLayoutCursorPosition(
+            lastLayout,
             outputStream,
-            -lastLayout.cursorCol,
-            -lastLayout.cursorRow,
           );
+          readline.moveCursor(outputStream, 0, -previousCursor.row);
           readline.cursorTo(outputStream, 0);
           readline.clearScreenDown(outputStream);
         } catch {
@@ -578,12 +640,10 @@ export function createChatPromptSession(
 
     if (outputStream.isTTY) {
       try {
-        readline.moveCursor(
-          outputStream,
-          0,
-          layout.cursorRow - layout.totalRows + 1,
-        );
-        readline.cursorTo(outputStream, layout.cursorCol);
+        const nextCursor = getLayoutCursorPosition(layout, outputStream);
+        const endRow = getLayoutEndRow(layout, outputStream);
+        readline.moveCursor(outputStream, 0, nextCursor.row - endRow);
+        readline.cursorTo(outputStream, nextCursor.col);
       } catch {
         // best effort only
       }

@@ -357,6 +357,48 @@ describe("createPromptComposer", () => {
     harness.composer.close();
   });
 
+  it("wraps the active footer before repainting narrow chat prompts", async () => {
+    let showToolCalls = true;
+    const harness = createTtyHarness({
+      columns: 40,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      onToggleToolCalls: () => {
+        showToolCalls = !showToolCalls;
+        return getIdleFooterText(showToolCalls);
+      },
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: getIdleFooterText(showToolCalls),
+    });
+
+    await flush();
+    expect(stripAnsiControls(harness.takeOutput())).toContain(
+      "Enter to send | ? help | Ctrl+O tools:\nshown\nName? ",
+    );
+
+    harness.inputStream.emit("keypress", "\u000f", {
+      name: "o",
+      ctrl: true,
+      meta: false,
+      shift: false,
+    });
+
+    const toggleOutput = stripAnsiControls(harness.takeOutput());
+    expect(toggleOutput).toContain(
+      "Enter to send | ? help | Ctrl+O tools:\nhidden\nName? ",
+    );
+    expect(toggleOutput).not.toContain("shown\nName? ");
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+  });
+
   it("repaints the active chat prompt when terminal columns change", async () => {
     const harness = createTtyHarness({
       enableReverseHistorySearch: false,
@@ -380,6 +422,45 @@ describe("createPromptComposer", () => {
     expect(output).toMatch(/\u001b\[(?:0)?J/);
     expect(output).toContain("> alpha beta");
     expect(output).toContain("  gamma delta");
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({
+      status: "closed",
+    });
+  });
+
+  it("clears reflowed footer rows when terminal columns change", async () => {
+    const harness = createTtyHarness({
+      columns: 80,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+      footer: getIdleFooterText(true),
+    });
+    await flush();
+    harness.takeOutput();
+
+    (harness.outputStream as NodeJS.WriteStream).columns = 20;
+    harness.outputStream.emit("resize");
+
+    const narrowOutput = harness.takeOutput();
+    expect(narrowOutput).toContain("\u001b[3A");
+    expect(stripAnsiControls(narrowOutput)).toContain(
+      "Enter to send | ?\nhelp | Ctrl+O\ntools: shown\nName? ",
+    );
+
+    (harness.outputStream as NodeJS.WriteStream).columns = 80;
+    harness.outputStream.emit("resize");
+
+    const wideOutput = harness.takeOutput();
+    expect(wideOutput).toContain("\u001b[3A");
+    expect(stripAnsiControls(wideOutput)).toContain(
+      "Enter to send | ? help | Ctrl+O tools: shown\nName? ",
+    );
 
     harness.composer.close();
     await expect(prompt).resolves.toEqual({
