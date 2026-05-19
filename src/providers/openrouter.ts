@@ -59,6 +59,14 @@ interface OpenRouterErrorEnvelope {
   };
 }
 
+interface StreamChunkState {
+  contentBuffer: string;
+  reasoningContent: string;
+  sawUsableOutput: boolean;
+  stopReason: string;
+  toolCallsByIndex: Map<number, { id?: string; name: string; argsString: string }>;
+}
+
 /**
  * OpenRouter implementation of LLMProvider using native fetch and OpenAI-compatible API.
  */
@@ -399,6 +407,78 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     };
   }
 
+  private processContentDelta(
+    delta: { content?: string },
+    state: StreamChunkState,
+    parseDsmlToolCalls: boolean,
+  ): ChatStreamEvent[] {
+    if (!delta.content) return [];
+    if (parseDsmlToolCalls) {
+      state.contentBuffer += delta.content;
+      const flushed = this.flushDsmlBuffer(state.contentBuffer, state.reasoningContent);
+      state.contentBuffer = flushed.remainingBuffer;
+      state.sawUsableOutput ||= flushed.sawUsableOutput;
+      return flushed.events;
+    }
+    if (delta.content.trim()) state.sawUsableOutput = true;
+    return [{ type: "assistant_text", delta: delta.content }];
+  }
+
+  private processToolCallsDelta(
+    delta: { tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> },
+    finishReason: string | undefined,
+    state: StreamChunkState,
+  ): ChatStreamEvent[] {
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        accumulateOpenAIStreamToolCall(tc, state.toolCallsByIndex, () => ({ name: "", argsString: "" }));
+      }
+    }
+    if (finishReason !== "tool_calls") return [];
+    const event = this.buildStructuredToolCallsEvent(state.toolCallsByIndex, state.reasoningContent);
+    if (event) { state.sawUsableOutput = true; return [event]; }
+    return [];
+  }
+
+  private flushStreamTail(
+    state: StreamChunkState,
+    parseDsmlToolCalls: boolean,
+  ): { events: ChatStreamEvent[]; noOutput: boolean } {
+    const events: ChatStreamEvent[] = [];
+    if (parseDsmlToolCalls && state.contentBuffer.length > 0) {
+      const flushed = this.flushDsmlBuffer(state.contentBuffer, state.reasoningContent);
+      events.push(...flushed.events);
+      state.sawUsableOutput ||= flushed.sawUsableOutput;
+    }
+    return { events, noOutput: !state.sawUsableOutput };
+  }
+
+  private processStreamChunk(
+    data: string,
+    state: StreamChunkState,
+    parseDsmlToolCalls: boolean,
+  ): { events: ChatStreamEvent[]; done: boolean } {
+    if (data === "[DONE]") return { events: [], done: true };
+    const choice = parseJsonMaybe<{
+      choices?: Array<{
+        delta?: {
+          content?: string;
+          reasoning_content?: string;
+          tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>;
+        };
+        finish_reason?: string;
+      }>;
+    }>(data)?.choices?.[0];
+    if (!choice?.delta) return { events: [], done: false };
+    if (choice.finish_reason) state.stopReason = this.mapOpenRouterFinishReason(choice.finish_reason);
+    if (choice.delta.reasoning_content) state.reasoningContent += choice.delta.reasoning_content;
+    const events = [
+      ...this.processContentDelta(choice.delta, state, parseDsmlToolCalls),
+      ...this.processToolCallsDelta(choice.delta, choice.finish_reason, state),
+    ];
+    return { events, done: false };
+  }
+
   private async *streamResponse(
     response: Response,
     options: {
@@ -408,103 +488,34 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     },
   ): AsyncIterable<ChatStreamEvent> {
     const reader = response.body?.getReader();
-    if (!reader) {
-      throw this.translateError(new Error("No response body"));
-    }
+    if (!reader) throw this.translateError(new Error("No response body"));
 
-    let contentBuffer = "";
-    let reasoningContent = "";
-    let sawUsableOutput = false;
-    let reachedDone = false;
-    let stopReason: any = "end_turn";
-    const structuredToolCallsByIndex = new Map<
-      number,
-      { id?: string; name: string; argsString: string }
-    >();
+    const state: StreamChunkState = {
+      contentBuffer: "",
+      reasoningContent: "",
+      sawUsableOutput: false,
+      stopReason: "end_turn",
+      toolCallsByIndex: new Map(),
+    };
 
     for await (const data of readSseDataLines(reader)) {
-      if (data === "[DONE]") {
-        reachedDone = true;
-        break;
-      }
-
-      const chunk = parseJsonMaybe<{
-        choices?: Array<{
-          delta?: {
-            content?: string;
-            reasoning_content?: string;
-            tool_calls?: Array<{
-              index?: number;
-              id?: string;
-              function?: { name?: string; arguments?: string };
-            }>;
-          };
-          finish_reason?: string;
-        }>;
-      }>(data);
-      const choice = chunk?.choices?.[0];
-      if (!choice?.delta) continue;
-
-      if (choice.finish_reason) {
-        stopReason = this.mapOpenRouterFinishReason(choice.finish_reason);
-      }
-
-      const delta = choice.delta;
-      if (delta.reasoning_content) reasoningContent += delta.reasoning_content;
-
-      if (delta.content) {
-        if (options.parseDsmlToolCalls) {
-          contentBuffer += delta.content;
-          const flushed = this.flushDsmlBuffer(contentBuffer, reasoningContent);
-          contentBuffer = flushed.remainingBuffer;
-          for (const event of flushed.events) yield event;
-          sawUsableOutput ||= flushed.sawUsableOutput;
-        } else {
-          yield { type: "assistant_text", delta: delta.content };
-          if (delta.content.trim()) sawUsableOutput = true;
-        }
-      }
-
-      if (delta.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          accumulateOpenAIStreamToolCall(
-            tc,
-            structuredToolCallsByIndex,
-            () => ({ name: "", argsString: "" }),
-          );
-        }
-      }
-
-      if (choice.finish_reason === "tool_calls") {
-        const event = this.buildStructuredToolCallsEvent(
-          structuredToolCallsByIndex,
-          reasoningContent,
-        );
-        if (event) {
-          yield event;
-          sawUsableOutput = true;
-        }
-      }
+      const { events, done } = this.processStreamChunk(data, state, options.parseDsmlToolCalls);
+      yield* events;
+      if (done) break;
     }
 
-    if (options.parseDsmlToolCalls && contentBuffer.length > 0) {
-      const flushed = this.flushDsmlBuffer(contentBuffer, reasoningContent);
-      for (const event of flushed.events) yield event;
-      sawUsableOutput ||= flushed.sawUsableOutput;
-    }
-
-    if (options.expectUsableOutput && !sawUsableOutput) {
+    const { events: tailEvents, noOutput } = this.flushStreamTail(state, options.parseDsmlToolCalls);
+    yield* tailEvents;
+    if (options.expectUsableOutput && noOutput) {
       yield {
         type: "status",
-        status:
-          "OpenRouter returned no usable assistant output; retrying would not help.",
+        status: "OpenRouter returned no usable assistant output; retrying would not help.",
         phase: "provider fallback",
       };
       throw new ProviderError("OpenRouter returned no usable assistant output");
     }
 
-    // Emit normalized terminal event (Phase 4.5)
-    yield { type: "terminal", stopReason };
+    yield { type: "terminal", stopReason: state.stopReason as any };
   }
 
   private async fetchAndValidate(

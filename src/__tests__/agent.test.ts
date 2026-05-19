@@ -57,6 +57,21 @@ function writeSkillDocument(
   return skillFile;
 }
 
+async function withSpiedDirs<T>(
+  cwdDir: string,
+  homeDir: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+  const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+  try {
+    return await fn();
+  } finally {
+    cwdSpy.mockRestore();
+    homeSpy.mockRestore();
+  }
+}
+
 describe("Agent with Multi-Provider Configuration", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-agent-tests-"));
 
@@ -254,8 +269,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const provider = new ReasoningToolProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = provider;
+      const agent = createTestAgent(provider);
 
       await agent.streamChat("Inspect package", () => {});
 
@@ -366,8 +380,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should preserve session context when switching provider", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("First message", () => {});
       const contextBefore = agent.getContext();
@@ -426,16 +439,13 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("skills bridge", () => {
-    it("should list and refresh local skills without requiring invocation support", () => {
+    it("should list and refresh local skills without requiring invocation support", async () => {
       const cwdDir = path.join(tempDir, "cwd");
       const homeDir = path.join(tempDir, "home");
       fs.mkdirSync(cwdDir, { recursive: true });
       fs.mkdirSync(homeDir, { recursive: true });
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, () => {
         const agent = new Agent({
           providersConfig: testProvidersConfig,
           cwd: cwdDir,
@@ -443,10 +453,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         });
         expect(agent.listSkills()).toEqual([]);
         expect(agent.refreshSkills()).toEqual([]);
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should surface an invoked skill body only once in the next prompt", async () => {
@@ -465,13 +472,9 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Use the review skill body once.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const mockProvider = new MockProvider();
-        (agent as any).provider = mockProvider;
+        const agent = createTestAgent(mockProvider);
 
         await agent.invokeSkill("review", "src/foo.ts", {
           source: "user",
@@ -484,10 +487,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         const matches = promptText.match(/Use the review skill body once\./g);
 
         expect(matches).toHaveLength(1);
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should support an immediate skill turn with an empty user prompt", async () => {
@@ -506,13 +506,9 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Use the instant skill body once.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const mockProvider = new MockProvider();
-        (agent as any).provider = mockProvider;
+        const agent = createTestAgent(mockProvider);
 
         await agent.invokeSkill("instant", undefined, { source: "user" });
         await agent.streamChat("", () => {});
@@ -522,10 +518,7 @@ describe("Agent with Multi-Provider Configuration", () => {
           .map((message) => message.content)
           .join("\n");
         expect(promptText).toContain("Use the instant skill body once.");
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should not activate path skills from denied tool calls", async () => {
@@ -594,10 +587,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("scope-lock", undefined, {
           source: "user",
@@ -619,10 +609,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         expect(requestToolNames).toEqual(["write"]);
         expect(activeSkillNames).toContain("scope-lock");
         expect(activeSkillNames).not.toContain("path-activation");
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should record model and effort warnings when the current model differs", async () => {
@@ -646,10 +633,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Model-sensitive body.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("model-skill", undefined, {
           source: "user",
@@ -669,10 +653,7 @@ describe("Agent with Multi-Provider Configuration", () => {
             ),
           ]),
         );
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should record a matching model as applied", async () => {
@@ -696,10 +677,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Matching model body.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("matching-model-skill", undefined, {
           source: "user",
@@ -718,10 +696,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         expect(invokedSkills[0].scope.warnings ?? []).not.toEqual(
           expect.arrayContaining([expect.stringContaining("Requested model")]),
         );
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should warn when a skill body references an unknown placeholder", async () => {
@@ -740,10 +715,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Use $MISSING and $ARGUMENTS.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         expect(
           agent
@@ -767,18 +739,14 @@ describe("Agent with Multi-Provider Configuration", () => {
             expect.stringContaining('Unknown placeholder "$MISSING"'),
           ]),
         );
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
   });
 
   describe("Chat Integration with New Config", () => {
     it("should pass resolved model to provider in streamChat", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Test", () => {});
 
@@ -800,8 +768,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should maintain all existing streamChat functionality", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const response = await agent.streamChat("Test message", () => {});
 
@@ -809,23 +776,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(response).toBe("Mock response");
       expect(mockProvider.streamChatCalls).toHaveLength(1);
     });
-  });
 
-  describe("Stream Integration with New Config", () => {
-    it("should pass resolved model to provider in streamChat", async () => {
+    it("should support token-by-token streaming", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      await agent.streamChat("Test", () => {});
-
-      expect(mockProvider.streamChatCalls[0].model).toBe("llama3.2:3b");
-    });
-
-    it("should maintain all existing streamChat functionality", async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const tokens: string[] = [];
       const response = await agent.streamChat("Test", (token) =>
@@ -840,8 +794,7 @@ describe("Agent with Multi-Provider Configuration", () => {
   describe("Backward Compatibility", () => {
     it("should keep streamChat() signature unchanged", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const response = await agent.streamChat("Test", () => {});
       expect(typeof response).toBe("string");
@@ -978,8 +931,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should pass abortSignal to provider streamChat requests", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const controller = new AbortController();
       await agent.streamChat("Test", jest.fn(), {
@@ -992,8 +944,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should reject immediately when abortSignal is already aborted", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const controller = new AbortController();
       controller.abort();
@@ -1007,8 +958,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should still invoke deprecated onToolStart callback", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const onToolStart = jest.fn();
 
@@ -1020,8 +970,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should still invoke deprecated onToolEnd callback", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const onToolEnd = jest.fn();
 
@@ -1749,8 +1698,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const mockProvider = new VisibilityMockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const eventTypes: string[] = [];
       const statuses: string[] = [];
@@ -1870,8 +1818,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const mockProvider = new DirectAnswerProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Answer directly", jest.fn());
       const reasoning = agent.getLastTurnReasoningSummary();
@@ -2265,8 +2212,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should reflect structured turns after a conversation", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Hello", () => {});
 
@@ -2286,8 +2232,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should capture prompt plan after normal request flow", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Test", () => {});
 
@@ -2377,8 +2322,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should be a deep defensive copy", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Test", () => {});
 
@@ -2393,8 +2337,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should be null after clearContext()", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Build a plan", () => {});
       expect(agent.getLastPromptPlan()).not.toBeNull();
@@ -2405,8 +2348,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should be null after importSession()", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("First session", () => {});
       expect(agent.getLastPromptPlan()).not.toBeNull();
