@@ -1419,16 +1419,17 @@ export class Agent {
     }
 
     const args = toolCall.function.arguments;
+    const safeArgs = args ?? {};
     const toolName = toolCall.function.name;
-    const serializedArgs = JSON.stringify(args ?? {});
+    const serializedArgs = JSON.stringify(safeArgs);
     const toolCallId = toolCall.id!;
-    const activityLabel = this.describeToolInvocation(toolName, args ?? {});
+    const activityLabel = this.describeToolInvocation(toolName, safeArgs);
 
     this.emitToolStartedDiagnostics(
       toolName,
       toolCallId,
       activityLabel,
-      args ?? {},
+      safeArgs,
       serializedArgs,
       iteration,
       options,
@@ -1445,7 +1446,7 @@ export class Agent {
       toolName,
       toolCallId,
       activityLabel,
-      args ?? {},
+      safeArgs,
       result,
       execResult,
       iteration,
@@ -1584,24 +1585,23 @@ export class Agent {
     hasFinalAssistantResponse: boolean;
   }> {
     const normalizedToolCalls = this.normalizeToolCallIds(toolCalls, iterationCount);
-    if (normalizedToolCalls && normalizedToolCalls.length > 0) {
+    const hasNormalizedToolCalls = normalizedToolCalls != null && normalizedToolCalls.length > 0;
+    if (hasNormalizedToolCalls) {
       this.emitStatus(options, "Tool call received", "tool");
       this.emitDiagnostic({
         type: "tool_calls_received",
         provider: this.provider.name,
         model: this.model,
         iteration: iterationCount,
-        count: normalizedToolCalls.length,
-        tools: normalizedToolCalls.map((toolCall) => toolCall.function.name),
+        count: normalizedToolCalls!.length,
+        tools: normalizedToolCalls!.map((toolCall) => toolCall.function.name),
       });
     }
 
     this.contextManager.commitAssistantResponse(
       fullResponse,
       normalizedToolCalls,
-      normalizedToolCalls && normalizedToolCalls.length > 0
-        ? { reasoningContent }
-        : undefined,
+      hasNormalizedToolCalls ? { reasoningContent } : undefined,
     );
     this.emitTurnFinishedDiagnostics(fullResponse, iterationCount, normalizedToolCalls);
 

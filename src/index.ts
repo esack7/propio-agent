@@ -102,30 +102,51 @@ interface SessionConfig {
   visibility: VisibilityOptions;
 }
 
-function buildSessionConfig(
+function isInteractiveMode(
   parsedArgs: ReturnType<typeof parseCliArgs>,
   ci: boolean,
-): SessionConfig {
-  const interactive =
+): boolean {
+  return (
     Boolean(process.stdin.isTTY) &&
     Boolean(process.stdout.isTTY) &&
     !ci &&
     !parsedArgs.flags.noInteractive &&
-    !parsedArgs.flags.json;
-  const plain = parsedArgs.flags.plain || !Boolean(process.stdout.isTTY) || ci;
-  const jsonMode = parsedArgs.flags.json && !parsedArgs.flags.help;
-  const debugLlmToStderr = isLlmDebugEnabled(parsedArgs.flags.debugLlm);
-  const debugLlmFilePath = parsedArgs.flags.debugLlmFile;
-  const diagnosticsEnabled = debugLlmToStderr || Boolean(debugLlmFilePath);
-  const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
+    !parsedArgs.flags.json
+  );
+}
+
+function isPlainMode(
+  parsedArgs: ReturnType<typeof parseCliArgs>,
+  ci: boolean,
+): boolean {
+  return parsedArgs.flags.plain || !Boolean(process.stdout.isTTY) || ci;
+}
+
+function resolveVisibilityOptions(
+  parsedArgs: ReturnType<typeof parseCliArgs>,
+): VisibilityOptions {
   const showTrace = parsedArgs.flags.showTrace;
-  const visibility: VisibilityOptions = {
+  return {
     showToolCalls: true,
     showStatus: parsedArgs.flags.showStatus || showTrace,
     showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
     showContextStats: parsedArgs.flags.showContextStats,
     showPromptPlan: parsedArgs.flags.showPromptPlan,
   };
+}
+
+function buildSessionConfig(
+  parsedArgs: ReturnType<typeof parseCliArgs>,
+  ci: boolean,
+): SessionConfig {
+  const interactive = isInteractiveMode(parsedArgs, ci);
+  const plain = isPlainMode(parsedArgs, ci);
+  const jsonMode = parsedArgs.flags.json && !parsedArgs.flags.help;
+  const debugLlmToStderr = isLlmDebugEnabled(parsedArgs.flags.debugLlm);
+  const debugLlmFilePath = parsedArgs.flags.debugLlmFile;
+  const diagnosticsEnabled = debugLlmToStderr || Boolean(debugLlmFilePath);
+  const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
+  const visibility = resolveVisibilityOptions(parsedArgs);
   return {
     interactive,
     plain,
