@@ -27,6 +27,7 @@ import { createPromptHistoryStore } from "./ui/promptHistory.js";
 import { printStartupBanner } from "./ui/banner.js";
 import {
   streamAssistantTurn,
+  type AssistantTurnResult,
   type AssistantTurnVisibilityOptions,
 } from "./ui/assistantTurnRenderer.js";
 import {
@@ -89,6 +90,53 @@ Options:
   --debug-llm-file    Append provider/stream/tool diagnostic events to a file
   -h, --help          Show this help text
 `;
+
+interface SessionConfig {
+  interactive: boolean;
+  plain: boolean;
+  jsonMode: boolean;
+  debugLlmToStderr: boolean;
+  debugLlmFilePath: string | undefined;
+  diagnosticsEnabled: boolean;
+  colorEnabled: boolean;
+  visibility: VisibilityOptions;
+}
+
+function buildSessionConfig(
+  parsedArgs: ReturnType<typeof parseCliArgs>,
+  ci: boolean,
+): SessionConfig {
+  const interactive =
+    Boolean(process.stdin.isTTY) &&
+    Boolean(process.stdout.isTTY) &&
+    !ci &&
+    !parsedArgs.flags.noInteractive &&
+    !parsedArgs.flags.json;
+  const plain = parsedArgs.flags.plain || !Boolean(process.stdout.isTTY) || ci;
+  const jsonMode = parsedArgs.flags.json && !parsedArgs.flags.help;
+  const debugLlmToStderr = isLlmDebugEnabled(parsedArgs.flags.debugLlm);
+  const debugLlmFilePath = parsedArgs.flags.debugLlmFile;
+  const diagnosticsEnabled = debugLlmToStderr || Boolean(debugLlmFilePath);
+  const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
+  const showTrace = parsedArgs.flags.showTrace;
+  const visibility: VisibilityOptions = {
+    showToolCalls: true,
+    showStatus: parsedArgs.flags.showStatus || showTrace,
+    showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
+    showContextStats: parsedArgs.flags.showContextStats,
+    showPromptPlan: parsedArgs.flags.showPromptPlan,
+  };
+  return {
+    interactive,
+    plain,
+    jsonMode,
+    debugLlmToStderr,
+    debugLlmFilePath,
+    diagnosticsEnabled,
+    colorEnabled,
+    visibility,
+  };
+}
 
 function createDiagnosticLogger(options: {
   stderr?: NodeJS.WriteStream;
@@ -177,36 +225,12 @@ export interface NonInteractiveSessionDeps {
   readonly readInput?: () => Promise<string>;
 }
 
-async function readNonInteractivePrompt(
+function writeNonInteractiveSuccessResponse(
+  result: AssistantTurnResult,
   ui: TerminalUi,
-  stdinIsTTY: boolean,
-  readInput: () => Promise<string>,
-): Promise<{ input?: string; exitCode?: number }> {
-  if (stdinIsTTY) {
-    ui.error(
-      "Non-interactive mode requires stdin input. Pipe a prompt or run without --no-interactive.",
-    );
-    return { exitCode: 1 };
-  }
-
-  const input = (await readInput()).trim();
-  if (!input) {
-    ui.error("No input provided on stdin.");
-    return { exitCode: 1 };
-  }
-
-  return { input };
-}
-
-function writeNonInteractiveResult(
-  ui: TerminalUi,
-  result: Awaited<ReturnType<typeof streamAssistantTurn>>,
   visibility: VisibilityOptions,
 ): void {
-  if (!ui.isJsonMode()) {
-    return;
-  }
-
+  if (!ui.isJsonMode()) return;
   ui.writeJson({
     response: result.response,
     ...(visibility.showReasoningSummary && result.reasoningSummary
@@ -218,14 +242,22 @@ function writeNonInteractiveResult(
   });
 }
 
-function reportNonInteractiveError(ui: TerminalUi, message: string): void {
+function handleNonInteractiveStreamError(
+  error: unknown,
+  abortController: AbortController,
+  ui: TerminalUi,
+): number {
+  if (abortController.signal.aborted || isAbortError(error)) {
+    return 130;
+  }
+  const message = error instanceof Error ? error.message : "Unknown error";
   ui.setMode("error");
   if (ui.isJsonMode()) {
     ui.writeJson({ error: message });
-    return;
+  } else {
+    ui.error(`Error: ${message}`);
   }
-
-  ui.error(`Error: ${message}`);
+  return 1;
 }
 
 export async function runNonInteractiveSession(
@@ -237,9 +269,18 @@ export async function runNonInteractiveSession(
 ): Promise<number> {
   const stdinIsTTY = deps.stdinIsTTY ?? process.stdin.isTTY;
   const readInput = deps.readInput ?? readStdinInput;
-  const prompt = await readNonInteractivePrompt(ui, stdinIsTTY, readInput);
-  if (prompt.exitCode !== undefined) {
-    return prompt.exitCode;
+
+  if (stdinIsTTY) {
+    ui.error(
+      "Non-interactive mode requires stdin input. Pipe a prompt or run without --no-interactive.",
+    );
+    return 1;
+  }
+
+  const stdinInput = (await readInput()).trim();
+  if (!stdinInput) {
+    ui.error("No input provided on stdin.");
+    return 1;
   }
 
   const abortController = new AbortController();
@@ -249,24 +290,16 @@ export async function runNonInteractiveSession(
   try {
     const result = await streamAssistantTurn(
       agent,
-      prompt.input!,
+      stdinInput,
       ui,
       abortController.signal,
       visibility,
     );
     ui.setMode("showingResults");
-    writeNonInteractiveResult(ui, result, visibility);
+    writeNonInteractiveSuccessResponse(result, ui, visibility);
     return 0;
   } catch (error) {
-    if (abortController.signal.aborted || isAbortError(error)) {
-      return 130;
-    }
-
-    reportNonInteractiveError(
-      ui,
-      error instanceof Error ? error.message : "Unknown error",
-    );
-    return 1;
+    return handleNonInteractiveStreamError(error, abortController, ui);
   } finally {
     setCurrentAbortController(null);
   }
@@ -447,56 +480,30 @@ async function handleSkillSubmission(
   });
 }
 
-function hasInspectableContext(
-  state: ReturnType<AgentType["getConversationState"]>,
-): boolean {
-  return (
+function renderContextOverviewSubcommand(
+  agent: AgentType,
+  ui: TerminalUi,
+): void {
+  const state = agent.getConversationState();
+  const hasContent =
     state.turns.length > 0 ||
     state.preamble.length > 0 ||
     state.artifacts.length > 0 ||
     state.pinnedMemory.length > 0 ||
-    state.rollingSummary != null
-  );
-}
-
-function renderContextOverviewOrEmpty(agent: AgentType, ui: TerminalUi): void {
-  const state = agent.getConversationState();
-  if (!hasInspectableContext(state)) {
+    state.rollingSummary != null;
+  if (!hasContent) {
     ui.info("No session context.");
-    return;
+  } else {
+    renderStyledLines(ui, formatContextOverview(state));
   }
-
-  renderStyledLines(ui, formatContextOverview(state));
 }
 
-function renderPromptPlanOrEmpty(agent: AgentType, ui: TerminalUi): void {
+function renderPromptPlanSubcommand(agent: AgentType, ui: TerminalUi): void {
   const snapshot = agent.getLastPromptPlan();
   if (!snapshot) {
     ui.info("No prompt plan yet (no requests have been built).");
-    return;
-  }
-
-  renderStyledLines(ui, formatPromptPlan(snapshot));
-}
-
-function renderContextSubmission(
-  subcommand: string,
-  agent: AgentType,
-  ui: TerminalUi,
-): void {
-  switch (subcommand) {
-    case "":
-      renderContextOverviewOrEmpty(agent, ui);
-      return;
-    case "prompt":
-      renderPromptPlanOrEmpty(agent, ui);
-      return;
-    case "memory":
-      renderStyledLines(ui, formatMemoryView(agent.getConversationState()));
-      return;
-    default:
-      ui.error(`Unknown /context subcommand: "${subcommand}"`);
-      ui.command("Usage: /context [prompt | memory]");
+  } else {
+    renderStyledLines(ui, formatPromptPlan(snapshot));
   }
 }
 
@@ -508,12 +515,21 @@ async function handleContextSubmission(
     return undefined;
   }
 
-  renderContextSubmission(
-    trimmedInput.slice("/context".length).trim(),
-    context.agent,
-    context.ui,
-  );
-  context.ui.command("");
+  const { agent, ui } = context;
+  const subcommand = trimmedInput.slice("/context".length).trim();
+
+  if (subcommand === "") {
+    renderContextOverviewSubcommand(agent, ui);
+  } else if (subcommand === "prompt") {
+    renderPromptPlanSubcommand(agent, ui);
+  } else if (subcommand === "memory") {
+    renderStyledLines(ui, formatMemoryView(agent.getConversationState()));
+  } else {
+    ui.error(`Unknown /context subcommand: "${subcommand}"`);
+    ui.command("Usage: /context [prompt | memory]");
+  }
+
+  ui.command("");
   return null;
 }
 
@@ -988,6 +1004,44 @@ async function runConfiguredSession(options: {
   }
 }
 
+async function runMainSession(
+  agent: AgentType,
+  ui: TerminalUi,
+  configPath: string,
+  interactive: boolean,
+  setCurrentAbortController: (controller: AbortController | null) => void,
+  setActiveComposer: (composer: PromptComposer | null) => void,
+  shouldExit: () => boolean,
+  visibility: VisibilityOptions,
+): Promise<number> {
+  if (interactive) {
+    const code = await runInteractiveSession(
+      agent,
+      ui,
+      configPath,
+      setCurrentAbortController,
+      setActiveComposer,
+      shouldExit,
+      visibility,
+    );
+    if (code === 130) {
+      return shouldExit() ? 130 : code;
+    }
+    return code;
+  }
+
+  const nonInteractiveCode = await runNonInteractiveSession(
+    agent,
+    ui,
+    setCurrentAbortController,
+    visibility,
+  );
+  if (shouldExit()) {
+    return 130;
+  }
+  return nonInteractiveCode;
+}
+
 async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
   const parsedArgs = parseCliArgs(rawArgs);
@@ -997,19 +1051,29 @@ async function main(): Promise<number> {
     return sandboxExitCode;
   }
 
-  const runtime = deriveCliRuntimeOptions(parsedArgs, isCiEnvironment());
+  const ci = isCiEnvironment();
+  const {
+    interactive,
+    plain,
+    jsonMode,
+    debugLlmToStderr,
+    debugLlmFilePath,
+    diagnosticsEnabled,
+    colorEnabled,
+    visibility,
+  } = buildSessionConfig(parsedArgs, ci);
   if (parsedArgs.flags.help) {
     process.stdout.write(HELP_TEXT);
     return 0;
   }
 
-  setColorEnabled(runtime.colorEnabled);
+  setColorEnabled(colorEnabled);
 
   const { TerminalUi } = await import("./ui/terminal.js");
   const ui = new TerminalUi({
-    interactive: runtime.interactive,
-    plain: runtime.plain || parsedArgs.flags.help,
-    json: runtime.jsonMode,
+    interactive,
+    plain: plain || parsedArgs.flags.help,
+    json: jsonMode,
   });
 
   if (reportParseErrors(ui, parsedArgs.parseErrors)) {
@@ -1019,20 +1083,44 @@ async function main(): Promise<number> {
 
   const abortState = createAbortStateController(ui);
   const diagnosticLogger = createDiagnosticLogger({
-    stderrEnabled: runtime.debugLlmToStderr,
-    filePath: runtime.debugLlmFilePath,
+    stderrEnabled: debugLlmToStderr,
+    filePath: debugLlmFilePath,
   });
   process.on("SIGINT", abortState.handleSigint);
 
+  let agent: AgentType | null = null;
   try {
-    return await runConfiguredSession({
+    if (!ui.isJsonMode()) {
+      printStartupBanner(ui);
+      ui.command("");
+    }
+
+    const sessionsDir = getDefaultSessionsDir();
+    handleStaleMarkers(sessionsDir, ui, diagnosticLogger);
+    const runtimeConfig = loadRuntimeConfig();
+    pruneStaleArtifacts(sessionsDir, runtimeConfig.artifactRetentionDays);
+
+    const initialized = await createInitializedAgent(
       parsedArgs,
-      runtime,
-      ui,
+      diagnosticsEnabled,
       diagnosticLogger,
-      abortState,
-    });
+    );
+    agent = initialized.agent;
+
+    return await runMainSession(
+      initialized.agent,
+      ui,
+      initialized.configPath,
+      interactive,
+      abortState.setCurrentAbortController,
+      abortState.setActiveComposer,
+      () => abortState.shouldExit(),
+      visibility,
+    );
   } finally {
+    if (agent) {
+      await agent.close();
+    }
     diagnosticLogger.cleanup();
     process.off("SIGINT", abortState.handleSigint);
     ui.done();

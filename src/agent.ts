@@ -42,6 +42,7 @@ import {
   DEFAULT_SUMMARY_POLICY,
   PromptPlan,
   ConversationState,
+  TurnEntry,
   PinnedMemoryRecord,
   PinFactInput,
   UpdateMemoryInput,
@@ -173,9 +174,9 @@ export class Agent {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
-  private provider: LLMProvider;
-  private model: string;
-  private resolvedProviderConfig: ProviderConfig;
+  private provider!: LLMProvider;
+  private model!: string;
+  private resolvedProviderConfig!: ProviderConfig;
   private contextManager: ContextManager;
   private systemPrompt: string;
   private toolRegistry: ToolRegistry;
@@ -202,138 +203,6 @@ export class Agent {
   private sessionsDir: string | null = null;
   private pendingToolResultBytes = 0;
 
-  private resolveProvidersConfig(
-    providersConfig: ProvidersConfig | string,
-  ): ProvidersConfig {
-    return typeof providersConfig === "string"
-      ? loadProvidersConfig(providersConfig)
-      : providersConfig;
-  }
-
-  private createAgentState(
-    options: {
-      providersConfig: ProvidersConfig | string;
-      providerName?: string;
-      modelKey?: string;
-      mcpConfig?: McpConfigFile;
-      mcpConfigPath?: string;
-      systemPrompt?: string;
-      agentsMdContent?: string;
-      cwd?: string;
-      homeDir?: string;
-      diagnosticsEnabled?: boolean;
-      onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-      runtimeConfig?: RuntimeConfig;
-    },
-    config: ProvidersConfig,
-  ): {
-    systemPrompt: string;
-    providersConfig: ProvidersConfig;
-    diagnosticsEnabled: boolean;
-    diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
-    skillContext: {
-      readonly cwd: string;
-      readonly homeDir: string;
-    };
-    sessionId: string;
-    runtimeConfig: RuntimeConfig;
-  } {
-    const basePrompt =
-      options.systemPrompt || "You are a helpful AI assistant.";
-
-    return {
-      systemPrompt: composeSystemPrompt(options.agentsMdContent ?? "", basePrompt),
-      providersConfig: config,
-      diagnosticsEnabled: options.diagnosticsEnabled ?? false,
-      diagnosticsListener: options.onDiagnosticEvent,
-      skillContext: {
-        cwd: options.cwd ?? process.cwd(),
-        homeDir: options.homeDir ?? os.homedir(),
-      },
-      sessionId: randomUUID(),
-      runtimeConfig: options.runtimeConfig ?? loadRuntimeConfig(),
-    };
-  }
-
-  private createProviderState(options: {
-    providerName?: string;
-    modelKey?: string;
-  }): {
-    resolvedProviderConfig: ProviderConfig;
-    provider: LLMProvider;
-    model: string;
-  } {
-    const resolvedProvider = resolveProvider(
-      this.providersConfig,
-      options.providerName,
-    );
-    const resolvedModelKey = resolveModelKey(
-      resolvedProvider,
-      options.modelKey,
-    );
-
-    return {
-      resolvedProviderConfig: resolvedProvider,
-      provider: createProvider(
-        resolvedProvider,
-        resolvedModelKey,
-        this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
-        this.diagnosticsEnabled,
-        {
-          maxRetries: this.runtimeConfig.maxRetries,
-          consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
-        },
-      ),
-      model: resolvedModelKey,
-    };
-  }
-
-  private createSupportComponents(options: {
-    mcpConfig?: McpConfigFile;
-    mcpConfigPath?: string;
-  }): {
-    contextManager: ContextManager;
-    toolRegistry: ToolRegistry;
-    mcpManager: McpManager;
-    summaryManager: SummaryManager;
-    summaryPolicy: SummaryPolicy;
-  } {
-    return {
-      contextManager: new ContextManager({
-        toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
-        rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
-        pinnedMemoryMaxContentLength:
-          this.runtimeConfig.pinnedMemoryMaxContentLength,
-      }),
-      toolRegistry: createDefaultToolRegistry({
-        runtimeConfig: this.runtimeConfig,
-        skillToolInvoker: {
-          invokeSkill: async (
-            name: string,
-            argumentsText: string | undefined,
-            invokeOptions:
-              | {
-                  readonly source?: "model";
-                }
-              | undefined,
-          ) => {
-            await this.invokeSkill(name, argumentsText, invokeOptions);
-            return `Activated skill ${name}.`;
-          },
-        },
-      }),
-      mcpManager: new McpManager({
-        ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
-        ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
-      }),
-      summaryManager: new SummaryManager(),
-      summaryPolicy: {
-        ...DEFAULT_SUMMARY_POLICY,
-        summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
-      },
-    };
-  }
-
   constructor(
     options: {
       providersConfig: ProvidersConfig | string;
@@ -356,27 +225,99 @@ export class Agent {
       );
     }
 
-    const config = this.resolveProvidersConfig(options.providersConfig);
-    const agentState = this.createAgentState(options, config);
-    this.systemPrompt = agentState.systemPrompt;
-    this.providersConfig = agentState.providersConfig;
-    this.diagnosticsEnabled = agentState.diagnosticsEnabled;
-    this.diagnosticsListener = agentState.diagnosticsListener;
-    this.skillContext = agentState.skillContext;
-    this.sessionId = agentState.sessionId;
-    this.runtimeConfig = agentState.runtimeConfig;
+    const basePrompt =
+      options.systemPrompt || "You are a helpful AI assistant.";
 
-    const providerState = this.createProviderState(options);
-    this.resolvedProviderConfig = providerState.resolvedProviderConfig;
-    this.provider = providerState.provider;
-    this.model = providerState.model;
+    this.systemPrompt = composeSystemPrompt(
+      options.agentsMdContent ?? "",
+      basePrompt,
+    );
 
-    const supportComponents = this.createSupportComponents(options);
-    this.contextManager = supportComponents.contextManager;
-    this.toolRegistry = supportComponents.toolRegistry;
-    this.mcpManager = supportComponents.mcpManager;
-    this.summaryManager = supportComponents.summaryManager;
-    this.summaryPolicy = supportComponents.summaryPolicy;
+    this.providersConfig = Agent.normalizeProvidersConfig(options.providersConfig);
+    this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
+    this.diagnosticsListener = options.onDiagnosticEvent;
+    this.skillContext = {
+      cwd: options.cwd ?? process.cwd(),
+      homeDir: options.homeDir ?? os.homedir(),
+    };
+
+    this.sessionId = randomUUID();
+    this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
+    this.initializeProvider(
+      this.providersConfig,
+      options.providerName,
+      options.modelKey,
+    );
+
+    this.contextManager = new ContextManager({
+      toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
+      rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
+      pinnedMemoryMaxContentLength:
+        this.runtimeConfig.pinnedMemoryMaxContentLength,
+    });
+    this.toolRegistry = createDefaultToolRegistry({
+      runtimeConfig: this.runtimeConfig,
+      skillToolInvoker: {
+        invokeSkill: async (
+          name: string,
+          argumentsText: string | undefined,
+          options:
+            | {
+                readonly source?: "model";
+              }
+            | undefined,
+        ) => {
+          await this.invokeSkill(name, argumentsText, options);
+          return `Activated skill ${name}.`;
+        },
+      },
+    });
+    this.mcpManager = new McpManager(Agent.buildMcpManagerOptions(options));
+    this.summaryManager = new SummaryManager();
+    this.summaryPolicy = {
+      ...DEFAULT_SUMMARY_POLICY,
+      summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
+    };
+  }
+
+  private static normalizeProvidersConfig(
+    config: ProvidersConfig | string,
+  ): ProvidersConfig {
+    if (typeof config === "string") {
+      return loadProvidersConfig(config);
+    }
+    return config;
+  }
+
+  private initializeProvider(
+    config: ProvidersConfig,
+    providerName: string | undefined,
+    modelKey: string | undefined,
+  ): void {
+    const resolvedProvider = resolveProvider(config, providerName);
+    const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
+    this.resolvedProviderConfig = resolvedProvider;
+    this.provider = createProvider(
+      resolvedProvider,
+      resolvedModelKey,
+      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+      this.diagnosticsEnabled,
+      {
+        maxRetries: this.runtimeConfig.maxRetries,
+        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+      },
+    );
+    this.model = resolvedModelKey;
+  }
+
+  private static buildMcpManagerOptions(options: {
+    mcpConfig?: McpConfigFile;
+    mcpConfigPath?: string;
+  }): { config?: McpConfigFile; configPath?: string } {
+    return {
+      ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
+      ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
+    };
   }
 
   async initialize(): Promise<void> {
@@ -522,48 +463,43 @@ export class Agent {
     return {};
   }
 
-  private collectRecentToolCallSignatures(lookback: number): {
-    hasAnyAssistantText: boolean;
-    seenCallSignatures: string[];
-  } {
-    const state = this.contextManager.getConversationState();
-    const turns = state.turns;
-    if (turns.length === 0) {
-      return { hasAnyAssistantText: false, seenCallSignatures: [] };
-    }
-
-    const recentEntries = turns[turns.length - 1].entries.slice(-lookback);
-    const seenCallSignatures: string[] = [];
-    let hasAnyAssistantText = false;
-
-    for (const entry of recentEntries) {
-      if (entry.kind !== "assistant") {
-        continue;
-      }
-      if (entry.message.content?.trim().length > 0) {
-        hasAnyAssistantText = true;
-      }
-      for (const toolCall of entry.message.toolCalls ?? []) {
-        seenCallSignatures.push(
-          `${toolCall.function.name}:${stableArgsKey(toolCall.function.arguments)}`,
-        );
-      }
-    }
-
-    return { hasAnyAssistantText, seenCallSignatures };
-  }
-
   private detectNoProgress(
     _currentToolCalls?: ChatToolCall[],
     lookback: number = 5,
   ): boolean {
-    const { hasAnyAssistantText, seenCallSignatures } =
-      this.collectRecentToolCallSignatures(lookback);
-    if (hasAnyAssistantText || seenCallSignatures.length < 3) {
-      return false;
-    }
+    const state = this.contextManager.getConversationState();
+    const turns = state.turns;
 
-    return new Set(seenCallSignatures).size === 1;
+    if (turns.length === 0) return false;
+
+    const lastTurn = turns[turns.length - 1];
+    const recentEntries = lastTurn.entries.slice(-lookback);
+    const { signatures, hasAnyAssistantText } =
+      this.gatherSignaturesFromTurnEntries(recentEntries);
+
+    if (hasAnyAssistantText) return false;
+    if (signatures.length < 3) return false;
+
+    return new Set(signatures).size === 1;
+  }
+
+  private gatherSignaturesFromTurnEntries(
+    entries: ReadonlyArray<TurnEntry>,
+  ): { signatures: string[]; hasAnyAssistantText: boolean } {
+    const signatures: string[] = [];
+    let hasAnyAssistantText = false;
+    for (const entry of entries) {
+      if (entry.kind !== "assistant") continue;
+      if (entry.message.content?.trim().length > 0) {
+        hasAnyAssistantText = true;
+      }
+      for (const tc of entry.message.toolCalls ?? []) {
+        signatures.push(
+          `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
+        );
+      }
+    }
+    return { signatures, hasAnyAssistantText };
   }
 
   private synthesizeAgentReasoningSummary(
@@ -698,56 +634,103 @@ export class Agent {
     }));
   }
 
-  private shouldRecordSkillTouch(toolName: string): boolean {
-    return toolName === "read" || toolName === "write" || toolName === "edit";
-  }
-
-  private extractTouchedPathsFromToolArgs(
-    args: Record<string, unknown>,
-  ): string[] {
-    const touchedPaths: string[] = [];
-
-    for (const [key, value] of Object.entries(args)) {
-      if (typeof value === "string" && /path/i.test(key)) {
-        touchedPaths.push(value);
-        continue;
-      }
-      if (!Array.isArray(value) || !/paths?/i.test(key)) {
-        continue;
-      }
-      for (const entry of value) {
-        if (typeof entry === "string" && entry.trim().length > 0) {
-          touchedPaths.push(entry);
-        }
-      }
-    }
-
-    return touchedPaths;
-  }
-
   private recordSkillTouchFromToolArgs(
     toolName: string,
     args: Record<string, unknown>,
   ): void {
-    if (!this.shouldRecordSkillTouch(toolName)) {
+    if (toolName !== "read" && toolName !== "write" && toolName !== "edit") {
       return;
     }
-
-    const touchedPaths = this.extractTouchedPathsFromToolArgs(args);
+    const touchedPaths = this.extractPathsFromToolArgs(args);
     if (touchedPaths.length > 0) {
       this.recordSkillFileTouch(touchedPaths);
     }
   }
 
-  private resolveInvocableSkill(
-    registry: SkillRegistry,
+  private extractPathsFromToolArgs(args: Record<string, unknown>): string[] {
+    const paths: string[] = [];
+    for (const [key, value] of Object.entries(args)) {
+      if (typeof value === "string" && /path/i.test(key)) {
+        paths.push(value);
+      }
+      if (Array.isArray(value) && /paths?/i.test(key)) {
+        for (const entry of value) {
+          if (typeof entry === "string" && entry.trim().length > 0) {
+            paths.push(entry);
+          }
+        }
+      }
+    }
+    return paths;
+  }
+
+  async invokeSkill(
     name: string,
-    source: "user" | "model",
-  ): Skill {
+    argumentsText?: string,
+    options?: SkillInvocationOptions,
+  ): Promise<string> {
+    const registry = this.getSkillRegistry();
     const skill = registry.get(name);
     if (!skill) {
       throw createMissingSkillError(name, registry.list());
     }
+
+    const source = options?.source ?? "user";
+    this.validateSkillForInvocation(skill, source);
+
+    const requestedModel = skill.model;
+    const requestedEffort = skill.effort;
+    const appliedModel =
+      requestedModel && requestedModel === this.model ? this.model : undefined;
+    const materializationWarnings: string[] = [];
+
+    const content = registry.materialize(
+      skill.name,
+      { arguments: argumentsText },
+      {
+        onWarning: (message) => {
+          materializationWarnings.push(message);
+        },
+      },
+    );
+    const warnings = this.collectSkillWarnings(
+      requestedModel,
+      appliedModel,
+      requestedEffort,
+    );
+    const combinedWarnings =
+      warnings.length > 0 || materializationWarnings.length > 0
+        ? [...warnings, ...materializationWarnings]
+        : undefined;
+
+    const scope = this.buildSkillScope(
+      skill,
+      source,
+      requestedModel,
+      requestedEffort,
+      appliedModel,
+      combinedWarnings,
+    );
+
+    const invocationRecord: InvokedSkillRecord = {
+      name: skill.name,
+      source: skill.source,
+      skillRoot: skill.skillRoot,
+      skillFile: skill.skillFile,
+      ...(argumentsText ? { arguments: argumentsText } : {}),
+      content,
+      invokedAt: new Date().toISOString(),
+      scope,
+    };
+
+    this.contextManager.recordInvokedSkill(invocationRecord);
+    return invocationRecord.content;
+  }
+
+  private validateSkillForInvocation(
+    skill: Skill,
+    source: "user" | "model",
+  ): void {
     if (source === "user" && skill.userInvocable === false) {
       throw new Error(`Skill is not user-invocable: ${skill.name}`);
     }
@@ -759,21 +742,14 @@ export class Agent {
         `Skill "${skill.name}" requests forked execution, which is not supported yet.`,
       );
     }
-    return skill;
   }
 
-  private collectSkillWarnings(skill: Skill): {
-    requestedModel?: string;
-    requestedEffort?: string;
-    appliedModel?: string;
-    warnings: string[];
-  } {
+  private collectSkillWarnings(
+    requestedModel: string | undefined,
+    appliedModel: string | undefined,
+    requestedEffort: string | undefined,
+  ): string[] {
     const warnings: string[] = [];
-    const requestedModel = skill.model;
-    const requestedEffort = skill.effort;
-    const appliedModel =
-      requestedModel && requestedModel === this.model ? this.model : undefined;
-
     if (requestedModel && !appliedModel) {
       warnings.push(
         `Requested model "${requestedModel}" was not applied; continuing with ${this.provider.name}/${this.model}.`,
@@ -784,42 +760,16 @@ export class Agent {
         `Requested effort "${requestedEffort}" was recorded but not applied by the current provider.`,
       );
     }
-
-    return {
-      requestedModel,
-      requestedEffort,
-      appliedModel,
-      warnings,
-    };
+    return warnings;
   }
 
-  private materializeSkillContent(
-    registry: SkillRegistry,
-    skill: Skill,
-    argumentsText: string | undefined,
-  ): { content: string; materializationWarnings: string[] } {
-    const materializationWarnings: string[] = [];
-    const content = registry.materialize(
-      skill.name,
-      { arguments: argumentsText },
-      {
-        onWarning: (message) => {
-          materializationWarnings.push(message);
-        },
-      },
-    );
-    return { content, materializationWarnings };
-  }
-
-  private buildSkillInvocationScope(
+  private buildSkillScope(
     skill: Skill,
     source: "user" | "model",
-    warningState: {
-      requestedModel?: string;
-      requestedEffort?: string;
-      appliedModel?: string;
-    },
-    warnings: string[] | undefined,
+    requestedModel: string | undefined,
+    requestedEffort: string | undefined,
+    appliedModel: string | undefined,
+    combinedWarnings: string[] | undefined,
   ): SkillInvocationScope {
     return {
       invocationSource: source,
@@ -827,68 +777,11 @@ export class Agent {
       skillRoot: skill.skillRoot,
       skillFile: skill.skillFile,
       ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
-      ...(warningState.requestedModel ? { model: warningState.requestedModel } : {}),
-      ...(warningState.requestedEffort
-        ? { effort: warningState.requestedEffort }
-        : {}),
-      ...(warningState.appliedModel
-        ? { appliedModel: warningState.appliedModel }
-        : {}),
-      ...(warnings ? { warnings } : {}),
+      ...(requestedModel ? { model: requestedModel } : {}),
+      ...(requestedEffort ? { effort: requestedEffort } : {}),
+      ...(appliedModel ? { appliedModel } : {}),
+      ...(combinedWarnings ? { warnings: combinedWarnings } : {}),
     };
-  }
-
-  private createSkillInvocationRecord(
-    skill: Skill,
-    argumentsText: string | undefined,
-    content: string,
-    scope: SkillInvocationScope,
-  ): InvokedSkillRecord {
-    return {
-      name: skill.name,
-      source: skill.source,
-      skillRoot: skill.skillRoot,
-      skillFile: skill.skillFile,
-      ...(argumentsText ? { arguments: argumentsText } : {}),
-      content,
-      invokedAt: new Date().toISOString(),
-      scope,
-    };
-  }
-
-  async invokeSkill(
-    name: string,
-    argumentsText?: string,
-    options?: SkillInvocationOptions,
-  ): Promise<string> {
-    const registry = this.getSkillRegistry();
-    const source = options?.source ?? "user";
-    const skill = this.resolveInvocableSkill(registry, name, source);
-    const warningState = this.collectSkillWarnings(skill);
-    const { content, materializationWarnings } = this.materializeSkillContent(
-      registry,
-      skill,
-      argumentsText,
-    );
-    const combinedWarnings = [
-      ...warningState.warnings,
-      ...materializationWarnings,
-    ];
-    const scope = this.buildSkillInvocationScope(
-      skill,
-      source,
-      warningState,
-      combinedWarnings.length > 0 ? combinedWarnings : undefined,
-    );
-    const invocationRecord = this.createSkillInvocationRecord(
-      skill,
-      argumentsText,
-      content,
-      scope,
-    );
-
-    this.contextManager.recordInvokedSkill(invocationRecord);
-    return invocationRecord.content;
   }
 
   private composeSkillDiscoveryBlock(): string {
@@ -1287,57 +1180,6 @@ export class Agent {
     return streamState.fullResponse;
   }
 
-  private async advanceNoToolsRetryLevel(
-    error: ProviderContextLengthError,
-    plan: PromptPlan,
-    iteration: number,
-    retryLevel: number,
-    shrinkCount: number,
-  ): Promise<"retry" | "next-level"> {
-    if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-      this.emitDiagnostic({
-        type: "context_pressure_circuit_breaker",
-        provider: this.provider.name,
-        model: this.model,
-        iteration,
-        retryLevel,
-      });
-      throw error;
-    }
-
-    if (await this.attemptSynchronousShrink(plan)) {
-      this.emitDiagnostic({
-        type: "provider_error",
-        provider: this.provider.name,
-        model: this.model,
-        iteration,
-        errorName: "ProviderContextLengthError",
-        message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
-      });
-      return "retry";
-    }
-
-    this.emitDiagnostic({
-      type: "provider_error",
-      provider: this.provider.name,
-      model: this.model,
-      iteration,
-      errorName: "ProviderContextLengthError",
-      message: `Context length exceeded, retrying at level ${retryLevel + 1}`,
-    });
-    return "next-level";
-  }
-
-  private emitNoToolsCircuitBreaker(iteration: number, retryLevel: number): void {
-    this.emitDiagnostic({
-      type: "context_pressure_circuit_breaker",
-      provider: this.provider.name,
-      model: this.model,
-      iteration,
-      retryLevel,
-    });
-  }
-
   private async requestFinalResponseWithoutTools(
     onToken: (token: string) => void,
     abortSignal: AbortSignal | undefined,
@@ -1370,25 +1212,17 @@ export class Agent {
           options,
         );
       } catch (error) {
-        if (!(error instanceof ProviderContextLengthError)) {
-          throw error;
-        }
-        if (retryLevel >= Agent.MAX_CONTEXT_RETRY_LEVEL) {
-          this.emitNoToolsCircuitBreaker(iteration, retryLevel);
-          throw error;
-        }
-
-        shrinkCount++;
-        const retryAction = await this.advanceNoToolsRetryLevel(
-          error,
+        if (!(error instanceof ProviderContextLengthError)) throw error;
+        const retryAction = await this.handleContextLengthError(
           plan,
-          iteration,
           retryLevel,
           shrinkCount,
+          iteration,
         );
-        if (retryAction === "next-level") {
-          retryLevel++;
-        }
+        if (retryAction.action === "rethrow") throw error;
+        retryLevel = retryAction.contextRetryLevel;
+        shrinkCount = retryAction.synchronousShrinkCount;
+        continue;
       }
     }
 
@@ -1572,12 +1406,71 @@ export class Agent {
     this.contextManager.recordToolResults(artifactToolResults);
   }
 
-  private emitToolExecutionStarted(
+  private async processToolCall(
+    toolCall: ChatToolCall,
+    allowedTools: ReadonlySet<string> | undefined,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+    onToken: (token: string) => void,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<ArtifactToolResult> {
+    if (options?.abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
+    const args = toolCall.function.arguments;
+    const toolName = toolCall.function.name;
+    const serializedArgs = JSON.stringify(args ?? {});
+    const toolCallId = toolCall.id!;
+    const activityLabel = this.describeToolInvocation(toolName, args ?? {});
+
+    this.emitToolStartedDiagnostics(
+      toolName,
+      toolCallId,
+      activityLabel,
+      args ?? {},
+      serializedArgs,
+      iteration,
+      options,
+    );
+    options?.onToolStart?.(toolName);
+
+    const execResult = await this.executeToolWithStatus(
+      toolName,
+      args,
+      allowedTools,
+    );
+    const result = execResult.content;
+    const failed = this.emitToolFinishedEvents(
+      toolName,
+      toolCallId,
+      activityLabel,
+      args ?? {},
+      result,
+      execResult,
+      iteration,
+      options,
+    );
+
+    if (!failed) {
+      this.recordSkillTouchFromToolArgs(toolName, args);
+    }
+    toolExecutionEvents.push({ name: toolName, failed });
+
+    return {
+      toolCallId,
+      toolName,
+      rawContent: result,
+      status: failed ? "error" : "success",
+    };
+  }
+
+  private emitToolStartedDiagnostics(
     toolName: string,
     toolCallId: string,
+    activityLabel: string,
     args: Record<string, unknown>,
     serializedArgs: string,
-    activityLabel: string,
     iteration: number,
     options: AgentToolOptions | undefined,
   ): void {
@@ -1603,25 +1496,19 @@ export class Agent {
       toolCallId,
       argsChars: serializedArgs.length,
     });
-    options?.onToolStart?.(toolName);
   }
 
-  private completeToolCallExecution(
+  private emitToolFinishedEvents(
     toolName: string,
     toolCallId: string,
-    args: Record<string, unknown>,
     activityLabel: string,
+    args: Record<string, unknown>,
+    result: string,
     execResult: ToolExecutionResult,
     iteration: number,
     options: AgentToolOptions | undefined,
-    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
-  ): ArtifactToolResult {
-    const result = execResult.content;
+  ): boolean {
     const failed = execResult.status !== "success";
-    if (!failed) {
-      this.recordSkillTouchFromToolArgs(toolName, args);
-    }
-    toolExecutionEvents.push({ name: toolName, failed });
     this.emitDiagnostic({
       type: "tool_execution_finished",
       provider: this.provider.name,
@@ -1633,13 +1520,6 @@ export class Agent {
       truncatedForContext: false,
       status: execResult.status,
     });
-
-    const artifactToolResult: ArtifactToolResult = {
-      toolCallId,
-      toolName,
-      rawContent: result,
-      status: failed ? "error" : "success",
-    };
     const resultPreview =
       !failed && this.toolRegistry.hasTool(toolName)
         ? this.toolRegistry.renderInvocationResult(toolName, args, result)
@@ -1652,52 +1532,7 @@ export class Agent {
       resultPreview,
     });
     options?.onToolEnd?.(toolName, result, execResult.status);
-    return artifactToolResult;
-  }
-
-  private async processToolCall(
-    toolCall: ChatToolCall,
-    allowedTools: ReadonlySet<string> | undefined,
-    iteration: number,
-    options: AgentToolOptions | undefined,
-    onToken: (token: string) => void,
-    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
-  ): Promise<ArtifactToolResult> {
-    if (options?.abortSignal?.aborted) {
-      throw new Error("Request cancelled");
-    }
-
-    const args = toolCall.function.arguments ?? {};
-    const toolName = toolCall.function.name;
-    const toolCallId = toolCall.id!;
-    const serializedArgs = JSON.stringify(args);
-    const activityLabel = this.describeToolInvocation(toolName, args);
-    this.emitToolExecutionStarted(
-      toolName,
-      toolCallId,
-      args,
-      serializedArgs,
-      activityLabel,
-      iteration,
-      options,
-    );
-
-    const execResult = await this.executeToolWithStatus(
-      toolName,
-      args,
-      allowedTools,
-    );
-    void onToken;
-    return this.completeToolCallExecution(
-      toolName,
-      toolCallId,
-      args,
-      activityLabel,
-      execResult,
-      iteration,
-      options,
-      toolExecutionEvents,
-    );
+    return failed;
   }
 
   private async finalizeWithNoToolsResponse(
@@ -1732,176 +1567,6 @@ export class Agent {
     };
   }
 
-  private normalizeToolCallsForIteration(
-    toolCalls: ChatToolCall[] | undefined,
-    iterationCount: number,
-  ): ChatToolCall[] {
-    return (toolCalls ?? []).map((toolCall, index) => ({
-      ...toolCall,
-      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
-    }));
-  }
-
-  private emitToolCallBatchDiagnostics(
-    toolCalls: ChatToolCall[],
-    iterationCount: number,
-    options: AgentStreamOptions | undefined,
-  ): void {
-    if (toolCalls.length === 0) {
-      return;
-    }
-
-    this.emitStatus(options, "Tool call received", "tool");
-    this.emitDiagnostic({
-      type: "tool_calls_received",
-      provider: this.provider.name,
-      model: this.model,
-      iteration: iterationCount,
-      count: toolCalls.length,
-      tools: toolCalls.map((toolCall) => toolCall.function.name),
-    });
-  }
-
-  private commitChatTurnIteration(
-    fullResponse: string,
-    toolCalls: ChatToolCall[],
-    reasoningContent: string | undefined,
-    iterationCount: number,
-  ): void {
-    this.contextManager.commitAssistantResponse(
-      fullResponse,
-      toolCalls.length > 0 ? toolCalls : undefined,
-      toolCalls.length > 0 ? { reasoningContent } : undefined,
-    );
-    this.emitDiagnostic({
-      type: "iteration_finished",
-      provider: this.provider.name,
-      model: this.model,
-      iteration: iterationCount,
-      responseChars: fullResponse.length,
-      responseIsEmpty: fullResponse.trim().length === 0,
-      toolCalls: toolCalls.length,
-    });
-    if (fullResponse.trim().length === 0 && toolCalls.length === 0) {
-      this.emitDiagnostic({
-        type: "empty_response",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        contextMessages: this.contextManager.messageCount,
-      });
-    }
-  }
-
-  private async maybeHandleToolLoopFallback(
-    toolCalls: ChatToolCall[],
-    iterationCount: number,
-    nextEmptyToolOnlyStreak: number,
-    options: AgentStreamOptions | undefined,
-    onToken: (token: string) => void,
-  ): Promise<
-    | {
-        finalResponse: string;
-        continueLoop: boolean;
-        emptyToolOnlyStreak: number;
-        hasFinalAssistantResponse: boolean;
-      }
-    | null
-  > {
-    if (this.runtimeConfig.useNoProgressDetector) {
-      if (!this.detectNoProgress(toolCalls)) {
-        return null;
-      }
-      this.emitDiagnostic({
-        type: "no_progress_detected",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        lookbackIterations: 5,
-      });
-      return await this.finalizeWithNoToolsResponse(
-        onToken,
-        options,
-        iterationCount,
-        nextEmptyToolOnlyStreak,
-        "Stopped after no-progress detection with no final assistant response.",
-      );
-    }
-
-    if (nextEmptyToolOnlyStreak < Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
-      return null;
-    }
-    this.emitDiagnostic({
-      type: "tool_loop_detected",
-      provider: this.provider.name,
-      model: this.model,
-      iteration: iterationCount,
-      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-      threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
-      action: "fallback_no_tools",
-    });
-    return await this.finalizeWithNoToolsResponse(
-      onToken,
-      options,
-      iterationCount,
-      nextEmptyToolOnlyStreak,
-      "Stopped after repeated empty tool-calling turns with no final assistant response.",
-    );
-  }
-
-  private async continueToolCallLoop(
-    fullResponse: string,
-    toolCalls: ChatToolCall[],
-    allowedTools: ReadonlySet<string> | undefined,
-    iterationCount: number,
-    options: AgentStreamOptions | undefined,
-    onToken: (token: string) => void,
-    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
-    nextEmptyToolOnlyStreak: number,
-  ): Promise<{
-    finalResponse: string;
-    continueLoop: boolean;
-    emptyToolOnlyStreak: number;
-    hasFinalAssistantResponse: boolean;
-  }> {
-    onToken("\n");
-    await this.executeToolCalls(
-      toolCalls,
-      allowedTools,
-      iterationCount,
-      options,
-      onToken,
-      toolExecutionEvents,
-    );
-    this.emitStatus(options, "Processing tool results", "tool");
-    onToken("\n");
-    return {
-      finalResponse: fullResponse,
-      continueLoop: true,
-      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-      hasFinalAssistantResponse: false,
-    };
-  }
-
-  private finalizeAssistantTurn(
-    fullResponse: string,
-    emptyToolOnlyStreak: number,
-    options: AgentStreamOptions | undefined,
-  ): {
-    finalResponse: string;
-    continueLoop: boolean;
-    emptyToolOnlyStreak: number;
-    hasFinalAssistantResponse: boolean;
-  } {
-    this.emitStatus(options, "Generating final answer", "answer");
-    return {
-      finalResponse: fullResponse,
-      continueLoop: false,
-      emptyToolOnlyStreak,
-      hasFinalAssistantResponse: true,
-    };
-  }
-
   private async handleChatTurnResponse(
     fullResponse: string,
     toolCalls: ChatToolCall[] | undefined,
@@ -1918,54 +1583,161 @@ export class Agent {
     emptyToolOnlyStreak: number;
     hasFinalAssistantResponse: boolean;
   }> {
-    const normalizedToolCalls = this.normalizeToolCallsForIteration(
-      toolCalls,
-      iterationCount,
-    );
-    this.emitToolCallBatchDiagnostics(
-      normalizedToolCalls,
-      iterationCount,
-      options,
-    );
-    this.commitChatTurnIteration(
+    const normalizedToolCalls = this.normalizeToolCallIds(toolCalls, iterationCount);
+    if (normalizedToolCalls && normalizedToolCalls.length > 0) {
+      this.emitStatus(options, "Tool call received", "tool");
+      this.emitDiagnostic({
+        type: "tool_calls_received",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        count: normalizedToolCalls.length,
+        tools: normalizedToolCalls.map((toolCall) => toolCall.function.name),
+      });
+    }
+
+    this.contextManager.commitAssistantResponse(
       fullResponse,
       normalizedToolCalls,
-      reasoningContent,
-      iterationCount,
+      normalizedToolCalls && normalizedToolCalls.length > 0
+        ? { reasoningContent }
+        : undefined,
     );
+    this.emitTurnFinishedDiagnostics(fullResponse, iterationCount, normalizedToolCalls);
 
+    const toolCallsToExecute = normalizedToolCalls ?? [];
+    const hasToolCalls = toolCallsToExecute.length > 0;
+    const isEmptyResponse = fullResponse.trim().length === 0;
     const nextEmptyToolOnlyStreak =
-      normalizedToolCalls.length > 0 && fullResponse.trim().length === 0
-        ? emptyToolOnlyStreak + 1
-        : 0;
-    if (normalizedToolCalls.length === 0) {
-      return this.finalizeAssistantTurn(
-        fullResponse,
+      hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
+
+    if (hasToolCalls) {
+      const loopResult = await this.checkLoopAndFinalize(
+        toolCallsToExecute,
         nextEmptyToolOnlyStreak,
+        onToken,
         options,
+        iterationCount,
+        toolExecutionEvents,
+      );
+      if (loopResult !== null) return loopResult;
+
+      onToken("\n");
+      await this.executeToolCalls(
+        toolCallsToExecute,
+        allowedTools,
+        iterationCount,
+        options,
+        onToken,
+        toolExecutionEvents,
+      );
+
+      this.emitStatus(options, "Processing tool results", "tool");
+      onToken("\n");
+      return {
+        finalResponse: fullResponse,
+        continueLoop: true,
+        emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+        hasFinalAssistantResponse: false,
+      };
+    }
+
+    this.emitStatus(options, "Generating final answer", "answer");
+    return {
+      finalResponse: fullResponse,
+      continueLoop: false,
+      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      hasFinalAssistantResponse: true,
+    };
+  }
+
+  private normalizeToolCallIds(
+    toolCalls: ChatToolCall[] | undefined,
+    iterationCount: number,
+  ): ChatToolCall[] | undefined {
+    return toolCalls?.map((toolCall, index) => ({
+      ...toolCall,
+      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
+    }));
+  }
+
+  private emitTurnFinishedDiagnostics(
+    fullResponse: string,
+    iterationCount: number,
+    normalizedToolCalls: ChatToolCall[] | undefined,
+  ): void {
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      responseChars: fullResponse.length,
+      responseIsEmpty: fullResponse.trim().length === 0,
+      toolCalls: normalizedToolCalls?.length ?? 0,
+    });
+
+    if (
+      fullResponse.trim().length === 0 &&
+      (!normalizedToolCalls || normalizedToolCalls.length === 0)
+    ) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        contextMessages: this.contextManager.messageCount,
+      });
+    }
+  }
+
+  private async checkLoopAndFinalize(
+    toolCallsToExecute: ChatToolCall[],
+    nextEmptyToolOnlyStreak: number,
+    onToken: (token: string) => void,
+    options: AgentStreamOptions | undefined,
+    iterationCount: number,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<{
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
+  } | null> {
+    void toolExecutionEvents;
+    if (this.runtimeConfig.useNoProgressDetector) {
+      if (!this.detectNoProgress(toolCallsToExecute)) return null;
+      this.emitDiagnostic({
+        type: "no_progress_detected",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        lookbackIterations: 5,
+      });
+      return this.finalizeWithNoToolsResponse(
+        onToken,
+        options,
+        iterationCount,
+        nextEmptyToolOnlyStreak,
+        "Stopped after no-progress detection with no final assistant response.",
       );
     }
 
-    const fallbackResult = await this.maybeHandleToolLoopFallback(
-      normalizedToolCalls,
+    if (nextEmptyToolOnlyStreak < Agent.MAX_EMPTY_TOOL_ONLY_STREAK) return null;
+    this.emitDiagnostic({
+      type: "tool_loop_detected",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+      action: "fallback_no_tools",
+    });
+    return this.finalizeWithNoToolsResponse(
+      onToken,
+      options,
       iterationCount,
       nextEmptyToolOnlyStreak,
-      options,
-      onToken,
-    );
-    if (fallbackResult) {
-      return fallbackResult;
-    }
-
-    return await this.continueToolCallLoop(
-      fullResponse,
-      normalizedToolCalls,
-      allowedTools,
-      iterationCount,
-      options,
-      onToken,
-      toolExecutionEvents,
-      nextEmptyToolOnlyStreak,
+      "Stopped after repeated empty tool-calling turns with no final assistant response.",
     );
   }
 
