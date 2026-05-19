@@ -65,10 +65,7 @@ function makeSummaryToolEntry(
 }
 
 /** Finds the tool message in the plan and asserts it exists + checks content. */
-function expectToolResultContent(
-  plan: PromptPlan,
-  expected: string,
-): void {
+function expectToolResultContent(plan: PromptPlan, expected: string): void {
   const toolMsg = plan.messages.find(
     (m) => m.role === "tool" && m.toolResults?.length,
   );
@@ -299,7 +296,9 @@ describe("PromptBuilder", () => {
     });
 
     it("should report includedArtifactIds for unresolved current-turn tool entries when rehydrated", () => {
-      const { plan } = buildUnresolvedToolTurnPlan("full raw artifact body for payload");
+      const { plan } = buildUnresolvedToolTurnPlan(
+        "full raw artifact body for payload",
+      );
       expect(plan.includedArtifactIds).toEqual(["art-1"]);
     });
 

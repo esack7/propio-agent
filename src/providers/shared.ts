@@ -34,8 +34,8 @@ interface OpenAIStreamToolCallAccumulator {
 
 export function expandToolResultMessages(
   messages: ChatMessage[],
-  toolCallIdForResult: (toolResult: ToolResult) => string =
-    (toolResult) => toolResult.toolCallId,
+  toolCallIdForResult: (toolResult: ToolResult) => string = (toolResult) =>
+    toolResult.toolCallId,
 ): ChatMessage[] {
   const expanded: ChatMessage[] = [];
 

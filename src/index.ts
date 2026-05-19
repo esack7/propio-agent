@@ -91,74 +91,6 @@ Options:
   -h, --help          Show this help text
 `;
 
-interface SessionConfig {
-  interactive: boolean;
-  plain: boolean;
-  jsonMode: boolean;
-  debugLlmToStderr: boolean;
-  debugLlmFilePath: string | undefined;
-  diagnosticsEnabled: boolean;
-  colorEnabled: boolean;
-  visibility: VisibilityOptions;
-}
-
-function isInteractiveMode(
-  parsedArgs: ReturnType<typeof parseCliArgs>,
-  ci: boolean,
-): boolean {
-  return (
-    Boolean(process.stdin.isTTY) &&
-    Boolean(process.stdout.isTTY) &&
-    !ci &&
-    !parsedArgs.flags.noInteractive &&
-    !parsedArgs.flags.json
-  );
-}
-
-function isPlainMode(
-  parsedArgs: ReturnType<typeof parseCliArgs>,
-  ci: boolean,
-): boolean {
-  return parsedArgs.flags.plain || !Boolean(process.stdout.isTTY) || ci;
-}
-
-function resolveVisibilityOptions(
-  parsedArgs: ReturnType<typeof parseCliArgs>,
-): VisibilityOptions {
-  const showTrace = parsedArgs.flags.showTrace;
-  return {
-    showToolCalls: true,
-    showStatus: parsedArgs.flags.showStatus || showTrace,
-    showReasoningSummary: parsedArgs.flags.showReasoningSummary || showTrace,
-    showContextStats: parsedArgs.flags.showContextStats,
-    showPromptPlan: parsedArgs.flags.showPromptPlan,
-  };
-}
-
-function buildSessionConfig(
-  parsedArgs: ReturnType<typeof parseCliArgs>,
-  ci: boolean,
-): SessionConfig {
-  const interactive = isInteractiveMode(parsedArgs, ci);
-  const plain = isPlainMode(parsedArgs, ci);
-  const jsonMode = parsedArgs.flags.json && !parsedArgs.flags.help;
-  const debugLlmToStderr = isLlmDebugEnabled(parsedArgs.flags.debugLlm);
-  const debugLlmFilePath = parsedArgs.flags.debugLlmFile;
-  const diagnosticsEnabled = debugLlmToStderr || Boolean(debugLlmFilePath);
-  const colorEnabled = !plain && !jsonMode && Boolean(process.stdout.isTTY);
-  const visibility = resolveVisibilityOptions(parsedArgs);
-  return {
-    interactive,
-    plain,
-    jsonMode,
-    debugLlmToStderr,
-    debugLlmFilePath,
-    diagnosticsEnabled,
-    colorEnabled,
-    visibility,
-  };
-}
-
 function createDiagnosticLogger(options: {
   stderr?: NodeJS.WriteStream;
   stderrEnabled: boolean;
@@ -870,7 +802,10 @@ function deriveCliRuntimeOptions(
   };
 }
 
-function reportParseErrors(ui: TerminalUi, parseErrors: readonly string[]): boolean {
+function reportParseErrors(
+  ui: TerminalUi,
+  parseErrors: readonly string[],
+): boolean {
   if (parseErrors.length === 0) {
     return false;
   }
@@ -1025,44 +960,6 @@ async function runConfiguredSession(options: {
   }
 }
 
-async function runMainSession(
-  agent: AgentType,
-  ui: TerminalUi,
-  configPath: string,
-  interactive: boolean,
-  setCurrentAbortController: (controller: AbortController | null) => void,
-  setActiveComposer: (composer: PromptComposer | null) => void,
-  shouldExit: () => boolean,
-  visibility: VisibilityOptions,
-): Promise<number> {
-  if (interactive) {
-    const code = await runInteractiveSession(
-      agent,
-      ui,
-      configPath,
-      setCurrentAbortController,
-      setActiveComposer,
-      shouldExit,
-      visibility,
-    );
-    if (code === 130) {
-      return shouldExit() ? 130 : code;
-    }
-    return code;
-  }
-
-  const nonInteractiveCode = await runNonInteractiveSession(
-    agent,
-    ui,
-    setCurrentAbortController,
-    visibility,
-  );
-  if (shouldExit()) {
-    return 130;
-  }
-  return nonInteractiveCode;
-}
-
 async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
   const parsedArgs = parseCliArgs(rawArgs);
@@ -1073,28 +970,19 @@ async function main(): Promise<number> {
   }
 
   const ci = isCiEnvironment();
-  const {
-    interactive,
-    plain,
-    jsonMode,
-    debugLlmToStderr,
-    debugLlmFilePath,
-    diagnosticsEnabled,
-    colorEnabled,
-    visibility,
-  } = buildSessionConfig(parsedArgs, ci);
+  const runtime = deriveCliRuntimeOptions(parsedArgs, ci);
   if (parsedArgs.flags.help) {
     process.stdout.write(HELP_TEXT);
     return 0;
   }
 
-  setColorEnabled(colorEnabled);
+  setColorEnabled(runtime.colorEnabled);
 
   const { TerminalUi } = await import("./ui/terminal.js");
   const ui = new TerminalUi({
-    interactive,
-    plain: plain || parsedArgs.flags.help,
-    json: jsonMode,
+    interactive: runtime.interactive,
+    plain: runtime.plain || parsedArgs.flags.help,
+    json: runtime.jsonMode,
   });
 
   if (reportParseErrors(ui, parsedArgs.parseErrors)) {
@@ -1104,44 +992,20 @@ async function main(): Promise<number> {
 
   const abortState = createAbortStateController(ui);
   const diagnosticLogger = createDiagnosticLogger({
-    stderrEnabled: debugLlmToStderr,
-    filePath: debugLlmFilePath,
+    stderrEnabled: runtime.debugLlmToStderr,
+    filePath: runtime.debugLlmFilePath,
   });
   process.on("SIGINT", abortState.handleSigint);
 
-  let agent: AgentType | null = null;
   try {
-    if (!ui.isJsonMode()) {
-      printStartupBanner(ui);
-      ui.command("");
-    }
-
-    const sessionsDir = getDefaultSessionsDir();
-    handleStaleMarkers(sessionsDir, ui, diagnosticLogger);
-    const runtimeConfig = loadRuntimeConfig();
-    pruneStaleArtifacts(sessionsDir, runtimeConfig.artifactRetentionDays);
-
-    const initialized = await createInitializedAgent(
+    return await runConfiguredSession({
       parsedArgs,
-      diagnosticsEnabled,
-      diagnosticLogger,
-    );
-    agent = initialized.agent;
-
-    return await runMainSession(
-      initialized.agent,
+      runtime,
       ui,
-      initialized.configPath,
-      interactive,
-      abortState.setCurrentAbortController,
-      abortState.setActiveComposer,
-      () => abortState.shouldExit(),
-      visibility,
-    );
+      diagnosticLogger,
+      abortState,
+    });
   } finally {
-    if (agent) {
-      await agent.close();
-    }
     diagnosticLogger.cleanup();
     process.off("SIGINT", abortState.handleSigint);
     ui.done();

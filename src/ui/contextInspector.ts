@@ -202,7 +202,9 @@ function formatToolEntrySummary(
 }
 
 function formatTurnEntrySummary(entries: ReadonlyArray<TurnEntry>): string {
-  const assistantCount = entries.filter((entry) => entry.kind === "assistant").length;
+  const assistantCount = entries.filter(
+    (entry) => entry.kind === "assistant",
+  ).length;
   const { toolNames, statusCounts } = summarizeToolEntries(entries);
   const parts: string[] = [];
 

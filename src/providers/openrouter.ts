@@ -70,7 +70,10 @@ interface StreamChunkState {
   reasoningContent: string;
   sawUsableOutput: boolean;
   stopReason: string;
-  toolCallsByIndex: Map<number, { id?: string; name: string; argsString: string }>;
+  toolCallsByIndex: Map<
+    number,
+    { id?: string; name: string; argsString: string }
+  >;
 }
 
 /**
@@ -358,11 +361,7 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       const startIndex = this.findDsmlStartTokenIndex(remainingBuffer);
 
       if (startIndex === -1) {
-        const nextBuffer = this.emitNonDsmlTail(
-          remainingBuffer,
-          events,
-          state,
-        );
+        const nextBuffer = this.emitNonDsmlTail(remainingBuffer, events, state);
         if (nextBuffer === remainingBuffer) {
           break;
         }
@@ -471,7 +470,10 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     if (!delta.content) return [];
     if (parseDsmlToolCalls) {
       state.contentBuffer += delta.content;
-      const flushed = this.flushDsmlBuffer(state.contentBuffer, state.reasoningContent);
+      const flushed = this.flushDsmlBuffer(
+        state.contentBuffer,
+        state.reasoningContent,
+      );
       state.contentBuffer = flushed.remainingBuffer;
       state.sawUsableOutput ||= flushed.sawUsableOutput;
       return flushed.events;
@@ -481,18 +483,33 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
   }
 
   private processToolCallsDelta(
-    delta: { tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> },
+    delta: {
+      tool_calls?: Array<{
+        index?: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    },
     finishReason: string | undefined,
     state: StreamChunkState,
   ): ChatStreamEvent[] {
     if (delta.tool_calls) {
       for (const tc of delta.tool_calls) {
-        accumulateOpenAIStreamToolCall(tc, state.toolCallsByIndex, () => ({ name: "", argsString: "" }));
+        accumulateOpenAIStreamToolCall(tc, state.toolCallsByIndex, () => ({
+          name: "",
+          argsString: "",
+        }));
       }
     }
     if (finishReason !== "tool_calls") return [];
-    const event = this.buildStructuredToolCallsEvent(state.toolCallsByIndex, state.reasoningContent);
-    if (event) { state.sawUsableOutput = true; return [event]; }
+    const event = this.buildStructuredToolCallsEvent(
+      state.toolCallsByIndex,
+      state.reasoningContent,
+    );
+    if (event) {
+      state.sawUsableOutput = true;
+      return [event];
+    }
     return [];
   }
 
@@ -502,7 +519,10 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
   ): { events: ChatStreamEvent[]; noOutput: boolean } {
     const events: ChatStreamEvent[] = [];
     if (parseDsmlToolCalls && state.contentBuffer.length > 0) {
-      const flushed = this.flushDsmlBuffer(state.contentBuffer, state.reasoningContent);
+      const flushed = this.flushDsmlBuffer(
+        state.contentBuffer,
+        state.reasoningContent,
+      );
       events.push(...flushed.events);
       state.sawUsableOutput ||= flushed.sawUsableOutput;
     }
@@ -520,14 +540,20 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
         delta?: {
           content?: string;
           reasoning_content?: string;
-          tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>;
+          tool_calls?: Array<{
+            index?: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
         };
         finish_reason?: string;
       }>;
     }>(data)?.choices?.[0];
     if (!choice?.delta) return { events: [], done: false };
-    if (choice.finish_reason) state.stopReason = this.mapOpenRouterFinishReason(choice.finish_reason);
-    if (choice.delta.reasoning_content) state.reasoningContent += choice.delta.reasoning_content;
+    if (choice.finish_reason)
+      state.stopReason = this.mapOpenRouterFinishReason(choice.finish_reason);
+    if (choice.delta.reasoning_content)
+      state.reasoningContent += choice.delta.reasoning_content;
     const events = [
       ...this.processContentDelta(choice.delta, state, parseDsmlToolCalls),
       ...this.processToolCallsDelta(choice.delta, choice.finish_reason, state),
@@ -555,17 +581,25 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     };
 
     for await (const data of readSseDataLines(reader)) {
-      const { events, done } = this.processStreamChunk(data, state, options.parseDsmlToolCalls);
+      const { events, done } = this.processStreamChunk(
+        data,
+        state,
+        options.parseDsmlToolCalls,
+      );
       yield* events;
       if (done) break;
     }
 
-    const { events: tailEvents, noOutput } = this.flushStreamTail(state, options.parseDsmlToolCalls);
+    const { events: tailEvents, noOutput } = this.flushStreamTail(
+      state,
+      options.parseDsmlToolCalls,
+    );
     yield* tailEvents;
     if (options.expectUsableOutput && noOutput) {
       yield {
         type: "status",
-        status: "OpenRouter returned no usable assistant output; retrying would not help.",
+        status:
+          "OpenRouter returned no usable assistant output; retrying would not help.",
         phase: "provider fallback",
       };
       throw new ProviderError("OpenRouter returned no usable assistant output");
@@ -595,26 +629,23 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     request: ChatRequest,
   ): Promise<Response> {
     let dropTools = false;
-    return await withRetry(
-      () => this.fetchAndValidate(request, dropTools),
-      {
-        ...createProviderRetryOptions({
-          request,
-          model: this.model,
-          provider: this.name,
-          retryConfig: {
-            maxRetries: this.retryConfig?.maxRetries ?? 3,
-            consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-            baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
-          },
-          isRetryable: (err) => this.isRetryableError(err),
-          onDiagnosticEvent: (event) => this.emitDiagnostic(event),
-        }),
-        onFinalRetry: () => {
-          dropTools = true;
+    return await withRetry(() => this.fetchAndValidate(request, dropTools), {
+      ...createProviderRetryOptions({
+        request,
+        model: this.model,
+        provider: this.name,
+        retryConfig: {
+          maxRetries: this.retryConfig?.maxRetries ?? 3,
+          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
         },
+        isRetryable: (err) => this.isRetryableError(err),
+        onDiagnosticEvent: (event) => this.emitDiagnostic(event),
+      }),
+      onFinalRetry: () => {
+        dropTools = true;
       },
-    );
+    });
   }
 
   private buildStreamResponseOptions(request: ChatRequest): {
@@ -785,7 +816,10 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
           originalError,
         );
       case 402:
-        return new ProviderError("Insufficient OpenRouter credits", originalError);
+        return new ProviderError(
+          "Insufficient OpenRouter credits",
+          originalError,
+        );
       case 404:
         return new ProviderModelNotFoundError(
           this.model,
@@ -816,7 +850,10 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       );
     }
 
-    const basicError = this.translateBasicHttpStatusError(response, originalError);
+    const basicError = this.translateBasicHttpStatusError(
+      response,
+      originalError,
+    );
     if (basicError) {
       return basicError;
     }

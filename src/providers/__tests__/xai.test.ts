@@ -23,7 +23,9 @@ const DEFAULT_REQUEST: ChatRequest = {
 
 const createSseStream = OpenRouterTestFixture.createSseStream;
 
-function createProvider(options: Partial<ConstructorParameters<typeof XaiProvider>[0]> = {}): XaiProvider {
+function createProvider(
+  options: Partial<ConstructorParameters<typeof XaiProvider>[0]> = {},
+): XaiProvider {
   return new XaiProvider({
     model: DEFAULT_MODEL,
     apiKey: "xai-test",
@@ -71,14 +73,20 @@ async function expectProviderErrorAndMessage(
   await expectStreamChatToThrow(provider, messageMatcher);
 }
 
-async function collectToolMessages(messages: ChatMessage[]): Promise<unknown[]> {
+async function collectToolMessages(
+  messages: ChatMessage[],
+): Promise<unknown[]> {
   const mockFetch = jest.fn().mockResolvedValue({
     ok: true,
-    body: createSseStream(['data: {"choices":[{"delta":{"content":"Done"}}]}\n\n']),
+    body: createSseStream([
+      'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
+    ]),
   });
   globalThis.fetch = mockFetch;
 
-  for await (const _chunk of createProvider().streamChat(createRequest({ messages }))) {
+  for await (const _chunk of createProvider().streamChat(
+    createRequest({ messages }),
+  )) {
     // consume
   }
 

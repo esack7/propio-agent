@@ -233,7 +233,9 @@ export class Agent {
       basePrompt,
     );
 
-    this.providersConfig = Agent.normalizeProvidersConfig(options.providersConfig);
+    this.providersConfig = Agent.normalizeProvidersConfig(
+      options.providersConfig,
+    );
     this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
     this.diagnosticsListener = options.onDiagnosticEvent;
     this.skillContext = {
@@ -474,6 +476,8 @@ export class Agent {
 
     const lastTurn = turns[turns.length - 1];
     const recentEntries = lastTurn.entries.slice(-lookback);
+    // commitAssistantResponse already ran before this check, so the current
+    // iteration's assistant entry is already in history; read from there only.
     const { signatures, hasAnyAssistantText } =
       this.gatherSignaturesFromTurnEntries(recentEntries);
 
@@ -483,9 +487,10 @@ export class Agent {
     return new Set(signatures).size === 1;
   }
 
-  private gatherSignaturesFromTurnEntries(
-    entries: ReadonlyArray<TurnEntry>,
-  ): { signatures: string[]; hasAnyAssistantText: boolean } {
+  private gatherSignaturesFromTurnEntries(entries: ReadonlyArray<TurnEntry>): {
+    signatures: string[];
+    hasAnyAssistantText: boolean;
+  } {
     const signatures: string[] = [];
     let hasAnyAssistantText = false;
     for (const entry of entries) {
@@ -1568,6 +1573,24 @@ export class Agent {
     };
   }
 
+  private emitToolCallsReceivedDiagnostic(
+    options: AgentStreamOptions | undefined,
+    iterationCount: number,
+    toolCalls: ChatToolCall[],
+  ): void {
+    if (toolCalls.length === 0) return;
+
+    this.emitStatus(options, "Tool call received", "tool");
+    this.emitDiagnostic({
+      type: "tool_calls_received",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      count: toolCalls.length,
+      tools: toolCalls.map((toolCall) => toolCall.function.name),
+    });
+  }
+
   private async handleChatTurnResponse(
     fullResponse: string,
     toolCalls: ChatToolCall[] | undefined,
@@ -1584,29 +1607,29 @@ export class Agent {
     emptyToolOnlyStreak: number;
     hasFinalAssistantResponse: boolean;
   }> {
-    const normalizedToolCalls = this.normalizeToolCallIds(toolCalls, iterationCount);
-    const hasNormalizedToolCalls = normalizedToolCalls != null && normalizedToolCalls.length > 0;
-    if (hasNormalizedToolCalls) {
-      this.emitStatus(options, "Tool call received", "tool");
-      this.emitDiagnostic({
-        type: "tool_calls_received",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        count: normalizedToolCalls!.length,
-        tools: normalizedToolCalls!.map((toolCall) => toolCall.function.name),
-      });
-    }
+    const normalizedToolCalls = this.normalizeToolCallIds(
+      toolCalls,
+      iterationCount,
+    );
+    const toolCallsToExecute = normalizedToolCalls ?? [];
+    const hasToolCalls = toolCallsToExecute.length > 0;
+    this.emitToolCallsReceivedDiagnostic(
+      options,
+      iterationCount,
+      toolCallsToExecute,
+    );
 
     this.contextManager.commitAssistantResponse(
       fullResponse,
       normalizedToolCalls,
-      hasNormalizedToolCalls ? { reasoningContent } : undefined,
+      hasToolCalls ? { reasoningContent } : undefined,
     );
-    this.emitTurnFinishedDiagnostics(fullResponse, iterationCount, normalizedToolCalls);
+    this.emitTurnFinishedDiagnostics(
+      fullResponse,
+      iterationCount,
+      normalizedToolCalls,
+    );
 
-    const toolCallsToExecute = normalizedToolCalls ?? [];
-    const hasToolCalls = toolCallsToExecute.length > 0;
     const isEmptyResponse = fullResponse.trim().length === 0;
     const nextEmptyToolOnlyStreak =
       hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
@@ -1943,10 +1966,12 @@ export class Agent {
       return { summary: agentSummary, source: "agent" };
     }
 
-    return providerReasoningSummary ?? {
-      summary: "Completed the request and generated the final response.",
-      source: "agent",
-    };
+    return (
+      providerReasoningSummary ?? {
+        summary: "Completed the request and generated the final response.",
+        source: "agent",
+      }
+    );
   }
 
   private async runOneIteration(

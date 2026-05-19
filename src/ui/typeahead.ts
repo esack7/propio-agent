@@ -350,7 +350,10 @@ function createPathTarget(
 ): TypeaheadTarget | null {
   const context = getPathTokenContext(buffer, cursor);
 
-  if (context.rawToken.length === 0 && !hasFileReferenceVerb(context.previousToken)) {
+  if (
+    context.rawToken.length === 0 &&
+    !hasFileReferenceVerb(context.previousToken)
+  ) {
     return null;
   }
 

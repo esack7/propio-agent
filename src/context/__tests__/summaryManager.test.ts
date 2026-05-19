@@ -542,7 +542,11 @@ describe("SummaryManager", () => {
     ];
     const previousSummary = makeSummary("Covers both", ["t0", "t1"]);
 
-    const result = await generateSummaryWithPrevious(provider, turns, previousSummary);
+    const result = await generateSummaryWithPrevious(
+      provider,
+      turns,
+      previousSummary,
+    );
 
     expect(providerCalled).toBe(false);
     expect(result.refreshedTurnCount).toBe(0);

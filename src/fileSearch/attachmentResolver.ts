@@ -144,7 +144,9 @@ function resolveMentionErrorMessage(
   }
 
   const message = err instanceof Error ? err.message : String(err);
-  return message.length > 0 ? message : `Failed to resolve mention: ${mention.raw}`;
+  return message.length > 0
+    ? message
+    : `Failed to resolve mention: ${mention.raw}`;
 }
 
 export class AttachmentResolver {

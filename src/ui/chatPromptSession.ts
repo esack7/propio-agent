@@ -95,9 +95,7 @@ function inCodePointRanges(
   codePoint: number,
   ranges: readonly CodePointRange[],
 ): boolean {
-  return ranges.some(
-    ([start, end]) => codePoint >= start && codePoint <= end,
-  );
+  return ranges.some(([start, end]) => codePoint >= start && codePoint <= end);
 }
 
 function isCombiningMark(codePoint: number): boolean {
@@ -105,7 +103,9 @@ function isCombiningMark(codePoint: number): boolean {
 }
 
 function isWideCharacter(codePoint: number): boolean {
-  return codePoint !== 0x303f && inCodePointRanges(codePoint, WIDE_CHARACTER_RANGES);
+  return (
+    codePoint !== 0x303f && inCodePointRanges(codePoint, WIDE_CHARACTER_RANGES)
+  );
 }
 
 function getDisplayWidth(text: string): number {
@@ -511,7 +511,9 @@ function findWrappedCursorPosition(
   const segment = wrapped[segmentIndex];
   return {
     segmentIndex,
-    columnInSegment: getDisplayWidth(line.slice(segment.start, lineCursorOffset)),
+    columnInSegment: getDisplayWidth(
+      line.slice(segment.start, lineCursorOffset),
+    ),
   };
 }
 
@@ -704,7 +706,9 @@ export function createChatPromptSession(
     buffer,
     cursor,
     footer: activeFooter ?? null,
-    historySearch: searchState ? getHistorySearchSummary(searchState) : undefined,
+    historySearch: searchState
+      ? getHistorySearchSummary(searchState)
+      : undefined,
     typeahead: typeaheadState ? getTypeaheadSummary(typeaheadState) : undefined,
     multiline: buffer.includes("\n"),
     editorStatus,
@@ -717,7 +721,10 @@ export function createChatPromptSession(
       }
 
       try {
-        const previousCursor = getLayoutCursorPosition(lastLayout, outputStream);
+        const previousCursor = getLayoutCursorPosition(
+          lastLayout,
+          outputStream,
+        );
         readline.moveCursor(outputStream, 0, -previousCursor.row);
         readline.cursorTo(outputStream, 0);
         readline.clearScreenDown(outputStream);
@@ -1481,7 +1488,10 @@ export function createChatPromptSession(
   };
 
   const handleWordMovement = (key: readline.Key): boolean => {
-    if ((key.name === "left" || key.name === "right") && (key.ctrl || key.meta)) {
+    if (
+      (key.name === "left" || key.name === "right") &&
+      (key.ctrl || key.meta)
+    ) {
       moveCursorByWord(key.name);
       return true;
     }

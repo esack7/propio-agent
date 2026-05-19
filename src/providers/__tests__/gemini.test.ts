@@ -385,68 +385,55 @@ describe("GeminiProvider", () => {
     });
 
     it("should throw ProviderAuthenticationError on 401", async () => {
-      await expectGeminiStreamChatToThrow(
-        () => {
-          globalThis.fetch = jest.fn().mockResolvedValue({
-            ok: false,
-            status: 401,
-            headers: new Headers(),
-          });
-        },
-        ProviderAuthenticationError,
-      );
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 401,
+          headers: new Headers(),
+        });
+      }, ProviderAuthenticationError);
     });
 
     it("should throw ProviderRateLimitError on 429", async () => {
-      await expectGeminiStreamChatToThrow(
-        () => {
-          globalThis.fetch = jest.fn().mockResolvedValue({
-            ok: false,
-            status: 429,
-            headers: new Headers([["retry-after", "30"]]),
-          });
-        },
-        ProviderRateLimitError,
-      );
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: new Headers([["retry-after", "30"]]),
+        });
+      }, ProviderRateLimitError);
     });
 
     it("should throw ProviderModelNotFoundError on 404", async () => {
-      await expectGeminiStreamChatToThrow(
-        () => {
-          globalThis.fetch = jest.fn().mockResolvedValue({
-            ok: false,
-            status: 404,
-            headers: new Headers(),
-          });
-        },
-        ProviderModelNotFoundError,
-      );
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 404,
+          headers: new Headers(),
+        });
+      }, ProviderModelNotFoundError);
     });
 
     it("should throw ProviderContextLengthError on context-length failures", async () => {
-      await expectGeminiStreamChatToThrow(
-        () => {
-          globalThis.fetch = jest.fn().mockResolvedValue({
-            ok: false,
-            status: 400,
-            headers: new Headers(),
-            text: async () =>
-              JSON.stringify({
-                error: { message: "prompt is too long for the model" },
-              }),
-          });
-        },
-        ProviderContextLengthError,
-      );
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: { message: "prompt is too long for the model" },
+            }),
+        });
+      }, ProviderContextLengthError);
     });
 
     it("should translate network failures into ProviderError", async () => {
-      await expectGeminiStreamChatToThrow(
-        () => {
-          globalThis.fetch = jest.fn().mockRejectedValue(new Error("fetch failed"));
-        },
-        ProviderError,
-      );
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest
+          .fn()
+          .mockRejectedValue(new Error("fetch failed"));
+      }, ProviderError);
     });
 
     it("should reject unsupported request model overrides", async () => {

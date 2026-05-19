@@ -583,7 +583,10 @@ describe("OpenRouterProvider", () => {
       );
       expect(fetchMock).toHaveBeenCalledTimes(1);
       await OpenRouterTestFixture.expectStreamChatToThrow(
-        new OpenRouterProvider({ model: "openai/gpt-3.5-turbo", apiKey: "sk-test" }),
+        new OpenRouterProvider({
+          model: "openai/gpt-3.5-turbo",
+          apiKey: "sk-test",
+        }),
         /Invalid OpenRouter API key/,
       );
       expect(fetchMock).toHaveBeenCalledTimes(2);

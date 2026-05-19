@@ -527,7 +527,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should surface an invoked skill body only once in the next prompt", async () => {
-      const { cwdDir, homeDir } = createSkillDirs("skill-prompt-cwd", "skill-prompt-home", tempDir);
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-prompt-cwd",
+        "skill-prompt-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -555,7 +559,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should support an immediate skill turn with an empty user prompt", async () => {
-      const { cwdDir, homeDir } = createSkillDirs("skill-immediate-cwd", "skill-immediate-home", tempDir);
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-immediate-cwd",
+        "skill-immediate-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -580,7 +588,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should not activate path skills from denied tool calls", async () => {
-      const { cwdDir, homeDir } = createSkillDirs("skill-path-cwd", "skill-path-home", tempDir);
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-path-cwd",
+        "skill-path-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -665,7 +677,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should record model and effort warnings when the current model differs", async () => {
-      const { cwdDir, homeDir } = createSkillDirs("skill-model-cwd", "skill-model-home", tempDir);
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-model-cwd",
+        "skill-model-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -703,7 +719,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should record a matching model as applied", async () => {
-      const { cwdDir, homeDir } = createSkillDirs("skill-model-match-cwd", "skill-model-match-home", tempDir);
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-model-match-cwd",
+        "skill-model-match-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -740,7 +760,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should warn when a skill body references an unknown placeholder", async () => {
-      const { cwdDir, homeDir } = createSkillDirs("skill-placeholder-cwd", "skill-placeholder-home", tempDir);
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-placeholder-cwd",
+        "skill-placeholder-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,

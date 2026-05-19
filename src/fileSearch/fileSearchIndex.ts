@@ -133,7 +133,10 @@ function createEntries(
   const entries: FileSearchEntry[] = [];
 
   for (const absoluteOrRelative of paths) {
-    const relativePath = resolveSearchEntryPath(absoluteOrRelative, workspaceRoot);
+    const relativePath = resolveSearchEntryPath(
+      absoluteOrRelative,
+      workspaceRoot,
+    );
     if (!relativePath) {
       continue;
     }

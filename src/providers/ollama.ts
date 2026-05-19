@@ -226,10 +226,16 @@ export class OllamaProvider implements LLMProvider {
       const state: OllamaStreamState = { stopReason: "end_turn" };
 
       for await (const chunk of response) {
-        yield* this.processOllamaChunk(chunk as OllamaStreamChunk, request, state);
+        yield* this.processOllamaChunk(
+          chunk as OllamaStreamChunk,
+          request,
+          state,
+        );
       }
 
-      const toolCallsEvent = this.buildOllamaToolCallsEvent(state.lastToolCalls);
+      const toolCallsEvent = this.buildOllamaToolCallsEvent(
+        state.lastToolCalls,
+      );
       if (toolCallsEvent) {
         yield toolCallsEvent;
       }
@@ -245,7 +251,10 @@ export class OllamaProvider implements LLMProvider {
    * Ollama expects each tool result as a separate message, not batched like Bedrock.
    */
   private expandToolResults(messages: ChatMessage[]): ChatMessage[] {
-    return expandToolResultMessages(messages, (toolResult) => toolResult.toolName);
+    return expandToolResultMessages(
+      messages,
+      (toolResult) => toolResult.toolName,
+    );
   }
 
   /**

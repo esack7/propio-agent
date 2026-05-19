@@ -87,7 +87,9 @@ export class EditTool implements ExecutableTool {
       this.rethrowKnownEditMessageErrors(err);
     }
     throwEditFileSystemError(err, rawPath);
-    throw new Error(`Failed to edit file: ${(err as Error).message || String(error)}`);
+    throw new Error(
+      `Failed to edit file: ${(err as Error).message || String(error)}`,
+    );
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {

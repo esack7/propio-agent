@@ -486,10 +486,7 @@ describe("persistence", () => {
     }
 
     it("should reject non-string source.turnId", () => {
-      expectV2RecordError(
-        { source: { origin: "user", turnId: 42 } },
-        "turnId",
-      );
+      expectV2RecordError({ source: { origin: "user", turnId: 42 } }, "turnId");
     });
 
     it("should reject non-string source.toolCallId", () => {
@@ -744,7 +741,10 @@ describe("persistence", () => {
         metadata: TEST_METADATA,
         context: { preamble: [], turns: [], artifacts: [] },
       });
-      expectParseError(json, "Unsupported session version: 99. Supported versions: 1, 2, 3.");
+      expectParseError(
+        json,
+        "Unsupported session version: 99. Supported versions: 1, 2, 3.",
+      );
     });
 
     it("should reject missing version field", () => {
@@ -761,7 +761,9 @@ describe("persistence", () => {
       // Override metadata with an incomplete one — rebuild manually
       const data = JSON.parse(json);
       data.metadata = { providerName: "test" };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(SessionParseError);
+      expect(() => parseSession(JSON.stringify(data))).toThrow(
+        SessionParseError,
+      );
     });
 
     it("should reject missing context field", () => {

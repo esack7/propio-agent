@@ -114,7 +114,9 @@ function parseDebugLlmFileArg(
       return { consumed: true };
     }
 
-    parseErrors.push(`${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`);
+    parseErrors.push(
+      `${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`,
+    );
     forwardedArgs.push(arg);
     return { consumed: false };
   }

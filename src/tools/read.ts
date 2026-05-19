@@ -177,7 +177,9 @@ export class ReadTool implements ExecutableTool {
       this.rethrowKnownReadMessageErrors(err);
     }
     throwReadFileSystemError(err, rawPath, path);
-    throw new Error(`Failed to read file: ${(err as Error).message || String(error)}`);
+    throw new Error(
+      `Failed to read file: ${(err as Error).message || String(error)}`,
+    );
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {

@@ -6,18 +6,20 @@ import {
 } from "../chatPromptSession.js";
 import type { TypeaheadProvider } from "../typeahead.js";
 
-function createTestSession(options: {
-  typeaheadProviders?: TypeaheadProvider[];
-  onRender?: (state: ChatPromptSessionState) => void;
-  toggleToolCalls?: () => string | null | undefined;
-  enableTypeahead?: boolean;
-  enableReverseHistorySearch?: boolean;
-  historySnapshot?: string[];
-  editorRunner?: unknown;
-  submit?: () => void;
-  interrupt?: () => void;
-  close?: () => void;
-} = {}): {
+function createTestSession(
+  options: {
+    typeaheadProviders?: TypeaheadProvider[];
+    onRender?: (state: ChatPromptSessionState) => void;
+    toggleToolCalls?: () => string | null | undefined;
+    enableTypeahead?: boolean;
+    enableReverseHistorySearch?: boolean;
+    historySnapshot?: string[];
+    editorRunner?: unknown;
+    submit?: () => void;
+    interrupt?: () => void;
+    close?: () => void;
+  } = {},
+): {
   inputStream: PassThrough;
   session: ChatPromptSession;
   getState: () => ChatPromptSessionState | undefined;
