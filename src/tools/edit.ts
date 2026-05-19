@@ -3,33 +3,40 @@ import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import {
+  createPathToolDisplayAdapter,
+  getPathToolInvocationLabel,
   normalizeToolPath,
   readUtf8TextFile,
+  throwToolPathAccessError,
   toStringArg,
   writeFileAtomically,
 } from "./shared.js";
+
+function throwEditFileSystemError(
+  err: NodeJS.ErrnoException | Error,
+  rawPath: unknown,
+): void {
+  if (!("code" in err)) {
+    return;
+  }
+
+  if (err.code === "ENOENT") {
+    throw new Error(`File not found: ${rawPath}`);
+  }
+
+  throwToolPathAccessError(err, rawPath);
+}
 
 export class EditTool implements ExecutableTool {
   readonly name = "edit";
   readonly description = "Edit a file - replace text.";
 
   getDisplayAdapter(): ToolDisplayAdapter {
-    return {
-      renderUse(input) {
-        const path = input.path;
-        return typeof path === "string" && path.length > 0 ? path : null;
-      },
-      renderResult(result) {
-        return result;
-      },
-    };
+    return createPathToolDisplayAdapter();
   }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const path = args.path;
-    return typeof path === "string" && path.length > 0
-      ? `Editing ${path}`
-      : "Editing file";
+    return getPathToolInvocationLabel(args, "Editing", "Editing file");
   }
 
   getSchema(): ChatTool {
@@ -67,6 +74,24 @@ export class EditTool implements ExecutableTool {
     };
   }
 
+  private rethrowKnownEditMessageErrors(err: Error): void {
+    if (err.message.startsWith("String not found")) throw err;
+    if (err.message === "old_string must be a non-empty string") throw err;
+    if (err.message.startsWith("Multiple matches found for edit")) throw err;
+    if (err.message.startsWith("Path is")) throw err;
+  }
+
+  private classifyEditError(error: unknown, rawPath: unknown): never {
+    const err = error as NodeJS.ErrnoException | Error;
+    if (err instanceof Error) {
+      this.rethrowKnownEditMessageErrors(err);
+    }
+    throwEditFileSystemError(err, rawPath);
+    throw new Error(
+      `Failed to edit file: ${(err as Error).message || String(error)}`,
+    );
+  }
+
   async execute(args: Record<string, unknown>): Promise<string> {
     const rawPath = args.path;
     const oldString = toStringArg(args.old_string, "old_string");
@@ -76,21 +101,16 @@ export class EditTool implements ExecutableTool {
 
     try {
       const stats = await fsPromises.stat(path);
-      if (stats.isDirectory()) {
+      if (stats.isDirectory())
         throw new Error(`Path is a directory, not a file: ${rawPath}`);
-      }
-
-      if (oldString.length === 0) {
+      if (oldString.length === 0)
         throw new Error("old_string must be a non-empty string");
-      }
 
       const original = await readUtf8TextFile(path);
       const occurrences = original.split(oldString).length - 1;
 
-      if (occurrences === 0) {
+      if (occurrences === 0)
         throw new Error(`String not found in file: ${oldString}`);
-      }
-
       if (occurrences > 1 && !replaceAll) {
         throw new Error(
           `Multiple matches found for edit; set replace_all to true: ${oldString}`,
@@ -102,42 +122,11 @@ export class EditTool implements ExecutableTool {
         : original.replace(oldString, newString);
 
       await writeFileAtomically(path, updated);
-
       return replaceAll
         ? `Edited file: ${rawPath} (${occurrences} replacements)`
         : `Edited file: ${rawPath} (1 replacement)`;
     } catch (error) {
-      const err = error as NodeJS.ErrnoException | Error;
-
-      if (err instanceof Error && err.message.startsWith("String not found")) {
-        throw err;
-      }
-      if (
-        err instanceof Error &&
-        err.message === "old_string must be a non-empty string"
-      ) {
-        throw err;
-      }
-      if (
-        err instanceof Error &&
-        err.message.startsWith("Multiple matches found for edit")
-      ) {
-        throw err;
-      }
-      if (err instanceof Error && err.message.startsWith("Path is")) {
-        throw err;
-      }
-      if ("code" in err && err.code === "ENOENT") {
-        throw new Error(`File not found: ${rawPath}`);
-      }
-      if ("code" in err && (err.code === "EACCES" || err.code === "EPERM")) {
-        throw new Error(`Permission denied: ${rawPath}`);
-      }
-      if ("code" in err && err.code === "EISDIR") {
-        throw new Error(`Path is a directory, not a file: ${rawPath}`);
-      }
-
-      throw new Error(`Failed to edit file: ${err.message || String(error)}`);
+      this.classifyEditError(error, rawPath);
     }
   }
 }

@@ -129,6 +129,26 @@ function errorResult(
   };
 }
 
+function resolveMentionErrorMessage(
+  err: NodeJS.ErrnoException | Error,
+  mention: ParsedFileMention,
+): string {
+  if ("code" in err) {
+    if (err.code === "ENOENT") return `File not found: ${mention.path}`;
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return `Permission denied: ${mention.path}`;
+    }
+    if (err.code === "EISDIR") {
+      return `Path is a directory, not a file: ${mention.path}`;
+    }
+  }
+
+  const message = err instanceof Error ? err.message : String(err);
+  return message.length > 0
+    ? message
+    : `Failed to resolve mention: ${mention.raw}`;
+}
+
 export class AttachmentResolver {
   private readonly parser = new MentionParser();
 
@@ -141,6 +161,67 @@ export class AttachmentResolver {
 
   async resolveText(text: string): Promise<MentionAttachment[]> {
     return await this.resolveMentions(this.parser.parse(text));
+  }
+
+  private async resolveDirectoryMention(
+    mention: ParsedFileMention,
+    resolvedPath: string,
+    toolCallId: string,
+  ): Promise<MentionAttachment> {
+    const entries = await fsPromises.readdir(resolvedPath, {
+      withFileTypes: true,
+    });
+    const formatted = entries
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, MAX_DIRECTORY_ENTRIES)
+      .map((entry) => formatFileType(entry, entry.name));
+    const omitted = entries.length - formatted.length;
+    const content =
+      formatted.length === 0
+        ? "Directory is empty"
+        : omitted > 0
+          ? `${formatted.join("\n")}\n[output truncated: ${omitted} entries omitted]`
+          : formatted.join("\n");
+    return {
+      mention,
+      toolCall: buildToolCall(toolCallId, "ls", mention, resolvedPath),
+      toolResult: successResult(toolCallId, "ls", content),
+    };
+  }
+
+  private async resolveFileMention(
+    mention: ParsedFileMention,
+    resolvedPath: string,
+    toolCallId: string,
+  ): Promise<MentionAttachment> {
+    const fileContent = await readUtf8TextFile(resolvedPath);
+    const selectedContent = selectLineRange(fileContent, mention);
+    const normalizedContent = truncateText(
+      mention.range
+        ? `${lineRangeLabel(mention)}\n${selectedContent}`
+        : selectedContent,
+      READ_OUTPUT_LIMIT,
+    ).value;
+    return {
+      mention,
+      toolCall: buildToolCall(toolCallId, "read", mention, resolvedPath),
+      toolResult: successResult(toolCallId, "read", normalizedContent),
+    };
+  }
+
+  private classifyMentionError(
+    error: unknown,
+    mention: ParsedFileMention,
+    resolvedPath: string,
+    toolCallId: string,
+  ): MentionAttachment {
+    const err = error as NodeJS.ErrnoException | Error;
+    const message = resolveMentionErrorMessage(err, mention);
+    return {
+      mention,
+      toolCall: buildToolCall(toolCallId, "read", mention, resolvedPath),
+      toolResult: errorResult(toolCallId, "read", message),
+    };
   }
 
   async resolveMentions(
@@ -157,10 +238,7 @@ export class AttachmentResolver {
           ? `${mention.range.startLine}:${mention.range.endLine ?? ""}`
           : "",
       ].join("|");
-
-      if (seen.has(dedupeKey)) {
-        continue;
-      }
+      if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
       const toolCallId = `mention_${index + 1}`;
@@ -173,67 +251,18 @@ export class AttachmentResolver {
           this.options.homeDir,
         );
         const stats = await fsPromises.stat(resolvedPath);
-
-        if (stats.isDirectory()) {
-          const entries = await fsPromises.readdir(resolvedPath, {
-            withFileTypes: true,
-          });
-          const formatted = entries
-            .sort((left, right) => left.name.localeCompare(right.name))
-            .slice(0, MAX_DIRECTORY_ENTRIES)
-            .map((entry) => formatFileType(entry, entry.name));
-          const omitted = entries.length - formatted.length;
-          const content =
-            formatted.length === 0
-              ? "Directory is empty"
-              : omitted > 0
-                ? `${formatted.join("\n")}\n[output truncated: ${omitted} entries omitted]`
-                : formatted.join("\n");
-
-          attachments.push({
-            mention,
-            toolCall: buildToolCall(toolCallId, "ls", mention, resolvedPath),
-            toolResult: successResult(toolCallId, "ls", content),
-          });
-          continue;
-        }
-
-        const fileContent = await readUtf8TextFile(resolvedPath);
-        const selectedContent = selectLineRange(fileContent, mention);
-        const normalizedContent = truncateText(
-          mention.range
-            ? `${lineRangeLabel(mention)}\n${selectedContent}`
-            : selectedContent,
-          READ_OUTPUT_LIMIT,
-        ).value;
-
-        attachments.push({
-          mention,
-          toolCall: buildToolCall(toolCallId, "read", mention, resolvedPath),
-          toolResult: successResult(toolCallId, "read", normalizedContent),
-        });
+        const attachment = stats.isDirectory()
+          ? await this.resolveDirectoryMention(
+              mention,
+              resolvedPath,
+              toolCallId,
+            )
+          : await this.resolveFileMention(mention, resolvedPath, toolCallId);
+        attachments.push(attachment);
       } catch (error) {
-        const err = error as NodeJS.ErrnoException | Error;
-        let message = err instanceof Error ? err.message : String(error);
-
-        if ("code" in err && err.code === "ENOENT") {
-          message = `File not found: ${mention.path}`;
-        } else if (
-          "code" in err &&
-          (err.code === "EACCES" || err.code === "EPERM")
-        ) {
-          message = `Permission denied: ${mention.path}`;
-        } else if ("code" in err && err.code === "EISDIR") {
-          message = `Path is a directory, not a file: ${mention.path}`;
-        } else if (message.length === 0) {
-          message = `Failed to resolve mention: ${mention.raw}`;
-        }
-
-        attachments.push({
-          mention,
-          toolCall: buildToolCall(toolCallId, "read", mention, resolvedPath),
-          toolResult: errorResult(toolCallId, "read", message),
-        });
+        attachments.push(
+          this.classifyMentionError(error, mention, resolvedPath, toolCallId),
+        );
       }
     }
 

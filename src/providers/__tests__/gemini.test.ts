@@ -11,28 +11,32 @@ import { ChatMessage, ChatRequest } from "../types.js";
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
 
-function createSseStream(chunks: string[]): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(new TextEncoder().encode(chunk));
-      }
-      controller.close();
-    },
-  });
-}
+import {
+  OpenRouterTestFixture,
+  registerProviderTestLifecycle,
+} from "./openrouterTestHelpers.js";
+
+const createSseStream = OpenRouterTestFixture.createSseStream;
 
 describe("GeminiProvider", () => {
-  beforeEach(() => {
-    jest.resetModules();
-    process.env = { ...originalEnv };
-    globalThis.fetch = originalFetch;
-  });
+  registerProviderTestLifecycle(originalEnv, originalFetch);
 
-  afterAll(() => {
-    process.env = originalEnv;
-    globalThis.fetch = originalFetch;
-  });
+  async function expectGeminiStreamChatToThrow(
+    fetchSetup: () => void,
+    ErrorClass: new (...args: unknown[]) => Error,
+    model = "gemini-3.1-pro-preview",
+  ): Promise<void> {
+    fetchSetup();
+    const provider = new GeminiProvider({ model, apiKey: "gemini-test-key" });
+    await expect(async () => {
+      for await (const _chunk of provider.streamChat({
+        model,
+        messages: [{ role: "user", content: "Hi" }],
+      })) {
+        // consume
+      }
+    }).rejects.toThrow(ErrorClass);
+  }
 
   describe("constructor", () => {
     it("should accept API key from options", () => {
@@ -101,18 +105,15 @@ describe("GeminiProvider", () => {
   describe("streamChat()", () => {
     it("should translate messages, images, and batched tool results into the Gemini request body", async () => {
       let capturedBody: unknown = null;
-      globalThis.fetch = jest
-        .fn()
-        .mockImplementation((_url: string, init?: RequestInit) => {
-          capturedBody = init?.body ? JSON.parse(init.body as string) : null;
-          return Promise.resolve({
-            ok: true,
-            body: createSseStream([
-              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-              "data: [DONE]\n\n",
-            ]),
-          });
-        });
+      globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
+        [
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        (body) => {
+          capturedBody = body;
+        },
+      );
 
       const provider = new GeminiProvider({
         model: "gemini-3.1-pro-preview",
@@ -384,108 +385,55 @@ describe("GeminiProvider", () => {
     });
 
     it("should throw ProviderAuthenticationError on 401", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 401,
-        headers: new Headers(),
-      });
-
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderAuthenticationError);
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 401,
+          headers: new Headers(),
+        });
+      }, ProviderAuthenticationError);
     });
 
     it("should throw ProviderRateLimitError on 429", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-        headers: new Headers([["retry-after", "30"]]),
-      });
-
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderRateLimitError);
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: new Headers([["retry-after", "30"]]),
+        });
+      }, ProviderRateLimitError);
     });
 
     it("should throw ProviderModelNotFoundError on 404", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 404,
-        headers: new Headers(),
-      });
-
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderModelNotFoundError);
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 404,
+          headers: new Headers(),
+        });
+      }, ProviderModelNotFoundError);
     });
 
     it("should throw ProviderContextLengthError on context-length failures", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 400,
-        headers: new Headers(),
-        text: async () =>
-          JSON.stringify({
-            error: { message: "prompt is too long for the model" },
-          }),
-      });
-
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderContextLengthError);
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: { message: "prompt is too long for the model" },
+            }),
+        });
+      }, ProviderContextLengthError);
     });
 
     it("should translate network failures into ProviderError", async () => {
-      globalThis.fetch = jest.fn().mockRejectedValue(new Error("fetch failed"));
-
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
+      await expectGeminiStreamChatToThrow(() => {
+        globalThis.fetch = jest
+          .fn()
+          .mockRejectedValue(new Error("fetch failed"));
+      }, ProviderError);
     });
 
     it("should reject unsupported request model overrides", async () => {

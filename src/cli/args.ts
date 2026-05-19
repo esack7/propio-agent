@@ -39,6 +39,119 @@ export interface ParsedCliArgs {
   parseErrors: string[];
 }
 
+type IntFlagResult =
+  | null
+  | { ok: false; error: string }
+  | { ok: true; value: number; consumed: boolean };
+
+function parseIntFlag(
+  arg: string,
+  nextArg: string | undefined,
+  flagName: string,
+  min: number,
+  errorMsg: string,
+): IntFlagResult {
+  let raw: string;
+  let isSpaceForm: boolean;
+
+  if (arg.startsWith(`${flagName}=`)) {
+    raw = arg.substring(flagName.length + 1);
+    isSpaceForm = false;
+  } else if (arg === flagName) {
+    raw = nextArg ?? "";
+    isSpaceForm = true;
+  } else {
+    return null;
+  }
+
+  const val = parseInt(raw, 10);
+  if (isNaN(val) || val < min) {
+    return { ok: false, error: errorMsg };
+  }
+  return { ok: true, value: val, consumed: isSpaceForm };
+}
+
+type BoolFlagKeys = {
+  [K in keyof ParsedCliArgs["flags"]]: ParsedCliArgs["flags"][K] extends boolean
+    ? K
+    : never;
+}[keyof ParsedCliArgs["flags"]];
+
+const BOOL_FLAG_MAP: ReadonlyMap<string, BoolFlagKeys> = new Map([
+  [CLI_FLAG_JSON, "json"],
+  [CLI_FLAG_PLAIN, "plain"],
+  [CLI_FLAG_NO_INTERACTIVE, "noInteractive"],
+  [CLI_FLAG_SHOW_STATUS, "showStatus"],
+  [CLI_FLAG_SHOW_REASONING_SUMMARY, "showReasoningSummary"],
+  [CLI_FLAG_SHOW_CONTEXT_STATS, "showContextStats"],
+  [CLI_FLAG_SHOW_PROMPT_PLAN, "showPromptPlan"],
+  [CLI_FLAG_SHOW_TRACE, "showTrace"],
+  [CLI_FLAG_DEBUG_LLM, "debugLlm"],
+  [CLI_FLAG_HELP, "help"],
+  [CLI_FLAG_HELP_SHORT, "help"],
+]);
+
+type DebugLlmFileResult = { consumed: boolean } | null;
+
+function parseDebugLlmFileArg(
+  arg: string,
+  nextArg: string | undefined,
+  flags: ParsedCliArgs["flags"],
+  forwardedArgs: string[],
+  parseErrors: string[],
+): DebugLlmFileResult {
+  if (arg.startsWith(`${CLI_FLAG_DEBUG_LLM_FILE}=`)) {
+    flags.debugLlmFile = arg.substring(CLI_FLAG_DEBUG_LLM_FILE.length + 1);
+    forwardedArgs.push(arg);
+    return { consumed: false };
+  }
+
+  if (arg === CLI_FLAG_DEBUG_LLM_FILE) {
+    const filePath = nextArg;
+    if (filePath && !filePath.startsWith("-")) {
+      flags.debugLlmFile = filePath;
+      forwardedArgs.push(arg, filePath);
+      return { consumed: true };
+    }
+
+    parseErrors.push(
+      `${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`,
+    );
+    forwardedArgs.push(arg);
+    return { consumed: false };
+  }
+
+  return null;
+}
+
+type IntFlagMatchResult =
+  | { matched: false }
+  | { matched: true; consumed: boolean };
+
+function matchAndApplyIntFlag(
+  arg: string,
+  nextArg: string | undefined,
+  intFlagDefs: Array<[string, number, string, (v: number) => void]>,
+  parseErrors: string[],
+): IntFlagMatchResult {
+  for (const [flagName, min, errorMsg, setter] of intFlagDefs) {
+    const result = parseIntFlag(arg, nextArg, flagName, min, errorMsg);
+    if (result === null) {
+      continue;
+    }
+
+    if (!result.ok) {
+      parseErrors.push(result.error);
+      return { matched: true, consumed: false };
+    }
+
+    setter(result.value);
+    return { matched: true, consumed: result.consumed };
+  }
+
+  return { matched: false };
+}
+
 export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const forwardedArgs: string[] = [];
   const parseErrors: string[] = [];
@@ -61,136 +174,82 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     streamIdleTimeoutMs: undefined,
   };
 
+  const intFlagDefs: Array<[string, number, string, (v: number) => void]> = [
+    [
+      CLI_FLAG_MAX_ITERATIONS,
+      1,
+      `${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`,
+      (v) => {
+        flags.maxIterations = v;
+      },
+    ],
+    [
+      CLI_FLAG_MAX_RETRIES,
+      0,
+      `${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`,
+      (v) => {
+        flags.maxRetries = v;
+      },
+    ],
+    [
+      CLI_FLAG_BASH_TIMEOUT_MS,
+      1,
+      `${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`,
+      (v) => {
+        flags.bashTimeoutMs = v;
+      },
+    ],
+    [
+      CLI_FLAG_STREAM_IDLE_TIMEOUT_MS,
+      1,
+      `${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`,
+      (v) => {
+        flags.streamIdleTimeoutMs = v;
+      },
+    ],
+  ];
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+
     if (arg === CLI_FLAG_SANDBOX) {
       flags.sandbox = true;
       continue;
     }
-    if (arg === CLI_FLAG_JSON) {
-      flags.json = true;
-    } else if (arg === CLI_FLAG_PLAIN) {
-      flags.plain = true;
-    } else if (arg === CLI_FLAG_NO_INTERACTIVE) {
-      flags.noInteractive = true;
-    } else if (arg === CLI_FLAG_SHOW_STATUS) {
-      flags.showStatus = true;
-    } else if (arg === CLI_FLAG_SHOW_REASONING_SUMMARY) {
-      flags.showReasoningSummary = true;
-    } else if (arg === CLI_FLAG_SHOW_CONTEXT_STATS) {
-      flags.showContextStats = true;
-    } else if (arg === CLI_FLAG_SHOW_PROMPT_PLAN) {
-      flags.showPromptPlan = true;
-    } else if (arg === CLI_FLAG_SHOW_TRACE) {
-      flags.showTrace = true;
-    } else if (arg === CLI_FLAG_DEBUG_LLM) {
-      flags.debugLlm = true;
-    } else if (arg.startsWith(`${CLI_FLAG_DEBUG_LLM_FILE}=`)) {
-      flags.debugLlmFile = arg.substring(CLI_FLAG_DEBUG_LLM_FILE.length + 1);
-    } else if (arg === CLI_FLAG_DEBUG_LLM_FILE) {
-      const filePath = args[i + 1];
-      if (filePath && !filePath.startsWith("-")) {
-        flags.debugLlmFile = filePath;
-        forwardedArgs.push(arg);
-        forwardedArgs.push(filePath);
-        i++;
-        continue;
-      } else {
-        parseErrors.push(
-          `${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`,
-        );
-      }
-    } else if (arg === CLI_FLAG_HELP || arg === CLI_FLAG_HELP_SHORT) {
-      flags.help = true;
-    } else if (arg.startsWith(`${CLI_FLAG_MAX_ITERATIONS}=`)) {
-      const val = parseInt(
-        arg.substring(CLI_FLAG_MAX_ITERATIONS.length + 1),
-        10,
-      );
-      if (isNaN(val) || val < 1) {
-        parseErrors.push(
-          `${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`,
-        );
-      } else {
-        flags.maxIterations = val;
-      }
-    } else if (arg === CLI_FLAG_MAX_ITERATIONS) {
-      const next = args[i + 1];
-      const val = next ? parseInt(next, 10) : NaN;
-      if (isNaN(val) || val < 1) {
-        parseErrors.push(
-          `${CLI_FLAG_MAX_ITERATIONS} requires a positive integer`,
-        );
-      } else {
-        flags.maxIterations = val;
+
+    const boolKey = BOOL_FLAG_MAP.get(arg);
+    if (boolKey !== undefined) {
+      flags[boolKey] = true;
+      forwardedArgs.push(arg);
+      continue;
+    }
+
+    const debugResult = parseDebugLlmFileArg(
+      arg,
+      args[i + 1],
+      flags,
+      forwardedArgs,
+      parseErrors,
+    );
+    if (debugResult !== null) {
+      if (debugResult.consumed) {
         i++;
       }
-    } else if (arg.startsWith(`${CLI_FLAG_MAX_RETRIES}=`)) {
-      const val = parseInt(arg.substring(CLI_FLAG_MAX_RETRIES.length + 1), 10);
-      if (isNaN(val) || val < 0) {
-        parseErrors.push(
-          `${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`,
-        );
-      } else {
-        flags.maxRetries = val;
-      }
-    } else if (arg === CLI_FLAG_MAX_RETRIES) {
-      const next = args[i + 1];
-      const val = next ? parseInt(next, 10) : NaN;
-      if (isNaN(val) || val < 0) {
-        parseErrors.push(
-          `${CLI_FLAG_MAX_RETRIES} requires a non-negative integer`,
-        );
-      } else {
-        flags.maxRetries = val;
+      continue;
+    }
+
+    const intResult = matchAndApplyIntFlag(
+      arg,
+      args[i + 1],
+      intFlagDefs,
+      parseErrors,
+    );
+    if (intResult.matched) {
+      if (intResult.consumed) {
         i++;
       }
-    } else if (arg.startsWith(`${CLI_FLAG_BASH_TIMEOUT_MS}=`)) {
-      const val = parseInt(
-        arg.substring(CLI_FLAG_BASH_TIMEOUT_MS.length + 1),
-        10,
-      );
-      if (isNaN(val) || val < 1) {
-        parseErrors.push(
-          `${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`,
-        );
-      } else {
-        flags.bashTimeoutMs = val;
-      }
-    } else if (arg === CLI_FLAG_BASH_TIMEOUT_MS) {
-      const next = args[i + 1];
-      const val = next ? parseInt(next, 10) : NaN;
-      if (isNaN(val) || val < 1) {
-        parseErrors.push(
-          `${CLI_FLAG_BASH_TIMEOUT_MS} requires a positive integer (milliseconds)`,
-        );
-      } else {
-        flags.bashTimeoutMs = val;
-        i++;
-      }
-    } else if (arg.startsWith(`${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS}=`)) {
-      const val = parseInt(
-        arg.substring(CLI_FLAG_STREAM_IDLE_TIMEOUT_MS.length + 1),
-        10,
-      );
-      if (isNaN(val) || val < 1) {
-        parseErrors.push(
-          `${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`,
-        );
-      } else {
-        flags.streamIdleTimeoutMs = val;
-      }
-    } else if (arg === CLI_FLAG_STREAM_IDLE_TIMEOUT_MS) {
-      const next = args[i + 1];
-      const val = next ? parseInt(next, 10) : NaN;
-      if (isNaN(val) || val < 1) {
-        parseErrors.push(
-          `${CLI_FLAG_STREAM_IDLE_TIMEOUT_MS} requires a positive integer (milliseconds)`,
-        );
-      } else {
-        flags.streamIdleTimeoutMs = val;
-        i++;
-      }
+      forwardedArgs.push(arg);
+      continue;
     }
 
     forwardedArgs.push(arg);

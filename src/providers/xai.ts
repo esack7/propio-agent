@@ -1,14 +1,10 @@
-import { LLMProvider, ProviderCapabilities } from "./interface.js";
+import { ProviderCapabilities } from "./interface.js";
 import {
-  ChatMessage,
   ChatRequest,
   ChatStreamEvent,
-  ChatTool,
   ProviderError,
   ProviderAuthenticationError,
-  ProviderRateLimitError,
   ProviderModelNotFoundError,
-  ProviderContextLengthError,
   ProviderCapacityError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
@@ -17,16 +13,14 @@ import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
   buildOpenAIStreamToolCalls,
-  applyOpenAIMessageCore,
-  createOpenAIToolDefinition,
-  isAbortOrTransportError,
-  isContextLengthError,
   parseJsonMaybe,
-  normalizeErrorMessage,
   parseOpenAIStreamToolCallArguments,
-  parseRetryAfterSeconds,
   readSseDataLines,
 } from "./shared.js";
+import {
+  OpenAiCompatibleProvider,
+  type OpenAiCompatibleProviderOptions,
+} from "./openAiCompatibleProvider.js";
 
 const XAI_API_URLS = [
   "https://api.x.ai/v1/chat/completions",
@@ -34,32 +28,10 @@ const XAI_API_URLS = [
   "https://eu-west-1.api.x.ai/v1/chat/completions",
 ] as const;
 
-/** OpenAI-compatible message format for API request */
-interface OpenAIMessage {
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  tool_calls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: string };
-  }>;
-  tool_call_id?: string;
-}
-
-/** OpenAI-compatible tool format */
-interface OpenAITool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: object;
-  };
-}
-
 /**
  * xAI (Grok) implementation of LLMProvider using the OpenAI-compatible API at api.x.ai.
  */
-export class XaiProvider implements LLMProvider {
+export class XaiProvider extends OpenAiCompatibleProvider {
   readonly name = "xai";
   private readonly model: string;
   private readonly apiKey: string;
@@ -79,12 +51,8 @@ export class XaiProvider implements LLMProvider {
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 2_000_000;
 
-  constructor(options: {
-    model: string;
-    apiKey?: string;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number };
-    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-  }) {
+  constructor(options: OpenAiCompatibleProviderOptions) {
+    super();
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
       throw new ProviderAuthenticationError(
@@ -105,18 +73,51 @@ export class XaiProvider implements LLMProvider {
     };
   }
 
-  private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
-    const role = msg.role as OpenAIMessage["role"];
-    const out: OpenAIMessage = { role, content: msg.content ?? "" };
-    return applyOpenAIMessageCore(out, msg);
-  }
-
-  private chatToolToOpenAITool(tool: ChatTool): OpenAITool {
-    return createOpenAIToolDefinition(tool);
-  }
-
   private shouldRetryEndpoint(status?: number): boolean {
     return status !== undefined && status >= 500 && status < 600;
+  }
+
+  private isAbortError(translated: ProviderError): boolean {
+    return (
+      translated.message === "Request cancelled" ||
+      translated.originalError?.name === "AbortError"
+    );
+  }
+
+  private shouldContinueToNextEndpoint(
+    error: unknown,
+    translated: ProviderError,
+  ): boolean {
+    return !(error instanceof ProviderError) && !this.isAbortError(translated);
+  }
+
+  private async createEndpointResponseError(response: Response): Promise<{
+    translated: ProviderError;
+    retryable: boolean;
+  }> {
+    let errorBody = "";
+    try {
+      errorBody = await response.text();
+    } catch {
+      // ignore read failures
+    }
+
+    return {
+      translated: this.translateError(
+        new Error(errorBody || `HTTP ${response.status}`),
+        response,
+      ),
+      retryable: this.shouldRetryEndpoint(response.status),
+    };
+  }
+
+  private getContinuationError(error: unknown): ProviderError {
+    const translated =
+      error instanceof ProviderError ? error : this.translateError(error);
+    if (!this.shouldContinueToNextEndpoint(error, translated)) {
+      throw translated;
+    }
+    return translated;
   }
 
   private async createChatCompletionResponse(
@@ -141,50 +142,18 @@ export class XaiProvider implements LLMProvider {
           return response;
         }
 
-        let errorBody = "";
-        try {
-          errorBody = await response.text();
-        } catch {
-          // ignore read failures
+        const { translated, retryable } =
+          await this.createEndpointResponseError(response);
+        if (!retryable) {
+          throw translated;
         }
-
-        const translated = this.translateError(
-          new Error(errorBody || `HTTP ${response.status}`),
-          response,
-        );
-
-        if (this.shouldRetryEndpoint(response.status)) {
-          lastError = translated;
-          continue;
-        }
-
-        throw translated;
+        lastError = translated;
       } catch (error) {
-        if (error instanceof ProviderError) {
-          throw error;
-        }
-
-        const translated = this.translateError(error);
-        const isAbort =
-          translated.message === "Request cancelled" ||
-          translated.originalError?.name === "AbortError";
-        if (!isAbort) {
-          lastError = translated;
-          continue;
-        }
-
-        throw translated;
+        lastError = this.getContinuationError(error);
       }
     }
 
     throw lastError ?? new ProviderError("xAI request failed");
-  }
-
-  private isRetryableError(err: unknown): boolean {
-    if (err instanceof ProviderContextLengthError) return false;
-    if (err instanceof ProviderAuthenticationError) return false;
-    if (err instanceof ProviderModelNotFoundError) return false;
-    return err instanceof ProviderError;
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
@@ -192,23 +161,12 @@ export class XaiProvider implements LLMProvider {
       const body = this.createChatCompletionRequestBody(request);
       const response = await withRetry(
         () => this.createChatCompletionResponse(body, request.signal),
-        {
-          maxRetries: this.retryConfig?.maxRetries ?? 3,
-          isRetryable: (err) => this.isRetryableError(err),
-          is529: (err) => err instanceof ProviderCapacityError,
-          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-          onRetry: (ctx) =>
-            this.onDiagnosticEvent?.({
-              type: "provider_retry",
-              provider: this.name,
-              model: request.model || this.model,
-              iteration: request.iteration ?? 0,
-              reason:
-                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-              attemptNumber: ctx.attempt + 1,
-              delayMs: ctx.delayMs,
-            }),
-        },
+        this.buildRetryOptions(
+          request,
+          this.model,
+          this.retryConfig,
+          this.onDiagnosticEvent,
+        ),
       );
 
       const reader = this.getResponseReader(response);
@@ -260,15 +218,47 @@ export class XaiProvider implements LLMProvider {
     yield { type: "terminal", stopReason: finishReason };
   }
 
-  private parseStreamLine(
-    data: string,
+  private mapXaiFinishReason(finishReason: string): string {
+    const finishReasonMap: Record<string, string> = {
+      length: "max_tokens",
+      stop: "end_turn",
+      tool_calls: "tool_use",
+    };
+    return finishReasonMap[finishReason] ?? "end_turn";
+  }
+
+  private buildToolCallsFromFinishReason(
+    finishReason: string | undefined,
     toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): { events: ChatStreamEvent[]; stopReason?: string } {
-    if (data === "[DONE]") {
-      return { events: [] };
+  ): ChatStreamEvent | null {
+    if (finishReason !== "tool_calls") {
+      return null;
     }
 
-    const chunk = parseJsonMaybe<{
+    const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
+      id: acc.id,
+      function: {
+        name: acc.name || "",
+        arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+      },
+    }));
+    return toolCalls.length > 0 ? { type: "tool_calls", toolCalls } : null;
+  }
+
+  private parseXaiStreamChoice(data: string):
+    | {
+        delta?: {
+          content?: string;
+          tool_calls?: Array<{
+            index?: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+        finish_reason?: string;
+      }
+    | undefined {
+    return parseJsonMaybe<{
       choices?: Array<{
         delta?: {
           content?: string;
@@ -280,163 +270,86 @@ export class XaiProvider implements LLMProvider {
         };
         finish_reason?: string;
       }>;
-    }>(data);
-    const choice = chunk?.choices?.[0];
+    }>(data)?.choices?.[0];
+  }
+
+  private appendXaiContentEvent(
+    content: string | undefined,
+    events: ChatStreamEvent[],
+  ): void {
+    if (content != null && content !== "") {
+      events.push({ type: "assistant_text", delta: content });
+    }
+  }
+
+  private accumulateXaiToolCalls(
+    toolCalls:
+      | Array<{
+          index?: number;
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>
+      | undefined,
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): void {
+    if (!toolCalls || !Array.isArray(toolCalls)) {
+      return;
+    }
+
+    for (const toolCall of toolCalls) {
+      accumulateOpenAIStreamToolCall(toolCall, toolCallsByIndex, () => ({
+        name: "",
+        argsString: "",
+      }));
+    }
+  }
+
+  private parseStreamLine(
+    data: string,
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): { events: ChatStreamEvent[]; stopReason?: string } {
+    if (data === "[DONE]") {
+      return { events: [] };
+    }
+
+    const choice = this.parseXaiStreamChoice(data);
     if (!choice?.delta) {
       return { events: [] };
     }
 
     const events: ChatStreamEvent[] = [];
-    const delta = choice.delta;
-    let stopReason: string | undefined;
+    this.appendXaiContentEvent(choice.delta.content, events);
+    this.accumulateXaiToolCalls(choice.delta.tool_calls, toolCallsByIndex);
 
-    if (delta.content != null && delta.content !== "") {
-      events.push({ type: "assistant_text", delta: delta.content });
-    }
-
-    if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-      for (const tc of delta.tool_calls) {
-        accumulateOpenAIStreamToolCall(tc, toolCallsByIndex, () => ({
-          name: "",
-          argsString: "",
-        }));
-      }
-    }
-
-    // Map xAI finish_reason to normalized StopReason
-    if (choice.finish_reason) {
-      if (choice.finish_reason === "length") {
-        stopReason = "max_tokens";
-      } else if (choice.finish_reason === "stop") {
-        stopReason = "end_turn";
-      } else if (choice.finish_reason === "tool_calls") {
-        stopReason = "tool_use";
-      } else {
-        stopReason = "end_turn";
-      }
-
-      // Only emit tool_calls when finish_reason is tool_calls
-      if (choice.finish_reason === "tool_calls") {
-        const toolCalls = buildOpenAIStreamToolCalls(
-          toolCallsByIndex,
-          (acc) => ({
-            id: acc.id,
-            function: {
-              name: acc.name || "",
-              arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-            },
-          }),
-        );
-        if (toolCalls.length > 0) {
-          events.push({ type: "tool_calls", toolCalls });
-        }
-      }
-    }
-
-    return { events, stopReason };
-  }
-
-  private isContextLengthError(message: string): boolean {
-    const lower = message.toLowerCase();
-    return (
-      lower.includes("context length") ||
-      lower.includes("context window") ||
-      lower.includes("maximum context") ||
-      lower.includes("token limit") ||
-      lower.includes("too many tokens") ||
-      lower.includes("input is too long") ||
-      lower.includes("prompt is too long") ||
-      lower.includes("exceeds the model") ||
-      lower.includes("reduce your prompt")
+    const toolCallsEvent = this.buildToolCallsFromFinishReason(
+      choice.finish_reason,
+      toolCallsByIndex,
     );
+    if (toolCallsEvent) {
+      events.push(toolCallsEvent);
+    }
+
+    return {
+      events,
+      stopReason: choice.finish_reason
+        ? this.mapXaiFinishReason(choice.finish_reason)
+        : undefined,
+    };
   }
 
-  private translateError(error: unknown, response?: Response): ProviderError {
-    const originalError =
-      error instanceof Error ? error : new Error(String(error));
-    const normalizedMessage = normalizeErrorMessage(originalError.message);
-
-    if (response) {
-      const translatedResponseError = this.translateResponseError(
-        response,
-        normalizedMessage,
-        originalError,
-      );
-      if (translatedResponseError) {
-        return translatedResponseError;
-      }
-    }
-
-    const msg = normalizedMessage || originalError.message;
-    return this.translateMessageError(msg, originalError);
-  }
-
-  private translateResponseError(
-    response: Response,
-    normalizedMessage: string,
-    originalError: Error,
-  ): ProviderError | null {
-    if (response.status === 400 && isContextLengthError(normalizedMessage)) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${normalizedMessage}`,
-        originalError,
-      );
-    }
-    if (response.status === 401) {
-      return new ProviderAuthenticationError(
-        "Invalid xAI API key",
-        originalError,
-      );
-    }
-    if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after");
-      const retryAfterSeconds = parseRetryAfterSeconds(retryAfter);
-      return new ProviderRateLimitError(
-        "xAI rate limit exceeded",
-        retryAfterSeconds,
-        originalError,
-      );
-    }
-    if (response.status === 404) {
-      return new ProviderModelNotFoundError(
-        this.model,
-        `Model not found: ${this.model}`,
-        originalError,
-      );
-    }
-    if (response.status >= 500 && response.status < 600) {
-      return new ProviderError(
-        normalizedMessage
-          ? `xAI service error: ${normalizedMessage}`
-          : "xAI service error",
-        originalError,
-      );
-    }
-
-    return null;
-  }
-
-  private translateMessageError(
-    msg: string,
-    originalError: Error,
+  protected translateError(
+    error: unknown,
+    response?: Response,
+    _responseBody?: string,
   ): ProviderError {
-    if (isContextLengthError(msg)) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${msg}`,
-        originalError,
-      );
-    }
-
-    if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
-      return new ProviderError("Request cancelled", originalError);
-    }
-    if (msg && isAbortOrTransportError(msg)) {
-      return new ProviderError("Failed to connect to xAI API", originalError);
-    }
-    return new ProviderError(
-      originalError.message || "xAI request failed",
-      originalError,
-    );
+    return this.translateStandardOpenAiError(error, response, {
+      model: this.model,
+      authenticationMessage: "Invalid xAI API key",
+      rateLimitMessage: "xAI rate limit exceeded",
+      serviceErrorMessage: "xAI service error",
+      connectionErrorMessage: "Failed to connect to xAI API",
+      requestFailedMessage: "xAI request failed",
+    });
   }
 }
 

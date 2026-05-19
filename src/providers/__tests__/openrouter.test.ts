@@ -8,40 +8,151 @@ import {
 } from "../types.js";
 import { ChatRequest, ChatMessage } from "../types.js";
 import { AgentDiagnosticEvent } from "../../diagnostics.js";
+import {
+  OpenRouterTestFixture,
+  registerAcceptsApiKeyTest,
+  registerProviderTestLifecycle,
+} from "./openrouterTestHelpers.js";
 
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
+const createSseStream = OpenRouterTestFixture.createSseStream;
+const createProvider = OpenRouterTestFixture.createProvider;
+const setupFetchMock = OpenRouterTestFixture.setupFetchMock;
+const consumeStream = OpenRouterTestFixture.consumeStream;
+const collectDeltas = OpenRouterTestFixture.collectDeltas;
 
-function createSseStream(chunks: string[]): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      chunks.forEach((chunk) =>
-        controller.enqueue(new TextEncoder().encode(chunk)),
-      );
-      controller.close();
-    },
+async function expectStatusError(
+  status: number,
+  messageMatcher: string | RegExp,
+): Promise<void> {
+  const fetchMock = jest.fn().mockResolvedValue({ ok: false, status });
+  globalThis.fetch = fetchMock;
+
+  const provider = createProvider("openai/gpt-3.5-turbo", "sk-test", {
+    maxRetries: 0,
+    baseDelayMs: 0,
+    consecutive529Limit: 3,
   });
+
+  await OpenRouterTestFixture.expectStreamChatToThrow(provider, ProviderError);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  await OpenRouterTestFixture.expectStreamChatToThrow(provider, messageMatcher);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+}
+
+async function collectDeltasFromChunks(chunks: string[]): Promise<string[]> {
+  globalThis.fetch = jest
+    .fn()
+    .mockResolvedValue({ ok: true, body: createSseStream(chunks) });
+  return await collectDeltas(createProvider());
+}
+
+/** The standard "single tool call" request used in retry-without-tools tests. */
+function makeToolCallRequest(extras: Partial<ChatRequest> = {}): ChatRequest {
+  return {
+    model: "openai/gpt-3.5-turbo",
+    messages: [{ role: "user", content: "Hello" }],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "lookup",
+          description: "Lookup",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ],
+    ...extras,
+  };
+}
+
+/** Collects all `assistant_text` deltas from a streamChat call. */
+async function collectAssistantText(
+  provider: OpenRouterProvider,
+  request: ChatRequest,
+): Promise<string> {
+  let content = "";
+  for await (const event of provider.streamChat(request)) {
+    if (event.type === "assistant_text") {
+      content += event.delta;
+    }
+  }
+  return content;
+}
+
+/** Collects `assistant_text` deltas and `tool_calls` events from a streamChat call. */
+async function collectTextAndToolCalls(
+  provider: OpenRouterProvider,
+  request: ChatRequest,
+): Promise<{ assistantText: string; toolCalls: unknown[] }> {
+  const assistantTextParts: string[] = [];
+  const toolCalls: unknown[] = [];
+  for await (const event of provider.streamChat(request)) {
+    if (event.type === "assistant_text") {
+      assistantTextParts.push(event.delta);
+    }
+    if (event.type === "tool_calls") {
+      toolCalls.push(event.toolCalls);
+    }
+  }
+  return { assistantText: assistantTextParts.join(""), toolCalls };
+}
+
+async function expectUpstreamProviderError(options: {
+  status: number;
+  upstreamMessage: string;
+  ErrorClass: new (...args: unknown[]) => Error;
+  retryAfterSeconds?: number;
+}): Promise<Error> {
+  const metadata = {
+    ...(options.retryAfterSeconds === undefined
+      ? {}
+      : { retry_after_seconds: options.retryAfterSeconds }),
+    raw: JSON.stringify({
+      error: { message: options.upstreamMessage },
+      provider_name: "Together",
+    }),
+  };
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: false,
+    status: options.status,
+    headers: new Map(),
+    text: () =>
+      Promise.resolve(
+        JSON.stringify({
+          error: {
+            message: "Provider returned error",
+            metadata,
+          },
+        }),
+      ),
+  });
+  globalThis.fetch = fetchMock;
+
+  const provider = createProvider("openai/gpt-3.5-turbo", "sk-test", {
+    maxRetries: 0,
+    baseDelayMs: 0,
+    consecutive529Limit: 3,
+  });
+  const caughtError = await OpenRouterTestFixture.catchStreamError(provider);
+
+  expect(caughtError).toBeInstanceOf(options.ErrorClass);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  return caughtError as Error;
 }
 
 describe("OpenRouterProvider", () => {
-  beforeEach(() => {
-    jest.resetModules();
-    process.env = { ...originalEnv };
-    globalThis.fetch = originalFetch;
-  });
-
-  afterAll(() => {
-    process.env = originalEnv;
-    globalThis.fetch = originalFetch;
-  });
+  registerProviderTestLifecycle(originalEnv, originalFetch);
 
   describe("constructor", () => {
-    it("should accept API key from options", () => {
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test-key",
-      });
-      expect(provider.name).toBe("openrouter");
+    registerAcceptsApiKeyTest({
+      expectedName: "openrouter",
+      createProvider: () =>
+        new OpenRouterProvider({
+          model: "openai/gpt-3.5-turbo",
+          apiKey: "sk-test-key",
+        }),
     });
 
     it("should use OPENROUTER_API_KEY env var when apiKey not in options", () => {
@@ -77,17 +188,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":"Hello back"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
       const provider = new OpenRouterProvider({
@@ -124,23 +227,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":"Ok"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
+      globalThis.fetch = setupFetchMock(chunks, (body) => {
+        capturedBody = body;
       });
-      globalThis.fetch = jest
-        .fn()
-        .mockImplementation((_url: string, init?: RequestInit) => {
-          capturedBody = init?.body ? JSON.parse(init.body as string) : null;
-          return Promise.resolve({
-            ok: true,
-            body: stream,
-          });
-        });
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -150,12 +239,13 @@ describe("OpenRouterProvider", () => {
         { role: "system", content: "You are helpful" },
         { role: "user", content: "Hi" },
       ];
-      for await (const chunk of provider.streamChat({
-        model: "openai/gpt-3.5-turbo",
-        messages,
-      })) {
-        // consume
-      }
+      await consumeStream(
+        provider,
+        OpenRouterTestFixture.createRequest({
+          model: "openai/gpt-3.5-turbo",
+          messages,
+        }),
+      );
 
       expect(capturedBody).not.toBeNull();
       const body = capturedBody as {
@@ -182,23 +272,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
+      globalThis.fetch = setupFetchMock(chunks, (body) => {
+        capturedBody = body;
       });
-      globalThis.fetch = jest
-        .fn()
-        .mockImplementation((_url: string, init?: RequestInit) => {
-          capturedBody = init?.body ? JSON.parse(init.body as string) : null;
-          return Promise.resolve({
-            ok: true,
-            body: stream,
-          });
-        });
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
@@ -218,12 +294,9 @@ describe("OpenRouterProvider", () => {
           },
         ],
       };
-      let hasToolCalls = false;
-      for await (const chunk of provider.streamChat(request)) {
-        if (chunk.toolCalls) {
-          hasToolCalls = true;
-        }
-      }
+      const hasToolCalls = (await consumeStream(provider, request)).some(
+        (chunk) => Boolean(chunk.toolCalls),
+      );
 
       const body = capturedBody as { tools?: unknown[] };
       expect(body.tools).toHaveLength(1);
@@ -236,17 +309,9 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
       const provider = new OpenRouterProvider({
@@ -275,50 +340,15 @@ describe("OpenRouterProvider", () => {
 
     it("should retry once without tools after a 429 and succeed", async () => {
       const diagnosticEvents: AgentDiagnosticEvent[] = [];
-      const fetchMock = jest
-        .fn()
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 429,
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          body: createSseStream([
-            'data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n',
-            "data: [DONE]\n\n",
-          ]),
+      const { fetchMock, provider } =
+        OpenRouterTestFixture.createRetrySuccessMock(429, "Recovered", {
+          onDiagnosticEvent: (event: AgentDiagnosticEvent) =>
+            diagnosticEvents.push(event),
+          iteration: 3,
         });
-      globalThis.fetch = fetchMock;
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
-        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-
-      const request: ChatRequest = {
-        model: "openai/gpt-3.5-turbo",
-        iteration: 3,
-        messages: [{ role: "user", content: "Hello" }],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "lookup",
-              description: "Lookup",
-              parameters: { type: "object", properties: {} },
-            },
-          },
-        ],
-      };
-
-      let content = "";
-      for await (const event of provider.streamChat(request)) {
-        if (event.type === "assistant_text") {
-          content += event.delta;
-        }
-      }
+      const request = makeToolCallRequest({ iteration: 3 });
+      const content = await collectAssistantText(provider, request);
 
       expect(content).toBe("Recovered");
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -364,32 +394,26 @@ describe("OpenRouterProvider", () => {
         retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
-      const assistantText: string[] = [];
-      const toolCalls: unknown[] = [];
-      for await (const event of provider.streamChat({
-        model: "deepseek/deepseek-v3.1",
-        iteration: 2,
-        messages: [{ role: "user", content: "Read more" }],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "read",
-              description: "Read a file",
-              parameters: { type: "object", properties: {} },
+      const { assistantText, toolCalls } = await collectTextAndToolCalls(
+        provider,
+        {
+          model: "deepseek/deepseek-v3.1",
+          iteration: 2,
+          messages: [{ role: "user", content: "Read more" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "read",
+                description: "Read a file",
+                parameters: { type: "object", properties: {} },
+              },
             },
-          },
-        ],
-      })) {
-        if (event.type === "assistant_text") {
-          assistantText.push(event.delta);
-        }
-        if (event.type === "tool_calls") {
-          toolCalls.push(event.toolCalls);
-        }
-      }
+          ],
+        },
+      );
 
-      expect(assistantText.join("")).not.toContain("<｜DSML｜tool_calls>");
+      expect(assistantText).not.toContain("<｜DSML｜tool_calls>");
       expect(toolCalls).toHaveLength(1);
       expect((toolCalls[0] as any)[0].function.name).toBe("read");
       expect((toolCalls[0] as any)[0].function.arguments).toEqual({
@@ -491,48 +515,11 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should retry once without tools after a 503 and succeed", async () => {
-      const fetchMock = jest
-        .fn()
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 503,
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          body: createSseStream([
-            'data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n',
-            "data: [DONE]\n\n",
-          ]),
-        });
-      globalThis.fetch = fetchMock;
+      const { fetchMock, provider } =
+        OpenRouterTestFixture.createRetrySuccessMock(503);
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-
-      const request: ChatRequest = {
-        model: "openai/gpt-3.5-turbo",
-        messages: [{ role: "user", content: "Hello" }],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "lookup",
-              description: "Lookup",
-              parameters: { type: "object", properties: {} },
-            },
-          },
-        ],
-      };
-
-      let content = "";
-      for await (const event of provider.streamChat(request)) {
-        if (event.type === "assistant_text") {
-          content += event.delta;
-        }
-      }
+      const request = makeToolCallRequest();
+      const content = await collectAssistantText(provider, request);
 
       expect(content).toBe("Recovered");
       expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -541,26 +528,8 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should preserve model and messages when retrying without tools", async () => {
-      const fetchMock = jest
-        .fn()
-        .mockResolvedValueOnce({
-          ok: false,
-          status: 429,
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          body: createSseStream([
-            'data: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n',
-            "data: [DONE]\n\n",
-          ]),
-        });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
+      const { fetchMock, provider } =
+        OpenRouterTestFixture.createRetrySuccessMock(429);
 
       const request: ChatRequest = {
         model: "openai/gpt-3.5-turbo",
@@ -592,81 +561,34 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should retry on 429 even without tools", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-
-      await expect(async () => {
-        for await (const _event of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hello" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderRateLimitError);
+      const fetchMock = await OpenRouterTestFixture.expectRetryError(
+        { ok: false, status: 429 },
+        ProviderRateLimitError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should retry on 503 even without tools", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-
-      await expect(async () => {
-        for await (const _event of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hello" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
+      const fetchMock = await OpenRouterTestFixture.expectRetryError(
+        { ok: false, status: 503 },
+        ProviderError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it("should throw ProviderAuthenticationError on 401", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 401,
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderAuthenticationError);
+      const fetchMock = await OpenRouterTestFixture.expectErrorOnStatus(
+        { ok: false, status: 401 },
+        ProviderAuthenticationError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
+      await OpenRouterTestFixture.expectStreamChatToThrow(
+        new OpenRouterProvider({
           model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(/Invalid OpenRouter API key/);
+          apiKey: "sk-test",
+        }),
+        /Invalid OpenRouter API key/,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
@@ -695,190 +617,43 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should surface OpenRouter upstream details on 429 response bodies", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
+      const caughtError = (await expectUpstreamProviderError({
         status: 429,
-        headers: new Map(),
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              error: {
-                message: "Provider returned error",
-                metadata: {
-                  retry_after_seconds: 7,
-                  raw: JSON.stringify({
-                    error: {
-                      message: "Rate limit exceeded",
-                    },
-                    provider_name: "Together",
-                  }),
-                },
-              },
-            }),
-          ),
-      });
-      globalThis.fetch = fetchMock;
+        upstreamMessage: "Rate limit exceeded",
+        ErrorClass: ProviderRateLimitError,
+        retryAfterSeconds: 7,
+      })) as ProviderRateLimitError;
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-
-      let caughtError: unknown;
-      try {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      } catch (error) {
-        caughtError = error;
-      }
-
-      expect(caughtError).toBeInstanceOf(ProviderRateLimitError);
-      expect((caughtError as ProviderRateLimitError).message).toContain(
-        "Together",
-      );
-      expect((caughtError as ProviderRateLimitError).message).toContain(
-        "Rate limit exceeded",
-      );
-      expect((caughtError as ProviderRateLimitError).retryAfterSeconds).toBe(7);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(caughtError.message).toContain("Together");
+      expect(caughtError.message).toContain("Rate limit exceeded");
+      expect(caughtError.retryAfterSeconds).toBe(7);
     });
 
     it("should throw ProviderModelNotFoundError on 404", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 404,
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderModelNotFoundError);
+      const fetchMock = await OpenRouterTestFixture.expectErrorOnStatus(
+        { ok: false, status: 404 },
+        ProviderModelNotFoundError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it("should throw ProviderError on 402", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 402,
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(/Insufficient OpenRouter credits/);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expectStatusError(402, /Insufficient OpenRouter credits/);
     });
 
     it("should throw ProviderError on 5xx", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(/OpenRouter service error/);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expectStatusError(503, /OpenRouter service error/);
     });
 
     it("should surface upstream provider details on 503 response bodies", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
+      const caughtError = await expectUpstreamProviderError({
         status: 503,
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              error: {
-                message: "Provider returned error",
-                metadata: {
-                  raw: JSON.stringify({
-                    error: {
-                      message: "Service unavailable",
-                    },
-                    provider_name: "Together",
-                  }),
-                },
-              },
-            }),
-          ),
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
+        upstreamMessage: "Service unavailable",
+        ErrorClass: ProviderError,
       });
 
-      let caughtError: unknown;
-      try {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      } catch (error) {
-        caughtError = error;
-      }
-
-      expect(caughtError).toBeInstanceOf(ProviderError);
-      expect((caughtError as Error).message).toContain("Together");
-      expect((caughtError as Error).message).toContain("Service unavailable");
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(caughtError.message).toContain("Together");
+      expect(caughtError.message).toContain("Service unavailable");
     });
 
     it("should include upstream details and retry-after text if the retry also fails", async () => {
@@ -935,9 +710,9 @@ describe("OpenRouterProvider", () => {
         retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
 
-      let caughtError: unknown;
-      try {
-        for await (const chunk of provider.streamChat({
+      const caughtError = await OpenRouterTestFixture.catchStreamError(
+        provider,
+        {
           model: "openai/gpt-3.5-turbo",
           messages: [{ role: "user", content: "Hi" }],
           tools: [
@@ -950,12 +725,8 @@ describe("OpenRouterProvider", () => {
               },
             },
           ],
-        })) {
-          // consume
-        }
-      } catch (error) {
-        caughtError = error;
-      }
+        },
+      );
 
       expect(caughtError).toBeInstanceOf(ProviderError);
       expect((caughtError as Error).message).toContain("Together");
@@ -1040,33 +811,22 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should throw ProviderContextLengthError on 400 with context length message in body", async () => {
-      const fetchMock = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 400,
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              error: {
-                message:
-                  "This model's maximum context length is 128000 tokens. However, your messages resulted in 200000 tokens.",
-              },
-            }),
-          ),
-      });
-      globalThis.fetch = fetchMock;
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderContextLengthError);
+      const fetchMock = await OpenRouterTestFixture.expectErrorOnStatus(
+        {
+          ok: false,
+          status: 400,
+          text: () =>
+            Promise.resolve(
+              JSON.stringify({
+                error: {
+                  message:
+                    "This model's maximum context length is 128000 tokens. However, your messages resulted in 200000 tokens.",
+                },
+              }),
+            ),
+        },
+        ProviderContextLengthError,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
@@ -1081,25 +841,20 @@ describe("OpenRouterProvider", () => {
       });
       globalThis.fetch = fetchMock;
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-        retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
+      const provider = createProvider("openai/gpt-3.5-turbo", "sk-test", {
+        maxRetries: 0,
+        baseDelayMs: 0,
+        consecutive529Limit: 3,
       });
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderError);
+      const request = OpenRouterTestFixture.createRequest();
+      await OpenRouterTestFixture.expectStreamChatToThrow(
+        provider,
+        ProviderError,
+        request,
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
       await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "openai/gpt-3.5-turbo",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
+        for await (const _chunk of provider.streamChat(request)) {
           // consume
         }
       }).rejects.not.toThrow(ProviderContextLengthError);
@@ -1114,31 +869,14 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      const request: ChatRequest = {
-        model: "openai/gpt-3.5-turbo",
-        messages: [{ role: "user", content: "Hi" }],
-      };
-      const deltas: string[] = [];
-      for await (const chunk of provider.streamChat(request)) {
-        deltas.push(chunk.delta);
-      }
+      const provider = createProvider();
+      const request = OpenRouterTestFixture.createRequest();
+      const deltas = await collectDeltas(provider, request);
       expect(deltas).toEqual(["Hello", " world"]);
     });
 
@@ -1150,27 +888,15 @@ describe("OpenRouterProvider", () => {
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
         "data: [DONE]\n\n",
       ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,
-        body: stream,
+        body: createSseStream(chunks),
       });
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      const request: ChatRequest = {
-        model: "openai/gpt-3.5-turbo",
+      const provider = createProvider();
+      const request = OpenRouterTestFixture.createRequest({
         messages: [{ role: "user", content: "Weather?" }],
-      };
+      });
       const results: Array<{ delta: string; toolCalls?: unknown[] }> = [];
       for await (const chunk of provider.streamChat(request)) {
         results.push({ delta: chunk.delta, toolCalls: chunk.toolCalls });
@@ -1219,18 +945,12 @@ describe("OpenRouterProvider", () => {
         ],
       };
 
-      const assistantText: string[] = [];
-      const toolCalls: unknown[] = [];
-      for await (const event of provider.streamChat(request)) {
-        if (event.type === "assistant_text") {
-          assistantText.push(event.delta);
-        }
-        if (event.type === "tool_calls") {
-          toolCalls.push(event.toolCalls);
-        }
-      }
+      const { assistantText, toolCalls } = await collectTextAndToolCalls(
+        provider,
+        request,
+      );
 
-      expect(assistantText.join("")).not.toContain("<｜DSML｜tool_calls>");
+      expect(assistantText).not.toContain("<｜DSML｜tool_calls>");
       expect(toolCalls).toHaveLength(1);
       expect((toolCalls[0] as any)[0].function.name).toBe("lookup");
       expect((toolCalls[0] as any)[0].function.arguments).toEqual({
@@ -1271,87 +991,32 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should stop on [DONE] marker", async () => {
-      const chunks = [
+      const deltas = await collectDeltasFromChunks([
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
         "data: [DONE]\n\n",
         'data: {"choices":[{"delta":{"content":"ignored"}}]}\n\n',
-      ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
-      globalThis.fetch = jest
-        .fn()
-        .mockResolvedValue({ ok: true, body: stream });
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      const deltas: string[] = [];
-      for await (const chunk of provider.streamChat({
-        model: "openai/gpt-3.5-turbo",
-        messages: [{ role: "user", content: "Hi" }],
-      })) {
-        deltas.push(chunk.delta);
-      }
+      ]);
       expect(deltas).toEqual(["Hi"]);
     });
 
     it("should skip malformed JSON lines", async () => {
-      const chunks = [
+      const deltas = await collectDeltasFromChunks([
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
         "data: not-json\n\n",
         "data: [DONE]\n\n",
-      ];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
-      });
-      globalThis.fetch = jest
-        .fn()
-        .mockResolvedValue({ ok: true, body: stream });
-
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
-      const deltas: string[] = [];
-      for await (const chunk of provider.streamChat({
-        model: "openai/gpt-3.5-turbo",
-        messages: [{ role: "user", content: "Hi" }],
-      })) {
-        deltas.push(chunk.delta);
-      }
+      ]);
       expect(deltas).toEqual(["Hi"]);
     });
 
     it("should expand batched tool results into individual messages", async () => {
       const chunks = ['data: {"choices":[{"delta":{"content":"Done"}}]}\n\n'];
-      const stream = new ReadableStream({
-        start(controller) {
-          chunks.forEach((c) =>
-            controller.enqueue(new TextEncoder().encode(c)),
-          );
-          controller.close();
-        },
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(chunks),
       });
-
-      const mockFetch = jest.fn().mockResolvedValue({ ok: true, body: stream });
       globalThis.fetch = mockFetch;
 
-      const provider = new OpenRouterProvider({
-        model: "openai/gpt-3.5-turbo",
-        apiKey: "sk-test",
-      });
+      const provider = createProvider();
 
       // Create a message with batched tool results
       const messages: ChatMessage[] = [
@@ -1374,13 +1039,13 @@ describe("OpenRouterProvider", () => {
         },
       ];
 
-      const deltas: string[] = [];
-      for await (const chunk of provider.streamChat({
-        model: "openai/gpt-3.5-turbo",
-        messages,
-      })) {
-        deltas.push(chunk.delta);
-      }
+      const deltas = await collectDeltas(
+        provider,
+        OpenRouterTestFixture.createRequest({
+          model: "openai/gpt-3.5-turbo",
+          messages,
+        }),
+      );
 
       // Verify the request body was sent with expanded tool messages
       expect(mockFetch).toHaveBeenCalledWith(

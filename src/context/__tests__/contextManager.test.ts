@@ -7,6 +7,7 @@ import {
 } from "../types.js";
 import type { PinFactInput } from "../types.js";
 import { MemoryValidationError } from "../memoryManager.js";
+import { expectThreeMessagePlanRoles } from "./testHelpers.js";
 
 function toolResult(
   toolCallId: string,
@@ -24,9 +25,125 @@ describe("ContextManager", () => {
     manager = new ContextManager();
   });
 
+  function addSingleToolTurn(
+    result: string,
+    status: "success" | "error" = "success",
+  ): void {
+    manager.beginUserTurn("Task");
+    manager.commitAssistantResponse("", [
+      { id: "tc-1", function: { name: "t", arguments: {} } },
+    ]);
+    manager.recordToolResults([toolResult("tc-1", "t", result, status)]);
+  }
+
+  function assertToolCallAlignment(
+    assistantMsg: { toolCalls?: Array<{ id: string }> },
+    toolMsg: { toolResults?: Array<{ toolCallId: string }> },
+  ) {
+    expect(assistantMsg.toolCalls![0].id).toBe(
+      toolMsg.toolResults![0].toolCallId,
+    );
+    expect(assistantMsg.toolCalls![1].id).toBe(
+      toolMsg.toolResults![1].toolCallId,
+    );
+  }
+
+  function addMultiToolTurn() {
+    manager.beginUserTurn("Run tools");
+    const toolCalls = [
+      { id: "call-a", function: { name: "tool_a", arguments: {} } },
+      { id: "call-b", function: { name: "tool_b", arguments: {} } },
+    ];
+    manager.commitAssistantResponse("", toolCalls);
+    manager.recordToolResults([
+      toolResult("call-a", "tool_a", "result-a"),
+      toolResult("call-b", "tool_b", "result-b"),
+    ]);
+  }
+
+  function addBinaryToolResult(
+    rawContent: Uint8Array,
+    mediaType?: string,
+  ): void {
+    manager.beginUserTurn("Task");
+    manager.commitAssistantResponse("", [
+      { id: "tc-1", function: { name: "t", arguments: {} } },
+    ]);
+    manager.recordToolResults([
+      {
+        toolCallId: "tc-1",
+        toolName: "t",
+        rawContent,
+        ...(mediaType ? { mediaType } : {}),
+        status: "success" as const,
+      },
+    ]);
+  }
+
+  function findToolMsgInPlan() {
+    const plan = manager.buildPromptPlan("system");
+    const toolMsg = plan.messages.find(
+      (m) => m.role === "tool" && m.toolResults?.length,
+    );
+    expect(toolMsg).toBeDefined();
+    return toolMsg!;
+  }
+
+  function findToolMsgsInPlan() {
+    const plan = manager.buildPromptPlan("system");
+    return plan.messages.filter(
+      (m) => m.role === "tool" && m.toolResults?.length,
+    );
+  }
+
+  /**
+   * Creates `count` completed turns then sets a rolling summary covering the
+   * first `coveredSlice` turns.  Returns the covered turn IDs.
+   */
+  function addCompletedTurnsWithSummary(
+    count: number,
+    coveredSlice: number,
+    summaryContent: string,
+  ): string[] {
+    for (let i = 0; i < count; i++) {
+      manager.beginUserTurn(`msg ${i}`);
+      manager.commitAssistantResponse(`reply ${i}`);
+    }
+    const state = manager.getConversationState();
+    const coveredIds = state.turns.slice(0, coveredSlice).map((t) => t.id);
+    manager.setRollingSummary({
+      content: summaryContent,
+      updatedAt: "2026-01-01T00:10:00Z",
+      coveredTurnIds: coveredIds,
+      estimatedTokens: 10,
+    });
+    return coveredIds;
+  }
+
+  /** Adds a two-tool turn using tool names "a" and "b" with given content. */
+  function addDualToolTurnAB(content1: string, content2: string): void {
+    manager.beginUserTurn("Task");
+    manager.commitAssistantResponse("", [
+      { id: "tc-1", function: { name: "a", arguments: {} } },
+      { id: "tc-2", function: { name: "b", arguments: {} } },
+    ]);
+    manager.recordToolResults([
+      toolResult("tc-1", "a", content1),
+      toolResult("tc-2", "b", content2),
+    ]);
+  }
+
   // =================================================================
   // Phase 1 behavior-preserving tests
   // =================================================================
+
+  /** Asserts manager has `count` messages, clears, then asserts empty. */
+  function assertClearedAtCount(count: number): void {
+    expect(manager.messageCount).toBe(count);
+    manager.clear();
+    expect(manager.messageCount).toBe(0);
+    expect(manager.getSnapshot()).toEqual([]);
+  }
 
   describe("beginUserTurn", () => {
     it("should append a user message", () => {
@@ -160,27 +277,13 @@ describe("ContextManager", () => {
     });
 
     it("should preserve toolCallId alignment with assistant tool calls", () => {
-      manager.beginUserTurn("Run tools");
-      const toolCalls = [
-        { id: "call-a", function: { name: "tool_a", arguments: {} } },
-        { id: "call-b", function: { name: "tool_b", arguments: {} } },
-      ];
-      manager.commitAssistantResponse("", toolCalls);
-      manager.recordToolResults([
-        toolResult("call-a", "tool_a", "result-a"),
-        toolResult("call-b", "tool_b", "result-b"),
-      ]);
+      addMultiToolTurn();
 
       const snapshot = manager.getSnapshot();
       const assistantMsg = snapshot[1];
       const toolMsg = snapshot[2];
 
-      expect(assistantMsg.toolCalls![0].id).toBe(
-        toolMsg.toolResults![0].toolCallId,
-      );
-      expect(assistantMsg.toolCalls![1].id).toBe(
-        toolMsg.toolResults![1].toolCallId,
-      );
+      assertToolCallAlignment(assistantMsg, toolMsg);
     });
   });
 
@@ -232,11 +335,7 @@ describe("ContextManager", () => {
       manager.beginUserTurn("First");
       manager.commitAssistantResponse("Second");
       manager.beginUserTurn("Third");
-      expect(manager.messageCount).toBe(3);
-
-      manager.clear();
-      expect(manager.messageCount).toBe(0);
-      expect(manager.getSnapshot()).toEqual([]);
+      assertClearedAtCount(3);
     });
 
     it("should allow new messages after clearing", () => {
@@ -371,9 +470,7 @@ describe("ContextManager", () => {
       manager.beginUserTurn("Later question");
 
       const plan = manager.buildPromptPlan("system");
-      expect(plan.messages).toHaveLength(3);
-      expect(plan.messages[0].role).toBe("system");
-      expect(plan.messages[1].role).toBe("assistant");
+      expectThreeMessagePlanRoles(plan, "assistant");
       expect(plan.messages[1].content).toBe("Early reply");
       expect(plan.messages[2].role).toBe("user");
       expect(plan.messages[2].content).toBe("Later question");
@@ -383,11 +480,7 @@ describe("ContextManager", () => {
       manager.commitAssistantResponse("Orphan");
       manager.beginUserTurn("User");
       manager.commitAssistantResponse("Reply");
-      expect(manager.messageCount).toBe(3);
-
-      manager.clear();
-      expect(manager.messageCount).toBe(0);
-      expect(manager.getSnapshot()).toEqual([]);
+      assertClearedAtCount(3);
     });
 
     it("should surface pre-turn messages in getConversationState().preamble", () => {
@@ -819,15 +912,7 @@ describe("ContextManager", () => {
     });
 
     it("should assign unique IDs to each artifact", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "a", arguments: {} } },
-        { id: "tc-2", function: { name: "b", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        toolResult("tc-1", "a", "one"),
-        toolResult("tc-2", "b", "two"),
-      ]);
+      addDualToolTurnAB("one", "two");
 
       const state = manager.getConversationState();
       expect(state.artifacts[0].id).toBeDefined();
@@ -871,14 +956,9 @@ describe("ContextManager", () => {
     });
 
     it("should deep-clone artifacts in getConversationState", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", "original")]);
+      addSingleToolTurn("original");
 
       const state1 = manager.getConversationState();
-      (state1.artifacts[0] as any).content = "MUTATED";
 
       const state2 = manager.getConversationState();
       expect(state2.artifacts[0].content).toBe("original");
@@ -973,11 +1053,7 @@ describe("ContextManager", () => {
 
     it("should truncate long success results in the summary", () => {
       const longResult = "x".repeat(5000);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+      addSingleToolTurn(longResult);
 
       const snapshot = manager.getSnapshot();
       const summary = snapshot[2].toolResults![0].content;
@@ -987,11 +1063,7 @@ describe("ContextManager", () => {
 
     it("should use full content as summary for short error results", () => {
       const shortError = "Error: file not found";
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", shortError, "error")]);
+      addSingleToolTurn(shortError, "error");
 
       const snapshot = manager.getSnapshot();
       expect(snapshot[2].toolResults![0].content).toBe(shortError);
@@ -999,11 +1071,7 @@ describe("ContextManager", () => {
 
     it("should truncate long error results in the summary", () => {
       const longError = "Error: " + "detail ".repeat(500);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", longError, "error")]);
+      addSingleToolTurn(longError, "error");
 
       const snapshot = manager.getSnapshot();
       const content = snapshot[2].toolResults![0].content;
@@ -1013,11 +1081,7 @@ describe("ContextManager", () => {
 
     it("should store resultSummary on tool invocation records", () => {
       const longResult = "y".repeat(5000);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+      addSingleToolTurn(longResult);
 
       const state = manager.getConversationState();
       const toolEntry = state.turns[0].entries[1];
@@ -1032,74 +1096,40 @@ describe("ContextManager", () => {
   describe("prompt rehydration", () => {
     it("should rehydrate raw artifact content for the current incomplete turn", () => {
       const longResult = "z".repeat(5000);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+      addSingleToolTurn(longResult);
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.toolResults![0].content).toBe(longResult);
+      const toolMsg = findToolMsgInPlan();
+      expect(toolMsg.toolResults![0].content).toBe(longResult);
     });
 
     it("should use summary content for completed turns in the prompt", () => {
       const longResult = "z".repeat(5000);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", longResult)]);
+      addSingleToolTurn(longResult);
       manager.commitAssistantResponse("Done");
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg).toBeDefined();
-      const content = toolMsg!.toolResults![0].content;
+      const toolMsg = findToolMsgInPlan();
+      const content = toolMsg.toolResults![0].content;
       expect(content.length).toBeLessThan(longResult.length);
       expect(content).toContain("more chars truncated");
     });
 
     it("should cap rehydrated content at the rehydration limit", () => {
       const hugeResult = "a".repeat(20000);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", hugeResult)]);
+      addSingleToolTurn(hugeResult);
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg!.toolResults![0].content.length).toBeLessThan(
+      const toolMsg = findToolMsgInPlan();
+      expect(toolMsg.toolResults![0].content.length).toBeLessThan(
         hugeResult.length,
       );
-      expect(toolMsg!.toolResults![0].content).toContain("output truncated:");
+      expect(toolMsg.toolResults![0].content).toContain("output truncated:");
     });
 
     it("should rehydrate multiple tool results in the same batch", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "a", arguments: {} } },
-        { id: "tc-2", function: { name: "b", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        toolResult("tc-1", "a", "result-a"),
-        toolResult("tc-2", "b", "result-b"),
-      ]);
+      addDualToolTurnAB("result-a", "result-b");
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg!.toolResults![0].content).toBe("result-a");
-      expect(toolMsg!.toolResults![1].content).toBe("result-b");
+      const toolMsg = findToolMsgInPlan();
+      expect(toolMsg.toolResults![0].content).toBe("result-a");
+      expect(toolMsg.toolResults![1].content).toBe("result-b");
     });
 
     it("should rehydrate current turn but summarize earlier completed turns", () => {
@@ -1121,10 +1151,7 @@ describe("ContextManager", () => {
       ]);
       manager.recordToolResults([toolResult("tc-2", "t", longResult2)]);
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsgs = plan.messages.filter(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
+      const toolMsgs = findToolMsgsInPlan();
       expect(toolMsgs).toHaveLength(2);
 
       // Turn 1 tool message: summary (completed)
@@ -1157,10 +1184,7 @@ describe("ContextManager", () => {
       ]);
       manager.recordToolResults([toolResult("tc-2", "ls", iterationTwoResult)]);
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsgs = plan.messages.filter(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
+      const toolMsgs = findToolMsgsInPlan();
       expect(toolMsgs).toHaveLength(2);
 
       // Iteration 1 tool results: summary (resolved — assistant already responded)
@@ -1186,10 +1210,7 @@ describe("ContextManager", () => {
         { id: "tc-2", function: { name: "t2", arguments: {} } },
       ]);
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsgs = plan.messages.filter(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
+      const toolMsgs = findToolMsgsInPlan();
       expect(toolMsgs).toHaveLength(1);
 
       // Tool results from before the latest assistant entry: summary
@@ -1223,10 +1244,7 @@ describe("ContextManager", () => {
       ]);
       manager.recordToolResults([toolResult("tc-3", "t", r3)]);
 
-      const plan = manager.buildPromptPlan("system");
-      const toolMsgs = plan.messages.filter(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
+      const toolMsgs = findToolMsgsInPlan();
       expect(toolMsgs).toHaveLength(3);
 
       // Iterations 1 and 2: summarized (resolved)
@@ -1244,11 +1262,7 @@ describe("ContextManager", () => {
 
   describe("clear removes artifacts", () => {
     it("should clear artifacts along with turns", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", "artifact content")]);
+      addSingleToolTurn("artifact content");
 
       expect(manager.getConversationState().artifacts).toHaveLength(1);
 
@@ -1280,29 +1294,14 @@ describe("ContextManager", () => {
 
   describe("media-type-aware artifact ingestion", () => {
     it("should default to text/plain for string content", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([toolResult("tc-1", "t", "text content")]);
+      addSingleToolTurn("text content");
 
       const state = manager.getConversationState();
       expect(state.artifacts[0].mediaType).toBe("text/plain");
     });
 
     it("should default to application/octet-stream for Uint8Array content", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        {
-          toolCallId: "tc-1",
-          toolName: "t",
-          rawContent: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-          status: "success" as const,
-        },
-      ]);
+      addBinaryToolResult(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
 
       const state = manager.getConversationState();
       expect(state.artifacts[0].mediaType).toBe("application/octet-stream");
@@ -1310,19 +1309,7 @@ describe("ContextManager", () => {
     });
 
     it("should use caller-supplied mediaType when provided", () => {
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        {
-          toolCallId: "tc-1",
-          toolName: "t",
-          rawContent: new Uint8Array([0xff, 0xd8, 0xff]),
-          mediaType: "image/jpeg",
-          status: "success" as const,
-        },
-      ]);
+      addBinaryToolResult(new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg");
 
       const state = manager.getConversationState();
       expect(state.artifacts[0].mediaType).toBe("image/jpeg");
@@ -1334,19 +1321,7 @@ describe("ContextManager", () => {
 
     it("should generate a descriptive summary for binary artifacts", () => {
       const binaryData = new Uint8Array(2048);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        {
-          toolCallId: "tc-1",
-          toolName: "t",
-          rawContent: binaryData,
-          mediaType: "image/png",
-          status: "success" as const,
-        },
-      ]);
+      addBinaryToolResult(binaryData, "image/png");
 
       const snapshot = manager.getSnapshot();
       const summary = snapshot[2].toolResults![0].content;
@@ -1357,18 +1332,7 @@ describe("ContextManager", () => {
 
     it("should store contentSizeChars as byte length for binary artifacts", () => {
       const data = new Uint8Array(512);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        {
-          toolCallId: "tc-1",
-          toolName: "t",
-          rawContent: data,
-          status: "success" as const,
-        },
-      ]);
+      addBinaryToolResult(data);
 
       const state = manager.getConversationState();
       expect(state.artifacts[0].contentSizeChars).toBe(512);
@@ -1376,19 +1340,7 @@ describe("ContextManager", () => {
 
     it("should not rehydrate binary artifacts into prompt messages", () => {
       const binaryData = new Uint8Array([1, 2, 3]);
-      manager.beginUserTurn("Task");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        {
-          toolCallId: "tc-1",
-          toolName: "t",
-          rawContent: binaryData,
-          mediaType: "image/png",
-          status: "success" as const,
-        },
-      ]);
+      addBinaryToolResult(binaryData, "image/png");
 
       const plan = manager.buildPromptPlan("system");
       const toolMsg = plan.messages.find(
@@ -1400,16 +1352,7 @@ describe("ContextManager", () => {
 
   describe("multi-tool batch ordering", () => {
     it("should preserve tool-call/tool-result ID alignment through artifacts", () => {
-      manager.beginUserTurn("Run tools");
-      const toolCalls = [
-        { id: "call-a", function: { name: "tool_a", arguments: {} } },
-        { id: "call-b", function: { name: "tool_b", arguments: {} } },
-      ];
-      manager.commitAssistantResponse("", toolCalls);
-      manager.recordToolResults([
-        toolResult("call-a", "tool_a", "result-a"),
-        toolResult("call-b", "tool_b", "result-b"),
-      ]);
+      addMultiToolTurn();
 
       const plan = manager.buildPromptPlan("system");
       const assistantMsg = plan.messages.find(
@@ -1419,12 +1362,7 @@ describe("ContextManager", () => {
         (m) => m.role === "tool" && m.toolResults?.length,
       );
 
-      expect(assistantMsg!.toolCalls![0].id).toBe(
-        toolMsg!.toolResults![0].toolCallId,
-      );
-      expect(assistantMsg!.toolCalls![1].id).toBe(
-        toolMsg!.toolResults![1].toolCallId,
-      );
+      assertToolCallAlignment(assistantMsg!, toolMsg!);
     });
   });
 
@@ -1547,20 +1485,7 @@ describe("ContextManager", () => {
     });
 
     it("should track new eligible count against stored summary", () => {
-      for (let i = 0; i < 10; i++) {
-        manager.beginUserTurn(`msg ${i}`);
-        manager.commitAssistantResponse(`reply ${i}`);
-      }
-
-      const state = manager.getConversationState();
-      const coveredIds = state.turns.slice(0, 2).map((t) => t.id);
-
-      manager.setRollingSummary({
-        content: "Covered first 2 turns",
-        updatedAt: "2026-01-01T00:10:00Z",
-        coveredTurnIds: coveredIds,
-        estimatedTokens: 10,
-      });
+      addCompletedTurnsWithSummary(10, 2, "Covered first 2 turns");
 
       const eligibility = manager.getSummaryEligibility();
       expect(eligibility.newEligibleCount).toBe(
@@ -1611,21 +1536,17 @@ describe("ContextManager", () => {
   });
 
   describe("buildPromptPlan with stored rolling summary", () => {
+    function setupManagerWithSummary() {
+      const coveredIds = addCompletedTurnsWithSummary(
+        10,
+        4,
+        "Summary of turns 0-3",
+      );
+      return { coveredIds };
+    }
+
     it("should source rolling summary from stored state by default", () => {
-      for (let i = 0; i < 10; i++) {
-        manager.beginUserTurn(`msg ${i}`);
-        manager.commitAssistantResponse(`reply ${i}`);
-      }
-
-      const state = manager.getConversationState();
-      const coveredIds = state.turns.slice(0, 4).map((t) => t.id);
-
-      manager.setRollingSummary({
-        content: "Summary of turns 0-3",
-        updatedAt: "2026-01-01T00:10:00Z",
-        coveredTurnIds: coveredIds,
-        estimatedTokens: 10,
-      });
+      setupManagerWithSummary();
 
       const plan = manager.buildPromptPlan("system");
 
@@ -1635,20 +1556,7 @@ describe("ContextManager", () => {
     });
 
     it("should exclude summary-covered turns from raw history", () => {
-      for (let i = 0; i < 10; i++) {
-        manager.beginUserTurn(`msg ${i}`);
-        manager.commitAssistantResponse(`reply ${i}`);
-      }
-
-      const state = manager.getConversationState();
-      const coveredIds = state.turns.slice(0, 4).map((t) => t.id);
-
-      manager.setRollingSummary({
-        content: "Summary of turns 0-3",
-        updatedAt: "2026-01-01T00:10:00Z",
-        coveredTurnIds: coveredIds,
-        estimatedTokens: 10,
-      });
+      const { coveredIds } = setupManagerWithSummary();
 
       const plan = manager.buildPromptPlan("system");
 
@@ -1684,20 +1592,7 @@ describe("ContextManager", () => {
 
     it("should still rehydrate unresolved tool chains with a summary present", () => {
       // Create enough completed turns to warrant a summary
-      for (let i = 0; i < 8; i++) {
-        manager.beginUserTurn(`msg ${i}`);
-        manager.commitAssistantResponse(`reply ${i}`);
-      }
-
-      const state = manager.getConversationState();
-      const coveredIds = state.turns.slice(0, 2).map((t) => t.id);
-
-      manager.setRollingSummary({
-        content: "Summary",
-        updatedAt: "2026-01-01T00:10:00Z",
-        coveredTurnIds: coveredIds,
-        estimatedTokens: 10,
-      });
+      addCompletedTurnsWithSummary(8, 2, "Summary");
 
       // Start a new turn with tools
       manager.beginUserTurn("Current task");
@@ -1708,13 +1603,8 @@ describe("ContextManager", () => {
         toolResult("tc-1", "tool", "tool output data"),
       ]);
 
-      const plan = manager.buildPromptPlan("system");
-
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.toolResults![0].content).toBe("tool output data");
+      const toolMsg = findToolMsgInPlan();
+      expect(toolMsg.toolResults![0].content).toBe("tool output data");
     });
   });
 

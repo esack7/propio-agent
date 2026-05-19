@@ -116,117 +116,109 @@ function parseMcpCommand(input: string): {
   };
 }
 
+type McpUi = Pick<
+  TerminalUi,
+  "command" | "error" | "info" | "section" | "success"
+>;
+type McpAgent = Pick<
+  Agent,
+  | "getMcpServerSummaries"
+  | "getMcpServerDetail"
+  | "listMcpTools"
+  | "reconnectMcpServer"
+  | "setMcpServerEnabled"
+>;
+
+function handleMcpGet(rest: string, agent: McpAgent, ui: McpUi): void {
+  if (!rest) {
+    ui.error("Usage: /mcp get <server>");
+    return;
+  }
+  const detail = agent.getMcpServerDetail(rest);
+  if (!detail) {
+    ui.error(`Unknown MCP server: "${rest}"`);
+    return;
+  }
+  renderDetail(ui, detail);
+}
+
+function handleMcpTools(rest: string, agent: McpAgent, ui: McpUi): void {
+  try {
+    renderTools(
+      ui,
+      rest ? agent.listMcpTools(rest) : agent.listMcpTools(),
+      rest || undefined,
+    );
+  } catch (error) {
+    ui.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleMcpReconnect(
+  rest: string,
+  agent: McpAgent,
+  ui: McpUi,
+): Promise<void> {
+  if (!rest) {
+    ui.error("Usage: /mcp reconnect <server>");
+    return;
+  }
+  try {
+    const summary = await agent.reconnectMcpServer(rest);
+    if (summary.status === "connected")
+      ui.success(`Reconnected ${summary.name}: ${formatSummary(summary)}.`);
+    else ui.error(formatActionFailure("Reconnected", summary));
+  } catch (error) {
+    ui.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleMcpEnableDisable(
+  subcommand: "enable" | "disable",
+  rest: string,
+  agent: McpAgent,
+  ui: McpUi,
+): Promise<void> {
+  if (!rest) {
+    ui.error(`Usage: /mcp ${subcommand} <server>`);
+    return;
+  }
+  const enabling = subcommand === "enable";
+  try {
+    const summary = await agent.setMcpServerEnabled(rest, enabling);
+    const label = enabling ? "Enabled" : "Disabled";
+    if (!enabling || summary.status === "connected")
+      ui.success(`${label} ${summary.name}: ${formatSummary(summary)}.`);
+    else ui.error(formatActionFailure(label, summary));
+  } catch (error) {
+    ui.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export async function handleMcpCommand(
   input: string,
-  agent: Pick<
-    Agent,
-    | "getMcpServerSummaries"
-    | "getMcpServerDetail"
-    | "listMcpTools"
-    | "reconnectMcpServer"
-    | "setMcpServerEnabled"
-  >,
-  ui: Pick<TerminalUi, "command" | "error" | "info" | "section" | "success">,
+  agent: McpAgent,
+  ui: McpUi,
 ): Promise<void> {
   const { subcommand, rest } = parseMcpCommand(input);
 
   if (subcommand === "" || subcommand === "list") {
     renderSummaries(ui, agent.getMcpServerSummaries());
-    ui.command("");
-    return;
+  } else if (subcommand === "get") {
+    handleMcpGet(rest, agent, ui);
+  } else if (subcommand === "tools") {
+    handleMcpTools(rest, agent, ui);
+  } else if (subcommand === "reconnect") {
+    await handleMcpReconnect(rest, agent, ui);
+  } else if (subcommand === "enable" || subcommand === "disable") {
+    await handleMcpEnableDisable(subcommand, rest, agent, ui);
+  } else {
+    ui.error(
+      `Unknown /mcp subcommand: "${subcommand}${rest ? ` ${rest}` : ""}"`,
+    );
+    ui.command(
+      "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server>]",
+    );
   }
-
-  if (subcommand === "get") {
-    const serverName = rest;
-    if (!serverName) {
-      ui.error("Usage: /mcp get <server>");
-      ui.command("");
-      return;
-    }
-
-    const detail = agent.getMcpServerDetail(serverName);
-    if (!detail) {
-      ui.error(`Unknown MCP server: "${serverName}"`);
-      ui.command("");
-      return;
-    }
-
-    renderDetail(ui, detail);
-    ui.command("");
-    return;
-  }
-
-  if (subcommand === "tools") {
-    try {
-      renderTools(
-        ui,
-        rest ? agent.listMcpTools(rest) : agent.listMcpTools(),
-        rest || undefined,
-      );
-    } catch (error) {
-      ui.error(error instanceof Error ? error.message : String(error));
-    }
-    ui.command("");
-    return;
-  }
-
-  if (subcommand === "reconnect") {
-    const serverName = rest;
-    if (!serverName) {
-      ui.error("Usage: /mcp reconnect <server>");
-      ui.command("");
-      return;
-    }
-
-    try {
-      const summary = await agent.reconnectMcpServer(serverName);
-      if (summary.status === "connected") {
-        ui.success(`Reconnected ${summary.name}: ${formatSummary(summary)}.`);
-      } else {
-        ui.error(formatActionFailure("Reconnected", summary));
-      }
-    } catch (error) {
-      ui.error(error instanceof Error ? error.message : String(error));
-    }
-    ui.command("");
-    return;
-  }
-
-  if (subcommand === "enable" || subcommand === "disable") {
-    const serverName = rest;
-    if (!serverName) {
-      ui.error(`Usage: /mcp ${subcommand} <server>`);
-      ui.command("");
-      return;
-    }
-
-    try {
-      const summary = await agent.setMcpServerEnabled(
-        serverName,
-        subcommand === "enable",
-      );
-      if (subcommand === "disable" || summary.status === "connected") {
-        ui.success(
-          `${subcommand === "enable" ? "Enabled" : "Disabled"} ${summary.name}: ${formatSummary(summary)}.`,
-        );
-      } else {
-        ui.error(
-          formatActionFailure(
-            subcommand === "enable" ? "Enabled" : "Disabled",
-            summary,
-          ),
-        );
-      }
-    } catch (error) {
-      ui.error(error instanceof Error ? error.message : String(error));
-    }
-    ui.command("");
-    return;
-  }
-
-  ui.error(`Unknown /mcp subcommand: "${subcommand}${rest ? ` ${rest}` : ""}"`);
-  ui.command(
-    "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server>]",
-  );
   ui.command("");
 }

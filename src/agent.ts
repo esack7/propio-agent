@@ -42,6 +42,7 @@ import {
   DEFAULT_SUMMARY_POLICY,
   PromptPlan,
   ConversationState,
+  TurnEntry,
   PinnedMemoryRecord,
   PinFactInput,
   UpdateMemoryInput,
@@ -173,9 +174,9 @@ export class Agent {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
-  private provider: LLMProvider;
-  private model: string;
-  private resolvedProviderConfig: ProviderConfig;
+  private provider!: LLMProvider;
+  private model!: string;
+  private resolvedProviderConfig!: ProviderConfig;
   private contextManager: ContextManager;
   private systemPrompt: string;
   private toolRegistry: ToolRegistry;
@@ -232,14 +233,9 @@ export class Agent {
       basePrompt,
     );
 
-    let config: ProvidersConfig;
-    if (typeof options.providersConfig === "string") {
-      config = loadProvidersConfig(options.providersConfig);
-    } else {
-      config = options.providersConfig;
-    }
-
-    this.providersConfig = config;
+    this.providersConfig = Agent.normalizeProvidersConfig(
+      options.providersConfig,
+    );
     this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
     this.diagnosticsListener = options.onDiagnosticEvent;
     this.skillContext = {
@@ -249,25 +245,11 @@ export class Agent {
 
     this.sessionId = randomUUID();
     this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
-
-    const resolvedProvider = resolveProvider(config, options.providerName);
-    const resolvedModelKey = resolveModelKey(
-      resolvedProvider,
+    this.initializeProvider(
+      this.providersConfig,
+      options.providerName,
       options.modelKey,
     );
-
-    this.resolvedProviderConfig = resolvedProvider;
-    this.provider = createProvider(
-      resolvedProvider,
-      resolvedModelKey,
-      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
-      this.diagnosticsEnabled,
-      {
-        maxRetries: this.runtimeConfig.maxRetries,
-        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
-      },
-    );
-    this.model = resolvedModelKey;
 
     this.contextManager = new ContextManager({
       toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
@@ -292,14 +274,51 @@ export class Agent {
         },
       },
     });
-    this.mcpManager = new McpManager({
-      ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
-      ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
-    });
+    this.mcpManager = new McpManager(Agent.buildMcpManagerOptions(options));
     this.summaryManager = new SummaryManager();
     this.summaryPolicy = {
       ...DEFAULT_SUMMARY_POLICY,
       summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
+    };
+  }
+
+  private static normalizeProvidersConfig(
+    config: ProvidersConfig | string,
+  ): ProvidersConfig {
+    if (typeof config === "string") {
+      return loadProvidersConfig(config);
+    }
+    return config;
+  }
+
+  private initializeProvider(
+    config: ProvidersConfig,
+    providerName: string | undefined,
+    modelKey: string | undefined,
+  ): void {
+    const resolvedProvider = resolveProvider(config, providerName);
+    const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
+    this.resolvedProviderConfig = resolvedProvider;
+    this.provider = createProvider(
+      resolvedProvider,
+      resolvedModelKey,
+      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+      this.diagnosticsEnabled,
+      {
+        maxRetries: this.runtimeConfig.maxRetries,
+        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+      },
+    );
+    this.model = resolvedModelKey;
+  }
+
+  private static buildMcpManagerOptions(options: {
+    mcpConfig?: McpConfigFile;
+    mcpConfigPath?: string;
+  }): { config?: McpConfigFile; configPath?: string } {
+    return {
+      ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
+      ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
     };
   }
 
@@ -456,40 +475,36 @@ export class Agent {
     if (turns.length === 0) return false;
 
     const lastTurn = turns[turns.length - 1];
-    // commitAssistantResponse already ran before this check, so the current
-    // iteration's assistant entry is already in history — read from there only.
     const recentEntries = lastTurn.entries.slice(-lookback);
-
-    const seenCallSignatures: string[] = [];
-    let hasAnyAssistantText = false;
-
-    for (const entry of recentEntries) {
-      if (entry.kind === "assistant") {
-        if (entry.message.content?.trim().length > 0) {
-          hasAnyAssistantText = true;
-        }
-        // Collect per-call signatures (tool name + stable args key)
-        if (entry.message.toolCalls?.length) {
-          for (const tc of entry.message.toolCalls) {
-            seenCallSignatures.push(
-              `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
-            );
-          }
-        }
-      }
-    }
+    // commitAssistantResponse already ran before this check, so the current
+    // iteration's assistant entry is already in history; read from there only.
+    const { signatures, hasAnyAssistantText } =
+      this.gatherSignaturesFromTurnEntries(recentEntries);
 
     if (hasAnyAssistantText) return false;
+    if (signatures.length < 3) return false;
 
-    // Need at least 3 identical call signatures in the lookback window.
-    // Each tool invocation creates a new artifact ID regardless of content, so
-    // artifact IDs cannot distinguish genuine progress from a stuck loop —
-    // the args-key comparison is the authoritative signal.
-    if (seenCallSignatures.length < 3) return false;
+    return new Set(signatures).size === 1;
+  }
 
-    // Stuck if every call in the window has the same signature (same tool + same args)
-    const uniqueSignatures = new Set(seenCallSignatures);
-    return uniqueSignatures.size === 1;
+  private gatherSignaturesFromTurnEntries(entries: ReadonlyArray<TurnEntry>): {
+    signatures: string[];
+    hasAnyAssistantText: boolean;
+  } {
+    const signatures: string[] = [];
+    let hasAnyAssistantText = false;
+    for (const entry of entries) {
+      if (entry.kind !== "assistant") continue;
+      if (entry.message.content?.trim().length > 0) {
+        hasAnyAssistantText = true;
+      }
+      for (const tc of entry.message.toolCalls ?? []) {
+        signatures.push(
+          `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
+        );
+      }
+    }
+    return { signatures, hasAnyAssistantText };
   }
 
   private synthesizeAgentReasoningSummary(
@@ -631,24 +646,27 @@ export class Agent {
     if (toolName !== "read" && toolName !== "write" && toolName !== "edit") {
       return;
     }
+    const touchedPaths = this.extractPathsFromToolArgs(args);
+    if (touchedPaths.length > 0) {
+      this.recordSkillFileTouch(touchedPaths);
+    }
+  }
 
-    const touchedPaths: string[] = [];
+  private extractPathsFromToolArgs(args: Record<string, unknown>): string[] {
+    const paths: string[] = [];
     for (const [key, value] of Object.entries(args)) {
       if (typeof value === "string" && /path/i.test(key)) {
-        touchedPaths.push(value);
+        paths.push(value);
       }
       if (Array.isArray(value) && /paths?/i.test(key)) {
         for (const entry of value) {
           if (typeof entry === "string" && entry.trim().length > 0) {
-            touchedPaths.push(entry);
+            paths.push(entry);
           }
         }
       }
     }
-
-    if (touchedPaths.length > 0) {
-      this.recordSkillFileTouch(touchedPaths);
-    }
+    return paths;
   }
 
   async invokeSkill(
@@ -663,35 +681,13 @@ export class Agent {
     }
 
     const source = options?.source ?? "user";
-    if (source === "user" && skill.userInvocable === false) {
-      throw new Error(`Skill is not user-invocable: ${skill.name}`);
-    }
-    if (source === "model" && skill.disableModelInvocation === true) {
-      throw new Error(`Skill is not model-invocable: ${skill.name}`);
-    }
-    if (skill.context === "fork") {
-      throw new Error(
-        `Skill "${skill.name}" requests forked execution, which is not supported yet.`,
-      );
-    }
+    this.validateSkillForInvocation(skill, source);
 
-    const warnings: string[] = [];
     const requestedModel = skill.model;
     const requestedEffort = skill.effort;
     const appliedModel =
       requestedModel && requestedModel === this.model ? this.model : undefined;
     const materializationWarnings: string[] = [];
-
-    if (requestedModel && !appliedModel) {
-      warnings.push(
-        `Requested model "${requestedModel}" was not applied; continuing with ${this.provider.name}/${this.model}.`,
-      );
-    }
-    if (requestedEffort) {
-      warnings.push(
-        `Requested effort "${requestedEffort}" was recorded but not applied by the current provider.`,
-      );
-    }
 
     const content = registry.materialize(
       skill.name,
@@ -702,22 +698,24 @@ export class Agent {
         },
       },
     );
+    const warnings = this.collectSkillWarnings(
+      requestedModel,
+      appliedModel,
+      requestedEffort,
+    );
     const combinedWarnings =
       warnings.length > 0 || materializationWarnings.length > 0
         ? [...warnings, ...materializationWarnings]
         : undefined;
 
-    const scope: SkillInvocationScope = {
-      invocationSource: source,
-      skillName: skill.name,
-      skillRoot: skill.skillRoot,
-      skillFile: skill.skillFile,
-      ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
-      ...(requestedModel ? { model: requestedModel } : {}),
-      ...(requestedEffort ? { effort: requestedEffort } : {}),
-      ...(appliedModel ? { appliedModel } : {}),
-      ...(combinedWarnings ? { warnings: combinedWarnings } : {}),
-    };
+    const scope = this.buildSkillScope(
+      skill,
+      source,
+      requestedModel,
+      requestedEffort,
+      appliedModel,
+      combinedWarnings,
+    );
 
     const invocationRecord: InvokedSkillRecord = {
       name: skill.name,
@@ -731,8 +729,64 @@ export class Agent {
     };
 
     this.contextManager.recordInvokedSkill(invocationRecord);
-
     return invocationRecord.content;
+  }
+
+  private validateSkillForInvocation(
+    skill: Skill,
+    source: "user" | "model",
+  ): void {
+    if (source === "user" && skill.userInvocable === false) {
+      throw new Error(`Skill is not user-invocable: ${skill.name}`);
+    }
+    if (source === "model" && skill.disableModelInvocation === true) {
+      throw new Error(`Skill is not model-invocable: ${skill.name}`);
+    }
+    if (skill.context === "fork") {
+      throw new Error(
+        `Skill "${skill.name}" requests forked execution, which is not supported yet.`,
+      );
+    }
+  }
+
+  private collectSkillWarnings(
+    requestedModel: string | undefined,
+    appliedModel: string | undefined,
+    requestedEffort: string | undefined,
+  ): string[] {
+    const warnings: string[] = [];
+    if (requestedModel && !appliedModel) {
+      warnings.push(
+        `Requested model "${requestedModel}" was not applied; continuing with ${this.provider.name}/${this.model}.`,
+      );
+    }
+    if (requestedEffort) {
+      warnings.push(
+        `Requested effort "${requestedEffort}" was recorded but not applied by the current provider.`,
+      );
+    }
+    return warnings;
+  }
+
+  private buildSkillScope(
+    skill: Skill,
+    source: "user" | "model",
+    requestedModel: string | undefined,
+    requestedEffort: string | undefined,
+    appliedModel: string | undefined,
+    combinedWarnings: string[] | undefined,
+  ): SkillInvocationScope {
+    return {
+      invocationSource: source,
+      skillName: skill.name,
+      skillRoot: skill.skillRoot,
+      skillFile: skill.skillFile,
+      ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
+      ...(requestedModel ? { model: requestedModel } : {}),
+      ...(requestedEffort ? { effort: requestedEffort } : {}),
+      ...(appliedModel ? { appliedModel } : {}),
+      ...(combinedWarnings ? { warnings: combinedWarnings } : {}),
+    };
   }
 
   private composeSkillDiscoveryBlock(): string {
@@ -1081,6 +1135,56 @@ export class Agent {
     return normalizedEvent;
   }
 
+  private async streamFinalResponseWithoutTools(
+    messages: ChatMessage[],
+    onToken: (token: string) => void,
+    abortSignal: AbortSignal | undefined,
+    iteration: number,
+    options: AgentEventOptions | undefined,
+  ): Promise<string> {
+    const streamState = { fullResponse: "", chunkCount: 0 };
+    this.emitStatus(options, "Streaming response", "response");
+    for await (const event of this.withStreamIdleWatchdog(
+      this.provider.streamChat({
+        model: this.model,
+        messages,
+        signal: abortSignal,
+        iteration,
+      }),
+      iteration,
+    )) {
+      const normalizedEvent = this.normalizeAndEmitStreamEvent(
+        event,
+        options,
+        abortSignal,
+      );
+      this.recordStreamChunk(normalizedEvent, iteration, streamState, onToken);
+    }
+
+    this.contextManager.commitAssistantResponse(streamState.fullResponse);
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      responseChars: streamState.fullResponse.length,
+      responseIsEmpty: streamState.fullResponse.trim().length === 0,
+      toolCalls: 0,
+    });
+
+    if (streamState.fullResponse.trim().length === 0) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        contextMessages: this.contextManager.messageCount,
+      });
+    }
+
+    return streamState.fullResponse;
+  }
+
   private async requestFinalResponseWithoutTools(
     onToken: (token: string) => void,
     abortSignal: AbortSignal | undefined,
@@ -1105,98 +1209,25 @@ export class Agent {
       );
 
       try {
-        const streamState = { fullResponse: "", chunkCount: 0 };
-        this.emitStatus(options, "Streaming response", "response");
-        for await (const event of this.withStreamIdleWatchdog(
-          this.provider.streamChat({
-            model: this.model,
-            messages,
-            signal: abortSignal,
-            iteration,
-          }),
+        return await this.streamFinalResponseWithoutTools(
+          messages,
+          onToken,
+          abortSignal,
           iteration,
-        )) {
-          const normalizedEvent = this.normalizeAndEmitStreamEvent(
-            event,
-            options,
-            abortSignal,
-          );
-          this.recordStreamChunk(
-            normalizedEvent,
-            iteration,
-            streamState,
-            onToken,
-          );
-        }
-
-        this.contextManager.commitAssistantResponse(streamState.fullResponse);
-        this.emitDiagnostic({
-          type: "iteration_finished",
-          provider: this.provider.name,
-          model: this.model,
-          iteration,
-          responseChars: streamState.fullResponse.length,
-          responseIsEmpty: streamState.fullResponse.trim().length === 0,
-          toolCalls: 0,
-        });
-
-        if (streamState.fullResponse.trim().length === 0) {
-          this.emitDiagnostic({
-            type: "empty_response",
-            provider: this.provider.name,
-            model: this.model,
-            iteration,
-            contextMessages: this.contextManager.messageCount,
-          });
-        }
-
-        return streamState.fullResponse;
+          options,
+        );
       } catch (error) {
-        if (error instanceof ProviderContextLengthError) {
-          if (retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
-            shrinkCount++;
-            if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-              this.emitDiagnostic({
-                type: "context_pressure_circuit_breaker",
-                provider: this.provider.name,
-                model: this.model,
-                iteration,
-                retryLevel,
-              });
-              throw error;
-            }
-            const shrunk = await this.attemptSynchronousShrink(plan);
-            if (shrunk) {
-              this.emitDiagnostic({
-                type: "provider_error",
-                provider: this.provider.name,
-                model: this.model,
-                iteration,
-                errorName: "ProviderContextLengthError",
-                message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
-              });
-              continue;
-            }
-            retryLevel++;
-            this.emitDiagnostic({
-              type: "provider_error",
-              provider: this.provider.name,
-              model: this.model,
-              iteration,
-              errorName: "ProviderContextLengthError",
-              message: `Context length exceeded, retrying at level ${retryLevel}`,
-            });
-            continue;
-          }
-          this.emitDiagnostic({
-            type: "context_pressure_circuit_breaker",
-            provider: this.provider.name,
-            model: this.model,
-            iteration,
-            retryLevel,
-          });
-        }
-        throw error;
+        if (!(error instanceof ProviderContextLengthError)) throw error;
+        const retryAction = await this.handleContextLengthError(
+          plan,
+          retryLevel,
+          shrinkCount,
+          iteration,
+        );
+        if (retryAction.action === "rethrow") throw error;
+        retryLevel = retryAction.contextRetryLevel;
+        shrinkCount = retryAction.synchronousShrinkCount;
+        continue;
       }
     }
 
@@ -1393,10 +1424,62 @@ export class Agent {
     }
 
     const args = toolCall.function.arguments;
+    const safeArgs = args ?? {};
     const toolName = toolCall.function.name;
-    const serializedArgs = JSON.stringify(args ?? {});
+    const serializedArgs = JSON.stringify(safeArgs);
     const toolCallId = toolCall.id!;
-    const activityLabel = this.describeToolInvocation(toolName, args ?? {});
+    const activityLabel = this.describeToolInvocation(toolName, safeArgs);
+
+    this.emitToolStartedDiagnostics(
+      toolName,
+      toolCallId,
+      activityLabel,
+      safeArgs,
+      serializedArgs,
+      iteration,
+      options,
+    );
+    options?.onToolStart?.(toolName);
+
+    const execResult = await this.executeToolWithStatus(
+      toolName,
+      args,
+      allowedTools,
+    );
+    const result = execResult.content;
+    const failed = this.emitToolFinishedEvents(
+      toolName,
+      toolCallId,
+      activityLabel,
+      safeArgs,
+      result,
+      execResult,
+      iteration,
+      options,
+    );
+
+    if (!failed) {
+      this.recordSkillTouchFromToolArgs(toolName, args);
+    }
+    toolExecutionEvents.push({ name: toolName, failed });
+
+    return {
+      toolCallId,
+      toolName,
+      rawContent: result,
+      status: failed ? "error" : "success",
+    };
+  }
+
+  private emitToolStartedDiagnostics(
+    toolName: string,
+    toolCallId: string,
+    activityLabel: string,
+    args: Record<string, unknown>,
+    serializedArgs: string,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+  ): void {
     this.emitStatus(options, "Running tool", "tool");
     this.emitVisibilityEvent(options, {
       type: "tool_started",
@@ -1404,9 +1487,9 @@ export class Agent {
       toolCallId,
       activityLabel,
       useLabel: this.toolRegistry.hasTool(toolName)
-        ? this.toolRegistry.renderInvocationUse(toolName, args ?? {})
+        ? this.toolRegistry.renderInvocationUse(toolName, args)
         : null,
-      args: args ?? {},
+      args,
       argumentChars: serializedArgs.length,
       argumentPreview: this.toPreview(serializedArgs),
     });
@@ -1419,19 +1502,19 @@ export class Agent {
       toolCallId,
       argsChars: serializedArgs.length,
     });
-    options?.onToolStart?.(toolName);
+  }
 
-    const execResult = await this.executeToolWithStatus(
-      toolName,
-      args,
-      allowedTools,
-    );
-    const result = execResult.content;
+  private emitToolFinishedEvents(
+    toolName: string,
+    toolCallId: string,
+    activityLabel: string,
+    args: Record<string, unknown>,
+    result: string,
+    execResult: ToolExecutionResult,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+  ): boolean {
     const failed = execResult.status !== "success";
-    if (!failed) {
-      this.recordSkillTouchFromToolArgs(toolName, args);
-    }
-    toolExecutionEvents.push({ name: toolName, failed });
     this.emitDiagnostic({
       type: "tool_execution_finished",
       provider: this.provider.name,
@@ -1443,17 +1526,9 @@ export class Agent {
       truncatedForContext: false,
       status: execResult.status,
     });
-
-    const artifactToolResult: ArtifactToolResult = {
-      toolCallId,
-      toolName,
-      rawContent: result,
-      status: failed ? "error" : "success",
-    };
-
     const resultPreview =
       !failed && this.toolRegistry.hasTool(toolName)
-        ? this.toolRegistry.renderInvocationResult(toolName, args ?? {}, result)
+        ? this.toolRegistry.renderInvocationResult(toolName, args, result)
         : this.toPreview(result);
     this.emitVisibilityEvent(options, {
       type: failed ? "tool_failed" : "tool_finished",
@@ -1463,8 +1538,7 @@ export class Agent {
       resultPreview,
     });
     options?.onToolEnd?.(toolName, result, execResult.status);
-
-    return artifactToolResult;
+    return failed;
   }
 
   private async finalizeWithNoToolsResponse(
@@ -1499,6 +1573,24 @@ export class Agent {
     };
   }
 
+  private emitToolCallsReceivedDiagnostic(
+    options: AgentStreamOptions | undefined,
+    iterationCount: number,
+    toolCalls: ChatToolCall[],
+  ): void {
+    if (toolCalls.length === 0) return;
+
+    this.emitStatus(options, "Tool call received", "tool");
+    this.emitDiagnostic({
+      type: "tool_calls_received",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      count: toolCalls.length,
+      tools: toolCalls.map((toolCall) => toolCall.function.name),
+    });
+  }
+
   private async handleChatTurnResponse(
     fullResponse: string,
     toolCalls: ChatToolCall[] | undefined,
@@ -1515,100 +1607,43 @@ export class Agent {
     emptyToolOnlyStreak: number;
     hasFinalAssistantResponse: boolean;
   }> {
-    const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
-      ...toolCall,
-      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
-    }));
-    if (normalizedToolCalls && normalizedToolCalls.length > 0) {
-      this.emitStatus(options, "Tool call received", "tool");
-      this.emitDiagnostic({
-        type: "tool_calls_received",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        count: normalizedToolCalls.length,
-        tools: normalizedToolCalls.map((toolCall) => toolCall.function.name),
-      });
-    }
+    const normalizedToolCalls = this.normalizeToolCallIds(
+      toolCalls,
+      iterationCount,
+    );
+    const toolCallsToExecute = normalizedToolCalls ?? [];
+    const hasToolCalls = toolCallsToExecute.length > 0;
+    this.emitToolCallsReceivedDiagnostic(
+      options,
+      iterationCount,
+      toolCallsToExecute,
+    );
 
     this.contextManager.commitAssistantResponse(
       fullResponse,
       normalizedToolCalls,
-      normalizedToolCalls && normalizedToolCalls.length > 0
-        ? { reasoningContent }
-        : undefined,
+      hasToolCalls ? { reasoningContent } : undefined,
     );
-    this.emitDiagnostic({
-      type: "iteration_finished",
-      provider: this.provider.name,
-      model: this.model,
-      iteration: iterationCount,
-      responseChars: fullResponse.length,
-      responseIsEmpty: fullResponse.trim().length === 0,
-      toolCalls: normalizedToolCalls?.length ?? 0,
-    });
+    this.emitTurnFinishedDiagnostics(
+      fullResponse,
+      iterationCount,
+      normalizedToolCalls,
+    );
 
-    if (
-      fullResponse.trim().length === 0 &&
-      (!normalizedToolCalls || normalizedToolCalls.length === 0)
-    ) {
-      this.emitDiagnostic({
-        type: "empty_response",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        contextMessages: this.contextManager.messageCount,
-      });
-    }
-
-    const toolCallsToExecute = normalizedToolCalls ?? [];
-    const hasToolCalls = toolCallsToExecute.length > 0;
     const isEmptyResponse = fullResponse.trim().length === 0;
     const nextEmptyToolOnlyStreak =
       hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
 
     if (hasToolCalls) {
-      // Check for no-progress condition if detector is enabled
-      if (this.runtimeConfig.useNoProgressDetector) {
-        if (this.detectNoProgress(normalizedToolCalls)) {
-          this.emitDiagnostic({
-            type: "no_progress_detected",
-            provider: this.provider.name,
-            model: this.model,
-            iteration: iterationCount,
-            lookbackIterations: 5,
-          });
-
-          return this.finalizeWithNoToolsResponse(
-            onToken,
-            options,
-            iterationCount,
-            nextEmptyToolOnlyStreak,
-            "Stopped after no-progress detection with no final assistant response.",
-          );
-        }
-      } else {
-        // Fallback to empty tool-only streak when detector is disabled (deprecated)
-        if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
-          this.emitDiagnostic({
-            type: "tool_loop_detected",
-            provider: this.provider.name,
-            model: this.model,
-            iteration: iterationCount,
-            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-            threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
-            action: "fallback_no_tools",
-          });
-
-          return this.finalizeWithNoToolsResponse(
-            onToken,
-            options,
-            iterationCount,
-            nextEmptyToolOnlyStreak,
-            "Stopped after repeated empty tool-calling turns with no final assistant response.",
-          );
-        }
-      }
+      const loopResult = await this.checkLoopAndFinalize(
+        toolCallsToExecute,
+        nextEmptyToolOnlyStreak,
+        onToken,
+        options,
+        iterationCount,
+        toolExecutionEvents,
+      );
+      if (loopResult !== null) return loopResult;
 
       onToken("\n");
       await this.executeToolCalls(
@@ -1639,6 +1674,342 @@ export class Agent {
     };
   }
 
+  private normalizeToolCallIds(
+    toolCalls: ChatToolCall[] | undefined,
+    iterationCount: number,
+  ): ChatToolCall[] | undefined {
+    return toolCalls?.map((toolCall, index) => ({
+      ...toolCall,
+      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
+    }));
+  }
+
+  private emitTurnFinishedDiagnostics(
+    fullResponse: string,
+    iterationCount: number,
+    normalizedToolCalls: ChatToolCall[] | undefined,
+  ): void {
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      responseChars: fullResponse.length,
+      responseIsEmpty: fullResponse.trim().length === 0,
+      toolCalls: normalizedToolCalls?.length ?? 0,
+    });
+
+    if (
+      fullResponse.trim().length === 0 &&
+      (!normalizedToolCalls || normalizedToolCalls.length === 0)
+    ) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        contextMessages: this.contextManager.messageCount,
+      });
+    }
+  }
+
+  private async checkLoopAndFinalize(
+    toolCallsToExecute: ChatToolCall[],
+    nextEmptyToolOnlyStreak: number,
+    onToken: (token: string) => void,
+    options: AgentStreamOptions | undefined,
+    iterationCount: number,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<{
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
+  } | null> {
+    void toolExecutionEvents;
+    if (this.runtimeConfig.useNoProgressDetector) {
+      if (!this.detectNoProgress(toolCallsToExecute)) return null;
+      this.emitDiagnostic({
+        type: "no_progress_detected",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        lookbackIterations: 5,
+      });
+      return this.finalizeWithNoToolsResponse(
+        onToken,
+        options,
+        iterationCount,
+        nextEmptyToolOnlyStreak,
+        "Stopped after no-progress detection with no final assistant response.",
+      );
+    }
+
+    if (nextEmptyToolOnlyStreak < Agent.MAX_EMPTY_TOOL_ONLY_STREAK) return null;
+    this.emitDiagnostic({
+      type: "tool_loop_detected",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+      action: "fallback_no_tools",
+    });
+    return this.finalizeWithNoToolsResponse(
+      onToken,
+      options,
+      iterationCount,
+      nextEmptyToolOnlyStreak,
+      "Stopped after repeated empty tool-calling turns with no final assistant response.",
+    );
+  }
+
+  private async handleMaxTokensRecovery(
+    initialResult: {
+      fullResponse: string;
+      toolCalls?: ChatToolCall[];
+      reasoningContent?: string;
+      stopReason?: string;
+    },
+    messages: ChatMessage[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<{
+    fullResponse: string;
+    toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
+  }> {
+    let { fullResponse, toolCalls, reasoningContent } = initialResult;
+
+    if (
+      initialResult.stopReason !== "max_tokens" ||
+      this.runtimeConfig.outputTokenRecoveryLimit <= 0
+    ) {
+      return { fullResponse, toolCalls, reasoningContent };
+    }
+
+    let recoveryAttempts = 0;
+    let currentStopReason = initialResult.stopReason;
+
+    while (
+      recoveryAttempts < this.runtimeConfig.outputTokenRecoveryLimit &&
+      currentStopReason === "max_tokens"
+    ) {
+      recoveryAttempts++;
+      this.emitDiagnostic({
+        type: "output_token_recovery_attempt",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        attemptNumber: recoveryAttempts,
+      });
+
+      const continuationMessages = [...messages];
+      if (fullResponse.trim().length > 0) {
+        continuationMessages.push({ role: "assistant", content: fullResponse });
+      }
+      continuationMessages.push({
+        role: "user",
+        content:
+          "Continue with more detail if needed. If the response is complete, just reply with a period.",
+      });
+
+      const continuationResult = await this.collectProviderStream(
+        continuationMessages,
+        allowedTools,
+        iterationCount,
+        options,
+        onToken,
+      );
+
+      fullResponse += continuationResult.fullResponse;
+      if (continuationResult.toolCalls) {
+        toolCalls = continuationResult.toolCalls;
+        reasoningContent = continuationResult.reasoningContent;
+      }
+      currentStopReason = continuationResult.stopReason ?? currentStopReason;
+    }
+
+    if (currentStopReason === "max_tokens") {
+      this.emitDiagnostic({
+        type: "output_token_recovery_exhausted",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        maxAttempts: this.runtimeConfig.outputTokenRecoveryLimit,
+      });
+    }
+
+    return { fullResponse, toolCalls, reasoningContent };
+  }
+
+  private async handleContextLengthError(
+    plan: PromptPlan,
+    contextRetryLevel: number,
+    synchronousShrinkCount: number,
+    iterationCount: number,
+  ): Promise<
+    | { action: "rethrow" }
+    | {
+        action: "retry";
+        contextRetryLevel: number;
+        synchronousShrinkCount: number;
+      }
+  > {
+    if (contextRetryLevel >= Agent.MAX_CONTEXT_RETRY_LEVEL) {
+      this.emitDiagnostic({
+        type: "context_pressure_circuit_breaker",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        retryLevel: contextRetryLevel,
+      });
+      return { action: "rethrow" };
+    }
+
+    synchronousShrinkCount++;
+    if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+      this.emitDiagnostic({
+        type: "context_pressure_circuit_breaker",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        retryLevel: contextRetryLevel,
+      });
+      return { action: "rethrow" };
+    }
+
+    const shrunk = await this.attemptSynchronousShrink(plan);
+    if (shrunk) {
+      this.emitDiagnostic({
+        type: "provider_error",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        errorName: "ProviderContextLengthError",
+        message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
+      });
+      return { action: "retry", contextRetryLevel, synchronousShrinkCount };
+    }
+
+    contextRetryLevel++;
+    this.emitDiagnostic({
+      type: "provider_error",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      errorName: "ProviderContextLengthError",
+      message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
+    });
+    return { action: "retry", contextRetryLevel, synchronousShrinkCount };
+  }
+
+  private validateTurnCompletion(
+    continueLoop: boolean,
+    iterationCount: number,
+    maxIterations: number,
+    toolCalls: ChatToolCall[] | undefined,
+    hasFinalAssistantResponse: boolean,
+    finalResponse: string,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): void {
+    if (!continueLoop || iterationCount < maxIterations) return;
+
+    const failedTools = Array.from(
+      new Set(
+        toolExecutionEvents
+          .filter((event) => event.failed)
+          .map((event) => event.name),
+      ),
+    );
+    const failedToolCount = toolExecutionEvents.filter(
+      (event) => event.failed,
+    ).length;
+    this.emitDiagnostic({
+      type: "max_iterations_reached",
+      provider: this.provider.name,
+      model: this.model,
+      maxIterations,
+      iterationsCompleted: iterationCount,
+      pendingToolCalls: toolCalls?.length ?? 0,
+      failedToolCount,
+      failedTools,
+    });
+    if (!hasFinalAssistantResponse || finalResponse.trim().length === 0) {
+      const failedToolsSuffix =
+        failedTools.length > 0
+          ? ` Failed tools: ${failedTools.join(", ")}.`
+          : "";
+      throw new Error(
+        `Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.${failedToolsSuffix}`,
+      );
+    }
+  }
+
+  private normalizeExtraInstruction(
+    options?: AgentStreamOptions,
+  ): string | undefined {
+    const instruction = options?.extraUserInstruction;
+    if (!instruction || !instruction.trim()) {
+      return undefined;
+    }
+    return instruction;
+  }
+
+  private selectTurnReasoningSummary(
+    agentSummary: string,
+    providerReasoningSummary: TurnReasoningSummary | null,
+  ): TurnReasoningSummary {
+    if (agentSummary.trim().length > 0) {
+      return { summary: agentSummary, source: "agent" };
+    }
+
+    return (
+      providerReasoningSummary ?? {
+        summary: "Completed the request and generated the final response.",
+        source: "agent",
+      }
+    );
+  }
+
+  private async runOneIteration(
+    messages: ChatMessage[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<{
+    fullResponse: string;
+    toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
+    providerReasoningSummary: TurnReasoningSummary | null;
+  }> {
+    const streamResult = await this.collectProviderStream(
+      messages,
+      allowedTools,
+      iterationCount,
+      options,
+      onToken,
+    );
+    const recovered = await this.handleMaxTokensRecovery(
+      streamResult,
+      messages,
+      allowedTools,
+      iterationCount,
+      options,
+      onToken,
+    );
+    return {
+      ...recovered,
+      providerReasoningSummary: streamResult.providerReasoningSummary,
+    };
+  }
+
+  // Orchestration loop: while + nested context-length retry handling is structural;
+  // business logic is extracted to dedicated helpers.
+  // fallow-ignore-next-line complexity
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
@@ -1658,11 +2029,7 @@ export class Agent {
     let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
-    const extraUserInstruction =
-      options?.extraUserInstruction &&
-      options.extraUserInstruction.trim().length > 0
-        ? options.extraUserInstruction
-        : undefined;
+    const extraUserInstruction = this.normalizeExtraInstruction(options);
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
@@ -1709,128 +2076,32 @@ export class Agent {
         );
 
         try {
-          const streamResult = await this.collectProviderStream(
+          const iterationResult = await this.runOneIteration(
             messages,
             allowedTools,
             iterationCount,
             options,
             onToken,
           );
-          fullResponse = streamResult.fullResponse;
-          toolCalls = streamResult.toolCalls;
-          reasoningContent = streamResult.reasoningContent;
-          providerReasoningSummary = streamResult.providerReasoningSummary;
-
-          // Output-token recovery: attempt continuation if stopped due to max_tokens
-          if (
-            streamResult.stopReason === "max_tokens" &&
-            this.runtimeConfig.outputTokenRecoveryLimit > 0
-          ) {
-            let recoveryAttempts = 0;
-            let currentStopReason = streamResult.stopReason;
-
-            while (
-              recoveryAttempts < this.runtimeConfig.outputTokenRecoveryLimit &&
-              currentStopReason === "max_tokens"
-            ) {
-              recoveryAttempts++;
-              this.emitDiagnostic({
-                type: "output_token_recovery_attempt",
-                provider: this.provider.name,
-                model: this.model,
-                iteration: iterationCount,
-                attemptNumber: recoveryAttempts,
-              });
-
-              // Continue with a request for more tokens
-              const continuationMessages = [...messages];
-              if (fullResponse.trim().length > 0) {
-                continuationMessages.push({
-                  role: "assistant",
-                  content: fullResponse,
-                });
-              }
-              continuationMessages.push({
-                role: "user",
-                content:
-                  "Continue with more detail if needed. If the response is complete, just reply with a period.",
-              });
-
-              const continuationResult = await this.collectProviderStream(
-                continuationMessages,
-                allowedTools,
-                iterationCount,
-                options,
-                onToken,
-              );
-
-              fullResponse += continuationResult.fullResponse;
-              if (continuationResult.toolCalls) {
-                toolCalls = continuationResult.toolCalls;
-                reasoningContent = continuationResult.reasoningContent;
-              }
-              currentStopReason =
-                continuationResult.stopReason ?? currentStopReason;
-            }
-
-            if (currentStopReason === "max_tokens") {
-              this.emitDiagnostic({
-                type: "output_token_recovery_exhausted",
-                provider: this.provider.name,
-                model: this.model,
-                iteration: iterationCount,
-                maxAttempts: this.runtimeConfig.outputTokenRecoveryLimit,
-              });
-            }
-          }
+          providerReasoningSummary = iterationResult.providerReasoningSummary;
+          fullResponse = iterationResult.fullResponse;
+          toolCalls = iterationResult.toolCalls;
+          reasoningContent = iterationResult.reasoningContent;
         } catch (streamError) {
-          if (streamError instanceof ProviderContextLengthError) {
-            if (contextRetryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
-              synchronousShrinkCount++;
-              if (synchronousShrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-                this.emitDiagnostic({
-                  type: "context_pressure_circuit_breaker",
-                  provider: this.provider.name,
-                  model: this.model,
-                  iteration: iterationCount,
-                  retryLevel: contextRetryLevel,
-                });
-                throw streamError;
-              }
-              const shrunk = await this.attemptSynchronousShrink(plan);
-              if (shrunk) {
-                this.emitDiagnostic({
-                  type: "provider_error",
-                  provider: this.provider.name,
-                  model: this.model,
-                  iteration: iterationCount,
-                  errorName: "ProviderContextLengthError",
-                  message: `Context length exceeded, retrying after synchronous summary refresh at level ${contextRetryLevel}`,
-                });
-                iterationCount--;
-                continue;
-              }
-              contextRetryLevel++;
-              this.emitDiagnostic({
-                type: "provider_error",
-                provider: this.provider.name,
-                model: this.model,
-                iteration: iterationCount,
-                errorName: "ProviderContextLengthError",
-                message: `Context length exceeded, retrying at level ${contextRetryLevel}`,
-              });
-              iterationCount--;
-              continue;
-            }
-            this.emitDiagnostic({
-              type: "context_pressure_circuit_breaker",
-              provider: this.provider.name,
-              model: this.model,
-              iteration: iterationCount,
-              retryLevel: contextRetryLevel,
-            });
+          if (!(streamError instanceof ProviderContextLengthError)) {
+            throw streamError;
           }
-          throw streamError;
+          const retryAction = await this.handleContextLengthError(
+            plan,
+            contextRetryLevel,
+            synchronousShrinkCount,
+            iterationCount,
+          );
+          if (retryAction.action === "rethrow") throw streamError;
+          contextRetryLevel = retryAction.contextRetryLevel;
+          synchronousShrinkCount = retryAction.synchronousShrinkCount;
+          iterationCount--;
+          continue;
         }
 
         contextRetryLevel = 0;
@@ -1851,50 +2122,24 @@ export class Agent {
         hasFinalAssistantResponse = turnResult.hasFinalAssistantResponse;
       }
 
-      if (continueLoop && iterationCount >= maxIterations) {
-        const failedTools = Array.from(
-          new Set(
-            toolExecutionEvents
-              .filter((event) => event.failed)
-              .map((event) => event.name),
-          ),
-        );
-        const failedToolCount = toolExecutionEvents.filter(
-          (event) => event.failed,
-        ).length;
-        this.emitDiagnostic({
-          type: "max_iterations_reached",
-          provider: this.provider.name,
-          model: this.model,
-          maxIterations,
-          iterationsCompleted: iterationCount,
-          pendingToolCalls: toolCalls?.length ?? 0,
-          failedToolCount,
-          failedTools,
-        });
-        if (!hasFinalAssistantResponse || finalResponse.trim().length === 0) {
-          const failedToolsSuffix =
-            failedTools.length > 0
-              ? ` Failed tools: ${failedTools.join(", ")}.`
-              : "";
-          throw new Error(
-            `Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.${failedToolsSuffix}`,
-          );
-        }
-      }
+      this.validateTurnCompletion(
+        continueLoop,
+        iterationCount,
+        maxIterations,
+        toolCalls,
+        hasFinalAssistantResponse,
+        finalResponse,
+        toolExecutionEvents,
+      );
 
       const agentSummary = this.synthesizeAgentReasoningSummary(
         iterationCount,
         toolExecutionEvents,
       );
-      const selectedReasoningSummary: TurnReasoningSummary =
-        agentSummary.trim().length > 0
-          ? { summary: agentSummary, source: "agent" }
-          : (providerReasoningSummary ?? {
-              summary:
-                "Completed the request and generated the final response.",
-              source: "agent",
-            });
+      const selectedReasoningSummary = this.selectTurnReasoningSummary(
+        agentSummary,
+        providerReasoningSummary,
+      );
 
       this.lastTurnReasoningSummary = selectedReasoningSummary;
       this.emitVisibilityEvent(options, {

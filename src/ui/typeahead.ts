@@ -208,83 +208,81 @@ function normalizeHomePath(candidatePath: string): string {
   return relative.length === 0 ? "~" : path.join("~", relative);
 }
 
-function resolvePathQuery(
+function resolveAbsolutePathQuery(
   query: string,
-  workspaceRoot: string,
+  resolvedWorkspaceRoot: string,
 ): PathResolution | null {
-  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const absoluteQuery = path.resolve(query);
+  if (!isInsideWorkspaceRoot(absoluteQuery, resolvedWorkspaceRoot)) return null;
+  const slashIndex = query.lastIndexOf("/");
+  const baseQuery = slashIndex >= 0 ? query.slice(0, slashIndex) : "";
+  const absoluteBase = baseQuery.length > 0 ? path.resolve(baseQuery) : "/";
+  if (!isInsideWorkspaceRoot(absoluteBase, resolvedWorkspaceRoot)) return null;
+  return {
+    absoluteBase,
+    basenamePrefix: slashIndex >= 0 ? query.slice(slashIndex + 1) : query,
+    style: "absolute",
+  };
+}
 
-  if (query.startsWith("/")) {
-    const absoluteQuery = path.resolve(query);
-    if (!isInsideWorkspaceRoot(absoluteQuery, resolvedWorkspaceRoot)) {
-      return null;
-    }
+function resolveHomePathQuery(
+  query: string,
+  resolvedWorkspaceRoot: string,
+): PathResolution | null {
+  const home = os.homedir();
+  const homeQuery =
+    query === "~"
+      ? ""
+      : query.startsWith("~/")
+        ? query.slice(2)
+        : query.slice(1);
+  const absoluteQuery = path.resolve(home, homeQuery);
+  if (!isInsideWorkspaceRoot(absoluteQuery, resolvedWorkspaceRoot)) return null;
+  const slashIndex = homeQuery.lastIndexOf("/");
+  const baseQuery = slashIndex >= 0 ? homeQuery.slice(0, slashIndex) : "";
+  const absoluteBase =
+    baseQuery.length > 0 ? path.resolve(home, baseQuery) : home;
+  if (!isInsideWorkspaceRoot(absoluteBase, resolvedWorkspaceRoot)) return null;
+  return {
+    absoluteBase,
+    basenamePrefix:
+      slashIndex >= 0 ? homeQuery.slice(slashIndex + 1) : homeQuery,
+    style: "home",
+  };
+}
 
-    const slashIndex = query.lastIndexOf("/");
-    const baseQuery = slashIndex >= 0 ? query.slice(0, slashIndex) : "";
-    const absoluteBase = baseQuery.length > 0 ? path.resolve(baseQuery) : "/";
-    if (!isInsideWorkspaceRoot(absoluteBase, resolvedWorkspaceRoot)) {
-      return null;
-    }
-
-    return {
-      absoluteBase,
-      basenamePrefix: slashIndex >= 0 ? query.slice(slashIndex + 1) : query,
-      style: "absolute",
-    };
-  }
-
-  if (query.startsWith("~")) {
-    const home = os.homedir();
-    const homeQuery =
-      query === "~"
-        ? ""
-        : query.startsWith("~/")
-          ? query.slice(2)
-          : query.slice(1);
-    const absoluteQuery = path.resolve(home, homeQuery);
-    if (!isInsideWorkspaceRoot(absoluteQuery, resolvedWorkspaceRoot)) {
-      return null;
-    }
-
-    const slashIndex = homeQuery.lastIndexOf("/");
-    const baseQuery = slashIndex >= 0 ? homeQuery.slice(0, slashIndex) : "";
-    const absoluteBase =
-      baseQuery.length > 0 ? path.resolve(home, baseQuery) : home;
-    if (!isInsideWorkspaceRoot(absoluteBase, resolvedWorkspaceRoot)) {
-      return null;
-    }
-
-    return {
-      absoluteBase,
-      basenamePrefix:
-        slashIndex >= 0 ? homeQuery.slice(slashIndex + 1) : homeQuery,
-      style: "home",
-    };
-  }
-
+function resolveRelativePathQuery(
+  query: string,
+  resolvedWorkspaceRoot: string,
+): PathResolution | null {
   const relativeQuery = query.startsWith("./") ? query.slice(2) : query;
   const resolvedQuery = path.resolve(resolvedWorkspaceRoot, relativeQuery);
-  if (!isInsideWorkspaceRoot(resolvedQuery, resolvedWorkspaceRoot)) {
-    return null;
-  }
-
+  if (!isInsideWorkspaceRoot(resolvedQuery, resolvedWorkspaceRoot)) return null;
   const slashIndex = relativeQuery.lastIndexOf("/");
   const baseQuery = slashIndex >= 0 ? relativeQuery.slice(0, slashIndex) : "";
   const absoluteBase =
     baseQuery.length > 0
       ? path.resolve(resolvedWorkspaceRoot, baseQuery)
       : resolvedWorkspaceRoot;
-  if (!isInsideWorkspaceRoot(absoluteBase, resolvedWorkspaceRoot)) {
-    return null;
-  }
-
+  if (!isInsideWorkspaceRoot(absoluteBase, resolvedWorkspaceRoot)) return null;
   return {
     absoluteBase,
     basenamePrefix:
       slashIndex >= 0 ? relativeQuery.slice(slashIndex + 1) : relativeQuery,
     style: query.startsWith("./") ? "dot" : "relative",
   };
+}
+
+function resolvePathQuery(
+  query: string,
+  workspaceRoot: string,
+): PathResolution | null {
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  if (query.startsWith("/"))
+    return resolveAbsolutePathQuery(query, resolvedWorkspaceRoot);
+  if (query.startsWith("~"))
+    return resolveHomePathQuery(query, resolvedWorkspaceRoot);
+  return resolveRelativePathQuery(query, resolvedWorkspaceRoot);
 }
 
 function formatCandidatePath(
@@ -306,44 +304,73 @@ function formatCandidatePath(
   }
 }
 
+interface PathTokenContext {
+  readonly rawToken: string;
+  readonly previousToken: string | null;
+  readonly replaceStart: number;
+  readonly replaceEnd: number;
+  readonly typedPrefix: string;
+  readonly quoted: boolean;
+}
+
+function getPathTokenContext(buffer: string, cursor: number): PathTokenContext {
+  const tokenStart = findTokenStart(buffer, cursor);
+  const tokenEnd = findTokenEnd(buffer, cursor);
+  const rawToken = buffer.slice(tokenStart, tokenEnd);
+  const previousToken = findPreviousToken(buffer, tokenStart);
+  const quote = isQuote(rawToken[0]) ? rawToken[0] : null;
+  const hasClosingQuote = quote !== null && rawToken.endsWith(quote);
+  const replaceStart = quote !== null ? tokenStart + 1 : tokenStart;
+  const replaceEnd = hasClosingQuote ? tokenEnd - 1 : tokenEnd;
+
+  return {
+    rawToken,
+    previousToken,
+    replaceStart,
+    replaceEnd,
+    typedPrefix: buffer
+      .slice(replaceStart, Math.min(cursor, replaceEnd))
+      .replace(/['"]$/, "")
+      .split("#", 1)[0],
+    quoted: quote !== null,
+  };
+}
+
+function hasFileReferenceVerb(previousToken: string | null): boolean {
+  return (
+    previousToken !== null &&
+    FILE_REFERENCE_VERBS.has(previousToken.toLowerCase())
+  );
+}
+
 function createPathTarget(
   buffer: string,
   cursor: number,
   workspaceRoot: string,
 ): TypeaheadTarget | null {
-  const tokenStart = findTokenStart(buffer, cursor);
-  const tokenEnd = findTokenEnd(buffer, cursor);
-  const rawToken = buffer.slice(tokenStart, tokenEnd);
-  const previousToken = findPreviousToken(buffer, tokenStart);
-
-  const quoted = isQuote(rawToken[0]) ? rawToken[0] : null;
-  const hasClosingQuote = quoted !== null && rawToken.endsWith(quoted);
-  const replaceStart = quoted !== null ? tokenStart + 1 : tokenStart;
-  const replaceEnd = hasClosingQuote ? tokenEnd - 1 : tokenEnd;
-  const typedPrefix = buffer
-    .slice(replaceStart, Math.min(cursor, replaceEnd))
-    .replace(/['"]$/, "")
-    .split("#", 1)[0];
+  const context = getPathTokenContext(buffer, cursor);
 
   if (
-    rawToken.length === 0 &&
-    (previousToken === null ||
-      !FILE_REFERENCE_VERBS.has(previousToken.toLowerCase()))
+    context.rawToken.length === 0 &&
+    !hasFileReferenceVerb(context.previousToken)
   ) {
     return null;
   }
 
-  if (rawToken.length > 0 && !isPathLikeToken(typedPrefix, previousToken)) {
+  if (
+    context.rawToken.length > 0 &&
+    !isPathLikeToken(context.typedPrefix, context.previousToken)
+  ) {
     return null;
   }
 
   return {
     kind: "path",
-    query: typedPrefix,
-    replaceStart,
-    replaceEnd,
+    query: context.typedPrefix,
+    replaceStart: context.replaceStart,
+    replaceEnd: context.replaceEnd,
     workspaceRoot,
-    quoted: quoted !== null,
+    quoted: context.quoted,
   };
 }
 

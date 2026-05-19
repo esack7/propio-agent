@@ -61,36 +61,50 @@ export interface ChatPromptSession {
 
 const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
+type CodePointRange = readonly [number, number];
+
+const COMBINING_MARK_RANGES: readonly CodePointRange[] = [
+  [0x0300, 0x036f],
+  [0x1ab0, 0x1aff],
+  [0x1dc0, 0x1dff],
+  [0x20d0, 0x20ff],
+  [0xfe20, 0xfe2f],
+];
+
+const WIDE_CHARACTER_RANGES: readonly CodePointRange[] = [
+  [0x1100, 0x115f],
+  [0x2329, 0x2329],
+  [0x232a, 0x232a],
+  [0x2e80, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1f64f],
+  [0x1f900, 0x1f9ff],
+  [0x20000, 0x3fffd],
+];
+
 function stripAnsi(text: string): string {
   return text.replace(ANSI_ESCAPE_PATTERN, "");
 }
 
+function inCodePointRanges(
+  codePoint: number,
+  ranges: readonly CodePointRange[],
+): boolean {
+  return ranges.some(([start, end]) => codePoint >= start && codePoint <= end);
+}
+
 function isCombiningMark(codePoint: number): boolean {
-  return (
-    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
-    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
-    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
-    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
-    (codePoint >= 0xfe20 && codePoint <= 0xfe2f)
-  );
+  return inCodePointRanges(codePoint, COMBINING_MARK_RANGES);
 }
 
 function isWideCharacter(codePoint: number): boolean {
   return (
-    codePoint >= 0x1100 &&
-    (codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
-      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd))
+    codePoint !== 0x303f && inCodePointRanges(codePoint, WIDE_CHARACTER_RANGES)
   );
 }
 
@@ -231,6 +245,12 @@ interface WrappedPromptSegment {
   end: number;
 }
 
+interface WrapLineState {
+  current: string;
+  currentWidth: number;
+  currentStart: number;
+}
+
 function splitLongTokenByWidth(
   token: string,
   tokenStart: number,
@@ -287,64 +307,94 @@ function splitLongTokenByWidth(
   return segments;
 }
 
+function flushWrappedLineState(
+  segments: WrappedPromptSegment[],
+  state: WrapLineState,
+  end: number,
+): WrapLineState {
+  if (state.current.length === 0) {
+    return state;
+  }
+
+  segments.push({
+    text: state.current,
+    start: state.currentStart,
+    end,
+  });
+  return {
+    current: "",
+    currentWidth: 0,
+    currentStart: end,
+  };
+}
+
+function appendWrappedLineToken(
+  state: WrapLineState,
+  token: string,
+  tokenStart: number,
+  tokenWidth: number,
+): WrapLineState {
+  return {
+    current: `${state.current}${token}`,
+    currentWidth: state.currentWidth + tokenWidth,
+    currentStart: state.current.length === 0 ? tokenStart : state.currentStart,
+  };
+}
+
+function processWrappedLineToken(
+  segments: WrappedPromptSegment[],
+  state: WrapLineState,
+  token: string,
+  tokenStart: number,
+  width: number,
+): WrapLineState {
+  const tokenWidth = getDisplayWidth(token);
+  const tokenEnd = tokenStart + token.length;
+  const nextState =
+    state.current.length > 0 && state.currentWidth + tokenWidth > width
+      ? flushWrappedLineState(segments, state, tokenStart)
+      : state;
+
+  if (tokenWidth > width) {
+    const flushedState = flushWrappedLineState(segments, nextState, tokenStart);
+    segments.push(...splitLongTokenByWidth(token, tokenStart, width));
+    return {
+      ...flushedState,
+      currentStart: tokenEnd,
+    };
+  }
+
+  return appendWrappedLineToken(nextState, token, tokenStart, tokenWidth);
+}
+
 function wrapLineByWidth(line: string, width: number): WrappedPromptSegment[] {
   if (!Number.isFinite(width) || width <= 0) {
     return [{ text: line, start: 0, end: line.length }];
   }
 
   const segments: WrappedPromptSegment[] = [];
-  let current = "";
-  let currentWidth = 0;
-  let currentStart = 0;
   const tokenPattern = /[^\S\n]+|\S+/g;
-  const tokens = line.matchAll(tokenPattern);
+  let state: WrapLineState = {
+    current: "",
+    currentWidth: 0,
+    currentStart: 0,
+  };
 
-  for (const match of tokens) {
-    const token = match[0];
-    const tokenStart = match.index ?? 0;
-    const tokenEnd = tokenStart + token.length;
-    const tokenWidth = getDisplayWidth(token);
-
-    if (current.length > 0 && currentWidth + tokenWidth > width) {
-      segments.push({
-        text: current,
-        start: currentStart,
-        end: tokenStart,
-      });
-      current = "";
-      currentWidth = 0;
-      currentStart = tokenStart;
-    }
-
-    if (tokenWidth > width) {
-      if (current.length > 0) {
-        segments.push({
-          text: current,
-          start: currentStart,
-          end: tokenStart,
-        });
-        current = "";
-        currentWidth = 0;
-      }
-
-      segments.push(...splitLongTokenByWidth(token, tokenStart, width));
-      currentStart = tokenEnd;
-      continue;
-    }
-
-    if (current.length === 0) {
-      currentStart = tokenStart;
-    }
-
-    current += token;
-    currentWidth += tokenWidth;
+  for (const match of line.matchAll(tokenPattern)) {
+    state = processWrappedLineToken(
+      segments,
+      state,
+      match[0],
+      match.index ?? 0,
+      width,
+    );
   }
 
-  if (current.length > 0 || line.length === 0) {
+  if (state.current.length > 0 || line.length === 0) {
     segments.push({
-      text: current,
-      start: currentStart,
-      end: currentStart + current.length,
+      text: state.current,
+      start: state.currentStart,
+      end: state.currentStart + state.current.length,
     });
   }
 
@@ -419,6 +469,92 @@ function formatFooterLines(
     );
 }
 
+interface PromptLayoutBuildState {
+  lines: string[];
+  cursorRow: number;
+  cursorCol: number;
+  consumedCharacters: number;
+  renderedRows: number;
+  footerRows: number;
+  promptWidth: number;
+  indent: string;
+}
+
+function appendWrappedPromptLines(
+  state: PromptLayoutBuildState,
+  promptText: string,
+  lineIndex: number,
+  wrapped: WrappedPromptSegment[],
+): void {
+  for (let segmentIndex = 0; segmentIndex < wrapped.length; segmentIndex += 1) {
+    const prefix =
+      lineIndex === 0 && segmentIndex === 0 ? promptText : state.indent;
+    state.lines.push(`${prefix}${wrapped[segmentIndex].text}`);
+  }
+}
+
+function findWrappedCursorPosition(
+  line: string,
+  wrapped: WrappedPromptSegment[],
+  lineCursorOffset: number,
+): { segmentIndex: number; columnInSegment: number } {
+  const segmentIndex = Math.max(
+    0,
+    wrapped.findIndex(
+      (segment, index) =>
+        lineCursorOffset >= segment.start &&
+        (lineCursorOffset < segment.end ||
+          index === wrapped.length - 1 ||
+          lineCursorOffset === segment.start),
+    ),
+  );
+  const segment = wrapped[segmentIndex];
+  return {
+    segmentIndex,
+    columnInSegment: getDisplayWidth(
+      line.slice(segment.start, lineCursorOffset),
+    ),
+  };
+}
+
+function updatePromptLayoutCursor(
+  state: PromptLayoutBuildState,
+  line: string,
+  wrapped: WrappedPromptSegment[],
+  cursor: number,
+): void {
+  const lineLength = line.length;
+  const cursorLineStart = state.consumedCharacters;
+  const cursorLineEnd = cursorLineStart + lineLength;
+  if (cursor < cursorLineStart || cursor > cursorLineEnd) {
+    return;
+  }
+
+  const lineCursorOffset = cursor - cursorLineStart;
+  const { segmentIndex, columnInSegment } = findWrappedCursorPosition(
+    line,
+    wrapped,
+    lineCursorOffset,
+  );
+  state.cursorRow = state.footerRows + state.renderedRows + segmentIndex;
+  state.cursorCol = state.promptWidth + columnInSegment;
+}
+
+function appendPromptLayoutLine(
+  state: PromptLayoutBuildState,
+  promptText: string,
+  line: string,
+  lineIndex: number,
+  availableWidth: number,
+  cursor: number,
+): void {
+  const wrapped = wrapLineByWidth(line, availableWidth);
+  appendWrappedPromptLines(state, promptText, lineIndex, wrapped);
+  updatePromptLayoutCursor(state, line, wrapped, cursor);
+  state.renderedRows += wrapped.length;
+  state.consumedCharacters += line.length + 1;
+}
+
 function buildPromptLayout(
   promptText: string,
   buffer: string,
@@ -431,66 +567,40 @@ function buildPromptLayout(
   const availableWidth = outputStream.isTTY
     ? Math.max(1, (outputStream.columns ?? 80) - promptWidth)
     : Number.POSITIVE_INFINITY;
-  const indent = " ".repeat(promptWidth);
-  const logicalLines = buffer.split("\n");
   const lines = formatFooterLines(footer, outputStream);
-  const footerRows = lines.length;
-  let cursorRow = footerRows;
-  let cursorCol = promptWidth;
-  let consumedCharacters = 0;
-  let renderedRows = 0;
+  const state: PromptLayoutBuildState = {
+    lines,
+    cursorRow: lines.length,
+    cursorCol: promptWidth,
+    consumedCharacters: 0,
+    renderedRows: 0,
+    footerRows: lines.length,
+    promptWidth,
+    indent: " ".repeat(promptWidth),
+  };
 
-  for (let lineIndex = 0; lineIndex < logicalLines.length; lineIndex += 1) {
-    const line = logicalLines[lineIndex];
-    const wrapped = wrapLineByWidth(line, availableWidth);
-
-    for (
-      let segmentIndex = 0;
-      segmentIndex < wrapped.length;
-      segmentIndex += 1
-    ) {
-      const prefix =
-        lineIndex === 0 && segmentIndex === 0 ? promptText : indent;
-      lines.push(`${prefix}${wrapped[segmentIndex].text}`);
-    }
-
-    const lineLength = line.length;
-    const cursorLineEnd = consumedCharacters + lineLength;
-    const cursorLineStart = consumedCharacters;
-
-    if (cursor >= cursorLineStart && cursor <= cursorLineEnd) {
-      const lineCursorOffset = cursor - cursorLineStart;
-      const segmentIndex = Math.max(
-        0,
-        wrapped.findIndex(
-          (segment, index) =>
-            lineCursorOffset >= segment.start &&
-            (lineCursorOffset < segment.end ||
-              index === wrapped.length - 1 ||
-              lineCursorOffset === segment.start),
-        ),
-      );
-      const segment = wrapped[segmentIndex];
-      const columnInSegment = getDisplayWidth(
-        line.slice(segment.start, lineCursorOffset),
-      );
-      cursorRow = footerRows + renderedRows + segmentIndex;
-      cursorCol = promptWidth + columnInSegment;
-    }
-
-    renderedRows += wrapped.length;
-    consumedCharacters += lineLength + 1;
-  }
+  buffer
+    .split("\n")
+    .forEach((line, lineIndex) =>
+      appendPromptLayoutLine(
+        state,
+        promptText,
+        line,
+        lineIndex,
+        availableWidth,
+        cursor,
+      ),
+    );
 
   if (statusLine) {
-    lines.push(statusLine);
+    state.lines.push(statusLine);
   }
 
   return {
-    lines,
-    cursorRow,
-    cursorCol,
-    totalRows: footerRows + renderedRows + (statusLine ? 1 : 0),
+    lines: state.lines,
+    cursorRow: state.cursorRow,
+    cursorCol: state.cursorCol,
+    totalRows: state.footerRows + state.renderedRows + (statusLine ? 1 : 0),
   };
 }
 
@@ -592,50 +702,44 @@ export function createChatPromptSession(
   let lastLayout: PromptLayout | null = null;
   let activeFooter = request.footer;
 
-  const render = (): void => {
-    const layout = renderPromptFrame(
-      outputStream,
-      request.promptText,
-      buffer,
-      cursor,
-      activeFooter,
-      searchState,
-      typeaheadState,
-      editorStatus,
-    );
+  const buildRenderState = (): ChatPromptSessionState => ({
+    buffer,
+    cursor,
+    footer: activeFooter ?? null,
+    historySearch: searchState
+      ? getHistorySearchSummary(searchState)
+      : undefined,
+    typeahead: typeaheadState ? getTypeaheadSummary(typeaheadState) : undefined,
+    multiline: buffer.includes("\n"),
+    editorStatus,
+  });
 
-    callbacks.render({
-      buffer,
-      cursor,
-      footer: activeFooter ?? null,
-      historySearch: searchState
-        ? getHistorySearchSummary(searchState)
-        : undefined,
-      typeahead: typeaheadState
-        ? getTypeaheadSummary(typeaheadState)
-        : undefined,
-      multiline: buffer.includes("\n"),
-      editorStatus,
-    });
-
+  const clearPreviousLayout = (): void => {
     if (outputStream.isTTY) {
-      if (lastLayout) {
-        try {
-          const previousCursor = getLayoutCursorPosition(
-            lastLayout,
-            outputStream,
-          );
-          readline.moveCursor(outputStream, 0, -previousCursor.row);
-          readline.cursorTo(outputStream, 0);
-          readline.clearScreenDown(outputStream);
-        } catch {
-          // best effort only
-        }
+      if (!lastLayout) {
+        return;
       }
-    } else if (lastLayout) {
-      outputStream.write("\r");
+
+      try {
+        const previousCursor = getLayoutCursorPosition(
+          lastLayout,
+          outputStream,
+        );
+        readline.moveCursor(outputStream, 0, -previousCursor.row);
+        readline.cursorTo(outputStream, 0);
+        readline.clearScreenDown(outputStream);
+      } catch {
+        // best effort only
+      }
+      return;
     }
 
+    if (lastLayout) {
+      outputStream.write("\r");
+    }
+  };
+
+  const writeRenderedLayout = (layout: PromptLayout): void => {
     outputStream.write(layout.lines.join("\n"));
 
     if (outputStream.isTTY) {
@@ -650,6 +754,23 @@ export function createChatPromptSession(
     }
 
     lastLayout = layout;
+  };
+
+  const render = (): void => {
+    const layout = renderPromptFrame(
+      outputStream,
+      request.promptText,
+      buffer,
+      cursor,
+      activeFooter,
+      searchState,
+      typeaheadState,
+      editorStatus,
+    );
+
+    callbacks.render(buildRenderState());
+    clearPreviousLayout();
+    writeRenderedLayout(layout);
   };
 
   const unwatchResize = watchTerminalResize(outputStream, () => {
@@ -922,72 +1043,74 @@ export function createChatPromptSession(
     exitSearch(acceptHistorySearch(searchState));
   };
 
-  const moveHistory = (direction: "up" | "down"): void => {
-    clearTransientStatus();
-    if (typeaheadState) {
-      cancelTypeahead(false);
-    }
-
-    if (searchState) {
-      return;
-    }
-
+  const getBufferLinePosition = () => {
     const currentLineStart = getLineStartIndex(buffer, cursor);
-    const currentLineEnd = getLineEndIndex(buffer, cursor);
-    const lineIndex = buffer.slice(0, currentLineStart).split("\n").length - 1;
-    const totalLines = buffer.length === 0 ? 1 : buffer.split("\n").length;
+    return {
+      currentLineStart,
+      currentLineEnd: getLineEndIndex(buffer, cursor),
+      lineIndex: buffer.slice(0, currentLineStart).split("\n").length - 1,
+      totalLines: buffer.length === 0 ? 1 : buffer.split("\n").length,
+    };
+  };
 
-    if (direction === "up" && lineIndex > 0) {
-      clearTransientStatus();
-      const previousLineStart = buffer.lastIndexOf("\n", currentLineStart - 2);
-      const previousLineEnd = currentLineStart - 1;
-      const targetColumn = getLineColumn(buffer, cursor);
-      const targetStart = previousLineStart >= 0 ? previousLineStart + 1 : 0;
-      cursor = Math.min(targetStart + targetColumn, previousLineEnd);
-      render();
-      return;
+  const selectHistoryEntry = (index: number): void => {
+    const selected = historySnapshot[index];
+    buffer = selected;
+    cursor = selected.length;
+    render();
+  };
+
+  const moveCursorToPreviousLine = (): boolean => {
+    const { currentLineStart, lineIndex } = getBufferLinePosition();
+    if (lineIndex <= 0) {
+      return false;
     }
 
-    if (direction === "up") {
-      if (historySnapshot.length === 0) {
-        return;
-      }
+    const previousLineStart = buffer.lastIndexOf("\n", currentLineStart - 2);
+    const previousLineEnd = currentLineStart - 1;
+    const targetColumn = getLineColumn(buffer, cursor);
+    const targetStart = previousLineStart >= 0 ? previousLineStart + 1 : 0;
+    cursor = Math.min(targetStart + targetColumn, previousLineEnd);
+    render();
+    return true;
+  };
 
-      if (historyIndex === null) {
-        clearTransientStatus();
-        draftSnapshot = { buffer, cursor };
-        historyIndex = 0;
-      } else if (historyIndex < historySnapshot.length - 1) {
-        historyIndex += 1;
-      } else {
-        return;
-      }
-
-      const selected = historySnapshot[historyIndex];
-      buffer = selected;
-      cursor = selected.length;
-      render();
-      return;
+  const moveCursorToNextLine = (): boolean => {
+    const { currentLineEnd, lineIndex, totalLines } = getBufferLinePosition();
+    if (lineIndex >= totalLines - 1) {
+      return false;
     }
 
-    if (direction === "down" && lineIndex < totalLines - 1) {
-      clearTransientStatus();
-      const targetColumn = getLineColumn(buffer, cursor);
-      const nextLineStart = currentLineEnd + 1;
-      const nextLineEnd = buffer.indexOf("\n", nextLineStart);
-      cursor = Math.min(
-        nextLineStart + targetColumn,
-        nextLineEnd >= 0 ? nextLineEnd : buffer.length,
-      );
-      render();
-      return;
-    }
+    const targetColumn = getLineColumn(buffer, cursor);
+    const nextLineStart = currentLineEnd + 1;
+    const nextLineEnd = buffer.indexOf("\n", nextLineStart);
+    cursor = Math.min(
+      nextLineStart + targetColumn,
+      nextLineEnd >= 0 ? nextLineEnd : buffer.length,
+    );
+    render();
+    return true;
+  };
 
+  const moveHistoryUp = (): void => {
     if (historySnapshot.length === 0) {
       return;
     }
 
     if (historyIndex === null) {
+      draftSnapshot = { buffer, cursor };
+      historyIndex = 0;
+    } else if (historyIndex < historySnapshot.length - 1) {
+      historyIndex += 1;
+    } else {
+      return;
+    }
+
+    selectHistoryEntry(historyIndex);
+  };
+
+  const moveHistoryDown = (): void => {
+    if (historySnapshot.length === 0 || historyIndex === null) {
       return;
     }
 
@@ -1001,10 +1124,31 @@ export function createChatPromptSession(
     }
 
     historyIndex -= 1;
-    const selected = historySnapshot[historyIndex];
-    buffer = selected;
-    cursor = selected.length;
-    render();
+    selectHistoryEntry(historyIndex);
+  };
+
+  const moveHistory = (direction: "up" | "down"): void => {
+    clearTransientStatus();
+    if (typeaheadState) {
+      cancelTypeahead(false);
+    }
+
+    if (searchState) {
+      return;
+    }
+
+    if (direction === "up") {
+      if (moveCursorToPreviousLine()) {
+        return;
+      }
+      moveHistoryUp();
+      return;
+    }
+
+    if (moveCursorToNextLine()) {
+      return;
+    }
+    moveHistoryDown();
   };
 
   const insertText = (text: string): void => {
@@ -1212,169 +1356,212 @@ export function createChatPromptSession(
     callbacks.submit(buffer);
   };
 
-  const handleKeypress = (str: string | undefined, key: readline.Key): void => {
-    if (!active) {
-      return;
-    }
-
+  const handleLifecycleKeys = (key: readline.Key): boolean => {
     if (key.name === "c" && key.ctrl) {
       callbacks.interrupt();
-      return;
+      return true;
     }
-
     if (key.name === "d" && key.ctrl) {
       callbacks.close();
-      return;
+      return true;
     }
+    return false;
+  };
 
-    if (key.name === "r" && key.ctrl) {
-      if (!options.enableReverseHistorySearch) {
-        return;
-      }
-      cancelTypeahead(false);
-      enterSearch();
-      return;
-    }
-
+  const handleEditorHandoffKeys = (key: readline.Key): boolean => {
     if (pendingEditorHandoff) {
       pendingEditorHandoff = false;
       if (key.name === "e" && key.ctrl) {
         openEditor();
-        return;
+        return true;
       }
+      return false;
     }
 
+    if (key.name === "x" && key.ctrl) {
+      if (!searchState) pendingEditorHandoff = true;
+      return true;
+    }
+
+    return false;
+  };
+
+  const handleSearchCancelKeys = (key: readline.Key): boolean => {
+    if (key.name === "r" && key.ctrl) {
+      if (options.enableReverseHistorySearch) {
+        cancelTypeahead(false);
+        enterSearch();
+      }
+      return true;
+    }
+
+    if ((key.name === "g" && key.ctrl) || key.name === "escape") {
+      if (searchState) cancelSearch();
+      else if (typeaheadState) cancelTypeahead(true);
+      return true;
+    }
+
+    return false;
+  };
+
+  const handleToolToggleKeys = (key: readline.Key): boolean => {
     if (key.name === "o" && key.ctrl) {
       const nextFooter = callbacks.toggleToolCalls?.();
       if (nextFooter !== undefined) {
         activeFooter = nextFooter ?? undefined;
         render();
       }
-      return;
+      return true;
     }
 
-    if (key.name === "x" && key.ctrl) {
-      if (!searchState) {
-        pendingEditorHandoff = true;
-      }
-      return;
-    }
+    return false;
+  };
 
-    if (key.name === "g" && key.ctrl) {
-      if (searchState) {
-        cancelSearch();
-      } else if (typeaheadState) {
-        cancelTypeahead(true);
-      }
-      return;
-    }
-
-    if (key.name === "escape") {
-      if (searchState) {
-        cancelSearch();
-      } else if (typeaheadState) {
-        cancelTypeahead(true);
-      }
-      return;
-    }
-
+  const handleNewlineAndEnterKeys = (
+    str: string | undefined,
+    key: readline.Key,
+  ): boolean => {
     if (!searchState && ((key.name === "j" && key.ctrl) || str === "\n")) {
       insertText("\n");
-      return;
+      return true;
     }
-
     if (key.name === "return" || key.name === "enter") {
       handleEnter();
-      return;
+      return true;
+    }
+    return false;
+  };
+
+  const handleControlAndSystemKeys = (
+    str: string | undefined,
+    key: readline.Key,
+  ): boolean =>
+    handleLifecycleKeys(key) ||
+    handleEditorHandoffKeys(key) ||
+    handleSearchCancelKeys(key) ||
+    handleToolToggleKeys(key) ||
+    handleNewlineAndEnterKeys(str, key);
+
+  const handleSearchModeInput = (
+    str: string | undefined,
+    key: readline.Key,
+  ): boolean => {
+    if (!searchState) return false;
+    if (key.name === "tab") return true;
+    if (key.name === "backspace" || key.name === "delete") {
+      updateSearchQuery(searchState.query.slice(0, -1));
+      return true;
+    }
+    if (isPrintableKey(str, key)) insertText(str ?? "");
+    return true;
+  };
+
+  const handleTabKey = (key: readline.Key): boolean => {
+    if (key.name !== "tab") {
+      return false;
     }
 
-    if (searchState) {
-      if (key.name === "tab") {
-        return;
+    if (typeaheadState) {
+      if (typeaheadPreviewApplied) cycleTypeahead();
+      else {
+        acceptTypeaheadSelection();
+        render();
       }
-
-      if (key.name === "backspace" || key.name === "delete") {
-        updateSearchQuery(searchState.query.slice(0, -1));
-        return;
-      }
-
-      if (isPrintableKey(str, key)) {
-        insertText(str ?? "");
-      }
-      return;
+    } else {
+      startTypeahead();
     }
 
-    if (key.name === "tab") {
-      if (typeaheadState) {
-        if (typeaheadPreviewApplied) {
-          cycleTypeahead();
-        } else {
-          acceptTypeaheadSelection();
-          render();
-        }
-      } else {
-        startTypeahead();
-      }
-      return;
+    return true;
+  };
+
+  const handleTypeaheadDirectional = (key: readline.Key): boolean => {
+    if (!typeaheadState) {
+      return false;
     }
 
-    if (
-      typeaheadState &&
-      (key.name === "up" || key.name === "down") &&
-      !key.ctrl &&
-      !key.meta
-    ) {
+    if ((key.name === "up" || key.name === "down") && !key.ctrl && !key.meta) {
       navigateTypeahead(key.name === "up" ? "previous" : "next");
-      return;
+      return true;
     }
 
+    return false;
+  };
+
+  const handleWordMovement = (key: readline.Key): boolean => {
     if (
       (key.name === "left" || key.name === "right") &&
       (key.ctrl || key.meta)
     ) {
       moveCursorByWord(key.name);
-      return;
+      return true;
     }
 
     if (key.meta && (key.name === "b" || key.name === "f")) {
       moveCursorByWord(key.name === "b" ? "left" : "right");
-      return;
+      return true;
     }
 
+    return false;
+  };
+
+  const handleBackspaceKey = (key: readline.Key): boolean => {
+    if (key.name !== "backspace") {
+      return false;
+    }
+
+    if (key.meta) {
+      deleteWordBeforeCursor();
+      return true;
+    }
+
+    deleteBeforeCursor();
+    return true;
+  };
+
+  const handleNavigationKeys = (key: readline.Key): boolean => {
     switch (key.name) {
-      case "backspace":
-        if (key.meta) {
-          deleteWordBeforeCursor();
-          return;
-        }
-        deleteBeforeCursor();
-        return;
       case "delete":
         deleteAtCursor();
-        return;
+        return true;
       case "left":
         moveCursor("left");
-        return;
+        return true;
       case "right":
         moveCursor("right");
-        return;
+        return true;
       case "home":
         moveCursor("home");
-        return;
+        return true;
       case "end":
         moveCursor("end");
-        return;
+        return true;
       case "up":
         moveHistory("up");
-        return;
+        return true;
       case "down":
         moveHistory("down");
-        return;
+        return true;
+      default:
+        return false;
     }
+  };
 
-    if (isPrintableKey(str, key)) {
-      insertText(str ?? "");
-    }
+  const handleTypeaheadAndNavigationKeys = (
+    _str: string | undefined,
+    key: readline.Key,
+  ): boolean =>
+    handleTabKey(key) ||
+    handleTypeaheadDirectional(key) ||
+    handleWordMovement(key) ||
+    handleBackspaceKey(key) ||
+    handleNavigationKeys(key);
+
+  const handleKeypress = (str: string | undefined, key: readline.Key): void => {
+    if (!active) return;
+    if (handleControlAndSystemKeys(str, key)) return;
+    if (handleSearchModeInput(str, key)) return;
+    if (handleTypeaheadAndNavigationKeys(str, key)) return;
+    if (isPrintableKey(str, key)) insertText(str ?? "");
   };
 
   const restoreRawMode = (): void => {

@@ -2,7 +2,10 @@ import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import {
+  createPathToolDisplayAdapter,
+  getPathToolInvocationLabel,
   normalizeToolPath,
+  throwToolPathAccessError,
   toStringArg,
   writeFileAtomically,
 } from "./shared.js";
@@ -12,22 +15,11 @@ export class WriteTool implements ExecutableTool {
   readonly description = "Write a file atomically.";
 
   getDisplayAdapter(): ToolDisplayAdapter {
-    return {
-      renderUse(input) {
-        const path = input.path;
-        return typeof path === "string" && path.length > 0 ? path : null;
-      },
-      renderResult(result) {
-        return result;
-      },
-    };
+    return createPathToolDisplayAdapter();
   }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const path = args.path;
-    return typeof path === "string" && path.length > 0
-      ? `Writing ${path}`
-      : "Writing file";
+    return getPathToolInvocationLabel(args, "Writing", "Writing file");
   }
 
   getSchema(): ChatTool {
@@ -65,14 +57,7 @@ export class WriteTool implements ExecutableTool {
       return `Wrote file: ${rawPath}`;
     } catch (error) {
       const err = error as NodeJS.ErrnoException | Error;
-
-      if ("code" in err && (err.code === "EACCES" || err.code === "EPERM")) {
-        throw new Error(`Permission denied: ${rawPath}`);
-      }
-      if ("code" in err && err.code === "EISDIR") {
-        throw new Error(`Path is a directory, not a file: ${rawPath}`);
-      }
-
+      throwToolPathAccessError(err, rawPath);
       throw new Error(`Failed to write file: ${err.message || String(error)}`);
     }
   }

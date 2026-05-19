@@ -14,6 +14,11 @@ import { ProvidersConfig } from "../providers/config.js";
 import { ExecutableTool } from "../tools/interface.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
+import {
+  testProvidersConfig as sharedTestProvidersConfig,
+  createTestAgent,
+  createMockTool,
+} from "./testHelpers.js";
 
 const require = createRequire(import.meta.url);
 const fs = require("fs") as typeof import("fs");
@@ -37,34 +42,7 @@ class MockProvider implements LLMProvider {
   }
 }
 
-// Test providers config
-const testProvidersConfig: ProvidersConfig = {
-  default: "local-ollama",
-  providers: [
-    {
-      name: "local-ollama",
-      type: "ollama",
-      models: [
-        { name: "Llama 3.2 3B", key: "llama3.2:3b" },
-        { name: "Llama 3.2 90B", key: "llama3.2:90b" },
-      ],
-      defaultModel: "llama3.2:3b",
-      host: "http://localhost:11434",
-    },
-    {
-      name: "bedrock",
-      type: "bedrock",
-      models: [
-        {
-          name: "Claude 3.5 Sonnet",
-          key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-        },
-      ],
-      defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-      region: "us-west-2",
-    },
-  ],
-};
+const testProvidersConfig: ProvidersConfig = sharedTestProvidersConfig;
 
 function writeSkillDocument(
   rootDir: string,
@@ -79,6 +57,39 @@ function writeSkillDocument(
   return skillFile;
 }
 
+async function withSpiedDirs<T>(
+  cwdDir: string,
+  homeDir: string,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
+  const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
+  try {
+    return await fn();
+  } finally {
+    cwdSpy.mockRestore();
+    homeSpy.mockRestore();
+  }
+}
+
+/**
+ * Creates fresh cwd and home directories for a skill test.
+ * Any pre-existing directories are removed first.
+ */
+function createSkillDirs(
+  cwdName: string,
+  homeName: string,
+  baseDir: string,
+): { cwdDir: string; homeDir: string } {
+  const cwdDir = path.join(baseDir, cwdName);
+  const homeDir = path.join(baseDir, homeName);
+  fs.rmSync(cwdDir, { recursive: true, force: true });
+  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.mkdirSync(cwdDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
+  return { cwdDir, homeDir };
+}
+
 describe("Agent with Multi-Provider Configuration", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-agent-tests-"));
 
@@ -87,6 +98,61 @@ describe("Agent with Multi-Provider Configuration", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * Shared base for mock providers that track streamChat calls and invocation
+   * count. Subclasses provide a `name` and implement `streamChat`.
+   */
+  abstract class CountingMockProvider implements LLMProvider {
+    abstract name: string;
+    streamChatCalls: ChatRequest[] = [];
+    callCount = 0;
+
+    getCapabilities() {
+      return { contextWindowTokens: 128000 };
+    }
+
+    abstract streamChat(request: ChatRequest): AsyncIterable<ChatChunk>;
+  }
+
+  /**
+   * Creates a diagnostics-enabled agent (no provider injected) and returns
+   * the mutable events array with the agent.
+   */
+  function createEventsAndAgent(): {
+    events: AgentDiagnosticEvent[];
+    agent: Agent;
+  } {
+    const events: AgentDiagnosticEvent[] = [];
+    const agent = new Agent({
+      providersConfig: testProvidersConfig,
+      diagnosticsEnabled: true,
+      onDiagnosticEvent: (event) => {
+        events.push(event);
+      },
+    });
+    return { events, agent };
+  }
+
+  /**
+   * Creates a diagnostics-enabled agent with a fresh MockProvider injected,
+   * and returns the collected events array alongside the agent and provider.
+   */
+  function createDiagnosticsAgent(): {
+    diagnosticEvents: AgentDiagnosticEvent[];
+    agent: Agent;
+    mockProvider: MockProvider;
+  } {
+    const diagnosticEvents: AgentDiagnosticEvent[] = [];
+    const agent = new Agent({
+      providersConfig: testProvidersConfig,
+      diagnosticsEnabled: true,
+      onDiagnosticEvent: (event) => diagnosticEvents.push(event),
+    });
+    const mockProvider = new MockProvider();
+    (agent as any).provider = mockProvider;
+    return { diagnosticEvents, agent, mockProvider };
+  }
 
   describe("Constructor with ProvidersConfig object", () => {
     it("should require providersConfig parameter", () => {
@@ -276,8 +342,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const provider = new ReasoningToolProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = provider;
+      const agent = createTestAgent(provider);
 
       await agent.streamChat("Inspect package", () => {});
 
@@ -388,8 +453,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should preserve session context when switching provider", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("First message", () => {});
       const contextBefore = agent.getContext();
@@ -448,16 +512,10 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("skills bridge", () => {
-    it("should list and refresh local skills without requiring invocation support", () => {
-      const cwdDir = path.join(tempDir, "cwd");
-      const homeDir = path.join(tempDir, "home");
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+    it("should list and refresh local skills without requiring invocation support", async () => {
+      const { cwdDir, homeDir } = createSkillDirs("cwd", "home", tempDir);
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, () => {
         const agent = new Agent({
           providersConfig: testProvidersConfig,
           cwd: cwdDir,
@@ -465,20 +523,15 @@ describe("Agent with Multi-Provider Configuration", () => {
         });
         expect(agent.listSkills()).toEqual([]);
         expect(agent.refreshSkills()).toEqual([]);
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should surface an invoked skill body only once in the next prompt", async () => {
-      const cwdDir = path.join(tempDir, "skill-prompt-cwd");
-      const homeDir = path.join(tempDir, "skill-prompt-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-prompt-cwd",
+        "skill-prompt-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -487,13 +540,9 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Use the review skill body once.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const mockProvider = new MockProvider();
-        (agent as any).provider = mockProvider;
+        const agent = createTestAgent(mockProvider);
 
         await agent.invokeSkill("review", "src/foo.ts", {
           source: "user",
@@ -506,20 +555,15 @@ describe("Agent with Multi-Provider Configuration", () => {
         const matches = promptText.match(/Use the review skill body once\./g);
 
         expect(matches).toHaveLength(1);
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should support an immediate skill turn with an empty user prompt", async () => {
-      const cwdDir = path.join(tempDir, "skill-immediate-cwd");
-      const homeDir = path.join(tempDir, "skill-immediate-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-immediate-cwd",
+        "skill-immediate-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -528,13 +572,9 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Use the instant skill body once.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const mockProvider = new MockProvider();
-        (agent as any).provider = mockProvider;
+        const agent = createTestAgent(mockProvider);
 
         await agent.invokeSkill("instant", undefined, { source: "user" });
         await agent.streamChat("", () => {});
@@ -544,20 +584,15 @@ describe("Agent with Multi-Provider Configuration", () => {
           .map((message) => message.content)
           .join("\n");
         expect(promptText).toContain("Use the instant skill body once.");
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should not activate path skills from denied tool calls", async () => {
-      const cwdDir = path.join(tempDir, "skill-path-cwd");
-      const homeDir = path.join(tempDir, "skill-path-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-path-cwd",
+        "skill-path-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -616,10 +651,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("scope-lock", undefined, {
           source: "user",
@@ -641,20 +673,15 @@ describe("Agent with Multi-Provider Configuration", () => {
         expect(requestToolNames).toEqual(["write"]);
         expect(activeSkillNames).toContain("scope-lock");
         expect(activeSkillNames).not.toContain("path-activation");
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should record model and effort warnings when the current model differs", async () => {
-      const cwdDir = path.join(tempDir, "skill-model-cwd");
-      const homeDir = path.join(tempDir, "skill-model-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-model-cwd",
+        "skill-model-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -668,10 +695,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Model-sensitive body.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("model-skill", undefined, {
           source: "user",
@@ -691,20 +715,15 @@ describe("Agent with Multi-Provider Configuration", () => {
             ),
           ]),
         );
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should record a matching model as applied", async () => {
-      const cwdDir = path.join(tempDir, "skill-model-match-cwd");
-      const homeDir = path.join(tempDir, "skill-model-match-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-model-match-cwd",
+        "skill-model-match-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -718,10 +737,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Matching model body.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         await agent.invokeSkill("matching-model-skill", undefined, {
           source: "user",
@@ -740,20 +756,15 @@ describe("Agent with Multi-Provider Configuration", () => {
         expect(invokedSkills[0].scope.warnings ?? []).not.toEqual(
           expect.arrayContaining([expect.stringContaining("Requested model")]),
         );
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
 
     it("should warn when a skill body references an unknown placeholder", async () => {
-      const cwdDir = path.join(tempDir, "skill-placeholder-cwd");
-      const homeDir = path.join(tempDir, "skill-placeholder-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-placeholder-cwd",
+        "skill-placeholder-home",
+        tempDir,
+      );
 
       writeSkillDocument(
         cwdDir,
@@ -762,10 +773,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Use $MISSING and $ARGUMENTS.",
       );
 
-      const cwdSpy = jest.spyOn(process, "cwd").mockReturnValue(cwdDir);
-      const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(homeDir);
-
-      try {
+      await withSpiedDirs(cwdDir, homeDir, async () => {
         const agent = new Agent({ providersConfig: testProvidersConfig });
         expect(
           agent
@@ -789,18 +797,14 @@ describe("Agent with Multi-Provider Configuration", () => {
             expect.stringContaining('Unknown placeholder "$MISSING"'),
           ]),
         );
-      } finally {
-        cwdSpy.mockRestore();
-        homeSpy.mockRestore();
-      }
+      });
     });
   });
 
   describe("Chat Integration with New Config", () => {
     it("should pass resolved model to provider in streamChat", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Test", () => {});
 
@@ -822,8 +826,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should maintain all existing streamChat functionality", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const response = await agent.streamChat("Test message", () => {});
 
@@ -831,23 +834,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(response).toBe("Mock response");
       expect(mockProvider.streamChatCalls).toHaveLength(1);
     });
-  });
 
-  describe("Stream Integration with New Config", () => {
-    it("should pass resolved model to provider in streamChat", async () => {
+    it("should support token-by-token streaming", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
-
-      await agent.streamChat("Test", () => {});
-
-      expect(mockProvider.streamChatCalls[0].model).toBe("llama3.2:3b");
-    });
-
-    it("should maintain all existing streamChat functionality", async () => {
-      const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const tokens: string[] = [];
       const response = await agent.streamChat("Test", (token) =>
@@ -862,8 +852,7 @@ describe("Agent with Multi-Provider Configuration", () => {
   describe("Backward Compatibility", () => {
     it("should keep streamChat() signature unchanged", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const response = await agent.streamChat("Test", () => {});
       expect(typeof response).toBe("string");
@@ -959,14 +948,8 @@ describe("Agent with Multi-Provider Configuration", () => {
     /**
      * Mock Provider that yields tool calls and then a final response
      */
-    class MockProviderWithToolCalls implements LLMProvider {
+    class MockProviderWithToolCalls extends CountingMockProvider {
       name = "mock-tools";
-      streamChatCalls: ChatRequest[] = [];
-      callCount = 0;
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
 
       async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
         this.streamChatCalls.push(request);
@@ -1000,8 +983,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should pass abortSignal to provider streamChat requests", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const controller = new AbortController();
       await agent.streamChat("Test", jest.fn(), {
@@ -1014,8 +996,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should reject immediately when abortSignal is already aborted", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const controller = new AbortController();
       controller.abort();
@@ -1029,8 +1010,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should still invoke deprecated onToolStart callback", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const onToolStart = jest.fn();
 
@@ -1042,8 +1022,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should still invoke deprecated onToolEnd callback", async () => {
       const mockProvider = new MockProviderWithToolCalls();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const onToolEnd = jest.fn();
 
@@ -1082,14 +1061,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     }
 
-    class MockProviderCapturingToolResult implements LLMProvider {
+    class MockProviderCapturingToolResult extends CountingMockProvider {
       name = "mock-capture";
-      streamChatCalls: ChatRequest[] = [];
-      callCount = 0;
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
 
       async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
         this.streamChatCalls.push(request);
@@ -1144,14 +1117,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new EmptyResponseProvider();
 
       const response = await agent.streamChat("hello", () => {});
@@ -1183,14 +1149,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new FailingProvider();
 
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
@@ -1282,29 +1241,25 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     }
 
+    function expectMaxIterationsDiagnostic(
+      events: AgentDiagnosticEvent[],
+      failedToolCount: number,
+      failedTools: string[],
+    ) {
+      const maxEvent = findMaxIterationsDiagnostic(events);
+      expect(maxEvent).toBeDefined();
+      expect(maxEvent?.iterationsCompleted).toBe(2);
+      expect(maxEvent?.pendingToolCalls).toBe(1);
+      expect(maxEvent?.failedToolCount).toBe(failedToolCount);
+      expect(maxEvent?.failedTools).toEqual(failedTools);
+    }
+
     it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
-      class LoopTool implements ExecutableTool {
-        readonly name = "loop_tool";
-        readonly description = "No-op loop tool for testing.";
-
-        getSchema() {
-          return {
-            type: "function" as const,
-            function: {
-              name: "loop_tool",
-              description: "No-op loop tool for testing",
-              parameters: {
-                type: "object",
-                properties: {},
-              },
-            },
-          };
-        }
-
-        async execute(): Promise<string> {
-          return "loop-ok";
-        }
-      }
+      const loopTool = createMockTool({
+        name: "loop_tool",
+        description: "No-op loop tool for testing.",
+        execute: async () => "loop-ok",
+      });
 
       class LoopingProvider implements LLMProvider {
         name = "looping-provider";
@@ -1341,7 +1296,7 @@ describe("Agent with Multi-Provider Configuration", () => {
           events.push(event);
         },
       });
-      agent.addTool(new LoopTool());
+      agent.addTool(loopTool);
       (agent as any).provider = provider;
 
       const response = await agent.streamChat("hello", () => {});
@@ -1359,28 +1314,11 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should throw a clear error when loop fallback also returns empty", async () => {
-      class LoopTool implements ExecutableTool {
-        readonly name = "loop_tool";
-        readonly description = "No-op loop tool for testing.";
-
-        getSchema() {
-          return {
-            type: "function" as const,
-            function: {
-              name: "loop_tool",
-              description: "No-op loop tool for testing",
-              parameters: {
-                type: "object",
-                properties: {},
-              },
-            },
-          };
-        }
-
-        async execute(): Promise<string> {
-          return "loop-ok";
-        }
-      }
+      const loopTool2 = createMockTool({
+        name: "loop_tool",
+        description: "No-op loop tool for testing.",
+        execute: async () => "loop-ok",
+      });
 
       class EmptyLoopingProvider implements LLMProvider {
         name = "empty-looping-provider";
@@ -1409,7 +1347,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
       });
-      agent.addTool(new LoopTool());
+      agent.addTool(loopTool2);
       (agent as any).provider = new EmptyLoopingProvider();
 
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
@@ -1436,35 +1374,18 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.",
       );
 
-      const maxEvent = findMaxIterationsDiagnostic(events);
-      expect(maxEvent).toBeDefined();
-      expect(maxEvent?.iterationsCompleted).toBe(2);
-      expect(maxEvent?.pendingToolCalls).toBe(1);
-      expect(maxEvent?.failedToolCount).toBe(0);
-      expect(maxEvent?.failedTools).toEqual([]);
+      expectMaxIterationsDiagnostic(events, 0, []);
     });
 
     it("should include failed tool details when max iterations stop an incomplete turn", async () => {
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new RepeatingToolCallProvider("missing_tool");
 
       await expect(
         agent.streamChat("hello", () => {}, { maxIterations: 2 }),
       ).rejects.toThrow("Failed tools: missing_tool.");
 
-      const maxEvent = findMaxIterationsDiagnostic(events);
-      expect(maxEvent).toBeDefined();
-      expect(maxEvent?.iterationsCompleted).toBe(2);
-      expect(maxEvent?.pendingToolCalls).toBe(1);
-      expect(maxEvent?.failedToolCount).toBe(2);
-      expect(maxEvent?.failedTools).toEqual(["missing_tool"]);
+      expectMaxIterationsDiagnostic(events, 2, ["missing_tool"]);
     });
 
     it("should still resolve when a failed tool is followed by a final answer", async () => {
@@ -1499,14 +1420,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should emit context_snapshot and enriched request_started for normal request", async () => {
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       const mockProvider = new MockProvider();
       (agent as any).provider = mockProvider;
 
@@ -1574,14 +1488,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       agent.addTool(new LoopTool());
       (agent as any).provider = new LoopingProvider();
 
@@ -1805,8 +1712,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const mockProvider = new VisibilityMockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       const eventTypes: string[] = [];
       const statuses: string[] = [];
@@ -1926,8 +1832,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const mockProvider = new DirectAnswerProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Answer directly", jest.fn());
       const reasoning = agent.getLastTurnReasoningSummary();
@@ -2100,14 +2005,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("prompt_plan diagnostic event", () => {
     it("should emit prompt_plan event with plan metadata on each request", async () => {
-      const diagnosticEvents: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
-      });
-      const mockProvider = new MockProvider();
-      (agent as any).provider = mockProvider;
+      const { diagnosticEvents, agent } = createDiagnosticsAgent();
 
       await agent.streamChat("Hello", jest.fn());
 
@@ -2134,14 +2032,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("summary refresh diagnostics", () => {
     it("should measure summary prompt size before the summary provider call", async () => {
-      const diagnosticEvents: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
-      });
-      const mockProvider = new MockProvider();
-      (agent as any).provider = mockProvider;
+      const { diagnosticEvents, agent } = createDiagnosticsAgent();
       (agent as any).summaryPolicy = {
         rawRecentTurns: 0,
         refreshIntervalTurns: 999,
@@ -2173,6 +2064,13 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent = new Agent({ providersConfig: testProvidersConfig });
     });
 
+    function expectSinglePinnedRecord(id: string) {
+      const records = agent.getPinnedMemory();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe(id);
+      return records[0];
+    }
+
     it("pinFact should add a retrievable active memory record", () => {
       const id = agent.pinFact({
         kind: "fact",
@@ -2181,12 +2079,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       expect(typeof id).toBe("string");
-      const records = agent.getPinnedMemory();
-      expect(records).toHaveLength(1);
-      expect(records[0].id).toBe(id);
-      expect(records[0].kind).toBe("fact");
-      expect(records[0].content).toBe("Node.js 20 is required");
-      expect(records[0].lifecycle).toBe("active");
+      const record = expectSinglePinnedRecord(id);
+      expect(record.kind).toBe("fact");
+      expect(record.content).toBe("Node.js 20 is required");
+      expect(record.lifecycle).toBe("active");
     });
 
     it("addProjectConstraint should pin a project-scoped constraint", () => {
@@ -2196,12 +2092,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         "security policy",
       );
 
-      const records = agent.getPinnedMemory();
-      expect(records).toHaveLength(1);
-      expect(records[0].id).toBe(id);
-      expect(records[0].kind).toBe("constraint");
-      expect(records[0].scope).toBe("project");
-      expect(records[0].rationale).toBe("security policy");
+      const record = expectSinglePinnedRecord(id);
+      expect(record.kind).toBe("constraint");
+      expect(record.scope).toBe("project");
+      expect(record.rationale).toBe("security policy");
     });
 
     it("updateMemory should supersede the old record and return a new one", () => {
@@ -2321,8 +2215,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should reflect structured turns after a conversation", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Hello", () => {});
 
@@ -2342,8 +2235,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should capture prompt plan after normal request flow", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Test", () => {});
 
@@ -2433,8 +2325,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should be a deep defensive copy", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Test", () => {});
 
@@ -2449,8 +2340,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should be null after clearContext()", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("Build a plan", () => {});
       expect(agent.getLastPromptPlan()).not.toBeNull();
@@ -2461,8 +2351,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should be null after importSession()", async () => {
       const mockProvider = new MockProvider();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createTestAgent(mockProvider);
 
       await agent.streamChat("First session", () => {});
       expect(agent.getLastPromptPlan()).not.toBeNull();
@@ -2573,6 +2462,16 @@ describe("Agent with Multi-Provider Configuration", () => {
         .then(() => events);
     }
 
+    function expectSingleToolEvent(
+      events: AgentVisibilityEvent[],
+      type: "tool_finished" | "tool_failed",
+      toolName: string,
+    ) {
+      const matching = events.filter((event) => event.type === type);
+      expect(matching).toHaveLength(1);
+      expect(matching[0]).toMatchObject({ type, toolName });
+    }
+
     it("emits tool_finished for a working tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new SingleToolCallProvider("read", {
@@ -2580,13 +2479,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       const events = await collectEvents(agent, "list files");
-      const finished = events.filter((e) => e.type === "tool_finished");
 
-      expect(finished).toHaveLength(1);
-      expect(finished[0]).toMatchObject({
-        type: "tool_finished",
-        toolName: "read",
-      });
+      expectSingleToolEvent(events, "tool_finished", "read");
     });
 
     it("emits tool_failed for a disabled tool", async () => {
@@ -2598,13 +2492,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       const events = await collectEvents(agent, "list files");
-      const failed = events.filter((e) => e.type === "tool_failed");
 
-      expect(failed).toHaveLength(1);
-      expect(failed[0]).toMatchObject({
-        type: "tool_failed",
-        toolName: "grep",
-      });
+      expectSingleToolEvent(events, "tool_failed", "grep");
     });
 
     it("emits tool_failed for a missing tool", async () => {
@@ -2615,13 +2504,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
 
       const events = await collectEvents(agent, "run tool");
-      const failed = events.filter((e) => e.type === "tool_failed");
 
-      expect(failed).toHaveLength(1);
-      expect(failed[0]).toMatchObject({
-        type: "tool_failed",
-        toolName: "nonexistent_tool_xyz",
-      });
+      expectSingleToolEvent(events, "tool_failed", "nonexistent_tool_xyz");
     });
   });
 });

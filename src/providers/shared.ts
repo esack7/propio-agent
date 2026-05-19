@@ -1,9 +1,13 @@
+import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type {
   ChatMessage,
   ChatRequest,
   ChatTool,
   ChatToolCall,
+  ToolResult,
 } from "./types.js";
+import { ProviderCapacityError } from "./types.js";
+import type { WithRetryOptions } from "./withRetry.js";
 
 export interface OpenAIToolDefinition {
   readonly type: "function";
@@ -28,7 +32,11 @@ interface OpenAIStreamToolCallAccumulator {
   argsString: string;
 }
 
-function expandToolResults(messages: ChatMessage[]): ChatMessage[] {
+export function expandToolResultMessages(
+  messages: ChatMessage[],
+  toolCallIdForResult: (toolResult: ToolResult) => string = (toolResult) =>
+    toolResult.toolCallId,
+): ChatMessage[] {
   const expanded: ChatMessage[] = [];
 
   for (const msg of messages) {
@@ -37,7 +45,7 @@ function expandToolResults(messages: ChatMessage[]): ChatMessage[] {
         expanded.push({
           role: "tool",
           content: toolResult.content,
-          toolCallId: toolResult.toolCallId,
+          toolCallId: toolCallIdForResult(toolResult),
         });
       }
       continue;
@@ -57,7 +65,7 @@ export function buildOpenAIChatCompletionRequestBody<TMessage, TTool>(options: {
   includeTools?: boolean;
   extra?: (body: Record<string, unknown>) => void;
 }): Record<string, unknown> {
-  const messages = expandToolResults(options.request.messages).map(
+  const messages = expandToolResultMessages(options.request.messages).map(
     options.mapMessage,
   );
 
@@ -78,6 +86,42 @@ export function buildOpenAIChatCompletionRequestBody<TMessage, TTool>(options: {
 
   options.extra?.(body);
   return body;
+}
+
+export function createProviderRetryOptions(options: {
+  request: ChatRequest;
+  model: string;
+  provider: string;
+  retryConfig?: {
+    maxRetries: number;
+    consecutive529Limit: number;
+    baseDelayMs?: number;
+  };
+  isRetryable: (err: unknown) => boolean;
+  onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+}): WithRetryOptions {
+  const retryOptions: WithRetryOptions = {
+    maxRetries: options.retryConfig?.maxRetries ?? 3,
+    isRetryable: options.isRetryable,
+    is529: (err) => err instanceof ProviderCapacityError,
+    consecutive529Limit: options.retryConfig?.consecutive529Limit ?? 3,
+    onRetry: (ctx) =>
+      options.onDiagnosticEvent?.({
+        type: "provider_retry",
+        provider: options.provider,
+        model: options.request.model || options.model,
+        iteration: options.request.iteration ?? 0,
+        reason: ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+        attemptNumber: ctx.attempt + 1,
+        delayMs: ctx.delayMs,
+      }),
+  };
+
+  if (options.retryConfig?.baseDelayMs !== undefined) {
+    retryOptions.baseDelayMs = options.retryConfig.baseDelayMs;
+  }
+
+  return retryOptions;
 }
 
 function serializeToolArguments(args: unknown): string {
