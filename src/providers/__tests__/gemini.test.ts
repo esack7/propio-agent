@@ -94,18 +94,15 @@ describe("GeminiProvider", () => {
   describe("streamChat()", () => {
     it("should translate messages, images, and batched tool results into the Gemini request body", async () => {
       let capturedBody: unknown = null;
-      globalThis.fetch = jest
-        .fn()
-        .mockImplementation((_url: string, init?: RequestInit) => {
-          capturedBody = init?.body ? JSON.parse(init.body as string) : null;
-          return Promise.resolve({
-            ok: true,
-            body: createSseStream([
-              'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-              "data: [DONE]\n\n",
-            ]),
-          });
-        });
+      globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
+        [
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        (body) => {
+          capturedBody = body;
+        },
+      );
 
       const provider = new GeminiProvider({
         model: "gemini-3.1-pro-preview",

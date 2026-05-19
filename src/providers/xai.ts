@@ -4,9 +4,7 @@ import {
   ChatStreamEvent,
   ProviderError,
   ProviderAuthenticationError,
-  ProviderRateLimitError,
   ProviderModelNotFoundError,
-  ProviderContextLengthError,
   ProviderCapacityError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
@@ -15,15 +13,14 @@ import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
   buildOpenAIStreamToolCalls,
-  isAbortOrTransportError,
-  isContextLengthError,
   parseJsonMaybe,
-  normalizeErrorMessage,
   parseOpenAIStreamToolCallArguments,
-  parseRetryAfterSeconds,
   readSseDataLines,
 } from "./shared.js";
-import { OpenAiCompatibleProvider } from "./openAiCompatibleProvider.js";
+import {
+  OpenAiCompatibleProvider,
+  type OpenAiCompatibleProviderOptions,
+} from "./openAiCompatibleProvider.js";
 
 const XAI_API_URLS = [
   "https://api.x.ai/v1/chat/completions",
@@ -54,12 +51,7 @@ export class XaiProvider extends OpenAiCompatibleProvider {
 
   private static readonly DEFAULT_CONTEXT_WINDOW = 2_000_000;
 
-  constructor(options: {
-    model: string;
-    apiKey?: string;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number };
-    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-  }) {
+  constructor(options: OpenAiCompatibleProviderOptions) {
     super();
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
     if (!apiKey || apiKey.trim() === "") {
@@ -151,23 +143,12 @@ export class XaiProvider extends OpenAiCompatibleProvider {
       const body = this.createChatCompletionRequestBody(request);
       const response = await withRetry(
         () => this.createChatCompletionResponse(body, request.signal),
-        {
-          maxRetries: this.retryConfig?.maxRetries ?? 3,
-          isRetryable: (err) => this.isRetryableError(err),
-          is529: (err) => err instanceof ProviderCapacityError,
-          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-          onRetry: (ctx) =>
-            this.onDiagnosticEvent?.({
-              type: "provider_retry",
-              provider: this.name,
-              model: request.model || this.model,
-              iteration: request.iteration ?? 0,
-              reason:
-                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-              attemptNumber: ctx.attempt + 1,
-              delayMs: ctx.delayMs,
-            }),
-        },
+        this.buildRetryOptions(
+          request,
+          this.model,
+          this.retryConfig,
+          this.onDiagnosticEvent,
+        ),
       );
 
       const reader = this.getResponseReader(response);
@@ -295,92 +276,19 @@ export class XaiProvider extends OpenAiCompatibleProvider {
     return { events, stopReason };
   }
 
-  protected translateError(error: unknown, response?: Response): ProviderError {
-    const originalError =
-      error instanceof Error ? error : new Error(String(error));
-    const normalizedMessage = normalizeErrorMessage(originalError.message);
-
-    if (response) {
-      const translatedResponseError = this.translateResponseError(
-        response,
-        normalizedMessage,
-        originalError,
-      );
-      if (translatedResponseError) {
-        return translatedResponseError;
-      }
-    }
-
-    const msg = normalizedMessage || originalError.message;
-    return this.translateMessageError(msg, originalError);
-  }
-
-  private translateResponseError(
-    response: Response,
-    normalizedMessage: string,
-    originalError: Error,
-  ): ProviderError | null {
-    if (response.status === 400 && isContextLengthError(normalizedMessage)) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${normalizedMessage}`,
-        originalError,
-      );
-    }
-    if (response.status === 401) {
-      return new ProviderAuthenticationError(
-        "Invalid xAI API key",
-        originalError,
-      );
-    }
-    if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after");
-      const retryAfterSeconds = parseRetryAfterSeconds(retryAfter);
-      return new ProviderRateLimitError(
-        "xAI rate limit exceeded",
-        retryAfterSeconds,
-        originalError,
-      );
-    }
-    if (response.status === 404) {
-      return new ProviderModelNotFoundError(
-        this.model,
-        `Model not found: ${this.model}`,
-        originalError,
-      );
-    }
-    if (response.status >= 500 && response.status < 600) {
-      return new ProviderError(
-        normalizedMessage
-          ? `xAI service error: ${normalizedMessage}`
-          : "xAI service error",
-        originalError,
-      );
-    }
-
-    return null;
-  }
-
-  private translateMessageError(
-    msg: string,
-    originalError: Error,
+  protected translateError(
+    error: unknown,
+    response?: Response,
+    _responseBody?: string,
   ): ProviderError {
-    if (isContextLengthError(msg)) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${msg}`,
-        originalError,
-      );
-    }
-
-    if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
-      return new ProviderError("Request cancelled", originalError);
-    }
-    if (msg && isAbortOrTransportError(msg)) {
-      return new ProviderError("Failed to connect to xAI API", originalError);
-    }
-    return new ProviderError(
-      originalError.message || "xAI request failed",
-      originalError,
-    );
+    return this.translateStandardOpenAiError(error, response, {
+      model: this.model,
+      authenticationMessage: "Invalid xAI API key",
+      rateLimitMessage: "xAI rate limit exceeded",
+      serviceErrorMessage: "xAI service error",
+      connectionErrorMessage: "Failed to connect to xAI API",
+      requestFailedMessage: "xAI request failed",
+    });
   }
 }
 

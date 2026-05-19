@@ -5,9 +5,25 @@ import { ChatTool } from "../providers/types.js";
 import {
   normalizeToolPath,
   readUtf8TextFile,
+  throwToolPathAccessError,
   toStringArg,
   writeFileAtomically,
 } from "./shared.js";
+
+function throwEditFileSystemError(
+  err: NodeJS.ErrnoException | Error,
+  rawPath: unknown,
+): void {
+  if (!("code" in err)) {
+    return;
+  }
+
+  if (err.code === "ENOENT") {
+    throw new Error(`File not found: ${rawPath}`);
+  }
+
+  throwToolPathAccessError(err, rawPath);
+}
 
 export class EditTool implements ExecutableTool {
   readonly name = "edit";
@@ -67,28 +83,20 @@ export class EditTool implements ExecutableTool {
     };
   }
 
+  private rethrowKnownEditMessageErrors(err: Error): void {
+    if (err.message.startsWith("String not found")) throw err;
+    if (err.message === "old_string must be a non-empty string") throw err;
+    if (err.message.startsWith("Multiple matches found for edit")) throw err;
+    if (err.message.startsWith("Path is")) throw err;
+  }
+
   private classifyEditError(error: unknown, rawPath: unknown): never {
     const err = error as NodeJS.ErrnoException | Error;
-    if (err instanceof Error && err.message.startsWith("String not found"))
-      throw err;
-    if (
-      err instanceof Error &&
-      err.message === "old_string must be a non-empty string"
-    )
-      throw err;
-    if (
-      err instanceof Error &&
-      err.message.startsWith("Multiple matches found for edit")
-    )
-      throw err;
-    if (err instanceof Error && err.message.startsWith("Path is")) throw err;
-    if ("code" in err && err.code === "ENOENT")
-      throw new Error(`File not found: ${rawPath}`);
-    if ("code" in err && (err.code === "EACCES" || err.code === "EPERM"))
-      throw new Error(`Permission denied: ${rawPath}`);
-    if ("code" in err && err.code === "EISDIR")
-      throw new Error(`Path is a directory, not a file: ${rawPath}`);
-    throw new Error(`Failed to edit file: ${err.message || String(error)}`);
+    if (err instanceof Error) {
+      this.rethrowKnownEditMessageErrors(err);
+    }
+    throwEditFileSystemError(err, rawPath);
+    throw new Error(`Failed to edit file: ${(err as Error).message || String(error)}`);
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {

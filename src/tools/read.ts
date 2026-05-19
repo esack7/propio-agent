@@ -2,10 +2,35 @@ import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
-import { normalizeToolPath, readUtf8TextFile } from "./shared.js";
+import {
+  normalizeToolPath,
+  readUtf8TextFile,
+  throwToolPathAccessError,
+} from "./shared.js";
 
 export interface ReadToolConfig {
   readonly outputInlineLimit?: number;
+}
+
+function throwReadFileSystemError(
+  err: NodeJS.ErrnoException | Error,
+  rawPath: unknown,
+  path: string,
+): void {
+  if (!("code" in err)) {
+    return;
+  }
+
+  if (err.code === "ENOENT") {
+    const isArtifact = typeof path === "string" && path.includes("/artifacts/");
+    throw new Error(
+      isArtifact
+        ? `Artifact file no longer available: ${rawPath}`
+        : `File not found: ${rawPath}`,
+    );
+  }
+
+  throwToolPathAccessError(err, rawPath);
 }
 
 export class ReadTool implements ExecutableTool {
@@ -77,27 +102,39 @@ export class ReadTool implements ExecutableTool {
     };
   }
 
+  private validateLineRange(
+    startLine: number | undefined,
+    lineCount: number | undefined,
+    totalLines: number,
+  ): void {
+    if (startLine !== undefined && startLine < 1) {
+      throw new Error(`startLine must be at least 1 (got ${startLine})`);
+    }
+
+    const start = (startLine ?? 1) - 1;
+    if (start >= totalLines) {
+      throw new Error(
+        `startLine ${startLine} is out of range (file has ${totalLines} lines)`,
+      );
+    }
+
+    if (lineCount !== undefined && lineCount < 1) {
+      throw new Error("lineCount must be at least 1");
+    }
+
+    if (lineCount !== undefined && lineCount > 5000) {
+      throw new Error(`lineCount ${lineCount} exceeds maximum of 5000`);
+    }
+  }
+
   private sliceByLines(
     content: string,
     startLine: number | undefined,
     lineCount: number | undefined,
   ): string {
-    if (startLine !== undefined && startLine < 1) {
-      throw new Error(`startLine must be at least 1 (got ${startLine})`);
-    }
     const lines = content.split("\n");
+    this.validateLineRange(startLine, lineCount, lines.length);
     const start = (startLine ?? 1) - 1;
-    if (start >= lines.length) {
-      throw new Error(
-        `startLine ${startLine} is out of range (file has ${lines.length} lines)`,
-      );
-    }
-    if (lineCount !== undefined && lineCount < 1) {
-      throw new Error("lineCount must be at least 1");
-    }
-    if (lineCount !== undefined && lineCount > 5000) {
-      throw new Error(`lineCount ${lineCount} exceeds maximum of 5000`);
-    }
     const count = lineCount ?? lines.length - start;
     return lines.slice(start, start + count).join("\n");
   }
@@ -123,34 +160,24 @@ export class ReadTool implements ExecutableTool {
     return buf.slice(offsetVal, end).toString("utf8");
   }
 
+  private rethrowKnownReadMessageErrors(err: Error): void {
+    if (err.message.startsWith("Path is")) throw err;
+    if (err.message.includes("is out of range")) throw err;
+    if (err.message.includes("must be")) throw err;
+    if (err.message.includes("exceeds maximum")) throw err;
+  }
+
   private classifyReadError(
     error: unknown,
     rawPath: unknown,
     path: string,
   ): never {
     const err = error as NodeJS.ErrnoException | Error;
-    if (err instanceof Error && err.message.startsWith("Path is")) throw err;
-    if (err instanceof Error && err.message.includes("is out of range"))
-      throw err;
-    if (err instanceof Error && err.message.includes("must be")) throw err;
-    if (err instanceof Error && err.message.includes("exceeds maximum"))
-      throw err;
-    if ("code" in err && err.code === "ENOENT") {
-      const isArtifact =
-        typeof path === "string" && path.includes("/artifacts/");
-      throw new Error(
-        isArtifact
-          ? `Artifact file no longer available: ${rawPath}`
-          : `File not found: ${rawPath}`,
-      );
+    if (err instanceof Error) {
+      this.rethrowKnownReadMessageErrors(err);
     }
-    if ("code" in err && (err.code === "EACCES" || err.code === "EPERM")) {
-      throw new Error(`Permission denied: ${rawPath}`);
-    }
-    if ("code" in err && err.code === "EISDIR") {
-      throw new Error(`Path is a directory, not a file: ${rawPath}`);
-    }
-    throw new Error(`Failed to read file: ${err.message || String(error)}`);
+    throwReadFileSystemError(err, rawPath, path);
+    throw new Error(`Failed to read file: ${(err as Error).message || String(error)}`);
   }
 
   async execute(args: Record<string, unknown>): Promise<string> {

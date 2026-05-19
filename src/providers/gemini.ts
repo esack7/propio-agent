@@ -1,16 +1,12 @@
-import { LLMProvider, ProviderCapabilities } from "./interface.js";
+import { ProviderCapabilities } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
   ChatStreamEvent,
-  ChatTool,
   ChatToolCall,
   ProviderAuthenticationError,
-  ProviderContextLengthError,
   ProviderError,
   ProviderModelNotFoundError,
-  ProviderRateLimitError,
-  ProviderCapacityError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { withRetry } from "./withRetry.js";
@@ -20,15 +16,14 @@ import {
   buildOpenAIStreamToolCalls,
   applyOpenAIMessageCore,
   createOpenAIToolCall,
-  createOpenAIToolDefinition,
-  isAbortOrTransportError,
-  isContextLengthError,
   parseJsonMaybe,
-  normalizeErrorMessage,
   parseOpenAIStreamToolCallArguments,
-  parseRetryAfterSeconds,
   readSseDataLines,
 } from "./shared.js";
+import {
+  OpenAiCompatibleProvider,
+  type OpenAiCompatibleProviderOptions,
+} from "./openAiCompatibleProvider.js";
 
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
@@ -67,7 +62,7 @@ interface OpenAITool {
 /**
  * Gemini implementation of LLMProvider using Google's OpenAI-compatible API.
  */
-export class GeminiProvider implements LLMProvider {
+export class GeminiProvider extends OpenAiCompatibleProvider {
   readonly name = "gemini";
   private readonly model: string;
   private readonly apiKey: string;
@@ -88,12 +83,8 @@ export class GeminiProvider implements LLMProvider {
     "gemini-3.1-flash-lite-preview",
   ]);
 
-  constructor(options: {
-    model: string;
-    apiKey?: string;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number };
-    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-  }) {
+  constructor(options: OpenAiCompatibleProviderOptions) {
+    super();
     const apiKey =
       options.apiKey ??
       process.env.GEMINI_API_KEY ??
@@ -143,7 +134,7 @@ export class GeminiProvider implements LLMProvider {
     return `data:image/png;base64,${Buffer.from(image).toString("base64")}`;
   }
 
-  private chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
+  protected chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
     const role = msg.role as OpenAIMessage["role"];
     const out: OpenAIMessage = {
       role,
@@ -187,89 +178,19 @@ export class GeminiProvider implements LLMProvider {
     return out;
   }
 
-  private chatToolToOpenAITool(tool: ChatTool): OpenAITool {
-    return createOpenAIToolDefinition(tool);
-  }
-
-  private translateError(error: unknown, response?: Response): ProviderError {
-    const originalError =
-      error instanceof Error ? error : new Error(String(error));
-    const normalizedMessage = normalizeErrorMessage(originalError.message);
-
-    if (response) {
-      if (response.status === 400 && isContextLengthError(normalizedMessage)) {
-        return new ProviderContextLengthError(
-          `Context length exceeded: ${normalizedMessage}`,
-          originalError,
-        );
-      }
-
-      if (response.status === 401) {
-        return new ProviderAuthenticationError(
-          "Invalid Gemini API key",
-          originalError,
-        );
-      }
-
-      if (response.status === 429) {
-        const retryAfter = response.headers.get("retry-after");
-        const retryAfterSeconds = parseRetryAfterSeconds(retryAfter);
-        return new ProviderRateLimitError(
-          "Gemini rate limit exceeded",
-          retryAfterSeconds,
-          originalError,
-        );
-      }
-
-      if (response.status === 404) {
-        return new ProviderModelNotFoundError(
-          this.model,
-          `Model not found: ${this.model}`,
-          originalError,
-        );
-      }
-
-      if (response.status >= 500 && response.status < 600) {
-        return new ProviderError(
-          normalizedMessage
-            ? `Gemini service error: ${normalizedMessage}`
-            : "Gemini service error",
-          originalError,
-        );
-      }
-    }
-
-    const msg = normalizedMessage || originalError.message;
-
-    if (isContextLengthError(msg)) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${msg}`,
-        originalError,
-      );
-    }
-
-    if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
-      return new ProviderError("Request cancelled", originalError);
-    }
-
-    if (msg && isAbortOrTransportError(msg)) {
-      return new ProviderError(
-        "Failed to connect to Gemini API",
-        originalError,
-      );
-    }
-
-    return new ProviderError(
-      originalError.message || "Gemini request failed",
-      originalError,
-    );
-  }
-
-  private isRetryableError(err: unknown): boolean {
-    if (err instanceof ProviderContextLengthError) return false;
-    if (err instanceof ProviderAuthenticationError) return false;
-    if (err instanceof ProviderModelNotFoundError) return false;
-    return err instanceof ProviderError;
+  protected translateError(
+    error: unknown,
+    response?: Response,
+    _responseBody?: string,
+  ): ProviderError {
+    return this.translateStandardOpenAiError(error, response, {
+      model: this.model,
+      authenticationMessage: "Invalid Gemini API key",
+      rateLimitMessage: "Gemini rate limit exceeded",
+      serviceErrorMessage: "Gemini service error",
+      connectionErrorMessage: "Failed to connect to Gemini API",
+      requestFailedMessage: "Gemini request failed",
+    });
   }
 
   private mapFinishReason(finishReason: string): string {
@@ -337,23 +258,12 @@ export class GeminiProvider implements LLMProvider {
 
       const response = await withRetry(
         () => this.fetchGeminiStream(body, request.signal),
-        {
-          maxRetries: this.retryConfig?.maxRetries ?? 3,
-          isRetryable: (err) => this.isRetryableError(err),
-          is529: (err) => err instanceof ProviderCapacityError,
-          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-          onRetry: (ctx) =>
-            this.onDiagnosticEvent?.({
-              type: "provider_retry",
-              provider: this.name,
-              model: request.model || this.model,
-              iteration: request.iteration ?? 0,
-              reason:
-                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-              attemptNumber: ctx.attempt + 1,
-              delayMs: ctx.delayMs,
-            }),
-        },
+        this.buildRetryOptions(
+          request,
+          this.model,
+          this.retryConfig,
+          this.onDiagnosticEvent,
+        ),
       );
 
       const reader = response.body?.getReader();

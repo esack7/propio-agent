@@ -129,6 +129,24 @@ function errorResult(
   };
 }
 
+function resolveMentionErrorMessage(
+  err: NodeJS.ErrnoException | Error,
+  mention: ParsedFileMention,
+): string {
+  if ("code" in err) {
+    if (err.code === "ENOENT") return `File not found: ${mention.path}`;
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return `Permission denied: ${mention.path}`;
+    }
+    if (err.code === "EISDIR") {
+      return `Path is a directory, not a file: ${mention.path}`;
+    }
+  }
+
+  const message = err instanceof Error ? err.message : String(err);
+  return message.length > 0 ? message : `Failed to resolve mention: ${mention.raw}`;
+}
+
 export class AttachmentResolver {
   private readonly parser = new MentionParser();
 
@@ -196,15 +214,7 @@ export class AttachmentResolver {
     toolCallId: string,
   ): MentionAttachment {
     const err = error as NodeJS.ErrnoException | Error;
-    let message = err instanceof Error ? err.message : String(error);
-    if ("code" in err && err.code === "ENOENT")
-      message = `File not found: ${mention.path}`;
-    else if ("code" in err && (err.code === "EACCES" || err.code === "EPERM"))
-      message = `Permission denied: ${mention.path}`;
-    else if ("code" in err && err.code === "EISDIR")
-      message = `Path is a directory, not a file: ${mention.path}`;
-    else if (message.length === 0)
-      message = `Failed to resolve mention: ${mention.raw}`;
+    const message = resolveMentionErrorMessage(err, mention);
     return {
       mention,
       toolCall: buildToolCall(toolCallId, "read", mention, resolvedPath),

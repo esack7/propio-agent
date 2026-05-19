@@ -1,9 +1,13 @@
 import { OpenRouterProvider } from "../openrouter.js";
-import type { ChatMessage } from "../types.js";
+import type { ChatMessage, ChatRequest, ChatStreamEvent } from "../types.js";
 
-const DEFAULT_CHAT_REQUEST = {
+const DEFAULT_CHAT_REQUEST: ChatRequest = {
   model: "openai/gpt-3.5-turbo",
-  messages: [{ role: "user" as const, content: "Hi" }] satisfies ChatMessage[],
+  messages: [{ role: "user", content: "Hi" }] satisfies ChatMessage[],
+};
+
+type StreamingProvider = {
+  streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent>;
 };
 
 export class OpenRouterTestFixture {
@@ -49,12 +53,41 @@ export class OpenRouterTestFixture {
     return new OpenRouterProvider({ model, apiKey, retryConfig });
   }
 
+  static createRequest(overrides: Partial<ChatRequest> = {}): ChatRequest {
+    return {
+      ...DEFAULT_CHAT_REQUEST,
+      ...overrides,
+      messages: overrides.messages ?? DEFAULT_CHAT_REQUEST.messages,
+    };
+  }
+
+  static async consumeStream(
+    provider: StreamingProvider,
+    request: ChatRequest = DEFAULT_CHAT_REQUEST,
+  ): Promise<ChatStreamEvent[]> {
+    const events: ChatStreamEvent[] = [];
+    for await (const event of provider.streamChat(request)) {
+      events.push(event);
+    }
+    return events;
+  }
+
+  static async collectDeltas(
+    provider: StreamingProvider,
+    request: ChatRequest = DEFAULT_CHAT_REQUEST,
+  ): Promise<string[]> {
+    return (await OpenRouterTestFixture.consumeStream(provider, request)).map(
+      (event) => event.delta,
+    );
+  }
+
   static async expectStreamChatToThrow(
     provider: OpenRouterProvider,
     matcher: string | RegExp | (new (...args: unknown[]) => unknown),
+    request: ChatRequest = DEFAULT_CHAT_REQUEST,
   ): Promise<void> {
     await expect(async () => {
-      for await (const _chunk of provider.streamChat(DEFAULT_CHAT_REQUEST)) {
+      for await (const _chunk of provider.streamChat(request)) {
         // consume
       }
     }).rejects.toThrow(matcher as any);

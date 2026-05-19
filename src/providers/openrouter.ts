@@ -14,7 +14,7 @@ import {
   accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
   buildOpenAIStreamToolCalls,
-  isAbortOrTransportError,
+  createProviderRetryOptions,
   isContextLengthError,
   parseJsonMaybe,
   parseOpenAIStreamToolCallArguments,
@@ -531,25 +531,21 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       const response = await withRetry(
         () => this.fetchAndValidate(request, dropTools),
         {
-          maxRetries: this.retryConfig?.maxRetries ?? 3,
-          baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
-          isRetryable: (err) => this.isRetryableError(err),
-          is529: (err) => err instanceof ProviderCapacityError,
-          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+          ...createProviderRetryOptions({
+            request,
+            model: this.model,
+            provider: this.name,
+            retryConfig: {
+              maxRetries: this.retryConfig?.maxRetries ?? 3,
+              consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+              baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
+            },
+            isRetryable: (err) => this.isRetryableError(err),
+            onDiagnosticEvent: (event) => this.emitDiagnostic(event),
+          }),
           onFinalRetry: () => {
             dropTools = true;
           },
-          onRetry: (ctx) =>
-            this.emitDiagnostic({
-              type: "provider_retry",
-              provider: this.name,
-              model: request.model || this.model,
-              iteration: request.iteration ?? 0,
-              reason:
-                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-              attemptNumber: ctx.attempt + 1,
-              delayMs: ctx.delayMs,
-            }),
         },
       );
 
@@ -645,6 +641,78 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     return details.length > 0 ? details.join("; ") : undefined;
   }
 
+  private buildRateLimitError(
+    response: Response,
+    errorInfo: {
+      retryAfterSeconds?: number;
+      message?: string;
+      providerName?: string;
+    },
+    originalError: Error,
+  ): ProviderRateLimitError {
+    const retryAfter = response.headers?.get("retry-after");
+    const retryAfterSeconds =
+      errorInfo.retryAfterSeconds ?? parseRetryAfterSeconds(retryAfter);
+    const detail = this.buildUpstreamDetail(errorInfo, true);
+    return new ProviderRateLimitError(
+      detail
+        ? `OpenRouter rate limit exceeded (${detail})`
+        : "OpenRouter rate limit exceeded",
+      Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
+      originalError,
+    );
+  }
+
+  private buildUpstreamServiceError(
+    type: "capacity" | "unavailable",
+    errorInfo: {
+      message?: string;
+      providerName?: string;
+      retryAfterSeconds?: number;
+    },
+    originalError: Error,
+  ): ProviderError {
+    const detail = this.buildUpstreamDetail(errorInfo, true);
+    if (type === "capacity") {
+      return new ProviderCapacityError(
+        detail
+          ? `OpenRouter upstream capacity exceeded (${detail})`
+          : "OpenRouter upstream capacity exceeded",
+        originalError,
+      );
+    }
+
+    return new ProviderError(
+      detail
+        ? `OpenRouter upstream provider unavailable (${detail})`
+        : "OpenRouter service error",
+      originalError,
+    );
+  }
+
+  private translateBasicHttpStatusError(
+    response: Response,
+    originalError: Error,
+  ): ProviderError | null {
+    switch (response.status) {
+      case 401:
+        return new ProviderAuthenticationError(
+          "Invalid OpenRouter API key",
+          originalError,
+        );
+      case 402:
+        return new ProviderError("Insufficient OpenRouter credits", originalError);
+      case 404:
+        return new ProviderModelNotFoundError(
+          this.model,
+          `Model not found: ${this.model}`,
+          originalError,
+        );
+      default:
+        return null;
+    }
+  }
+
   private translateHttpStatusError(
     response: Response,
     errorInfo: {
@@ -654,9 +722,6 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     },
     originalError: Error,
   ): ProviderError | null {
-    const detail = (includeRetryAfter: boolean) =>
-      this.buildUpstreamDetail(errorInfo, includeRetryAfter);
-
     if (
       response.status === 400 &&
       isContextLengthError(originalError.message)
@@ -666,60 +731,43 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
         originalError,
       );
     }
-    if (response.status === 401) {
-      return new ProviderAuthenticationError(
-        "Invalid OpenRouter API key",
-        originalError,
-      );
+
+    const basicError = this.translateBasicHttpStatusError(response, originalError);
+    if (basicError) {
+      return basicError;
     }
-    if (response.status === 429) {
-      const retryAfter = response.headers?.get("retry-after");
-      const retryAfterSeconds =
-        errorInfo.retryAfterSeconds ?? parseRetryAfterSeconds(retryAfter);
-      const d = detail(true);
-      return new ProviderRateLimitError(
-        d
-          ? `OpenRouter rate limit exceeded (${d})`
-          : "OpenRouter rate limit exceeded",
-        Number.isNaN(retryAfterSeconds) ? undefined : retryAfterSeconds,
-        originalError,
-      );
+
+    switch (response.status) {
+      case 429:
+        return this.buildRateLimitError(response, errorInfo, originalError);
+      case 529:
+        return this.buildUpstreamServiceError(
+          "capacity",
+          errorInfo,
+          originalError,
+        );
+      case 503:
+        return this.buildUpstreamServiceError(
+          "unavailable",
+          errorInfo,
+          originalError,
+        );
+      default:
+        return response.status >= 500
+          ? new ProviderError("OpenRouter service error", originalError)
+          : null;
     }
-    if (response.status === 404) {
-      return new ProviderModelNotFoundError(
-        this.model,
-        `Model not found: ${this.model}`,
-        originalError,
-      );
-    }
-    if (response.status === 402) {
-      return new ProviderError(
-        "Insufficient OpenRouter credits",
-        originalError,
-      );
-    }
-    if (response.status === 529) {
-      const d = detail(true);
-      return new ProviderCapacityError(
-        d
-          ? `OpenRouter upstream capacity exceeded (${d})`
-          : "OpenRouter upstream capacity exceeded",
-        originalError,
-      );
-    }
-    if (response.status === 503) {
-      const d = detail(true);
-      return new ProviderError(
-        d
-          ? `OpenRouter upstream provider unavailable (${d})`
-          : "OpenRouter service error",
-        originalError,
-      );
-    }
-    if (response.status >= 500 && response.status < 600) {
-      return new ProviderError("OpenRouter service error", originalError);
-    }
-    return null;
+  }
+
+  private classifyByErrorMessage(
+    msg: string | undefined,
+    originalError: Error,
+  ): ProviderError | null {
+    return this.translateCommonMessageError(
+      msg,
+      originalError,
+      "Failed to connect to OpenRouter API",
+    );
   }
 
   protected translateError(
@@ -727,8 +775,7 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     response?: Response,
     responseBody?: string,
   ): ProviderError {
-    const originalError =
-      error instanceof Error ? error : new Error(String(error));
+    const originalError = this.createOriginalError(error);
     if (response) {
       const errorInfo = this.parseOpenRouterErrorBody(responseBody);
       const statusError = this.translateHttpStatusError(
@@ -736,27 +783,17 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
         errorInfo,
         originalError,
       );
-      if (statusError) return statusError;
+      if (statusError) {
+        return statusError;
+      }
     }
-    const msg = originalError.message;
-    if (isContextLengthError(msg)) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${msg}`,
+
+    return (
+      this.classifyByErrorMessage(originalError.message, originalError) ??
+      new ProviderError(
+        originalError.message || "OpenRouter request failed",
         originalError,
-      );
-    }
-    if (msg && (msg.includes("AbortError") || msg.includes("aborted"))) {
-      return new ProviderError("Request cancelled", originalError);
-    }
-    if (msg && isAbortOrTransportError(msg)) {
-      return new ProviderError(
-        "Failed to connect to OpenRouter API",
-        originalError,
-      );
-    }
-    return new ProviderError(
-      originalError.message || "OpenRouter request failed",
-      originalError,
+      )
     );
   }
 }

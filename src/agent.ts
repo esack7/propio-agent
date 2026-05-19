@@ -1823,6 +1823,66 @@ export class Agent {
     }
   }
 
+  private normalizeExtraInstruction(
+    options?: AgentStreamOptions,
+  ): string | undefined {
+    const instruction = options?.extraUserInstruction;
+    if (!instruction || !instruction.trim()) {
+      return undefined;
+    }
+    return instruction;
+  }
+
+  private selectTurnReasoningSummary(
+    agentSummary: string,
+    providerReasoningSummary: TurnReasoningSummary | null,
+  ): TurnReasoningSummary {
+    if (agentSummary.trim().length > 0) {
+      return { summary: agentSummary, source: "agent" };
+    }
+
+    return providerReasoningSummary ?? {
+      summary: "Completed the request and generated the final response.",
+      source: "agent",
+    };
+  }
+
+  private async runOneIteration(
+    messages: ChatMessage[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<{
+    fullResponse: string;
+    toolCalls?: ChatToolCall[];
+    reasoningContent?: string;
+    providerReasoningSummary: TurnReasoningSummary | null;
+  }> {
+    const streamResult = await this.collectProviderStream(
+      messages,
+      allowedTools,
+      iterationCount,
+      options,
+      onToken,
+    );
+    const recovered = await this.handleMaxTokensRecovery(
+      streamResult,
+      messages,
+      allowedTools,
+      iterationCount,
+      options,
+      onToken,
+    );
+    return {
+      ...recovered,
+      providerReasoningSummary: streamResult.providerReasoningSummary,
+    };
+  }
+
+  // Orchestration loop: while + nested context-length retry handling is structural;
+  // business logic is extracted to dedicated helpers.
+  // fallow-ignore-next-line complexity
   async streamChat(
     userMessage: string,
     onToken: (token: string) => void,
@@ -1842,11 +1902,7 @@ export class Agent {
     let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
-    const extraUserInstruction =
-      options?.extraUserInstruction &&
-      options.extraUserInstruction.trim().length > 0
-        ? options.extraUserInstruction
-        : undefined;
+    const extraUserInstruction = this.normalizeExtraInstruction(options);
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
@@ -1893,25 +1949,17 @@ export class Agent {
         );
 
         try {
-          const streamResult = await this.collectProviderStream(
+          const iterationResult = await this.runOneIteration(
             messages,
             allowedTools,
             iterationCount,
             options,
             onToken,
           );
-          providerReasoningSummary = streamResult.providerReasoningSummary;
-          const recovered = await this.handleMaxTokensRecovery(
-            streamResult,
-            messages,
-            allowedTools,
-            iterationCount,
-            options,
-            onToken,
-          );
-          fullResponse = recovered.fullResponse;
-          toolCalls = recovered.toolCalls;
-          reasoningContent = recovered.reasoningContent;
+          providerReasoningSummary = iterationResult.providerReasoningSummary;
+          fullResponse = iterationResult.fullResponse;
+          toolCalls = iterationResult.toolCalls;
+          reasoningContent = iterationResult.reasoningContent;
         } catch (streamError) {
           if (!(streamError instanceof ProviderContextLengthError)) {
             throw streamError;
@@ -1961,14 +2009,10 @@ export class Agent {
         iterationCount,
         toolExecutionEvents,
       );
-      const selectedReasoningSummary: TurnReasoningSummary =
-        agentSummary.trim().length > 0
-          ? { summary: agentSummary, source: "agent" }
-          : (providerReasoningSummary ?? {
-              summary:
-                "Completed the request and generated the final response.",
-              source: "agent",
-            });
+      const selectedReasoningSummary = this.selectTurnReasoningSummary(
+        agentSummary,
+        providerReasoningSummary,
+      );
 
       this.lastTurnReasoningSummary = selectedReasoningSummary;
       this.emitVisibilityEvent(options, {

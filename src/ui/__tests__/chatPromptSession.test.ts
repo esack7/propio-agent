@@ -10,7 +10,14 @@ function createTestSession(options: {
   typeaheadProviders?: TypeaheadProvider[];
   onRender?: (state: ChatPromptSessionState) => void;
   toggleToolCalls?: () => string | null | undefined;
-}): {
+  enableTypeahead?: boolean;
+  enableReverseHistorySearch?: boolean;
+  historySnapshot?: string[];
+  editorRunner?: unknown;
+  submit?: () => void;
+  interrupt?: () => void;
+  close?: () => void;
+} = {}): {
   inputStream: PassThrough;
   session: ChatPromptSession;
   getState: () => ChatPromptSessionState | undefined;
@@ -29,19 +36,20 @@ function createTestSession(options: {
     inputStream: inputStream as unknown as NodeJS.ReadStream,
     outputStream: outputStream as unknown as NodeJS.WriteStream,
     request: { promptText: ">", mode: "chat" },
-    historySnapshot: [],
-    enableTypeahead: true,
-    enableReverseHistorySearch: false,
+    historySnapshot: options.historySnapshot ?? [],
+    enableTypeahead: options.enableTypeahead ?? true,
+    enableReverseHistorySearch: options.enableReverseHistorySearch ?? false,
     workspaceRoot: "/tmp/workspace",
     typeaheadProviders: options.typeaheadProviders ?? [],
+    editorRunner: options.editorRunner as never,
     callbacks: {
       render: (state) => {
         latestState = state;
         options.onRender?.(state);
       },
-      submit: () => {},
-      interrupt: () => {},
-      close: () => {},
+      submit: options.submit ?? (() => {}),
+      interrupt: options.interrupt ?? (() => {}),
+      close: options.close ?? (() => {}),
       toggleToolCalls: options.toggleToolCalls,
     },
   });
@@ -105,58 +113,12 @@ describe("chatPromptSession", () => {
   });
 
   it("clears a pending Ctrl+X editor chord before handling Ctrl+O", () => {
-    const inputStream = new PassThrough();
-    const outputStream = new PassThrough();
-    let latestState: ChatPromptSessionState | undefined;
     const toggleToolCalls = jest.fn();
     const editorRunner = jest.fn(() => ({ status: 0, signal: null }));
-
-    (
-      inputStream as NodeJS.ReadStream & {
-        setRawMode: (mode: boolean) => void;
-      }
-    ).setRawMode = () => {};
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).isTTY = false;
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).columns = 80;
-
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream: outputStream as unknown as NodeJS.WriteStream,
-      request: {
-        promptText: ">",
-        mode: "chat",
-      },
-      historySnapshot: [],
+    const { inputStream, session, getState } = createTestSession({
       enableTypeahead: false,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
-      typeaheadProviders: [],
-      editorRunner: editorRunner as never,
-      callbacks: {
-        render: (state) => {
-          latestState = state;
-        },
-        submit: () => {
-          /* no-op */
-        },
-        interrupt: () => {
-          /* no-op */
-        },
-        toggleToolCalls,
-        close: () => {
-          /* no-op */
-        },
-      },
+      toggleToolCalls,
+      editorRunner,
     });
 
     try {
@@ -181,7 +143,7 @@ describe("chatPromptSession", () => {
 
       expect(toggleToolCalls).toHaveBeenCalledTimes(1);
       expect(editorRunner).not.toHaveBeenCalled();
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "",
         cursor: 0,
       });
@@ -193,28 +155,7 @@ describe("chatPromptSession", () => {
   it("retries mention typeahead when the first search has no matches", () => {
     jest.useFakeTimers();
 
-    const inputStream = new PassThrough();
-    const outputStream = new PassThrough();
-    let latestState: ChatPromptSessionState | undefined;
     let calls = 0;
-
-    (
-      inputStream as NodeJS.ReadStream & {
-        setRawMode: (mode: boolean) => void;
-      }
-    ).setRawMode = () => {};
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).isTTY = false;
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).columns = 80;
 
     const mentionProvider: TypeaheadProvider = {
       kind: "mention",
@@ -230,32 +171,8 @@ describe("chatPromptSession", () => {
       },
     };
 
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream: outputStream as unknown as NodeJS.WriteStream,
-      request: {
-        promptText: ">",
-        mode: "chat",
-      },
-      historySnapshot: [],
-      enableTypeahead: true,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
+    const { inputStream, session, getState } = createTestSession({
       typeaheadProviders: [mentionProvider],
-      callbacks: {
-        render: (state) => {
-          latestState = state;
-        },
-        submit: () => {
-          /* no-op */
-        },
-        interrupt: () => {
-          /* no-op */
-        },
-        close: () => {
-          /* no-op */
-        },
-      },
     });
 
     try {
@@ -272,7 +189,7 @@ describe("chatPromptSession", () => {
         shift: false,
       });
 
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "@s",
         typeahead: {
           kind: "mention",
@@ -282,7 +199,7 @@ describe("chatPromptSession", () => {
 
       jest.advanceTimersByTime(100);
 
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "@s",
         typeahead: {
           kind: "mention",
@@ -297,27 +214,7 @@ describe("chatPromptSession", () => {
   });
 
   it("keeps directory typeahead alive on the accepted path baseline", () => {
-    const inputStream = new PassThrough();
-    const outputStream = new PassThrough();
     const renderedBuffers: string[] = [];
-
-    (
-      inputStream as NodeJS.ReadStream & {
-        setRawMode: (mode: boolean) => void;
-      }
-    ).setRawMode = () => {};
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).isTTY = false;
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).columns = 80;
 
     const mentionProvider: TypeaheadProvider = {
       kind: "mention",
@@ -327,31 +224,10 @@ describe("chatPromptSession", () => {
           : [],
     };
 
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream: outputStream as unknown as NodeJS.WriteStream,
-      request: {
-        promptText: ">",
-        mode: "chat",
-      },
-      historySnapshot: [],
-      enableTypeahead: true,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
+    const { inputStream, session } = createTestSession({
       typeaheadProviders: [mentionProvider],
-      callbacks: {
-        render: (state) => {
-          renderedBuffers.push(state.buffer);
-        },
-        submit: () => {
-          /* no-op */
-        },
-        interrupt: () => {
-          /* no-op */
-        },
-        close: () => {
-          /* no-op */
-        },
+      onRender: (state) => {
+        renderedBuffers.push(state.buffer);
       },
     });
 
@@ -388,28 +264,6 @@ describe("chatPromptSession", () => {
   });
 
   it("navigates mention matches with arrow keys before accepting", () => {
-    const inputStream = new PassThrough();
-    const outputStream = new PassThrough();
-    let latestState: ChatPromptSessionState | undefined;
-
-    (
-      inputStream as NodeJS.ReadStream & {
-        setRawMode: (mode: boolean) => void;
-      }
-    ).setRawMode = () => {};
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).isTTY = false;
-    (
-      outputStream as NodeJS.WriteStream & {
-        isTTY: boolean;
-        columns: number;
-      }
-    ).columns = 80;
-
     const mentionProvider: TypeaheadProvider = {
       kind: "mention",
       getSuggestions: (target) =>
@@ -422,32 +276,9 @@ describe("chatPromptSession", () => {
           : [],
     };
 
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream: outputStream as unknown as NodeJS.WriteStream,
-      request: {
-        promptText: ">",
-        mode: "chat",
-      },
+    const { inputStream, session, getState } = createTestSession({
       historySnapshot: ["previous prompt"],
-      enableTypeahead: true,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
       typeaheadProviders: [mentionProvider],
-      callbacks: {
-        render: (state) => {
-          latestState = state;
-        },
-        submit: () => {
-          /* no-op */
-        },
-        interrupt: () => {
-          /* no-op */
-        },
-        close: () => {
-          /* no-op */
-        },
-      },
     });
 
     try {
@@ -460,7 +291,7 @@ describe("chatPromptSession", () => {
         });
       }
 
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "@PLAN",
         typeahead: {
           kind: "mention",
@@ -477,7 +308,7 @@ describe("chatPromptSession", () => {
         shift: false,
       });
 
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "@PLAN",
         typeahead: {
           match: "@docs/PLAN-file-search.md ",
@@ -493,11 +324,11 @@ describe("chatPromptSession", () => {
         shift: false,
       });
 
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "@docs/PLAN-file-search.md ",
         cursor: "@docs/PLAN-file-search.md ".length,
       });
-      expect(latestState?.typeahead).toBeUndefined();
+      expect(getState()?.typeahead).toBeUndefined();
     } finally {
       session.cleanup();
     }

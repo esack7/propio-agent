@@ -14,6 +14,7 @@ import {
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { withRetry } from "./withRetry.js";
+import { createProviderRetryOptions } from "./shared.js";
 
 /**
  * Ollama implementation of LLMProvider
@@ -103,23 +104,14 @@ export class OllamaProvider implements LLMProvider {
             stream: true,
             ...(tools && { tools }),
           }),
-        {
-          maxRetries: this.retryConfig?.maxRetries ?? 3,
+        createProviderRetryOptions({
+          request,
+          model: this.model,
+          provider: this.name,
+          retryConfig: this.retryConfig,
           isRetryable: (err) => this.isRetryableError(err),
-          is529: (err) => err instanceof ProviderCapacityError,
-          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-          onRetry: (ctx) =>
-            this.onDiagnosticEvent?.({
-              type: "provider_retry",
-              provider: this.name,
-              model: request.model || this.model,
-              iteration: request.iteration ?? 0,
-              reason:
-                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-              attemptNumber: ctx.attempt + 1,
-              delayMs: ctx.delayMs,
-            }),
-        },
+          onDiagnosticEvent: this.onDiagnosticEvent,
+        }),
       );
 
       let lastToolCalls: ChatToolCall[] | undefined;

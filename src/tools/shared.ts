@@ -47,6 +47,23 @@ export async function readUtf8TextFile(filePath: string): Promise<string> {
   return buffer.toString("utf8");
 }
 
+export function throwToolPathAccessError(
+  err: NodeJS.ErrnoException | Error,
+  rawPath: unknown,
+): void {
+  if (!("code" in err)) {
+    return;
+  }
+
+  if (err.code === "EACCES" || err.code === "EPERM") {
+    throw new Error(`Permission denied: ${rawPath}`);
+  }
+
+  if (err.code === "EISDIR") {
+    throw new Error(`Path is a directory, not a file: ${rawPath}`);
+  }
+}
+
 async function ensureParentDirectory(filePath: string): Promise<void> {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
 }

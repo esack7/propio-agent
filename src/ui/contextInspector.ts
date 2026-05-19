@@ -45,6 +45,24 @@ export interface ContextOverviewLine {
   readonly style: "info" | "subtle" | "section";
 }
 
+function sumPreambleTokens(preamble: ConversationState["preamble"]): number {
+  let total = 0;
+  for (const msg of preamble) {
+    total += estimateTokens(estimateMessageChars(msg));
+  }
+  return total;
+}
+
+function sumTurnTokens(turns: ConversationState["turns"]): number {
+  let total = 0;
+  for (const turn of turns) {
+    if (turn.estimatedTokens != null) {
+      total += turn.estimatedTokens;
+    }
+  }
+  return total;
+}
+
 function formatStatsSection(state: ConversationState): ContextOverviewLine[] {
   const preambleCount = state.preamble.length;
   const turnCount = state.turns.length;
@@ -53,13 +71,8 @@ function formatStatsSection(state: ConversationState): ContextOverviewLine[] {
     (r) => r.lifecycle === "active",
   );
   const invokedSkillCount = state.invokedSkills?.length ?? 0;
-  let preambleTokens = 0;
-  for (const msg of state.preamble)
-    preambleTokens += estimateTokens(estimateMessageChars(msg));
-  let turnTokens = 0;
-  for (const turn of state.turns) {
-    if (turn.estimatedTokens != null) turnTokens += turn.estimatedTokens;
-  }
+  const preambleTokens = sumPreambleTokens(state.preamble);
+  const turnTokens = sumTurnTokens(state.turns);
   const totalEstimatedTokens = preambleTokens + turnTokens;
   const summaryTokens = state.rollingSummary?.estimatedTokens ?? 0;
 

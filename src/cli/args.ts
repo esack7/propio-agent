@@ -91,6 +91,65 @@ const BOOL_FLAG_MAP: ReadonlyMap<string, BoolFlagKeys> = new Map([
   [CLI_FLAG_HELP_SHORT, "help"],
 ]);
 
+type DebugLlmFileResult = { consumed: boolean } | null;
+
+function parseDebugLlmFileArg(
+  arg: string,
+  nextArg: string | undefined,
+  flags: ParsedCliArgs["flags"],
+  forwardedArgs: string[],
+  parseErrors: string[],
+): DebugLlmFileResult {
+  if (arg.startsWith(`${CLI_FLAG_DEBUG_LLM_FILE}=`)) {
+    flags.debugLlmFile = arg.substring(CLI_FLAG_DEBUG_LLM_FILE.length + 1);
+    forwardedArgs.push(arg);
+    return { consumed: false };
+  }
+
+  if (arg === CLI_FLAG_DEBUG_LLM_FILE) {
+    const filePath = nextArg;
+    if (filePath && !filePath.startsWith("-")) {
+      flags.debugLlmFile = filePath;
+      forwardedArgs.push(arg, filePath);
+      return { consumed: true };
+    }
+
+    parseErrors.push(`${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`);
+    forwardedArgs.push(arg);
+    return { consumed: false };
+  }
+
+  return null;
+}
+
+type IntFlagMatchResult =
+  | { matched: false }
+  | { matched: true; consumed: boolean };
+
+function matchAndApplyIntFlag(
+  arg: string,
+  nextArg: string | undefined,
+  intFlagDefs: Array<[string, number, string, (v: number) => void]>,
+  parseErrors: string[],
+): IntFlagMatchResult {
+  for (const [flagName, min, errorMsg, setter] of intFlagDefs) {
+    const result = parseIntFlag(arg, nextArg, flagName, min, errorMsg);
+    if (result === null) {
+      continue;
+    }
+
+    if (!result.ok) {
+      parseErrors.push(result.error);
+      return { matched: true, consumed: false };
+    }
+
+    setter(result.value);
+    return { matched: true, consumed: result.consumed };
+  }
+
+  return { matched: false };
+}
+
 export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const forwardedArgs: string[] = [];
   const parseErrors: string[] = [];
@@ -163,42 +222,30 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       continue;
     }
 
-    if (arg.startsWith(`${CLI_FLAG_DEBUG_LLM_FILE}=`)) {
-      flags.debugLlmFile = arg.substring(CLI_FLAG_DEBUG_LLM_FILE.length + 1);
-      forwardedArgs.push(arg);
-      continue;
-    }
-
-    if (arg === CLI_FLAG_DEBUG_LLM_FILE) {
-      const filePath = args[i + 1];
-      if (filePath && !filePath.startsWith("-")) {
-        flags.debugLlmFile = filePath;
-        forwardedArgs.push(arg);
-        forwardedArgs.push(filePath);
+    const debugResult = parseDebugLlmFileArg(
+      arg,
+      args[i + 1],
+      flags,
+      forwardedArgs,
+      parseErrors,
+    );
+    if (debugResult !== null) {
+      if (debugResult.consumed) {
         i++;
-      } else {
-        parseErrors.push(
-          `${CLI_FLAG_DEBUG_LLM_FILE} requires a file path argument`,
-        );
-        forwardedArgs.push(arg);
       }
       continue;
     }
 
-    let matched = false;
-    for (const [flagName, min, errorMsg, setter] of intFlagDefs) {
-      const result = parseIntFlag(arg, args[i + 1], flagName, min, errorMsg);
-      if (result === null) continue;
-      matched = true;
-      if (!result.ok) parseErrors.push(result.error);
-      else {
-        setter(result.value);
-        if (result.consumed) i++;
+    const intResult = matchAndApplyIntFlag(
+      arg,
+      args[i + 1],
+      intFlagDefs,
+      parseErrors,
+    );
+    if (intResult.matched) {
+      if (intResult.consumed) {
+        i++;
       }
-      break;
-    }
-
-    if (matched) {
       forwardedArgs.push(arg);
       continue;
     }

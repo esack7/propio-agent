@@ -1212,10 +1212,7 @@ export function createChatPromptSession(
     callbacks.submit(buffer);
   };
 
-  const handleControlAndSystemKeys = (
-    str: string | undefined,
-    key: readline.Key,
-  ): boolean => {
+  const handleLifecycleKeys = (key: readline.Key): boolean => {
     if (key.name === "c" && key.ctrl) {
       callbacks.interrupt();
       return true;
@@ -1224,6 +1221,28 @@ export function createChatPromptSession(
       callbacks.close();
       return true;
     }
+    return false;
+  };
+
+  const handleEditorHandoffKeys = (key: readline.Key): boolean => {
+    if (pendingEditorHandoff) {
+      pendingEditorHandoff = false;
+      if (key.name === "e" && key.ctrl) {
+        openEditor();
+        return true;
+      }
+      return false;
+    }
+
+    if (key.name === "x" && key.ctrl) {
+      if (!searchState) pendingEditorHandoff = true;
+      return true;
+    }
+
+    return false;
+  };
+
+  const handleSearchCancelKeys = (key: readline.Key): boolean => {
     if (key.name === "r" && key.ctrl) {
       if (options.enableReverseHistorySearch) {
         cancelTypeahead(false);
@@ -1231,17 +1250,17 @@ export function createChatPromptSession(
       }
       return true;
     }
-    if (pendingEditorHandoff) {
-      pendingEditorHandoff = false;
-      if (key.name === "e" && key.ctrl) {
-        openEditor();
-        return true;
-      }
-    }
-    if (key.name === "x" && key.ctrl) {
-      if (!searchState) pendingEditorHandoff = true;
+
+    if ((key.name === "g" && key.ctrl) || key.name === "escape") {
+      if (searchState) cancelSearch();
+      else if (typeaheadState) cancelTypeahead(true);
       return true;
     }
+
+    return false;
+  };
+
+  const handleToolToggleKeys = (key: readline.Key): boolean => {
     if (key.name === "o" && key.ctrl) {
       const nextFooter = callbacks.toggleToolCalls?.();
       if (nextFooter !== undefined) {
@@ -1250,11 +1269,14 @@ export function createChatPromptSession(
       }
       return true;
     }
-    if ((key.name === "g" && key.ctrl) || key.name === "escape") {
-      if (searchState) cancelSearch();
-      else if (typeaheadState) cancelTypeahead(true);
-      return true;
-    }
+
+    return false;
+  };
+
+  const handleNewlineAndEnterKeys = (
+    str: string | undefined,
+    key: readline.Key,
+  ): boolean => {
     if (!searchState && ((key.name === "j" && key.ctrl) || str === "\n")) {
       insertText("\n");
       return true;
@@ -1265,6 +1287,16 @@ export function createChatPromptSession(
     }
     return false;
   };
+
+  const handleControlAndSystemKeys = (
+    str: string | undefined,
+    key: readline.Key,
+  ): boolean =>
+    handleLifecycleKeys(key) ||
+    handleEditorHandoffKeys(key) ||
+    handleSearchCancelKeys(key) ||
+    handleToolToggleKeys(key) ||
+    handleNewlineAndEnterKeys(str, key);
 
   const handleSearchModeInput = (
     str: string | undefined,
@@ -1280,50 +1312,67 @@ export function createChatPromptSession(
     return true;
   };
 
-  const handleTypeaheadAndNavigationKeys = (
-    str: string | undefined,
-    key: readline.Key,
-  ): boolean => {
-    if (key.name === "tab") {
-      if (typeaheadState) {
-        if (typeaheadPreviewApplied) cycleTypeahead();
-        else {
-          acceptTypeaheadSelection();
-          render();
-        }
-      } else {
-        startTypeahead();
-      }
-      return true;
+  const handleTabKey = (key: readline.Key): boolean => {
+    if (key.name !== "tab") {
+      return false;
     }
-    if (
-      typeaheadState &&
-      (key.name === "up" || key.name === "down") &&
-      !key.ctrl &&
-      !key.meta
-    ) {
+
+    if (typeaheadState) {
+      if (typeaheadPreviewApplied) cycleTypeahead();
+      else {
+        acceptTypeaheadSelection();
+        render();
+      }
+    } else {
+      startTypeahead();
+    }
+
+    return true;
+  };
+
+  const handleTypeaheadDirectional = (key: readline.Key): boolean => {
+    if (!typeaheadState) {
+      return false;
+    }
+
+    if ((key.name === "up" || key.name === "down") && !key.ctrl && !key.meta) {
       navigateTypeahead(key.name === "up" ? "previous" : "next");
       return true;
     }
-    if (
-      (key.name === "left" || key.name === "right") &&
-      (key.ctrl || key.meta)
-    ) {
+
+    return false;
+  };
+
+  const handleWordMovement = (key: readline.Key): boolean => {
+    if ((key.name === "left" || key.name === "right") && (key.ctrl || key.meta)) {
       moveCursorByWord(key.name);
       return true;
     }
+
     if (key.meta && (key.name === "b" || key.name === "f")) {
       moveCursorByWord(key.name === "b" ? "left" : "right");
       return true;
     }
+
+    return false;
+  };
+
+  const handleBackspaceKey = (key: readline.Key): boolean => {
+    if (key.name !== "backspace") {
+      return false;
+    }
+
+    if (key.meta) {
+      deleteWordBeforeCursor();
+      return true;
+    }
+
+    deleteBeforeCursor();
+    return true;
+  };
+
+  const handleNavigationKeys = (key: readline.Key): boolean => {
     switch (key.name) {
-      case "backspace":
-        if (key.meta) {
-          deleteWordBeforeCursor();
-          return true;
-        }
-        deleteBeforeCursor();
-        return true;
       case "delete":
         deleteAtCursor();
         return true;
@@ -1345,9 +1394,20 @@ export function createChatPromptSession(
       case "down":
         moveHistory("down");
         return true;
+      default:
+        return false;
     }
-    return false;
   };
+
+  const handleTypeaheadAndNavigationKeys = (
+    _str: string | undefined,
+    key: readline.Key,
+  ): boolean =>
+    handleTabKey(key) ||
+    handleTypeaheadDirectional(key) ||
+    handleWordMovement(key) ||
+    handleBackspaceKey(key) ||
+    handleNavigationKeys(key);
 
   const handleKeypress = (str: string | undefined, key: readline.Key): void => {
     if (!active) return;

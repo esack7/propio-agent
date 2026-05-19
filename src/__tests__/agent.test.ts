@@ -42,34 +42,7 @@ class MockProvider implements LLMProvider {
   }
 }
 
-// Test providers config
-const testProvidersConfig: ProvidersConfig = {
-  default: "local-ollama",
-  providers: [
-    {
-      name: "local-ollama",
-      type: "ollama",
-      models: [
-        { name: "Llama 3.2 3B", key: "llama3.2:3b" },
-        { name: "Llama 3.2 90B", key: "llama3.2:90b" },
-      ],
-      defaultModel: "llama3.2:3b",
-      host: "http://localhost:11434",
-    },
-    {
-      name: "bedrock",
-      type: "bedrock",
-      models: [
-        {
-          name: "Claude 3.5 Sonnet",
-          key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-        },
-      ],
-      defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
-      region: "us-west-2",
-    },
-  ],
-};
+const testProvidersConfig: ProvidersConfig = sharedTestProvidersConfig;
 
 function writeSkillDocument(
   rootDir: string,

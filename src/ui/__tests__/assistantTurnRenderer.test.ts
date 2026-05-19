@@ -193,6 +193,37 @@ function grepMissingSteps(): ScriptStep[] {
   ];
 }
 
+async function runHiddenToolScenario(
+  steps: ReadonlyArray<ScriptStep>,
+  userInput: string,
+): Promise<{
+  output: string;
+  statusSpy: jest.SpiedFunction<TerminalUi["status"]>;
+  doneSpy: jest.SpiedFunction<TerminalUi["done"]>;
+}> {
+  const { ui, stderr } = createUi();
+  const statusSpy = jest.spyOn(ui, "status");
+  const doneSpy = jest.spyOn(ui, "done");
+  const agent = new ScriptedAssistantTurnAgent(steps);
+
+  await streamAssistantTurn(
+    agent,
+    userInput,
+    ui,
+    new AbortController().signal,
+    {
+      ...defaultVisibility,
+      showToolCalls: false,
+    },
+  );
+
+  return {
+    output: normalizeOutput(stderr.chunks),
+    statusSpy,
+    doneSpy,
+  };
+}
+
 describe("streamAssistantTurn", () => {
   it("renders streamed assistant tokens and preserves turn completion output", async () => {
     const { ui, stderr } = createUi();
@@ -303,27 +334,14 @@ describe("streamAssistantTurn", () => {
   });
 
   it("shows working spinner when tool calls are hidden", async () => {
-    const { ui, stderr } = createUi();
-    const statusSpy = jest.spyOn(ui, "status");
-    const doneSpy = jest.spyOn(ui, "done");
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Prelude." },
-      ...readPackageJsonSteps(),
-      { type: "token", value: "Tail." },
-    ]);
-
-    await streamAssistantTurn(
-      agent,
+    const { output, statusSpy, doneSpy } = await runHiddenToolScenario(
+      [
+        { type: "token", value: "Prelude." },
+        ...readPackageJsonSteps(),
+        { type: "token", value: "Tail." },
+      ],
       "hidden tool test",
-      ui,
-      new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showToolCalls: false,
-      },
     );
-
-    const output = normalizeOutput(stderr.chunks);
 
     expect(output).toContain("Prelude.");
     expect(output).toContain("Tail.");
@@ -334,27 +352,14 @@ describe("streamAssistantTurn", () => {
   });
 
   it("keeps the hidden tool spinner active through consecutive tool calls in the same turn", async () => {
-    const { ui, stderr } = createUi();
-    const statusSpy = jest.spyOn(ui, "status");
-    const doneSpy = jest.spyOn(ui, "done");
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Prelude." },
-      ...readPackageJsonSteps(),
-      ...grepMissingSteps(),
-    ]);
-
-    await streamAssistantTurn(
-      agent,
+    const { output, statusSpy, doneSpy } = await runHiddenToolScenario(
+      [
+        { type: "token", value: "Prelude." },
+        ...readPackageJsonSteps(),
+        ...grepMissingSteps(),
+      ],
       "hidden tool loop test",
-      ui,
-      new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showToolCalls: false,
-      },
     );
-
-    const output = normalizeOutput(stderr.chunks);
 
     expect(output).toContain("Prelude.");
     expect(statusSpy).toHaveBeenCalledTimes(1);
@@ -363,29 +368,16 @@ describe("streamAssistantTurn", () => {
   });
 
   it("clears and restarts the hidden tool spinner when assistant text appears between tool calls", async () => {
-    const { ui, stderr } = createUi();
-    const statusSpy = jest.spyOn(ui, "status");
-    const doneSpy = jest.spyOn(ui, "done");
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Prelude." },
-      ...readPackageJsonSteps(),
-      { type: "token", value: " Need one more check." },
-      ...grepMissingSteps(),
-      { type: "token", value: " Done." },
-    ]);
-
-    await streamAssistantTurn(
-      agent,
+    const { output, statusSpy, doneSpy } = await runHiddenToolScenario(
+      [
+        { type: "token", value: "Prelude." },
+        ...readPackageJsonSteps(),
+        { type: "token", value: " Need one more check." },
+        ...grepMissingSteps(),
+        { type: "token", value: " Done." },
+      ],
       "hidden tool loop test",
-      ui,
-      new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showToolCalls: false,
-      },
     );
-
-    const output = normalizeOutput(stderr.chunks);
 
     expect(output).toContain("Prelude.");
     expect(output).toContain("Need one more check.");
@@ -396,29 +388,16 @@ describe("streamAssistantTurn", () => {
   });
 
   it("does not clear the hidden tool spinner for structural whitespace tokens between tool calls", async () => {
-    const { ui, stderr } = createUi();
-    const statusSpy = jest.spyOn(ui, "status");
-    const doneSpy = jest.spyOn(ui, "done");
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Prelude." },
-      ...readPackageJsonSteps(),
-      { type: "token", value: "\n" },
-      ...grepMissingSteps(),
-      { type: "token", value: " Done." },
-    ]);
-
-    await streamAssistantTurn(
-      agent,
+    const { output, statusSpy, doneSpy } = await runHiddenToolScenario(
+      [
+        { type: "token", value: "Prelude." },
+        ...readPackageJsonSteps(),
+        { type: "token", value: "\n" },
+        ...grepMissingSteps(),
+        { type: "token", value: " Done." },
+      ],
       "hidden structural newline test",
-      ui,
-      new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showToolCalls: false,
-      },
     );
-
-    const output = normalizeOutput(stderr.chunks);
 
     expect(output).toContain("Prelude.");
     expect(output).toContain("Done.");
