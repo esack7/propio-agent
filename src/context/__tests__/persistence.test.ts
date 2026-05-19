@@ -476,51 +476,42 @@ describe("persistence", () => {
       };
     }
 
+    function expectV2RecordError(
+      overrides: Record<string, unknown>,
+      matcher: string | RegExp,
+    ): void {
+      const json = v2Session([validRecord(overrides)]);
+      expect(() => parseSession(json)).toThrow(SessionParseError);
+      expect(() => parseSession(json)).toThrow(matcher);
+    }
+
     it("should reject non-string source.turnId", () => {
-      const record = validRecord({
-        source: { origin: "user", turnId: 42 },
-      });
-      expect(() => parseSession(v2Session([record]))).toThrow(
-        SessionParseError,
+      expectV2RecordError(
+        { source: { origin: "user", turnId: 42 } },
+        "turnId",
       );
-      expect(() => parseSession(v2Session([record]))).toThrow("turnId");
     });
 
     it("should reject non-string source.toolCallId", () => {
-      const record = validRecord({
-        source: { origin: "tool", toolCallId: true },
-      });
-      expect(() => parseSession(v2Session([record]))).toThrow(
-        SessionParseError,
+      expectV2RecordError(
+        { source: { origin: "tool", toolCallId: true } },
+        "toolCallId",
       );
-      expect(() => parseSession(v2Session([record]))).toThrow("toolCallId");
     });
 
     it("should reject non-string rationale", () => {
-      const record = validRecord({ rationale: 123 });
-      expect(() => parseSession(v2Session([record]))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(v2Session([record]))).toThrow("rationale");
+      expectV2RecordError({ rationale: 123 }, "rationale");
     });
 
     it("should reject non-string supersededById", () => {
-      const record = validRecord({
-        lifecycle: "superseded",
-        supersededById: 99,
-      });
-      expect(() => parseSession(v2Session([record]))).toThrow(
-        SessionParseError,
+      expectV2RecordError(
+        { lifecycle: "superseded", supersededById: 99 },
+        "supersededById",
       );
-      expect(() => parseSession(v2Session([record]))).toThrow("supersededById");
     });
 
     it("should reject superseded lifecycle without supersededById", () => {
-      const record = validRecord({ lifecycle: "superseded" });
-      expect(() => parseSession(v2Session([record]))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(v2Session([record]))).toThrow("supersededById");
+      expectV2RecordError({ lifecycle: "superseded" }, "supersededById");
     });
 
     it("should accept superseded record with valid supersededById", () => {
@@ -582,6 +573,19 @@ describe("persistence", () => {
   // =================================================================
 
   describe("artifact encoding", () => {
+    function makeBinaryArtifactManager(data: Uint8Array): ContextManager {
+      const mgr = new ContextManager();
+      mgr.beginUserTurn("Get data");
+      mgr.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "t", arguments: {} } },
+      ]);
+      mgr.recordToolResults([
+        toolResult("tc-1", "t", data, "success", "application/octet-stream"),
+      ]);
+      mgr.commitAssistantResponse("Done");
+      return mgr;
+    }
+
     it("should encode text artifacts with contentEncoding utf8", () => {
       const manager = new ContextManager();
       manager.beginUserTurn("Read it");
@@ -600,16 +604,8 @@ describe("persistence", () => {
     });
 
     it("should encode binary artifacts with contentEncoding base64", () => {
-      const manager = new ContextManager();
       const data = new Uint8Array([1, 2, 3, 4, 5]);
-      manager.beginUserTurn("Get binary");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        toolResult("tc-1", "t", data, "success", "application/octet-stream"),
-      ]);
-      manager.commitAssistantResponse("Done");
+      const manager = makeBinaryArtifactManager(data);
 
       const state = manager.getConversationState();
       const json = serializeSession(state, TEST_METADATA);
@@ -622,16 +618,8 @@ describe("persistence", () => {
     });
 
     it("should restore binary artifacts to Uint8Array", () => {
-      const manager = new ContextManager();
       const data = new Uint8Array([10, 20, 30, 40, 50]);
-      manager.beginUserTurn("Get data");
-      manager.commitAssistantResponse("", [
-        { id: "tc-1", function: { name: "t", arguments: {} } },
-      ]);
-      manager.recordToolResults([
-        toolResult("tc-1", "t", data, "success", "application/octet-stream"),
-      ]);
-      manager.commitAssistantResponse("Done");
+      const manager = makeBinaryArtifactManager(data);
 
       const restored = roundTrip(manager);
       expect(restored.artifacts[0].content).toBeInstanceOf(Uint8Array);
@@ -726,85 +714,75 @@ describe("persistence", () => {
   // =================================================================
 
   describe("parseSession rejection", () => {
+    /** Build a minimal v1 session JSON string, merging in custom context fields. */
+    function makeV1SessionJson(context: Record<string, unknown>): string {
+      return JSON.stringify({
+        version: 1,
+        savedAt: "2026-01-01T00:00:00Z",
+        metadata: TEST_METADATA,
+        context: { preamble: [], turns: [], artifacts: [], ...context },
+      });
+    }
+
+    /** Assert that parsing `json` throws SessionParseError with a matching message. */
+    function expectParseError(
+      json: string,
+      matcher: string | RegExp | (new (...args: unknown[]) => unknown),
+    ): void {
+      expect(() => parseSession(json)).toThrow(SessionParseError);
+      expect(() => parseSession(json)).toThrow(matcher as any);
+    }
     it("should reject non-JSON input", () => {
       expect(() => parseSession("not json at all")).toThrow(SessionParseError);
       expect(() => parseSession("not json at all")).toThrow("Invalid JSON");
     });
 
     it("should reject unknown schema version", () => {
-      const data = {
+      const json = JSON.stringify({
         version: 99,
         savedAt: "2026-01-01T00:00:00Z",
         metadata: TEST_METADATA,
         context: { preamble: [], turns: [], artifacts: [] },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        "Unsupported session version: 99. Supported versions: 1, 2, 3.",
-      );
+      });
+      expectParseError(json, "Unsupported session version: 99. Supported versions: 1, 2, 3.");
     });
 
     it("should reject missing version field", () => {
-      const data = {
+      const json = JSON.stringify({
         savedAt: "2026-01-01T00:00:00Z",
         metadata: TEST_METADATA,
         context: { preamble: [], turns: [], artifacts: [] },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        "Unsupported session version",
-      );
+      });
+      expectParseError(json, "Unsupported session version");
     });
 
     it("should reject missing required metadata fields", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: { providerName: "test" },
-        context: { preamble: [], turns: [], artifacts: [] },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
+      const json = makeV1SessionJson({});
+      // Override metadata with an incomplete one — rebuild manually
+      const data = JSON.parse(json);
+      data.metadata = { providerName: "test" };
+      expect(() => parseSession(JSON.stringify(data))).toThrow(SessionParseError);
     });
 
     it("should reject missing context field", () => {
-      const data = {
+      const json = JSON.stringify({
         version: 1,
         savedAt: "2026-01-01T00:00:00Z",
         metadata: TEST_METADATA,
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
+      });
+      expect(() => parseSession(json)).toThrow(SessionParseError);
     });
 
     it("should reject when turns is not an array", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: { preamble: [], turns: "not-an-array", artifacts: [] },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
+      expectParseError(
+        makeV1SessionJson({ turns: "not-an-array" }),
         "must be an array",
       );
     });
 
     it("should reject a turn with missing id", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
+      expectParseError(
+        makeV1SessionJson({
           turns: [
             {
               startedAt: "2026-01-01T00:00:00Z",
@@ -813,22 +791,14 @@ describe("persistence", () => {
               entries: [],
             },
           ],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "id",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("id");
     });
 
     it("should reject an entry with invalid kind", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
+      expectParseError(
+        makeV1SessionJson({
           turns: [
             {
               id: "t1",
@@ -844,22 +814,14 @@ describe("persistence", () => {
               ],
             },
           ],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "kind",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("kind");
     });
 
     it("should reject a tool entry missing toolInvocations", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
+      expectParseError(
+        makeV1SessionJson({
           turns: [
             {
               id: "t1",
@@ -875,24 +837,14 @@ describe("persistence", () => {
               ],
             },
           ],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
+        }),
         "missing required toolInvocations",
       );
     });
 
     it("should reject a tool entry whose message role is not tool", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
+      expectParseError(
+        makeV1SessionJson({
           turns: [
             {
               id: "t1",
@@ -909,24 +861,14 @@ describe("persistence", () => {
               ],
             },
           ],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
+        }),
         'kind "tool" but message.role is "assistant"',
       );
     });
 
     it("should reject an assistant entry whose message role is not assistant", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
+      expectParseError(
+        makeV1SessionJson({
           turns: [
             {
               id: "t1",
@@ -942,23 +884,14 @@ describe("persistence", () => {
               ],
             },
           ],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
+        }),
         'kind "assistant" but message.role is "tool"',
       );
     });
 
     it("should reject a toolCall missing function property", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
+      expectParseError(
+        makeV1SessionJson({
           preamble: [
             {
               role: "assistant",
@@ -967,21 +900,14 @@ describe("persistence", () => {
             },
           ],
           turns: [],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "function",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("function");
     });
 
     it("should reject a toolCall with missing function.name", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
+      expectParseError(
+        makeV1SessionJson({
           preamble: [
             {
               role: "assistant",
@@ -990,21 +916,14 @@ describe("persistence", () => {
             },
           ],
           turns: [],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "function.name",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("function.name");
     });
 
     it("should reject a toolResult with missing fields", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
+      expectParseError(
+        makeV1SessionJson({
           preamble: [
             {
               role: "tool",
@@ -1013,23 +932,14 @@ describe("persistence", () => {
             },
           ],
           turns: [],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "toolName",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("toolName");
     });
 
     it("should reject invalid base64 in artifact content", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
-          turns: [],
+      expectParseError(
+        makeV1SessionJson({
           artifacts: [
             {
               id: "a1",
@@ -1042,22 +952,14 @@ describe("persistence", () => {
               referencingTurnIds: [],
             },
           ],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "base64",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("base64");
     });
 
     it("should reject artifact with invalid contentEncoding value", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
-          turns: [],
+      expectParseError(
+        makeV1SessionJson({
           artifacts: [
             {
               id: "a1",
@@ -1070,46 +972,26 @@ describe("persistence", () => {
               referencingTurnIds: [],
             },
           ],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
-      );
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
+        }),
         "contentEncoding",
       );
     });
 
     it("should reject a message with invalid role", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
+      expectParseError(
+        makeV1SessionJson({
           preamble: [{ role: "narrator", content: "Once upon a time" }],
           turns: [],
-          artifacts: [],
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
-        SessionParseError,
+        }),
+        "role",
       );
-      expect(() => parseSession(JSON.stringify(data))).toThrow("role");
     });
 
     it("should reject invalid rolling summary", () => {
-      const data = {
-        version: 1,
-        savedAt: "2026-01-01T00:00:00Z",
-        metadata: TEST_METADATA,
-        context: {
-          preamble: [],
-          turns: [],
-          artifacts: [],
+      expectParseError(
+        makeV1SessionJson({
           rollingSummary: { content: "summary" },
-        },
-      };
-      expect(() => parseSession(JSON.stringify(data))).toThrow(
+        }),
         SessionParseError,
       );
     });

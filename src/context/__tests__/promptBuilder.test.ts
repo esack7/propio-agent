@@ -11,7 +11,145 @@ import {
   makeArtifact,
   makeState,
   makeRequest,
+  expectThreeMessagePlanRoles,
 } from "./testHelpers.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a plan for a single unresolved current-turn tool entry backed by
+ * `artifact art-1`.  `rawContent` is used as the artifact body.  The tool
+ * entry always uses "summary only" as its stored summary, so the raw content
+ * appears in the plan only when the tool result is still *unresolved*.
+ */
+function buildUnresolvedToolTurnPlan(rawContent: string) {
+  const artifact = makeArtifact("art-1", rawContent, ["t1"]);
+  const toolEntry = makeToolEntry([
+    {
+      toolCallId: "tc-1",
+      toolName: "read",
+      content: "summary only",
+      artifactId: "art-1",
+    },
+  ]);
+  const currentTurn = makeTurn({
+    id: "t1",
+    userMessage: "Read it",
+    entries: [makeAssistantEntry(""), toolEntry],
+  });
+  const artifacts = new Map([["art-1", artifact]]);
+  const plan = new PromptBuilder().buildPlan(
+    makeRequest({
+      state: makeState({ turns: [currentTurn], artifacts: [artifact] }),
+      artifacts,
+    }),
+  );
+  return { plan, artifact };
+}
+
+/** Creates a standard tool entry for tc-1/read with the given content/artifact. */
+function makeSummaryToolEntry(
+  content: string,
+  artifactId = "art-1",
+): ReturnType<typeof makeToolEntry> {
+  return makeToolEntry([
+    {
+      toolCallId: "tc-1",
+      toolName: "read",
+      content,
+      artifactId,
+    },
+  ]);
+}
+
+/** Finds the tool message in the plan and asserts it exists + checks content. */
+function expectToolResultContent(
+  plan: PromptPlan,
+  expected: string,
+): void {
+  const toolMsg = plan.messages.find(
+    (m) => m.role === "tool" && m.toolResults?.length,
+  );
+  expect(toolMsg).toBeDefined();
+  expect(toolMsg!.toolResults![0].content).toBe(expected);
+}
+
+/** Creates a "current" turn containing an assistant calling a single tool. */
+function makeCurrentToolTurn(
+  toolEntry: ReturnType<typeof makeToolEntry>,
+): ReturnType<typeof makeTurn> {
+  return makeTurn({
+    id: "current",
+    userMessage: "Do task",
+    entries: [makeAssistantEntry("Calling tool"), toolEntry],
+  });
+}
+
+/** Builds a single-turn plan for a "Hello" user message. */
+function buildHelloPlan() {
+  const turn = makeTurn({ id: "t1", userMessage: "Hello" });
+  return new PromptBuilder().buildPlan(
+    makeRequest({ state: makeState({ turns: [turn] }) }),
+  );
+}
+
+/** Creates a completed turn: id "t1", userMessage "Hi", reply "Hello". */
+function makeCompletedHiTurn() {
+  return makeTurn({
+    id: "t1",
+    userMessage: "Hi",
+    completedAt: "2026-01-01T00:01:00Z",
+    entries: [makeAssistantEntry("Hello")],
+  });
+}
+
+/**
+ * Creates `n` turns, each with a very long user message and assistant reply
+ * (useful for triggering budget-based pruning or rolling summary logic).
+ */
+function makeLongTurns(n = 10, length = 10000) {
+  const longMessage = "x".repeat(length);
+  return Array.from({ length: n }, (_, i) =>
+    makeTurn({
+      id: `t${i}`,
+      userMessage: longMessage,
+      completedAt: `2026-01-01T00:0${i}:00Z`,
+      entries: [makeAssistantEntry(longMessage)],
+    }),
+  );
+}
+
+/**
+ * Creates `n` turns with short messages — useful for rolling summary tests
+ * that need predictable turn IDs but don't need to trigger budget pruning.
+ */
+function makeShortTurns(n = 8, prefix = "Message") {
+  return Array.from({ length: n }, (_, i) =>
+    makeTurn({
+      id: `t${i}`,
+      userMessage: `${prefix} ${i}`,
+      completedAt: `2026-01-01T00:0${i}:00Z`,
+      entries: [makeAssistantEntry(`Reply ${i}`)],
+    }),
+  );
+}
+
+/**
+ * Creates `count` turns with "Message i" / "Reply i" messages and padded
+ * second-resolution timestamps — used for retry-level and maxRecentTurns tests.
+ */
+function makeManyTurns(count: number) {
+  return Array.from({ length: count }, (_, i) =>
+    makeTurn({
+      id: `t${i}`,
+      userMessage: `Message ${i}`,
+      completedAt: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+      entries: [makeAssistantEntry(`Reply ${i}`)],
+    }),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -20,14 +158,31 @@ import {
 describe("PromptBuilder", () => {
   const builder = new PromptBuilder();
 
+  /**
+   * Builds a plan using all `makeLongTurns()` covered by rolling summary.
+   * `contextWindowTokens: 10000` forces some turns to be omitted so the
+   * rolling summary is actually used.
+   */
+  function buildAllCoveredPlan(
+    rollingSummary: string,
+    extras: Parameters<typeof makeRequest>[0] = {},
+  ) {
+    const turns = makeLongTurns();
+    const allTurnIds = new Set(turns.map((t) => t.id));
+    return builder.buildPlan(
+      makeRequest({
+        state: makeState({ turns }),
+        contextWindowTokens: 10000,
+        rollingSummary,
+        summaryCoveredTurnIds: allTurnIds,
+        ...extras,
+      }),
+    );
+  }
+
   describe("basic plan construction", () => {
     it("should produce system-first messages with a single user turn", () => {
-      const turn = makeTurn({ id: "t1", userMessage: "Hello" });
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns: [turn] }),
-        }),
-      );
+      const plan = buildHelloPlan();
 
       expect(plan.messages).toHaveLength(2);
       expect(plan.messages[0].role).toBe("system");
@@ -94,12 +249,7 @@ describe("PromptBuilder", () => {
 
   describe("PromptPlan diagnostics fields", () => {
     it("should populate all required diagnostic fields", () => {
-      const t1 = makeTurn({
-        id: "t1",
-        userMessage: "Hi",
-        completedAt: "2026-01-01T00:01:00Z",
-        entries: [makeAssistantEntry("Hello")],
-      });
+      const t1 = makeCompletedHiTurn();
       const plan = builder.buildPlan(
         makeRequest({ state: makeState({ turns: [t1] }) }),
       );
@@ -149,30 +299,7 @@ describe("PromptBuilder", () => {
     });
 
     it("should report includedArtifactIds for unresolved current-turn tool entries when rehydrated", () => {
-      const rawContent = "full raw artifact body for payload";
-      const artifact = makeArtifact("art-1", rawContent, ["t1"]);
-      const toolEntry = makeToolEntry([
-        {
-          toolCallId: "tc-1",
-          toolName: "read",
-          content: "summary only",
-          artifactId: "art-1",
-        },
-      ]);
-      const currentTurn = makeTurn({
-        id: "t1",
-        userMessage: "Read it",
-        entries: [makeAssistantEntry(""), toolEntry],
-      });
-
-      const artifacts = new Map([["art-1", artifact]]);
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns: [currentTurn], artifacts: [artifact] }),
-          artifacts,
-        }),
-      );
-
+      const { plan } = buildUnresolvedToolTurnPlan("full raw artifact body for payload");
       expect(plan.includedArtifactIds).toEqual(["art-1"]);
     });
 
@@ -219,15 +346,7 @@ describe("PromptBuilder", () => {
 
   describe("budget-driven turn pruning", () => {
     it("should omit older turns when budget is tight", () => {
-      const longMessage = "x".repeat(10000);
-      const turns = Array.from({ length: 10 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: longMessage,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(longMessage)],
-        }),
-      );
+      const turns = makeLongTurns();
 
       const plan = builder.buildPlan(
         makeRequest({
@@ -267,14 +386,7 @@ describe("PromptBuilder", () => {
     });
 
     it("should respect maxRecentTurns policy", () => {
-      const turns = Array.from({ length: 20 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: `Message ${i}`,
-          completedAt: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`,
-          entries: [makeAssistantEntry(`Reply ${i}`)],
-        }),
-      );
+      const turns = makeManyTurns(20);
 
       const plan = builder.buildPlan(
         makeRequest({
@@ -291,35 +403,9 @@ describe("PromptBuilder", () => {
   describe("unresolved tool-chain protection", () => {
     it("should rehydrate unresolved current-turn tool results from artifacts", () => {
       const rawContent = "full raw artifact content here";
-      const artifact = makeArtifact("art-1", rawContent, ["t1"]);
-      const toolEntry = makeToolEntry([
-        {
-          toolCallId: "tc-1",
-          toolName: "read",
-          content: "summary only",
-          artifactId: "art-1",
-        },
-      ]);
+      const { plan } = buildUnresolvedToolTurnPlan(rawContent);
 
-      const currentTurn = makeTurn({
-        id: "t1",
-        userMessage: "Read it",
-        entries: [makeAssistantEntry(""), toolEntry],
-      });
-
-      const artifacts = new Map([["art-1", artifact]]);
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns: [currentTurn], artifacts: [artifact] }),
-          artifacts,
-        }),
-      );
-
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.toolResults![0].content).toBe(rawContent);
+      expectToolResultContent(plan, rawContent);
     });
 
     it("should use summary for resolved tool results in the current turn", () => {
@@ -327,14 +413,7 @@ describe("PromptBuilder", () => {
       const summary = "short summary";
       const artifact = makeArtifact("art-1", longRawContent, ["t1"]);
 
-      const toolEntry = makeToolEntry([
-        {
-          toolCallId: "tc-1",
-          toolName: "read",
-          content: summary,
-          artifactId: "art-1",
-        },
-      ]);
+      const toolEntry = makeSummaryToolEntry(summary);
 
       const currentTurn = makeTurn({
         id: "t1",
@@ -354,22 +433,12 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg!.toolResults![0].content).toBe(summary);
+      expectToolResultContent(plan, summary);
     });
 
     it("should use summary for completed turn tool results", () => {
       const summary = "truncated summary";
-      const toolEntry = makeToolEntry([
-        {
-          toolCallId: "tc-1",
-          toolName: "read",
-          content: summary,
-          artifactId: "art-1",
-        },
-      ]);
+      const toolEntry = makeSummaryToolEntry(summary);
 
       const completedTurn = makeTurn({
         id: "t1",
@@ -388,10 +457,7 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg!.toolResults![0].content).toBe(summary);
+      expectToolResultContent(plan, summary);
     });
   });
 
@@ -424,12 +490,7 @@ describe("PromptBuilder", () => {
     });
 
     it("system prompt is unchanged when pinnedMemoryBlock is undefined", () => {
-      const turn = makeTurn({ id: "t1", userMessage: "Hello" });
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns: [turn] }),
-        }),
-      );
+      const plan = buildHelloPlan();
 
       expect(plan.messages[0].content).toBe("You are a helpful assistant.");
     });
@@ -454,26 +515,9 @@ describe("PromptBuilder", () => {
     });
 
     it("pinned memory appears before session summary in system prompt (when both are present)", () => {
-      const longMessage = "x".repeat(10000);
-      const turns = Array.from({ length: 10 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: longMessage,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(longMessage)],
-        }),
-      );
-
-      const allTurnIds = new Set(turns.map((t) => t.id));
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns }),
-          contextWindowTokens: 10000,
-          rollingSummary: "Older session gist",
-          summaryCoveredTurnIds: allTurnIds,
-          pinnedMemoryBlock: "MUST_STAY_VISIBLE",
-        }),
-      );
+      const plan = buildAllCoveredPlan("Older session gist", {
+        pinnedMemoryBlock: "MUST_STAY_VISIBLE",
+      });
 
       expect(plan.usedRollingSummary).toBe(true);
       const content = plan.messages[0].content;
@@ -486,16 +530,6 @@ describe("PromptBuilder", () => {
   });
 
   describe("retry levels", () => {
-    const makeManyTurns = (count: number): TurnRecord[] =>
-      Array.from({ length: count }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: `Message ${i}`,
-          completedAt: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`,
-          entries: [makeAssistantEntry(`Reply ${i}`)],
-        }),
-      );
-
     it("should include more turns at level 0 than level 1", () => {
       const turns = makeManyTurns(20);
       const baseRequest = makeRequest({
@@ -565,27 +599,13 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      expect(plan.messages).toHaveLength(3);
-      expect(plan.messages[0].role).toBe("system");
-      expect(plan.messages[1].role).toBe("user");
+      expectThreeMessagePlanRoles(plan, "user");
       expect(plan.messages[2].content).toBe("No tools.");
     });
 
     it("should include unresolved tool chain in minimal prompt (level 3)", () => {
-      const toolEntry = makeToolEntry([
-        {
-          toolCallId: "tc-1",
-          toolName: "read",
-          content: "summary",
-          artifactId: "art-1",
-        },
-      ]);
-
-      const currentTurn = makeTurn({
-        id: "current",
-        userMessage: "Do task",
-        entries: [makeAssistantEntry("Calling tool"), toolEntry],
-      });
+      const toolEntry = makeSummaryToolEntry("summary");
+      const currentTurn = makeCurrentToolTurn(toolEntry);
 
       const plan = builder.buildPlan(
         makeRequest({
@@ -602,20 +622,8 @@ describe("PromptBuilder", () => {
     it("should rehydrate unresolved tool output from artifacts at level 3", () => {
       const rawContent = "full raw tool output for the model to reason about";
       const artifact = makeArtifact("art-1", rawContent, ["current"]);
-      const toolEntry = makeToolEntry([
-        {
-          toolCallId: "tc-1",
-          toolName: "read",
-          content: "short summary",
-          artifactId: "art-1",
-        },
-      ]);
-
-      const currentTurn = makeTurn({
-        id: "current",
-        userMessage: "Do task",
-        entries: [makeAssistantEntry("Calling tool"), toolEntry],
-      });
+      const toolEntry = makeSummaryToolEntry("short summary");
+      const currentTurn = makeCurrentToolTurn(toolEntry);
 
       const artifacts = new Map([["art-1", artifact]]);
       const plan = builder.buildPlan(
@@ -629,11 +637,7 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      const toolMsg = plan.messages.find(
-        (m) => m.role === "tool" && m.toolResults?.length,
-      );
-      expect(toolMsg).toBeDefined();
-      expect(toolMsg!.toolResults![0].content).toBe(rawContent);
+      expectToolResultContent(plan, rawContent);
       expect(plan.includedArtifactIds).toContain("art-1");
     });
 
@@ -694,12 +698,7 @@ describe("PromptBuilder", () => {
 
   describe("rolling summary", () => {
     it("should not use rolling summary when no turns are omitted", () => {
-      const t1 = makeTurn({
-        id: "t1",
-        userMessage: "Hi",
-        completedAt: "2026-01-01T00:01:00Z",
-        entries: [makeAssistantEntry("Hello")],
-      });
+      const t1 = makeCompletedHiTurn();
 
       const plan = builder.buildPlan(
         makeRequest({
@@ -715,25 +714,7 @@ describe("PromptBuilder", () => {
     });
 
     it("should include rolling summary when turns are omitted and all are covered", () => {
-      const longMessage = "x".repeat(10000);
-      const turns = Array.from({ length: 10 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: longMessage,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(longMessage)],
-        }),
-      );
-
-      const allTurnIds = new Set(turns.map((t) => t.id));
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns }),
-          contextWindowTokens: 10000,
-          rollingSummary: "Summary of older context",
-          summaryCoveredTurnIds: allTurnIds,
-        }),
-      );
+      const plan = buildAllCoveredPlan("Summary of older context");
 
       expect(plan.usedRollingSummary).toBe(true);
       const systemMsg = plan.messages[0];
@@ -743,16 +724,7 @@ describe("PromptBuilder", () => {
     });
 
     it("should NOT use summary when budget omits turns not covered by it", () => {
-      const longMessage = "x".repeat(10000);
-      const turns = Array.from({ length: 10 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: longMessage,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(longMessage)],
-        }),
-      );
-
+      const turns = makeLongTurns();
       const plan = builder.buildPlan(
         makeRequest({
           state: makeState({ turns }),
@@ -817,16 +789,26 @@ describe("PromptBuilder", () => {
   // =================================================================
 
   describe("rolling summary with covered turn IDs", () => {
-    it("should exclude covered turns and merge summary into system message", () => {
-      const turns = Array.from({ length: 8 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: `Message ${i}`,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(`Reply ${i}`)],
-        }),
-      );
+    // Builds a plan with turns covered by { t0, t1 } and extra options.
+    function buildPlanCoveredT0T1(
+      turns: ReturnType<typeof makeTurn>[],
+      options: Parameters<typeof makeRequest>[0] = {},
+    ) {
+      const coveredIds = new Set(["t0", "t1"]);
+      return {
+        coveredIds,
+        plan: builder.buildPlan(
+          makeRequest({
+            state: makeState({ turns }),
+            summaryCoveredTurnIds: coveredIds,
+            ...options,
+          }),
+        ),
+      };
+    }
 
+    it("should exclude covered turns and merge summary into system message", () => {
+      const turns = makeShortTurns();
       const coveredIds = new Set(["t0", "t1", "t2"]);
 
       const plan = builder.buildPlan(
@@ -852,15 +834,7 @@ describe("PromptBuilder", () => {
     });
 
     it("should include unsummarized recent turns verbatim", () => {
-      const turns = Array.from({ length: 8 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: `Message ${i}`,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(`Reply ${i}`)],
-        }),
-      );
-
+      const turns = makeShortTurns();
       const coveredIds = new Set(["t0", "t1"]);
 
       const plan = builder.buildPlan(
@@ -943,15 +917,9 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      const coveredIds = new Set(["t0", "t1"]);
-
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns }),
-          rollingSummary: "Important facts from early turns",
-          summaryCoveredTurnIds: coveredIds,
-        }),
-      );
+      const { plan } = buildPlanCoveredT0T1(turns, {
+        rollingSummary: "Important facts from early turns",
+      });
 
       const systemContent = plan.messages[0].content;
       expect(systemContent).toContain("<session_summary>");
@@ -973,30 +941,16 @@ describe("PromptBuilder", () => {
         }),
       );
 
-      const coveredIds = new Set(["t0", "t1"]);
-
-      const plan = builder.buildPlan(
-        makeRequest({
-          state: makeState({ turns }),
-          contextWindowTokens: 20000,
-          rollingSummary: "Summary of first 2 turns",
-          summaryCoveredTurnIds: coveredIds,
-        }),
-      );
+      const { plan } = buildPlanCoveredT0T1(turns, {
+        contextWindowTokens: 20000,
+        rollingSummary: "Summary of first 2 turns",
+      });
 
       expect(plan.omittedTurnIds.length).toBeGreaterThan(2);
     });
 
     it("should NOT use stale summary when budget drops uncovered turns", () => {
-      const longMessage = "x".repeat(10000);
-      const turns = Array.from({ length: 10 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: longMessage,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(longMessage)],
-        }),
-      );
+      const turns = makeLongTurns();
 
       // Summary only covers t0-t2, but budget will also drop t3-t6ish
       const coveredIds = new Set(["t0", "t1", "t2"]);
@@ -1023,14 +977,7 @@ describe("PromptBuilder", () => {
     });
 
     it("should use summary only when all omitted turns are covered by it", () => {
-      const turns = Array.from({ length: 8 }, (_, i) =>
-        makeTurn({
-          id: `t${i}`,
-          userMessage: `Short msg ${i}`,
-          completedAt: `2026-01-01T00:0${i}:00Z`,
-          entries: [makeAssistantEntry(`Reply ${i}`)],
-        }),
-      );
+      const turns = makeShortTurns(8, "Short msg");
 
       // Summary covers t0-t4; all 8 turns fit in budget, so only
       // the covered ones are omitted (pre-filtered).

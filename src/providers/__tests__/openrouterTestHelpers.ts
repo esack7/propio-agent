@@ -6,9 +6,41 @@ const DEFAULT_CHAT_REQUEST: ChatRequest = {
   messages: [{ role: "user", content: "Hi" }] satisfies ChatMessage[],
 };
 
+type RetryConfig = {
+  maxRetries: number;
+  baseDelayMs: number;
+  consecutive529Limit: number;
+};
+
 type StreamingProvider = {
   streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent>;
 };
+
+export function registerProviderTestLifecycle(
+  originalEnv: NodeJS.ProcessEnv,
+  originalFetch: typeof globalThis.fetch,
+): void {
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = { ...originalEnv };
+    globalThis.fetch = originalFetch;
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+    globalThis.fetch = originalFetch;
+  });
+}
+
+export function registerAcceptsApiKeyTest<T extends { name: string }>(options: {
+  expectedName: string;
+  createProvider: () => T;
+}): void {
+  it("should accept API key from options", () => {
+    const provider = options.createProvider();
+    expect(provider.name).toBe(options.expectedName);
+  });
+}
 
 export class OpenRouterTestFixture {
   static createSseStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -91,5 +123,101 @@ export class OpenRouterTestFixture {
         // consume
       }
     }).rejects.toThrow(matcher as any);
+  }
+
+  /**
+   * Sets up a fetch mock returning the given response, creates a default
+   * provider, expects streamChat to throw the given matcher, and returns the
+   * mock so callers can assert call counts.
+   */
+  static async expectErrorOnStatus(
+    fetchResponse: Record<string, unknown>,
+    errorMatcher: string | RegExp | (new (...args: unknown[]) => unknown),
+    model = "openai/gpt-3.5-turbo",
+    apiKey = "sk-test",
+    retryConfig?: RetryConfig,
+  ): Promise<jest.Mock> {
+    const fetchMock = jest.fn().mockResolvedValue(fetchResponse);
+    globalThis.fetch = fetchMock;
+    const provider = new OpenRouterProvider({ model, apiKey, retryConfig });
+    await OpenRouterTestFixture.expectStreamChatToThrow(provider, errorMatcher);
+    return fetchMock;
+  }
+
+  /**
+   * Sets up a fetch mock that always returns the same failing response,
+   * creates a provider with one retry, and expects the stream to throw the
+   * given error class. Returns the mock so callers can assert call counts.
+   */
+  static async expectRetryError(
+    fetchResponse: Record<string, unknown>,
+    errorMatcher: string | RegExp | (new (...args: unknown[]) => unknown),
+    retryConfig: RetryConfig = {
+      maxRetries: 1,
+      baseDelayMs: 0,
+      consecutive529Limit: 3,
+    },
+  ): Promise<jest.Mock> {
+    const fetchMock = jest.fn().mockResolvedValue(fetchResponse);
+    globalThis.fetch = fetchMock;
+    const provider = new OpenRouterProvider({
+      model: "openai/gpt-3.5-turbo",
+      apiKey: "sk-test",
+      retryConfig,
+    });
+    await OpenRouterTestFixture.expectStreamChatToThrow(provider, errorMatcher);
+    return fetchMock;
+  }
+
+  /**
+   * Runs streamChat inside a try/catch and returns the caught error (or
+   * undefined if no error was thrown). Useful for asserting on error properties
+   * that are not easily checked with `expect(...).rejects.toThrow`.
+   */
+  static async catchStreamError(
+    provider: OpenRouterProvider,
+    request: ChatRequest = DEFAULT_CHAT_REQUEST,
+  ): Promise<unknown> {
+    let caughtError: unknown;
+    try {
+      for await (const _chunk of provider.streamChat(request)) {
+        // consume
+      }
+    } catch (error) {
+      caughtError = error;
+    }
+    return caughtError;
+  }
+
+  /**
+   * Creates a fetch mock that fails on the first call (with the given status)
+   * and succeeds on the second call, streaming the given content back.
+   * Also sets `globalThis.fetch` to the mock and creates a provider with one
+   * retry. Returns both the mock and the provider so callers can make requests
+   * and assert call counts.
+   */
+  static createRetrySuccessMock(
+    failStatus: number,
+    successContent = "Recovered",
+    extraProviderOpts: Record<string, unknown> = {},
+  ): { fetchMock: jest.Mock; provider: OpenRouterProvider } {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: failStatus })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: OpenRouterTestFixture.createSseStream([
+          `data: {"choices":[{"delta":{"content":"${successContent}"}}]}\n\n`,
+          "data: [DONE]\n\n",
+        ]),
+      });
+    globalThis.fetch = fetchMock;
+    const provider = new OpenRouterProvider({
+      model: "openai/gpt-3.5-turbo",
+      apiKey: "sk-test",
+      retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
+      ...extraProviderOpts,
+    });
+    return { fetchMock, provider };
   }
 }

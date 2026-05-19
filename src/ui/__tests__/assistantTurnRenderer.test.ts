@@ -193,6 +193,30 @@ function grepMissingSteps(): ScriptStep[] {
   ];
 }
 
+function readStreamChatStartSteps(): ScriptStep[] {
+  return [
+    { type: "token", value: "Alpha." },
+    toolStartedStep(
+      "read",
+      "tool_1",
+      'Reading src for "streamChat"',
+      '{"q":"x"}',
+    ),
+  ];
+}
+
+function readStreamChatSteps(resultPreview = "match found"): ScriptStep[] {
+  return [
+    ...readStreamChatStartSteps(),
+    toolFinishedStep(
+      "read",
+      "tool_1",
+      'Reading src for "streamChat"',
+      resultPreview,
+    ),
+  ];
+}
+
 async function runHiddenToolScenario(
   steps: ReadonlyArray<ScriptStep>,
   userInput: string,
@@ -276,19 +300,7 @@ describe("streamAssistantTurn", () => {
   it("flushes markdown before activity traces are rendered", async () => {
     const { ui, stderr } = createUi();
     const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Alpha." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: 'Reading src for "streamChat"',
-          args: {},
-          argumentChars: 12,
-          argumentPreview: '{"q":"x"}',
-        },
-      },
+      ...readStreamChatStartSteps(),
       { type: "token", value: " Beta." },
       {
         type: "event",
@@ -497,31 +509,7 @@ describe("streamAssistantTurn", () => {
 
   it("suppresses all tool call UI when tool calls are hidden", async () => {
     const { ui, stderr } = createUi();
-    const agent = new ScriptedAssistantTurnAgent([
-      { type: "token", value: "Alpha." },
-      {
-        type: "event",
-        value: {
-          type: "tool_started",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: 'Reading src for "streamChat"',
-          args: {},
-          argumentChars: 12,
-          argumentPreview: '{"q":"x"}',
-        },
-      },
-      {
-        type: "event",
-        value: {
-          type: "tool_finished",
-          toolName: "read",
-          toolCallId: "tool_1",
-          activityLabel: 'Reading src for "streamChat"',
-          resultPreview: "match found",
-        },
-      },
-    ]);
+    const agent = new ScriptedAssistantTurnAgent(readStreamChatSteps());
 
     await streamAssistantTurn(
       agent,

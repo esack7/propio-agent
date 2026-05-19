@@ -77,6 +77,49 @@ export class XaiProvider extends OpenAiCompatibleProvider {
     return status !== undefined && status >= 500 && status < 600;
   }
 
+  private isAbortError(translated: ProviderError): boolean {
+    return (
+      translated.message === "Request cancelled" ||
+      translated.originalError?.name === "AbortError"
+    );
+  }
+
+  private shouldContinueToNextEndpoint(
+    error: unknown,
+    translated: ProviderError,
+  ): boolean {
+    return !(error instanceof ProviderError) && !this.isAbortError(translated);
+  }
+
+  private async createEndpointResponseError(response: Response): Promise<{
+    translated: ProviderError;
+    retryable: boolean;
+  }> {
+    let errorBody = "";
+    try {
+      errorBody = await response.text();
+    } catch {
+      // ignore read failures
+    }
+
+    return {
+      translated: this.translateError(
+        new Error(errorBody || `HTTP ${response.status}`),
+        response,
+      ),
+      retryable: this.shouldRetryEndpoint(response.status),
+    };
+  }
+
+  private getContinuationError(error: unknown): ProviderError {
+    const translated =
+      error instanceof ProviderError ? error : this.translateError(error);
+    if (!this.shouldContinueToNextEndpoint(error, translated)) {
+      throw translated;
+    }
+    return translated;
+  }
+
   private async createChatCompletionResponse(
     body: Record<string, unknown>,
     signal?: AbortSignal,
@@ -99,39 +142,14 @@ export class XaiProvider extends OpenAiCompatibleProvider {
           return response;
         }
 
-        let errorBody = "";
-        try {
-          errorBody = await response.text();
-        } catch {
-          // ignore read failures
+        const { translated, retryable } =
+          await this.createEndpointResponseError(response);
+        if (!retryable) {
+          throw translated;
         }
-
-        const translated = this.translateError(
-          new Error(errorBody || `HTTP ${response.status}`),
-          response,
-        );
-
-        if (this.shouldRetryEndpoint(response.status)) {
-          lastError = translated;
-          continue;
-        }
-
-        throw translated;
+        lastError = translated;
       } catch (error) {
-        if (error instanceof ProviderError) {
-          throw error;
-        }
-
-        const translated = this.translateError(error);
-        const isAbort =
-          translated.message === "Request cancelled" ||
-          translated.originalError?.name === "AbortError";
-        if (!isAbort) {
-          lastError = translated;
-          continue;
-        }
-
-        throw translated;
+        lastError = this.getContinuationError(error);
       }
     }
 
@@ -200,15 +218,47 @@ export class XaiProvider extends OpenAiCompatibleProvider {
     yield { type: "terminal", stopReason: finishReason };
   }
 
-  private parseStreamLine(
-    data: string,
+  private mapXaiFinishReason(finishReason: string): string {
+    const finishReasonMap: Record<string, string> = {
+      length: "max_tokens",
+      stop: "end_turn",
+      tool_calls: "tool_use",
+    };
+    return finishReasonMap[finishReason] ?? "end_turn";
+  }
+
+  private buildToolCallsFromFinishReason(
+    finishReason: string | undefined,
     toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): { events: ChatStreamEvent[]; stopReason?: string } {
-    if (data === "[DONE]") {
-      return { events: [] };
+  ): ChatStreamEvent | null {
+    if (finishReason !== "tool_calls") {
+      return null;
     }
 
-    const chunk = parseJsonMaybe<{
+    const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
+      id: acc.id,
+      function: {
+        name: acc.name || "",
+        arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
+      },
+    }));
+    return toolCalls.length > 0 ? { type: "tool_calls", toolCalls } : null;
+  }
+
+  private parseXaiStreamChoice(data: string):
+    | {
+        delta?: {
+          content?: string;
+          tool_calls?: Array<{
+            index?: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+        finish_reason?: string;
+      }
+    | undefined {
+    return parseJsonMaybe<{
       choices?: Array<{
         delta?: {
           content?: string;
@@ -220,60 +270,71 @@ export class XaiProvider extends OpenAiCompatibleProvider {
         };
         finish_reason?: string;
       }>;
-    }>(data);
-    const choice = chunk?.choices?.[0];
+    }>(data)?.choices?.[0];
+  }
+
+  private appendXaiContentEvent(
+    content: string | undefined,
+    events: ChatStreamEvent[],
+  ): void {
+    if (content != null && content !== "") {
+      events.push({ type: "assistant_text", delta: content });
+    }
+  }
+
+  private accumulateXaiToolCalls(
+    toolCalls:
+      | Array<{
+          index?: number;
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }>
+      | undefined,
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): void {
+    if (!toolCalls || !Array.isArray(toolCalls)) {
+      return;
+    }
+
+    for (const toolCall of toolCalls) {
+      accumulateOpenAIStreamToolCall(toolCall, toolCallsByIndex, () => ({
+        name: "",
+        argsString: "",
+      }));
+    }
+  }
+
+  private parseStreamLine(
+    data: string,
+    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+  ): { events: ChatStreamEvent[]; stopReason?: string } {
+    if (data === "[DONE]") {
+      return { events: [] };
+    }
+
+    const choice = this.parseXaiStreamChoice(data);
     if (!choice?.delta) {
       return { events: [] };
     }
 
     const events: ChatStreamEvent[] = [];
-    const delta = choice.delta;
-    let stopReason: string | undefined;
+    this.appendXaiContentEvent(choice.delta.content, events);
+    this.accumulateXaiToolCalls(choice.delta.tool_calls, toolCallsByIndex);
 
-    if (delta.content != null && delta.content !== "") {
-      events.push({ type: "assistant_text", delta: delta.content });
+    const toolCallsEvent = this.buildToolCallsFromFinishReason(
+      choice.finish_reason,
+      toolCallsByIndex,
+    );
+    if (toolCallsEvent) {
+      events.push(toolCallsEvent);
     }
 
-    if (delta.tool_calls && Array.isArray(delta.tool_calls)) {
-      for (const tc of delta.tool_calls) {
-        accumulateOpenAIStreamToolCall(tc, toolCallsByIndex, () => ({
-          name: "",
-          argsString: "",
-        }));
-      }
-    }
-
-    // Map xAI finish_reason to normalized StopReason
-    if (choice.finish_reason) {
-      if (choice.finish_reason === "length") {
-        stopReason = "max_tokens";
-      } else if (choice.finish_reason === "stop") {
-        stopReason = "end_turn";
-      } else if (choice.finish_reason === "tool_calls") {
-        stopReason = "tool_use";
-      } else {
-        stopReason = "end_turn";
-      }
-
-      // Only emit tool_calls when finish_reason is tool_calls
-      if (choice.finish_reason === "tool_calls") {
-        const toolCalls = buildOpenAIStreamToolCalls(
-          toolCallsByIndex,
-          (acc) => ({
-            id: acc.id,
-            function: {
-              name: acc.name || "",
-              arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-            },
-          }),
-        );
-        if (toolCalls.length > 0) {
-          events.push({ type: "tool_calls", toolCalls });
-        }
-      }
-    }
-
-    return { events, stopReason };
+    return {
+      events,
+      stopReason: choice.finish_reason
+        ? this.mapXaiFinishReason(choice.finish_reason)
+        : undefined,
+    };
   }
 
   protected translateError(

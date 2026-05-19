@@ -70,6 +70,22 @@ function makeMockProvider(responseText: string): LLMProvider {
   };
 }
 
+function makeCapturingProvider(responseText = "Summary"): {
+  provider: LLMProvider;
+  captured: { messages: any[] };
+} {
+  const captured = { messages: [] as any[] };
+  const provider: LLMProvider = {
+    name: "mock",
+    getCapabilities: () => ({ contextWindowTokens: 128000 }),
+    async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+      captured.messages = request.messages;
+      yield { type: "assistant_text" as const, delta: responseText };
+    },
+  };
+  return { provider, captured };
+}
+
 // ---------------------------------------------------------------------------
 // computeSummaryEligibility
 // ---------------------------------------------------------------------------
@@ -77,10 +93,51 @@ function makeMockProvider(responseText: string): LLMProvider {
 describe("computeSummaryEligibility", () => {
   const policy = DEFAULT_SUMMARY_POLICY;
 
-  it("should return no eligible turns when fewer than rawRecentTurns exist", () => {
-    const turns = Array.from({ length: 4 }, (_, i) =>
+  /** Creates `n` simple turns: id `t${i}`, userMessage `msg ${i}`. */
+  function makeSimpleTurns(n: number) {
+    return Array.from({ length: n }, (_, i) =>
       makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
     );
+  }
+
+  /** Standard prior summary covering t0, t1, t2 with text "old summary". */
+  function makeOldSummary() {
+    return makeSummary("old summary", ["t0", "t1", "t2"]);
+  }
+
+  function computeEligibility(
+    turnCount: number,
+    existing?: RollingSummaryRecord,
+    policyOverrides: Partial<SummaryPolicy> = {},
+  ) {
+    return computeSummaryEligibility(makeSimpleTurns(turnCount), existing, {
+      ...policy,
+      ...policyOverrides,
+    });
+  }
+
+  function computeWithPressure(
+    turns: TurnRecord[],
+    existing: RollingSummaryRecord | undefined,
+  ) {
+    return computeSummaryEligibility(
+      turns,
+      existing,
+      { ...policy, contextPressureThreshold: 0.6, refreshIntervalTurns: 10 },
+      7000,
+      10000,
+    );
+  }
+
+  function computePressureEligibility(coveredTurnIds: string[]) {
+    return computeWithPressure(
+      makeSimpleTurns(8),
+      makeSummary("old summary", coveredTurnIds),
+    );
+  }
+
+  it("should return no eligible turns when fewer than rawRecentTurns exist", () => {
+    const turns = makeSimpleTurns(4);
 
     const result = computeSummaryEligibility(turns, undefined, policy);
 
@@ -89,11 +146,7 @@ describe("computeSummaryEligibility", () => {
   });
 
   it("should identify eligible turns beyond the recent window", () => {
-    const turns = Array.from({ length: 10 }, (_, i) =>
-      makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
-    );
-
-    const result = computeSummaryEligibility(turns, undefined, policy);
+    const result = computeEligibility(10);
 
     expect(result.eligibleTurns).toHaveLength(4);
     expect(result.eligibleTurns.map((t) => t.id)).toEqual([
@@ -105,12 +158,7 @@ describe("computeSummaryEligibility", () => {
   });
 
   it("should trigger refresh when new eligible count meets interval", () => {
-    const turns = Array.from({ length: 10 }, (_, i) =>
-      makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
-    );
-
-    const result = computeSummaryEligibility(turns, undefined, {
-      ...policy,
+    const result = computeEligibility(10, undefined, {
       refreshIntervalTurns: 3,
     });
 
@@ -120,14 +168,7 @@ describe("computeSummaryEligibility", () => {
   });
 
   it("should not trigger refresh when new eligible count is below interval", () => {
-    const turns = Array.from({ length: 10 }, (_, i) =>
-      makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
-    );
-
-    const existing = makeSummary("old summary", ["t0", "t1", "t2"]);
-
-    const result = computeSummaryEligibility(turns, existing, {
-      ...policy,
+    const result = computeEligibility(10, makeOldSummary(), {
       refreshIntervalTurns: 3,
     });
 
@@ -136,37 +177,14 @@ describe("computeSummaryEligibility", () => {
   });
 
   it("should trigger refresh on context pressure even with fewer new turns", () => {
-    const turns = Array.from({ length: 8 }, (_, i) =>
-      makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
-    );
-    const existing = makeSummary("old summary", ["t0"]);
-
-    const result = computeSummaryEligibility(
-      turns,
-      existing,
-      { ...policy, contextPressureThreshold: 0.6, refreshIntervalTurns: 10 },
-      7000,
-      10000,
-    );
+    const result = computePressureEligibility(["t0"]);
 
     expect(result.shouldRefresh).toBe(true);
     expect(result.reason).toBe("context_pressure");
   });
 
   it("should not trigger context pressure refresh when no new eligible turns", () => {
-    const turns = Array.from({ length: 8 }, (_, i) =>
-      makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
-    );
-    // All eligible turns are already covered
-    const existing = makeSummary("old summary", ["t0", "t1"]);
-
-    const result = computeSummaryEligibility(
-      turns,
-      existing,
-      { ...policy, contextPressureThreshold: 0.6, refreshIntervalTurns: 10 },
-      7000,
-      10000,
-    );
+    const result = computePressureEligibility(["t0", "t1"]);
 
     // Context pressure IS high, and there IS a new eligible turn (t1 is
     // covered but eligible count = 2; 8 turns - 6 raw = 2 eligible; 2 covered
@@ -177,12 +195,7 @@ describe("computeSummaryEligibility", () => {
   });
 
   it("should correctly track coverage with existing summary", () => {
-    const turns = Array.from({ length: 12 }, (_, i) =>
-      makeTurn({ id: `t${i}`, userMessage: `msg ${i}` }),
-    );
-    const existing = makeSummary("old summary", ["t0", "t1", "t2"]);
-
-    const result = computeSummaryEligibility(turns, existing, policy);
+    const result = computeEligibility(12, makeOldSummary());
 
     expect(result.eligibleTurns).toHaveLength(6);
     expect(result.newEligibleCount).toBe(3);
@@ -298,14 +311,34 @@ describe("serializeTurnForSummary", () => {
 describe("SummaryManager", () => {
   const manager = new SummaryManager();
 
-  it("should generate a summary from eligible turns", async () => {
-    const turns = Array.from({ length: 3 }, (_, i) =>
+  /** Creates `n` Q&A turns: id `t${i}`, userMessage `Question ${i}`, Answer `i`. */
+  function makeQATurns(n: number) {
+    return Array.from({ length: n }, (_, i) =>
       makeTurn({
         id: `t${i}`,
         userMessage: `Question ${i}`,
         entries: [makeAssistantEntry(`Answer ${i}`)],
       }),
     );
+  }
+
+  /** Calls generateSummary with the standard "test-model" and DEFAULT policy. */
+  function generateSummaryWithPrevious(
+    provider: LLMProvider,
+    turns: ReturnType<typeof makeTurn>[],
+    previousSummary: RollingSummaryRecord | undefined,
+  ) {
+    return manager.generateSummary(
+      provider,
+      "test-model",
+      turns,
+      previousSummary,
+      DEFAULT_SUMMARY_POLICY,
+    );
+  }
+
+  it("should generate a summary from eligible turns", async () => {
+    const turns = makeQATurns(3);
 
     const provider = makeMockProvider(
       "The user asked 3 questions and received answers.",
@@ -337,15 +370,7 @@ describe("SummaryManager", () => {
       }),
     ];
 
-    let capturedMessages: any[] = [];
-    const provider: LLMProvider = {
-      name: "mock",
-      getCapabilities: () => ({ contextWindowTokens: 128000 }),
-      async *streamChat(request: ChatRequest) {
-        capturedMessages = request.messages;
-        yield { type: "assistant_text" as const, delta: "Updated summary" };
-      },
-    };
+    const { provider, captured } = makeCapturingProvider("Updated summary");
 
     const previousSummary = makeSummary("Previous session context", [
       "t0",
@@ -353,63 +378,32 @@ describe("SummaryManager", () => {
       "t2",
     ]);
 
-    await manager.generateSummary(
-      provider,
-      "test-model",
-      turns,
-      previousSummary,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    await generateSummaryWithPrevious(provider, turns, previousSummary);
 
-    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    const userMsg = captured.messages.find((m: any) => m.role === "user");
     expect(userMsg.content).toContain("<previous_summary>");
     expect(userMsg.content).toContain("Previous session context");
     expect(userMsg.content).toContain("<new_turns>");
   });
 
   it("should use the correct system prompt for summarization", async () => {
-    let capturedMessages: any[] = [];
-    const provider: LLMProvider = {
-      name: "mock",
-      getCapabilities: () => ({ contextWindowTokens: 128000 }),
-      async *streamChat(request: ChatRequest) {
-        capturedMessages = request.messages;
-        yield { type: "assistant_text" as const, delta: "Summary" };
-      },
-    };
+    const { provider, captured } = makeCapturingProvider("Summary");
 
-    await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    await generateForSingleTurn(provider);
 
-    const systemMsg = capturedMessages.find((m: any) => m.role === "system");
+    const systemMsg = captured.messages.find((m: any) => m.role === "system");
     expect(systemMsg.content).toBe(SUMMARY_SYSTEM_PROMPT);
   });
 
   it("should include target tokens in the user prompt", async () => {
-    let capturedMessages: any[] = [];
-    const provider: LLMProvider = {
-      name: "mock",
-      getCapabilities: () => ({ contextWindowTokens: 128000 }),
-      async *streamChat(request: ChatRequest) {
-        capturedMessages = request.messages;
-        yield { type: "assistant_text" as const, delta: "Summary" };
-      },
-    };
+    const { provider, captured } = makeCapturingProvider("Summary");
 
-    await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      { ...DEFAULT_SUMMARY_POLICY, summaryTargetTokens: 256 },
-    );
+    await generateForSingleTurn(provider, {
+      ...DEFAULT_SUMMARY_POLICY,
+      summaryTargetTokens: 256,
+    });
 
-    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    const userMsg = captured.messages.find((m: any) => m.role === "user");
     expect(userMsg.content).toContain("256 tokens");
   });
 
@@ -474,15 +468,7 @@ describe("SummaryManager", () => {
   });
 
   it("should not include raw artifact content, only resultSummary", async () => {
-    let capturedMessages: any[] = [];
-    const provider: LLMProvider = {
-      name: "mock",
-      getCapabilities: () => ({ contextWindowTokens: 128000 }),
-      async *streamChat(request: ChatRequest) {
-        capturedMessages = request.messages;
-        yield { type: "assistant_text" as const, delta: "Summary" };
-      },
-    };
+    const { provider, captured } = makeCapturingProvider("Summary");
 
     const turn = makeTurn({
       id: "t0",
@@ -502,29 +488,15 @@ describe("SummaryManager", () => {
       DEFAULT_SUMMARY_POLICY,
     );
 
-    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    const userMsg = captured.messages.find((m: any) => m.role === "user");
     expect(userMsg.content).toContain("short summary of file contents");
     expect(userMsg.content).not.toContain("art-1");
   });
 
   it("should only serialize newly eligible turns, not already-covered ones", async () => {
-    const allTurns = Array.from({ length: 5 }, (_, i) =>
-      makeTurn({
-        id: `t${i}`,
-        userMessage: `Question ${i}`,
-        entries: [makeAssistantEntry(`Answer ${i}`)],
-      }),
-    );
+    const allTurns = makeQATurns(5);
 
-    let capturedMessages: any[] = [];
-    const provider: LLMProvider = {
-      name: "mock",
-      getCapabilities: () => ({ contextWindowTokens: 128000 }),
-      async *streamChat(request: ChatRequest) {
-        capturedMessages = request.messages;
-        yield { type: "assistant_text" as const, delta: "Updated summary" };
-      },
-    };
+    const { provider, captured } = makeCapturingProvider("Updated summary");
 
     const previousSummary = makeSummary("Summary of t0-t2", ["t0", "t1", "t2"]);
 
@@ -536,7 +508,7 @@ describe("SummaryManager", () => {
       DEFAULT_SUMMARY_POLICY,
     );
 
-    const userMsg = capturedMessages.find((m: any) => m.role === "user");
+    const userMsg = captured.messages.find((m: any) => m.role === "user");
     expect(userMsg.content).toContain("Question 3");
     expect(userMsg.content).toContain("Question 4");
     expect(userMsg.content).not.toContain("Question 0");
@@ -570,13 +542,7 @@ describe("SummaryManager", () => {
     ];
     const previousSummary = makeSummary("Covers both", ["t0", "t1"]);
 
-    const result = await manager.generateSummary(
-      provider,
-      "test-model",
-      turns,
-      previousSummary,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    const result = await generateSummaryWithPrevious(provider, turns, previousSummary);
 
     expect(providerCalled).toBe(false);
     expect(result.refreshedTurnCount).toBe(0);
@@ -588,6 +554,23 @@ describe("SummaryManager", () => {
   // Structured sections (Phase 5)
   // -----------------------------------------------------------------------
 
+  async function generateForSingleTurn(
+    providerOrText: LLMProvider | string,
+    policy = DEFAULT_SUMMARY_POLICY,
+  ) {
+    const provider =
+      typeof providerOrText === "string"
+        ? makeMockProvider(providerOrText)
+        : providerOrText;
+    return manager.generateSummary(
+      provider,
+      "test-model",
+      [makeTurn({ id: "t0", userMessage: "hi" })],
+      undefined,
+      policy,
+    );
+  }
+
   it("should parse valid JSON sections and populate sections field", async () => {
     const sectionsJSON = JSON.stringify({
       goals: "Build X and test it",
@@ -595,15 +578,7 @@ describe("SummaryManager", () => {
       accomplished: "Step 1 done",
     });
 
-    const provider = makeMockProvider(sectionsJSON);
-
-    const result = await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    const result = await generateForSingleTurn(sectionsJSON);
 
     expect(result.summary.sections).toBeDefined();
     expect(result.summary.sections!.goals).toBe("Build X and test it");
@@ -617,15 +592,7 @@ describe("SummaryManager", () => {
       constraints: "Use TypeScript",
     });
 
-    const provider = makeMockProvider(sectionsJSON);
-
-    const result = await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    const result = await generateForSingleTurn(sectionsJSON);
 
     expect(result.summary.content).toContain("Goals: Build X");
     expect(result.summary.content).toContain("Constraints: Use TypeScript");
@@ -633,15 +600,8 @@ describe("SummaryManager", () => {
 
   it("should fall back to plain text when LLM returns invalid JSON", async () => {
     const plainText = "This is a plain text summary, not JSON";
-    const provider = makeMockProvider(plainText);
 
-    const result = await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    const result = await generateForSingleTurn(plainText);
 
     expect(result.summary.sections).toBeUndefined();
     expect(result.summary.content).toBe(plainText);
@@ -649,15 +609,8 @@ describe("SummaryManager", () => {
 
   it("should fall back to plain text when JSON has wrong shape", async () => {
     const wrongShapeJSON = JSON.stringify({ unknownKey: "value" });
-    const provider = makeMockProvider(wrongShapeJSON);
 
-    const result = await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    const result = await generateForSingleTurn(wrongShapeJSON);
 
     expect(result.summary.sections).toBeUndefined();
     // Should store the raw JSON string as content
@@ -670,15 +623,7 @@ describe("SummaryManager", () => {
       // other keys omitted
     });
 
-    const provider = makeMockProvider(sparseJSON);
-
-    const result = await manager.generateSummary(
-      provider,
-      "test-model",
-      [makeTurn({ id: "t0", userMessage: "hi" })],
-      undefined,
-      DEFAULT_SUMMARY_POLICY,
-    );
+    const result = await generateForSingleTurn(sparseJSON);
 
     expect(result.summary.sections).toBeDefined();
     expect(result.summary.sections!.goals).toBe("Do X");

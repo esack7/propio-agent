@@ -202,6 +202,138 @@ export class Agent {
   private sessionsDir: string | null = null;
   private pendingToolResultBytes = 0;
 
+  private resolveProvidersConfig(
+    providersConfig: ProvidersConfig | string,
+  ): ProvidersConfig {
+    return typeof providersConfig === "string"
+      ? loadProvidersConfig(providersConfig)
+      : providersConfig;
+  }
+
+  private createAgentState(
+    options: {
+      providersConfig: ProvidersConfig | string;
+      providerName?: string;
+      modelKey?: string;
+      mcpConfig?: McpConfigFile;
+      mcpConfigPath?: string;
+      systemPrompt?: string;
+      agentsMdContent?: string;
+      cwd?: string;
+      homeDir?: string;
+      diagnosticsEnabled?: boolean;
+      onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+      runtimeConfig?: RuntimeConfig;
+    },
+    config: ProvidersConfig,
+  ): {
+    systemPrompt: string;
+    providersConfig: ProvidersConfig;
+    diagnosticsEnabled: boolean;
+    diagnosticsListener?: (event: AgentDiagnosticEvent) => void;
+    skillContext: {
+      readonly cwd: string;
+      readonly homeDir: string;
+    };
+    sessionId: string;
+    runtimeConfig: RuntimeConfig;
+  } {
+    const basePrompt =
+      options.systemPrompt || "You are a helpful AI assistant.";
+
+    return {
+      systemPrompt: composeSystemPrompt(options.agentsMdContent ?? "", basePrompt),
+      providersConfig: config,
+      diagnosticsEnabled: options.diagnosticsEnabled ?? false,
+      diagnosticsListener: options.onDiagnosticEvent,
+      skillContext: {
+        cwd: options.cwd ?? process.cwd(),
+        homeDir: options.homeDir ?? os.homedir(),
+      },
+      sessionId: randomUUID(),
+      runtimeConfig: options.runtimeConfig ?? loadRuntimeConfig(),
+    };
+  }
+
+  private createProviderState(options: {
+    providerName?: string;
+    modelKey?: string;
+  }): {
+    resolvedProviderConfig: ProviderConfig;
+    provider: LLMProvider;
+    model: string;
+  } {
+    const resolvedProvider = resolveProvider(
+      this.providersConfig,
+      options.providerName,
+    );
+    const resolvedModelKey = resolveModelKey(
+      resolvedProvider,
+      options.modelKey,
+    );
+
+    return {
+      resolvedProviderConfig: resolvedProvider,
+      provider: createProvider(
+        resolvedProvider,
+        resolvedModelKey,
+        this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+        this.diagnosticsEnabled,
+        {
+          maxRetries: this.runtimeConfig.maxRetries,
+          consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+        },
+      ),
+      model: resolvedModelKey,
+    };
+  }
+
+  private createSupportComponents(options: {
+    mcpConfig?: McpConfigFile;
+    mcpConfigPath?: string;
+  }): {
+    contextManager: ContextManager;
+    toolRegistry: ToolRegistry;
+    mcpManager: McpManager;
+    summaryManager: SummaryManager;
+    summaryPolicy: SummaryPolicy;
+  } {
+    return {
+      contextManager: new ContextManager({
+        toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
+        rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
+        pinnedMemoryMaxContentLength:
+          this.runtimeConfig.pinnedMemoryMaxContentLength,
+      }),
+      toolRegistry: createDefaultToolRegistry({
+        runtimeConfig: this.runtimeConfig,
+        skillToolInvoker: {
+          invokeSkill: async (
+            name: string,
+            argumentsText: string | undefined,
+            invokeOptions:
+              | {
+                  readonly source?: "model";
+                }
+              | undefined,
+          ) => {
+            await this.invokeSkill(name, argumentsText, invokeOptions);
+            return `Activated skill ${name}.`;
+          },
+        },
+      }),
+      mcpManager: new McpManager({
+        ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
+        ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
+      }),
+      summaryManager: new SummaryManager(),
+      summaryPolicy: {
+        ...DEFAULT_SUMMARY_POLICY,
+        summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
+      },
+    };
+  }
+
   constructor(
     options: {
       providersConfig: ProvidersConfig | string;
@@ -224,83 +356,27 @@ export class Agent {
       );
     }
 
-    const basePrompt =
-      options.systemPrompt || "You are a helpful AI assistant.";
+    const config = this.resolveProvidersConfig(options.providersConfig);
+    const agentState = this.createAgentState(options, config);
+    this.systemPrompt = agentState.systemPrompt;
+    this.providersConfig = agentState.providersConfig;
+    this.diagnosticsEnabled = agentState.diagnosticsEnabled;
+    this.diagnosticsListener = agentState.diagnosticsListener;
+    this.skillContext = agentState.skillContext;
+    this.sessionId = agentState.sessionId;
+    this.runtimeConfig = agentState.runtimeConfig;
 
-    this.systemPrompt = composeSystemPrompt(
-      options.agentsMdContent ?? "",
-      basePrompt,
-    );
+    const providerState = this.createProviderState(options);
+    this.resolvedProviderConfig = providerState.resolvedProviderConfig;
+    this.provider = providerState.provider;
+    this.model = providerState.model;
 
-    let config: ProvidersConfig;
-    if (typeof options.providersConfig === "string") {
-      config = loadProvidersConfig(options.providersConfig);
-    } else {
-      config = options.providersConfig;
-    }
-
-    this.providersConfig = config;
-    this.diagnosticsEnabled = options.diagnosticsEnabled ?? false;
-    this.diagnosticsListener = options.onDiagnosticEvent;
-    this.skillContext = {
-      cwd: options.cwd ?? process.cwd(),
-      homeDir: options.homeDir ?? os.homedir(),
-    };
-
-    this.sessionId = randomUUID();
-    this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
-
-    const resolvedProvider = resolveProvider(config, options.providerName);
-    const resolvedModelKey = resolveModelKey(
-      resolvedProvider,
-      options.modelKey,
-    );
-
-    this.resolvedProviderConfig = resolvedProvider;
-    this.provider = createProvider(
-      resolvedProvider,
-      resolvedModelKey,
-      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
-      this.diagnosticsEnabled,
-      {
-        maxRetries: this.runtimeConfig.maxRetries,
-        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
-      },
-    );
-    this.model = resolvedModelKey;
-
-    this.contextManager = new ContextManager({
-      toolResultSummaryMaxChars: this.runtimeConfig.toolResultSummaryMaxChars,
-      rehydrationMaxChars: this.runtimeConfig.rehydrationMaxChars,
-      pinnedMemoryMaxContentLength:
-        this.runtimeConfig.pinnedMemoryMaxContentLength,
-    });
-    this.toolRegistry = createDefaultToolRegistry({
-      runtimeConfig: this.runtimeConfig,
-      skillToolInvoker: {
-        invokeSkill: async (
-          name: string,
-          argumentsText: string | undefined,
-          options:
-            | {
-                readonly source?: "model";
-              }
-            | undefined,
-        ) => {
-          await this.invokeSkill(name, argumentsText, options);
-          return `Activated skill ${name}.`;
-        },
-      },
-    });
-    this.mcpManager = new McpManager({
-      ...(options.mcpConfig ? { config: options.mcpConfig } : {}),
-      ...(options.mcpConfigPath ? { configPath: options.mcpConfigPath } : {}),
-    });
-    this.summaryManager = new SummaryManager();
-    this.summaryPolicy = {
-      ...DEFAULT_SUMMARY_POLICY,
-      summaryTargetTokens: this.runtimeConfig.rollingSummaryTargetTokens,
-    };
+    const supportComponents = this.createSupportComponents(options);
+    this.contextManager = supportComponents.contextManager;
+    this.toolRegistry = supportComponents.toolRegistry;
+    this.mcpManager = supportComponents.mcpManager;
+    this.summaryManager = supportComponents.summaryManager;
+    this.summaryPolicy = supportComponents.summaryPolicy;
   }
 
   async initialize(): Promise<void> {
@@ -446,50 +522,48 @@ export class Agent {
     return {};
   }
 
-  private detectNoProgress(
-    _currentToolCalls?: ChatToolCall[],
-    lookback: number = 5,
-  ): boolean {
+  private collectRecentToolCallSignatures(lookback: number): {
+    hasAnyAssistantText: boolean;
+    seenCallSignatures: string[];
+  } {
     const state = this.contextManager.getConversationState();
     const turns = state.turns;
+    if (turns.length === 0) {
+      return { hasAnyAssistantText: false, seenCallSignatures: [] };
+    }
 
-    if (turns.length === 0) return false;
-
-    const lastTurn = turns[turns.length - 1];
-    // commitAssistantResponse already ran before this check, so the current
-    // iteration's assistant entry is already in history — read from there only.
-    const recentEntries = lastTurn.entries.slice(-lookback);
-
+    const recentEntries = turns[turns.length - 1].entries.slice(-lookback);
     const seenCallSignatures: string[] = [];
     let hasAnyAssistantText = false;
 
     for (const entry of recentEntries) {
-      if (entry.kind === "assistant") {
-        if (entry.message.content?.trim().length > 0) {
-          hasAnyAssistantText = true;
-        }
-        // Collect per-call signatures (tool name + stable args key)
-        if (entry.message.toolCalls?.length) {
-          for (const tc of entry.message.toolCalls) {
-            seenCallSignatures.push(
-              `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
-            );
-          }
-        }
+      if (entry.kind !== "assistant") {
+        continue;
+      }
+      if (entry.message.content?.trim().length > 0) {
+        hasAnyAssistantText = true;
+      }
+      for (const toolCall of entry.message.toolCalls ?? []) {
+        seenCallSignatures.push(
+          `${toolCall.function.name}:${stableArgsKey(toolCall.function.arguments)}`,
+        );
       }
     }
 
-    if (hasAnyAssistantText) return false;
+    return { hasAnyAssistantText, seenCallSignatures };
+  }
 
-    // Need at least 3 identical call signatures in the lookback window.
-    // Each tool invocation creates a new artifact ID regardless of content, so
-    // artifact IDs cannot distinguish genuine progress from a stuck loop —
-    // the args-key comparison is the authoritative signal.
-    if (seenCallSignatures.length < 3) return false;
+  private detectNoProgress(
+    _currentToolCalls?: ChatToolCall[],
+    lookback: number = 5,
+  ): boolean {
+    const { hasAnyAssistantText, seenCallSignatures } =
+      this.collectRecentToolCallSignatures(lookback);
+    if (hasAnyAssistantText || seenCallSignatures.length < 3) {
+      return false;
+    }
 
-    // Stuck if every call in the window has the same signature (same tool + same args)
-    const uniqueSignatures = new Set(seenCallSignatures);
-    return uniqueSignatures.size === 1;
+    return new Set(seenCallSignatures).size === 1;
   }
 
   private synthesizeAgentReasoningSummary(
@@ -624,45 +698,56 @@ export class Agent {
     }));
   }
 
-  private recordSkillTouchFromToolArgs(
-    toolName: string,
-    args: Record<string, unknown>,
-  ): void {
-    if (toolName !== "read" && toolName !== "write" && toolName !== "edit") {
-      return;
-    }
+  private shouldRecordSkillTouch(toolName: string): boolean {
+    return toolName === "read" || toolName === "write" || toolName === "edit";
+  }
 
+  private extractTouchedPathsFromToolArgs(
+    args: Record<string, unknown>,
+  ): string[] {
     const touchedPaths: string[] = [];
+
     for (const [key, value] of Object.entries(args)) {
       if (typeof value === "string" && /path/i.test(key)) {
         touchedPaths.push(value);
+        continue;
       }
-      if (Array.isArray(value) && /paths?/i.test(key)) {
-        for (const entry of value) {
-          if (typeof entry === "string" && entry.trim().length > 0) {
-            touchedPaths.push(entry);
-          }
+      if (!Array.isArray(value) || !/paths?/i.test(key)) {
+        continue;
+      }
+      for (const entry of value) {
+        if (typeof entry === "string" && entry.trim().length > 0) {
+          touchedPaths.push(entry);
         }
       }
     }
 
+    return touchedPaths;
+  }
+
+  private recordSkillTouchFromToolArgs(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): void {
+    if (!this.shouldRecordSkillTouch(toolName)) {
+      return;
+    }
+
+    const touchedPaths = this.extractTouchedPathsFromToolArgs(args);
     if (touchedPaths.length > 0) {
       this.recordSkillFileTouch(touchedPaths);
     }
   }
 
-  async invokeSkill(
+  private resolveInvocableSkill(
+    registry: SkillRegistry,
     name: string,
-    argumentsText?: string,
-    options?: SkillInvocationOptions,
-  ): Promise<string> {
-    const registry = this.getSkillRegistry();
+    source: "user" | "model",
+  ): Skill {
     const skill = registry.get(name);
     if (!skill) {
       throw createMissingSkillError(name, registry.list());
     }
-
-    const source = options?.source ?? "user";
     if (source === "user" && skill.userInvocable === false) {
       throw new Error(`Skill is not user-invocable: ${skill.name}`);
     }
@@ -674,13 +759,20 @@ export class Agent {
         `Skill "${skill.name}" requests forked execution, which is not supported yet.`,
       );
     }
+    return skill;
+  }
 
+  private collectSkillWarnings(skill: Skill): {
+    requestedModel?: string;
+    requestedEffort?: string;
+    appliedModel?: string;
+    warnings: string[];
+  } {
     const warnings: string[] = [];
     const requestedModel = skill.model;
     const requestedEffort = skill.effort;
     const appliedModel =
       requestedModel && requestedModel === this.model ? this.model : undefined;
-    const materializationWarnings: string[] = [];
 
     if (requestedModel && !appliedModel) {
       warnings.push(
@@ -693,6 +785,20 @@ export class Agent {
       );
     }
 
+    return {
+      requestedModel,
+      requestedEffort,
+      appliedModel,
+      warnings,
+    };
+  }
+
+  private materializeSkillContent(
+    registry: SkillRegistry,
+    skill: Skill,
+    argumentsText: string | undefined,
+  ): { content: string; materializationWarnings: string[] } {
+    const materializationWarnings: string[] = [];
     const content = registry.materialize(
       skill.name,
       { arguments: argumentsText },
@@ -702,24 +808,43 @@ export class Agent {
         },
       },
     );
-    const combinedWarnings =
-      warnings.length > 0 || materializationWarnings.length > 0
-        ? [...warnings, ...materializationWarnings]
-        : undefined;
+    return { content, materializationWarnings };
+  }
 
-    const scope: SkillInvocationScope = {
+  private buildSkillInvocationScope(
+    skill: Skill,
+    source: "user" | "model",
+    warningState: {
+      requestedModel?: string;
+      requestedEffort?: string;
+      appliedModel?: string;
+    },
+    warnings: string[] | undefined,
+  ): SkillInvocationScope {
+    return {
       invocationSource: source,
       skillName: skill.name,
       skillRoot: skill.skillRoot,
       skillFile: skill.skillFile,
       ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
-      ...(requestedModel ? { model: requestedModel } : {}),
-      ...(requestedEffort ? { effort: requestedEffort } : {}),
-      ...(appliedModel ? { appliedModel } : {}),
-      ...(combinedWarnings ? { warnings: combinedWarnings } : {}),
+      ...(warningState.requestedModel ? { model: warningState.requestedModel } : {}),
+      ...(warningState.requestedEffort
+        ? { effort: warningState.requestedEffort }
+        : {}),
+      ...(warningState.appliedModel
+        ? { appliedModel: warningState.appliedModel }
+        : {}),
+      ...(warnings ? { warnings } : {}),
     };
+  }
 
-    const invocationRecord: InvokedSkillRecord = {
+  private createSkillInvocationRecord(
+    skill: Skill,
+    argumentsText: string | undefined,
+    content: string,
+    scope: SkillInvocationScope,
+  ): InvokedSkillRecord {
+    return {
       name: skill.name,
       source: skill.source,
       skillRoot: skill.skillRoot,
@@ -729,9 +854,40 @@ export class Agent {
       invokedAt: new Date().toISOString(),
       scope,
     };
+  }
+
+  async invokeSkill(
+    name: string,
+    argumentsText?: string,
+    options?: SkillInvocationOptions,
+  ): Promise<string> {
+    const registry = this.getSkillRegistry();
+    const source = options?.source ?? "user";
+    const skill = this.resolveInvocableSkill(registry, name, source);
+    const warningState = this.collectSkillWarnings(skill);
+    const { content, materializationWarnings } = this.materializeSkillContent(
+      registry,
+      skill,
+      argumentsText,
+    );
+    const combinedWarnings = [
+      ...warningState.warnings,
+      ...materializationWarnings,
+    ];
+    const scope = this.buildSkillInvocationScope(
+      skill,
+      source,
+      warningState,
+      combinedWarnings.length > 0 ? combinedWarnings : undefined,
+    );
+    const invocationRecord = this.createSkillInvocationRecord(
+      skill,
+      argumentsText,
+      content,
+      scope,
+    );
 
     this.contextManager.recordInvokedSkill(invocationRecord);
-
     return invocationRecord.content;
   }
 
@@ -1081,6 +1237,107 @@ export class Agent {
     return normalizedEvent;
   }
 
+  private async streamFinalResponseWithoutTools(
+    messages: ChatMessage[],
+    onToken: (token: string) => void,
+    abortSignal: AbortSignal | undefined,
+    iteration: number,
+    options: AgentEventOptions | undefined,
+  ): Promise<string> {
+    const streamState = { fullResponse: "", chunkCount: 0 };
+    this.emitStatus(options, "Streaming response", "response");
+    for await (const event of this.withStreamIdleWatchdog(
+      this.provider.streamChat({
+        model: this.model,
+        messages,
+        signal: abortSignal,
+        iteration,
+      }),
+      iteration,
+    )) {
+      const normalizedEvent = this.normalizeAndEmitStreamEvent(
+        event,
+        options,
+        abortSignal,
+      );
+      this.recordStreamChunk(normalizedEvent, iteration, streamState, onToken);
+    }
+
+    this.contextManager.commitAssistantResponse(streamState.fullResponse);
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      responseChars: streamState.fullResponse.length,
+      responseIsEmpty: streamState.fullResponse.trim().length === 0,
+      toolCalls: 0,
+    });
+
+    if (streamState.fullResponse.trim().length === 0) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        contextMessages: this.contextManager.messageCount,
+      });
+    }
+
+    return streamState.fullResponse;
+  }
+
+  private async advanceNoToolsRetryLevel(
+    error: ProviderContextLengthError,
+    plan: PromptPlan,
+    iteration: number,
+    retryLevel: number,
+    shrinkCount: number,
+  ): Promise<"retry" | "next-level"> {
+    if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
+      this.emitDiagnostic({
+        type: "context_pressure_circuit_breaker",
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        retryLevel,
+      });
+      throw error;
+    }
+
+    if (await this.attemptSynchronousShrink(plan)) {
+      this.emitDiagnostic({
+        type: "provider_error",
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        errorName: "ProviderContextLengthError",
+        message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
+      });
+      return "retry";
+    }
+
+    this.emitDiagnostic({
+      type: "provider_error",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      errorName: "ProviderContextLengthError",
+      message: `Context length exceeded, retrying at level ${retryLevel + 1}`,
+    });
+    return "next-level";
+  }
+
+  private emitNoToolsCircuitBreaker(iteration: number, retryLevel: number): void {
+    this.emitDiagnostic({
+      type: "context_pressure_circuit_breaker",
+      provider: this.provider.name,
+      model: this.model,
+      iteration,
+      retryLevel,
+    });
+  }
+
   private async requestFinalResponseWithoutTools(
     onToken: (token: string) => void,
     abortSignal: AbortSignal | undefined,
@@ -1105,98 +1362,33 @@ export class Agent {
       );
 
       try {
-        const streamState = { fullResponse: "", chunkCount: 0 };
-        this.emitStatus(options, "Streaming response", "response");
-        for await (const event of this.withStreamIdleWatchdog(
-          this.provider.streamChat({
-            model: this.model,
-            messages,
-            signal: abortSignal,
-            iteration,
-          }),
+        return await this.streamFinalResponseWithoutTools(
+          messages,
+          onToken,
+          abortSignal,
           iteration,
-        )) {
-          const normalizedEvent = this.normalizeAndEmitStreamEvent(
-            event,
-            options,
-            abortSignal,
-          );
-          this.recordStreamChunk(
-            normalizedEvent,
-            iteration,
-            streamState,
-            onToken,
-          );
-        }
-
-        this.contextManager.commitAssistantResponse(streamState.fullResponse);
-        this.emitDiagnostic({
-          type: "iteration_finished",
-          provider: this.provider.name,
-          model: this.model,
-          iteration,
-          responseChars: streamState.fullResponse.length,
-          responseIsEmpty: streamState.fullResponse.trim().length === 0,
-          toolCalls: 0,
-        });
-
-        if (streamState.fullResponse.trim().length === 0) {
-          this.emitDiagnostic({
-            type: "empty_response",
-            provider: this.provider.name,
-            model: this.model,
-            iteration,
-            contextMessages: this.contextManager.messageCount,
-          });
-        }
-
-        return streamState.fullResponse;
+          options,
+        );
       } catch (error) {
-        if (error instanceof ProviderContextLengthError) {
-          if (retryLevel < Agent.MAX_CONTEXT_RETRY_LEVEL) {
-            shrinkCount++;
-            if (shrinkCount > Agent.MAX_CONTEXT_RETRY_LEVEL + 1) {
-              this.emitDiagnostic({
-                type: "context_pressure_circuit_breaker",
-                provider: this.provider.name,
-                model: this.model,
-                iteration,
-                retryLevel,
-              });
-              throw error;
-            }
-            const shrunk = await this.attemptSynchronousShrink(plan);
-            if (shrunk) {
-              this.emitDiagnostic({
-                type: "provider_error",
-                provider: this.provider.name,
-                model: this.model,
-                iteration,
-                errorName: "ProviderContextLengthError",
-                message: `Context length exceeded, retrying after synchronous summary refresh at level ${retryLevel}`,
-              });
-              continue;
-            }
-            retryLevel++;
-            this.emitDiagnostic({
-              type: "provider_error",
-              provider: this.provider.name,
-              model: this.model,
-              iteration,
-              errorName: "ProviderContextLengthError",
-              message: `Context length exceeded, retrying at level ${retryLevel}`,
-            });
-            continue;
-          }
-          this.emitDiagnostic({
-            type: "context_pressure_circuit_breaker",
-            provider: this.provider.name,
-            model: this.model,
-            iteration,
-            retryLevel,
-          });
+        if (!(error instanceof ProviderContextLengthError)) {
+          throw error;
         }
-        throw error;
+        if (retryLevel >= Agent.MAX_CONTEXT_RETRY_LEVEL) {
+          this.emitNoToolsCircuitBreaker(iteration, retryLevel);
+          throw error;
+        }
+
+        shrinkCount++;
+        const retryAction = await this.advanceNoToolsRetryLevel(
+          error,
+          plan,
+          iteration,
+          retryLevel,
+          shrinkCount,
+        );
+        if (retryAction === "next-level") {
+          retryLevel++;
+        }
       }
     }
 
@@ -1380,23 +1572,15 @@ export class Agent {
     this.contextManager.recordToolResults(artifactToolResults);
   }
 
-  private async processToolCall(
-    toolCall: ChatToolCall,
-    allowedTools: ReadonlySet<string> | undefined,
+  private emitToolExecutionStarted(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    serializedArgs: string,
+    activityLabel: string,
     iteration: number,
     options: AgentToolOptions | undefined,
-    onToken: (token: string) => void,
-    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
-  ): Promise<ArtifactToolResult> {
-    if (options?.abortSignal?.aborted) {
-      throw new Error("Request cancelled");
-    }
-
-    const args = toolCall.function.arguments;
-    const toolName = toolCall.function.name;
-    const serializedArgs = JSON.stringify(args ?? {});
-    const toolCallId = toolCall.id!;
-    const activityLabel = this.describeToolInvocation(toolName, args ?? {});
+  ): void {
     this.emitStatus(options, "Running tool", "tool");
     this.emitVisibilityEvent(options, {
       type: "tool_started",
@@ -1404,9 +1588,9 @@ export class Agent {
       toolCallId,
       activityLabel,
       useLabel: this.toolRegistry.hasTool(toolName)
-        ? this.toolRegistry.renderInvocationUse(toolName, args ?? {})
+        ? this.toolRegistry.renderInvocationUse(toolName, args)
         : null,
-      args: args ?? {},
+      args,
       argumentChars: serializedArgs.length,
       argumentPreview: this.toPreview(serializedArgs),
     });
@@ -1420,12 +1604,18 @@ export class Agent {
       argsChars: serializedArgs.length,
     });
     options?.onToolStart?.(toolName);
+  }
 
-    const execResult = await this.executeToolWithStatus(
-      toolName,
-      args,
-      allowedTools,
-    );
+  private completeToolCallExecution(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    activityLabel: string,
+    execResult: ToolExecutionResult,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): ArtifactToolResult {
     const result = execResult.content;
     const failed = execResult.status !== "success";
     if (!failed) {
@@ -1450,10 +1640,9 @@ export class Agent {
       rawContent: result,
       status: failed ? "error" : "success",
     };
-
     const resultPreview =
       !failed && this.toolRegistry.hasTool(toolName)
-        ? this.toolRegistry.renderInvocationResult(toolName, args ?? {}, result)
+        ? this.toolRegistry.renderInvocationResult(toolName, args, result)
         : this.toPreview(result);
     this.emitVisibilityEvent(options, {
       type: failed ? "tool_failed" : "tool_finished",
@@ -1463,8 +1652,52 @@ export class Agent {
       resultPreview,
     });
     options?.onToolEnd?.(toolName, result, execResult.status);
-
     return artifactToolResult;
+  }
+
+  private async processToolCall(
+    toolCall: ChatToolCall,
+    allowedTools: ReadonlySet<string> | undefined,
+    iteration: number,
+    options: AgentToolOptions | undefined,
+    onToken: (token: string) => void,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+  ): Promise<ArtifactToolResult> {
+    if (options?.abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+
+    const args = toolCall.function.arguments ?? {};
+    const toolName = toolCall.function.name;
+    const toolCallId = toolCall.id!;
+    const serializedArgs = JSON.stringify(args);
+    const activityLabel = this.describeToolInvocation(toolName, args);
+    this.emitToolExecutionStarted(
+      toolName,
+      toolCallId,
+      args,
+      serializedArgs,
+      activityLabel,
+      iteration,
+      options,
+    );
+
+    const execResult = await this.executeToolWithStatus(
+      toolName,
+      args,
+      allowedTools,
+    );
+    void onToken;
+    return this.completeToolCallExecution(
+      toolName,
+      toolCallId,
+      args,
+      activityLabel,
+      execResult,
+      iteration,
+      options,
+      toolExecutionEvents,
+    );
   }
 
   private async finalizeWithNoToolsResponse(
@@ -1499,6 +1732,176 @@ export class Agent {
     };
   }
 
+  private normalizeToolCallsForIteration(
+    toolCalls: ChatToolCall[] | undefined,
+    iterationCount: number,
+  ): ChatToolCall[] {
+    return (toolCalls ?? []).map((toolCall, index) => ({
+      ...toolCall,
+      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
+    }));
+  }
+
+  private emitToolCallBatchDiagnostics(
+    toolCalls: ChatToolCall[],
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+  ): void {
+    if (toolCalls.length === 0) {
+      return;
+    }
+
+    this.emitStatus(options, "Tool call received", "tool");
+    this.emitDiagnostic({
+      type: "tool_calls_received",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      count: toolCalls.length,
+      tools: toolCalls.map((toolCall) => toolCall.function.name),
+    });
+  }
+
+  private commitChatTurnIteration(
+    fullResponse: string,
+    toolCalls: ChatToolCall[],
+    reasoningContent: string | undefined,
+    iterationCount: number,
+  ): void {
+    this.contextManager.commitAssistantResponse(
+      fullResponse,
+      toolCalls.length > 0 ? toolCalls : undefined,
+      toolCalls.length > 0 ? { reasoningContent } : undefined,
+    );
+    this.emitDiagnostic({
+      type: "iteration_finished",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      responseChars: fullResponse.length,
+      responseIsEmpty: fullResponse.trim().length === 0,
+      toolCalls: toolCalls.length,
+    });
+    if (fullResponse.trim().length === 0 && toolCalls.length === 0) {
+      this.emitDiagnostic({
+        type: "empty_response",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        contextMessages: this.contextManager.messageCount,
+      });
+    }
+  }
+
+  private async maybeHandleToolLoopFallback(
+    toolCalls: ChatToolCall[],
+    iterationCount: number,
+    nextEmptyToolOnlyStreak: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+  ): Promise<
+    | {
+        finalResponse: string;
+        continueLoop: boolean;
+        emptyToolOnlyStreak: number;
+        hasFinalAssistantResponse: boolean;
+      }
+    | null
+  > {
+    if (this.runtimeConfig.useNoProgressDetector) {
+      if (!this.detectNoProgress(toolCalls)) {
+        return null;
+      }
+      this.emitDiagnostic({
+        type: "no_progress_detected",
+        provider: this.provider.name,
+        model: this.model,
+        iteration: iterationCount,
+        lookbackIterations: 5,
+      });
+      return await this.finalizeWithNoToolsResponse(
+        onToken,
+        options,
+        iterationCount,
+        nextEmptyToolOnlyStreak,
+        "Stopped after no-progress detection with no final assistant response.",
+      );
+    }
+
+    if (nextEmptyToolOnlyStreak < Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
+      return null;
+    }
+    this.emitDiagnostic({
+      type: "tool_loop_detected",
+      provider: this.provider.name,
+      model: this.model,
+      iteration: iterationCount,
+      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
+      action: "fallback_no_tools",
+    });
+    return await this.finalizeWithNoToolsResponse(
+      onToken,
+      options,
+      iterationCount,
+      nextEmptyToolOnlyStreak,
+      "Stopped after repeated empty tool-calling turns with no final assistant response.",
+    );
+  }
+
+  private async continueToolCallLoop(
+    fullResponse: string,
+    toolCalls: ChatToolCall[],
+    allowedTools: ReadonlySet<string> | undefined,
+    iterationCount: number,
+    options: AgentStreamOptions | undefined,
+    onToken: (token: string) => void,
+    toolExecutionEvents: Array<{ name: string; failed: boolean }>,
+    nextEmptyToolOnlyStreak: number,
+  ): Promise<{
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
+  }> {
+    onToken("\n");
+    await this.executeToolCalls(
+      toolCalls,
+      allowedTools,
+      iterationCount,
+      options,
+      onToken,
+      toolExecutionEvents,
+    );
+    this.emitStatus(options, "Processing tool results", "tool");
+    onToken("\n");
+    return {
+      finalResponse: fullResponse,
+      continueLoop: true,
+      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
+      hasFinalAssistantResponse: false,
+    };
+  }
+
+  private finalizeAssistantTurn(
+    fullResponse: string,
+    emptyToolOnlyStreak: number,
+    options: AgentStreamOptions | undefined,
+  ): {
+    finalResponse: string;
+    continueLoop: boolean;
+    emptyToolOnlyStreak: number;
+    hasFinalAssistantResponse: boolean;
+  } {
+    this.emitStatus(options, "Generating final answer", "answer");
+    return {
+      finalResponse: fullResponse,
+      continueLoop: false,
+      emptyToolOnlyStreak,
+      hasFinalAssistantResponse: true,
+    };
+  }
+
   private async handleChatTurnResponse(
     fullResponse: string,
     toolCalls: ChatToolCall[] | undefined,
@@ -1515,128 +1918,55 @@ export class Agent {
     emptyToolOnlyStreak: number;
     hasFinalAssistantResponse: boolean;
   }> {
-    const normalizedToolCalls = toolCalls?.map((toolCall, index) => ({
-      ...toolCall,
-      id: toolCall.id || `toolcall_${iterationCount}_${index}`,
-    }));
-    if (normalizedToolCalls && normalizedToolCalls.length > 0) {
-      this.emitStatus(options, "Tool call received", "tool");
-      this.emitDiagnostic({
-        type: "tool_calls_received",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        count: normalizedToolCalls.length,
-        tools: normalizedToolCalls.map((toolCall) => toolCall.function.name),
-      });
-    }
-
-    this.contextManager.commitAssistantResponse(
+    const normalizedToolCalls = this.normalizeToolCallsForIteration(
+      toolCalls,
+      iterationCount,
+    );
+    this.emitToolCallBatchDiagnostics(
+      normalizedToolCalls,
+      iterationCount,
+      options,
+    );
+    this.commitChatTurnIteration(
       fullResponse,
       normalizedToolCalls,
-      normalizedToolCalls && normalizedToolCalls.length > 0
-        ? { reasoningContent }
-        : undefined,
+      reasoningContent,
+      iterationCount,
     );
-    this.emitDiagnostic({
-      type: "iteration_finished",
-      provider: this.provider.name,
-      model: this.model,
-      iteration: iterationCount,
-      responseChars: fullResponse.length,
-      responseIsEmpty: fullResponse.trim().length === 0,
-      toolCalls: normalizedToolCalls?.length ?? 0,
-    });
 
-    if (
-      fullResponse.trim().length === 0 &&
-      (!normalizedToolCalls || normalizedToolCalls.length === 0)
-    ) {
-      this.emitDiagnostic({
-        type: "empty_response",
-        provider: this.provider.name,
-        model: this.model,
-        iteration: iterationCount,
-        contextMessages: this.contextManager.messageCount,
-      });
-    }
-
-    const toolCallsToExecute = normalizedToolCalls ?? [];
-    const hasToolCalls = toolCallsToExecute.length > 0;
-    const isEmptyResponse = fullResponse.trim().length === 0;
     const nextEmptyToolOnlyStreak =
-      hasToolCalls && isEmptyResponse ? emptyToolOnlyStreak + 1 : 0;
-
-    if (hasToolCalls) {
-      // Check for no-progress condition if detector is enabled
-      if (this.runtimeConfig.useNoProgressDetector) {
-        if (this.detectNoProgress(normalizedToolCalls)) {
-          this.emitDiagnostic({
-            type: "no_progress_detected",
-            provider: this.provider.name,
-            model: this.model,
-            iteration: iterationCount,
-            lookbackIterations: 5,
-          });
-
-          return this.finalizeWithNoToolsResponse(
-            onToken,
-            options,
-            iterationCount,
-            nextEmptyToolOnlyStreak,
-            "Stopped after no-progress detection with no final assistant response.",
-          );
-        }
-      } else {
-        // Fallback to empty tool-only streak when detector is disabled (deprecated)
-        if (nextEmptyToolOnlyStreak >= Agent.MAX_EMPTY_TOOL_ONLY_STREAK) {
-          this.emitDiagnostic({
-            type: "tool_loop_detected",
-            provider: this.provider.name,
-            model: this.model,
-            iteration: iterationCount,
-            emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-            threshold: Agent.MAX_EMPTY_TOOL_ONLY_STREAK,
-            action: "fallback_no_tools",
-          });
-
-          return this.finalizeWithNoToolsResponse(
-            onToken,
-            options,
-            iterationCount,
-            nextEmptyToolOnlyStreak,
-            "Stopped after repeated empty tool-calling turns with no final assistant response.",
-          );
-        }
-      }
-
-      onToken("\n");
-      await this.executeToolCalls(
-        toolCallsToExecute,
-        allowedTools,
-        iterationCount,
+      normalizedToolCalls.length > 0 && fullResponse.trim().length === 0
+        ? emptyToolOnlyStreak + 1
+        : 0;
+    if (normalizedToolCalls.length === 0) {
+      return this.finalizeAssistantTurn(
+        fullResponse,
+        nextEmptyToolOnlyStreak,
         options,
-        onToken,
-        toolExecutionEvents,
       );
-
-      this.emitStatus(options, "Processing tool results", "tool");
-      onToken("\n");
-      return {
-        finalResponse: fullResponse,
-        continueLoop: true,
-        emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-        hasFinalAssistantResponse: false,
-      };
     }
 
-    this.emitStatus(options, "Generating final answer", "answer");
-    return {
-      finalResponse: fullResponse,
-      continueLoop: false,
-      emptyToolOnlyStreak: nextEmptyToolOnlyStreak,
-      hasFinalAssistantResponse: true,
-    };
+    const fallbackResult = await this.maybeHandleToolLoopFallback(
+      normalizedToolCalls,
+      iterationCount,
+      nextEmptyToolOnlyStreak,
+      options,
+      onToken,
+    );
+    if (fallbackResult) {
+      return fallbackResult;
+    }
+
+    return await this.continueToolCallLoop(
+      fullResponse,
+      normalizedToolCalls,
+      allowedTools,
+      iterationCount,
+      options,
+      onToken,
+      toolExecutionEvents,
+      nextEmptyToolOnlyStreak,
+    );
   }
 
   private async handleMaxTokensRecovery(

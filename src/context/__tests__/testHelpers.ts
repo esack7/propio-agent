@@ -127,6 +127,15 @@ export function makeState(opts?: {
   };
 }
 
+export function expectThreeMessagePlanRoles(
+  plan: { messages: Array<{ role: ChatMessage["role"] }> },
+  secondRole: ChatMessage["role"],
+): void {
+  expect(plan.messages).toHaveLength(3);
+  expect(plan.messages[0].role).toBe("system");
+  expect(plan.messages[1].role).toBe(secondRole);
+}
+
 export function makeRequest(opts: {
   systemPrompt?: string;
   state?: ConversationState;

@@ -7,7 +7,11 @@ import {
   ProviderError,
 } from "../types.js";
 import { ChatRequest, ChatMessage } from "../types.js";
-import { OpenRouterTestFixture } from "./openrouterTestHelpers.js";
+import {
+  OpenRouterTestFixture,
+  registerAcceptsApiKeyTest,
+  registerProviderTestLifecycle,
+} from "./openrouterTestHelpers.js";
 
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
@@ -83,24 +87,16 @@ async function collectToolMessages(messages: ChatMessage[]): Promise<unknown[]> 
 }
 
 describe("XaiProvider", () => {
-  beforeEach(() => {
-    jest.resetModules();
-    process.env = { ...originalEnv };
-    globalThis.fetch = originalFetch;
-  });
-
-  afterAll(() => {
-    process.env = originalEnv;
-    globalThis.fetch = originalFetch;
-  });
+  registerProviderTestLifecycle(originalEnv, originalFetch);
 
   describe("constructor", () => {
-    it("should accept API key from options", () => {
-      const provider = new XaiProvider({
-        model: "grok-4-1-fast-reasoning",
-        apiKey: "xai-test-key",
-      });
-      expect(provider.name).toBe("xai");
+    registerAcceptsApiKeyTest({
+      expectedName: "xai",
+      createProvider: () =>
+        new XaiProvider({
+          model: "grok-4-1-fast-reasoning",
+          apiKey: "xai-test-key",
+        }),
     });
 
     it("should use XAI_API_KEY env var when apiKey not in options", () => {

@@ -14,7 +14,67 @@ import {
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { withRetry } from "./withRetry.js";
-import { createProviderRetryOptions } from "./shared.js";
+import {
+  createProviderRetryOptions,
+  expandToolResultMessages,
+} from "./shared.js";
+
+interface OllamaStreamChunk {
+  message: {
+    content?: string;
+    tool_calls?: ToolCall[];
+  };
+  done_reason?: string;
+}
+
+interface OllamaStreamState {
+  lastToolCalls?: ChatToolCall[];
+  stopReason: string;
+}
+
+interface OllamaErrorPattern {
+  readonly test: (errorMessage: string, lower: string) => boolean;
+  readonly make: (
+    errorMessage: string,
+    originalError: Error | undefined,
+    model: string,
+  ) => ProviderError;
+}
+
+const OLLAMA_ERROR_PATTERNS: readonly OllamaErrorPattern[] = [
+  {
+    test: (_errorMessage, lower) =>
+      lower.includes("context length") ||
+      lower.includes("too many tokens") ||
+      lower.includes("input is too long"),
+    make: (errorMessage, originalError) =>
+      new ProviderContextLengthError(
+        `Context length exceeded: ${errorMessage}`,
+        originalError,
+      ),
+  },
+  {
+    test: (errorMessage) =>
+      errorMessage.includes("ECONNREFUSED") ||
+      errorMessage.includes("ECONNRESET") ||
+      errorMessage.includes("connect"),
+    make: (errorMessage, originalError) =>
+      new ProviderAuthenticationError(
+        `Failed to connect to Ollama: ${errorMessage}`,
+        originalError,
+      ),
+  },
+  {
+    test: (_errorMessage, lower) =>
+      lower.includes("model not found") || lower.includes("pull"),
+    make: (errorMessage, originalError, model) =>
+      new ProviderModelNotFoundError(
+        model,
+        `Model ${model} not found: ${errorMessage}`,
+        originalError,
+      ),
+  },
+];
 
 /**
  * Ollama implementation of LLMProvider
@@ -81,79 +141,100 @@ export class OllamaProvider implements LLMProvider {
     return err instanceof ProviderError;
   }
 
+  private mapOllamaDoneReason(doneReason: string): string {
+    const reasonMap: Record<string, string> = {
+      length: "max_tokens",
+      stop: "end_turn",
+    };
+    return reasonMap[doneReason] ?? "end_turn";
+  }
+
+  private createOllamaMessages(request: ChatRequest): Message[] {
+    return this.expandToolResults(request.messages).map((msg) =>
+      this.chatMessageToOllamaMessage(msg),
+    );
+  }
+
+  private createOllamaTools(request: ChatRequest): Tool[] | undefined {
+    return request.tools?.map((tool) => this.chatToolToOllamaTool(tool));
+  }
+
+  private async createOllamaStream(request: ChatRequest) {
+    const messages = this.createOllamaMessages(request);
+    const tools = this.createOllamaTools(request);
+    return await withRetry(
+      () =>
+        this.ollama.chat({
+          model: request.model || this.model,
+          messages,
+          stream: true,
+          ...(tools && { tools }),
+        }),
+      createProviderRetryOptions({
+        request,
+        model: this.model,
+        provider: this.name,
+        retryConfig: this.retryConfig,
+        isRetryable: (err) => this.isRetryableError(err),
+        onDiagnosticEvent: this.onDiagnosticEvent,
+      }),
+    );
+  }
+
+  private processOllamaChunk(
+    chunk: OllamaStreamChunk,
+    request: ChatRequest,
+    state: OllamaStreamState,
+  ): ChatStreamEvent[] {
+    if (request.signal?.aborted) {
+      throw new ProviderError("Request cancelled");
+    }
+
+    const events: ChatStreamEvent[] = [];
+    if (chunk.message.content) {
+      events.push({ type: "assistant_text", delta: chunk.message.content });
+    }
+    if (chunk.message.tool_calls) {
+      state.lastToolCalls = chunk.message.tool_calls.map((toolCall) =>
+        this.ollamaToolCallToChatToolCall(toolCall),
+      );
+    }
+    if (chunk.done_reason) {
+      state.stopReason = this.mapOllamaDoneReason(chunk.done_reason);
+    }
+    return events;
+  }
+
+  private buildOllamaToolCallsEvent(
+    toolCalls: ChatToolCall[] | undefined,
+  ): ChatStreamEvent | null {
+    return toolCalls && toolCalls.length > 0
+      ? {
+          type: "tool_calls",
+          toolCalls,
+        }
+      : null;
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       if (request.signal?.aborted) {
         throw new ProviderError("Request cancelled");
       }
 
-      // Expand batched tool results into separate messages for Ollama
-      const expandedMessages = this.expandToolResults(request.messages);
-      const messages = expandedMessages.map((msg) =>
-        this.chatMessageToOllamaMessage(msg),
-      );
-      const tools = request.tools?.map((tool) =>
-        this.chatToolToOllamaTool(tool),
-      );
-
-      const response = await withRetry(
-        () =>
-          this.ollama.chat({
-            model: request.model || this.model,
-            messages,
-            stream: true,
-            ...(tools && { tools }),
-          }),
-        createProviderRetryOptions({
-          request,
-          model: this.model,
-          provider: this.name,
-          retryConfig: this.retryConfig,
-          isRetryable: (err) => this.isRetryableError(err),
-          onDiagnosticEvent: this.onDiagnosticEvent,
-        }),
-      );
-
-      let lastToolCalls: ChatToolCall[] | undefined;
-      let stopReason: any = "end_turn";
+      const response = await this.createOllamaStream(request);
+      const state: OllamaStreamState = { stopReason: "end_turn" };
 
       for await (const chunk of response) {
-        if (request.signal?.aborted) {
-          throw new ProviderError("Request cancelled");
-        }
-
-        // Yield delta content
-        if (chunk.message.content) {
-          yield { type: "assistant_text", delta: chunk.message.content };
-        }
-
-        // Capture tool calls from the final chunk
-        if (chunk.message.tool_calls) {
-          lastToolCalls = chunk.message.tool_calls.map((toolCall) =>
-            this.ollamaToolCallToChatToolCall(toolCall),
-          );
-        }
-
-        // Capture stop reason and map from Ollama to normalized StopReason
-        if (chunk.done_reason) {
-          if (chunk.done_reason === "length") {
-            stopReason = "max_tokens";
-          } else if (chunk.done_reason === "stop") {
-            stopReason = "end_turn";
-          }
-        }
+        yield* this.processOllamaChunk(chunk as OllamaStreamChunk, request, state);
       }
 
-      // Yield final chunk with tool calls if present
-      if (lastToolCalls && lastToolCalls.length > 0) {
-        yield {
-          type: "tool_calls",
-          toolCalls: lastToolCalls,
-        };
+      const toolCallsEvent = this.buildOllamaToolCallsEvent(state.lastToolCalls);
+      if (toolCallsEvent) {
+        yield toolCallsEvent;
       }
 
-      // Emit normalized terminal event (Phase 4.5)
-      yield { type: "terminal", stopReason };
+      yield { type: "terminal", stopReason: state.stopReason as any };
     } catch (error) {
       throw this.translateError(error);
     }
@@ -164,29 +245,7 @@ export class OllamaProvider implements LLMProvider {
    * Ollama expects each tool result as a separate message, not batched like Bedrock.
    */
   private expandToolResults(messages: ChatMessage[]): ChatMessage[] {
-    const expanded: ChatMessage[] = [];
-
-    for (const msg of messages) {
-      // If this is a batched tool result message, expand it
-      if (
-        msg.role === "tool" &&
-        msg.toolResults &&
-        msg.toolResults.length > 0
-      ) {
-        for (const toolResult of msg.toolResults) {
-          expanded.push({
-            role: "tool",
-            content: toolResult.content,
-            toolCallId: toolResult.toolName, // Use toolName as toolCallId for Ollama
-          });
-        }
-      } else {
-        // Not a batched tool result, keep as is
-        expanded.push(msg);
-      }
-    }
-
-    return expanded;
+    return expandToolResultMessages(messages, (toolResult) => toolResult.toolName);
   }
 
   /**
@@ -285,48 +344,16 @@ export class OllamaProvider implements LLMProvider {
    * Translate errors to ProviderError types
    */
   private translateError(error: any): ProviderError {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const originalError = error instanceof Error ? error : undefined;
+    const errorMessage = originalError?.message ?? String(error);
     const lower = errorMessage.toLowerCase();
 
-    if (
-      lower.includes("context length") ||
-      lower.includes("too many tokens") ||
-      lower.includes("input is too long")
-    ) {
-      return new ProviderContextLengthError(
-        `Context length exceeded: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
-      );
+    for (const pattern of OLLAMA_ERROR_PATTERNS) {
+      if (pattern.test(errorMessage, lower)) {
+        return pattern.make(errorMessage, originalError, this.model);
+      }
     }
 
-    // Connection errors
-    if (
-      errorMessage.includes("ECONNREFUSED") ||
-      errorMessage.includes("ECONNRESET") ||
-      errorMessage.includes("connect")
-    ) {
-      return new ProviderAuthenticationError(
-        `Failed to connect to Ollama: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
-      );
-    }
-
-    // Model not found
-    if (
-      errorMessage.includes("model not found") ||
-      errorMessage.includes("pull")
-    ) {
-      return new ProviderModelNotFoundError(
-        this.model,
-        `Model ${this.model} not found: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
-      );
-    }
-
-    // Generic error
-    return new ProviderError(
-      errorMessage,
-      error instanceof Error ? error : undefined,
-    );
+    return new ProviderError(errorMessage, originalError);
   }
 }

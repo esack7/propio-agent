@@ -59,6 +59,12 @@ interface OpenRouterErrorEnvelope {
   };
 }
 
+interface OpenRouterErrorDetails {
+  message?: string;
+  providerName?: string;
+  retryAfterSeconds?: number;
+}
+
 interface StreamChunkState {
   contentBuffer: string;
   reasoningContent: string;
@@ -151,6 +157,38 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     this.onDiagnosticEvent?.(event);
   }
 
+  private buildProviderRoutingBody(): Record<string, unknown> | undefined {
+    if (!this.providerRouting) {
+      return undefined;
+    }
+
+    const provider: Record<string, unknown> = {};
+    if (this.providerRouting.allowFallbacks !== undefined) {
+      provider.allow_fallbacks = this.providerRouting.allowFallbacks;
+    }
+    if (this.providerRouting.order !== undefined) {
+      provider.order = [...this.providerRouting.order];
+    }
+    if (this.providerRouting.requireParameters !== undefined) {
+      provider.require_parameters = this.providerRouting.requireParameters;
+    }
+
+    return Object.keys(provider).length > 0 ? provider : undefined;
+  }
+
+  private applyRequestBodyExtras(body: Record<string, unknown>): void {
+    const provider = this.buildProviderRoutingBody();
+    if (provider) {
+      body.provider = provider;
+    }
+    if (this.fallbackModels && this.fallbackModels.length > 0) {
+      body.models = [...this.fallbackModels];
+    }
+    if (this.debugEchoUpstreamBody && this.debugLoggingEnabled) {
+      body.debug = { echo_upstream_body: true };
+    }
+  }
+
   private buildRequestBody(
     request: ChatRequest,
     includeTools: boolean,
@@ -162,30 +200,7 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       mapTool: (tool) => this.chatToolToOpenAITool(tool),
       includeTools,
       extra: (body) => {
-        if (this.providerRouting) {
-          const provider: Record<string, unknown> = {};
-          if (this.providerRouting.allowFallbacks !== undefined) {
-            provider.allow_fallbacks = this.providerRouting.allowFallbacks;
-          }
-          if (this.providerRouting.order !== undefined) {
-            provider.order = [...this.providerRouting.order];
-          }
-          if (this.providerRouting.requireParameters !== undefined) {
-            provider.require_parameters =
-              this.providerRouting.requireParameters;
-          }
-          if (Object.keys(provider).length > 0) {
-            body.provider = provider;
-          }
-        }
-
-        if (this.fallbackModels && this.fallbackModels.length > 0) {
-          body.models = [...this.fallbackModels];
-        }
-
-        if (this.debugEchoUpstreamBody && this.debugLoggingEnabled) {
-          body.debug = { echo_upstream_body: true };
-        }
+        this.applyRequestBodyExtras(body);
       },
     });
   }
@@ -241,6 +256,31 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     return earliest;
   }
 
+  private parseDsmlParameters(invokeBody: string): Record<string, unknown> {
+    const args: Record<string, unknown> = {};
+
+    for (const parameterMatch of invokeBody.matchAll(DSML_PARAMETER_REGEX)) {
+      const paramName = parameterMatch[1] ?? "";
+      const rawValue = parameterMatch[2] ?? "";
+      const fullTag = parameterMatch[0];
+      const stringFlag = /string="(true|false)"/.exec(fullTag)?.[1];
+      if (!paramName) continue;
+
+      if (stringFlag === "true") {
+        args[paramName] = rawValue;
+        continue;
+      }
+
+      try {
+        args[paramName] = JSON.parse(rawValue);
+      } catch {
+        args[paramName] = rawValue;
+      }
+    }
+
+    return args;
+  }
+
   private parseDsmlToolCalls(text: string): ChatToolCall[] {
     const toolCalls: ChatToolCall[] = [];
 
@@ -249,40 +289,60 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       for (const invokeMatch of block.matchAll(DSML_INVOKE_REGEX)) {
         const invokeName = invokeMatch[1] ?? "";
         const invokeBody = invokeMatch[2] ?? "";
-        const args: Record<string, unknown> = {};
-
-        for (const parameterMatch of invokeBody.matchAll(
-          DSML_PARAMETER_REGEX,
-        )) {
-          const paramName = parameterMatch[1] ?? "";
-          const rawValue = parameterMatch[2] ?? "";
-          const fullTag = parameterMatch[0];
-          const stringFlag = /string="(true|false)"/.exec(fullTag)?.[1];
-          if (!paramName) continue;
-
-          if (stringFlag === "true") {
-            args[paramName] = rawValue;
-            continue;
-          }
-
-          try {
-            args[paramName] = JSON.parse(rawValue);
-          } catch {
-            args[paramName] = rawValue;
-          }
-        }
-
         toolCalls.push({
           id: `call_${invokeName}_${Date.now()}_${toolCalls.length}`,
           function: {
             name: invokeName,
-            arguments: args,
+            arguments: this.parseDsmlParameters(invokeBody),
           },
         });
       }
     }
 
     return toolCalls;
+  }
+
+  private emitBufferedText(
+    content: string,
+    events: ChatStreamEvent[],
+    state: { sawUsableOutput: boolean },
+  ): void {
+    if (content.length === 0) {
+      return;
+    }
+
+    events.push({ type: "assistant_text", delta: content });
+    if (content.trim().length > 0) {
+      state.sawUsableOutput = true;
+    }
+  }
+
+  private emitBufferPrefix(
+    buffer: string,
+    prefixEnd: number,
+    events: ChatStreamEvent[],
+    state: { sawUsableOutput: boolean },
+  ): string {
+    this.emitBufferedText(buffer.slice(0, prefixEnd), events, state);
+    return buffer.slice(prefixEnd);
+  }
+
+  private emitNonDsmlTail(
+    buffer: string,
+    events: ChatStreamEvent[],
+    state: { sawUsableOutput: boolean },
+  ): string {
+    const overlap = DSML_TOOL_CALL_START_TOKENS.reduce(
+      (max, token) => Math.max(max, this.longestSuffixOverlap(buffer, token)),
+      0,
+    );
+    const emitLength = buffer.length - overlap;
+    if (emitLength <= 0) {
+      return buffer;
+    }
+
+    this.emitBufferedText(buffer.slice(0, emitLength), events, state);
+    return buffer.slice(emitLength);
   }
 
   private consumeDsmlBuffer(buffer: string): {
@@ -292,39 +352,31 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
   } {
     const events: ChatStreamEvent[] = [];
     let remainingBuffer = buffer;
-    let sawUsableOutput = false;
+    const state = { sawUsableOutput: false };
 
     while (remainingBuffer.length > 0) {
       const startIndex = this.findDsmlStartTokenIndex(remainingBuffer);
 
       if (startIndex === -1) {
-        const overlap = DSML_TOOL_CALL_START_TOKENS.reduce(
-          (max, token) =>
-            Math.max(max, this.longestSuffixOverlap(remainingBuffer, token)),
-          0,
+        const nextBuffer = this.emitNonDsmlTail(
+          remainingBuffer,
+          events,
+          state,
         );
-        const emitLength = remainingBuffer.length - overlap;
-        if (emitLength > 0) {
-          const content = remainingBuffer.slice(0, emitLength);
-          events.push({ type: "assistant_text", delta: content });
-          if (content.trim().length > 0) {
-            sawUsableOutput = true;
-          }
-          remainingBuffer = remainingBuffer.slice(emitLength);
-          continue;
+        if (nextBuffer === remainingBuffer) {
+          break;
         }
-        break;
+        remainingBuffer = nextBuffer;
+        continue;
       }
 
       if (startIndex > 0) {
-        const prefix = remainingBuffer.slice(0, startIndex);
-        if (prefix.length > 0) {
-          events.push({ type: "assistant_text", delta: prefix });
-          if (prefix.trim().length > 0) {
-            sawUsableOutput = true;
-          }
-        }
-        remainingBuffer = remainingBuffer.slice(startIndex);
+        remainingBuffer = this.emitBufferPrefix(
+          remainingBuffer,
+          startIndex,
+          events,
+          state,
+        );
         continue;
       }
 
@@ -339,12 +391,16 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       const toolCalls = this.parseDsmlToolCalls(blockText);
       if (toolCalls.length > 0) {
         events.push({ type: "tool_calls", toolCalls });
-        sawUsableOutput = true;
+        state.sawUsableOutput = true;
       }
       remainingBuffer = remainingBuffer.slice(blockText.length);
     }
 
-    return { remainingBuffer, events, sawUsableOutput };
+    return {
+      remainingBuffer,
+      events,
+      sawUsableOutput: state.sawUsableOutput,
+    };
   }
 
   private buildStructuredToolCallsEvent(
@@ -535,101 +591,118 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     return response;
   }
 
+  private async fetchStreamResponseWithRetry(
+    request: ChatRequest,
+  ): Promise<Response> {
+    let dropTools = false;
+    return await withRetry(
+      () => this.fetchAndValidate(request, dropTools),
+      {
+        ...createProviderRetryOptions({
+          request,
+          model: this.model,
+          provider: this.name,
+          retryConfig: {
+            maxRetries: this.retryConfig?.maxRetries ?? 3,
+            consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+            baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
+          },
+          isRetryable: (err) => this.isRetryableError(err),
+          onDiagnosticEvent: (event) => this.emitDiagnostic(event),
+        }),
+        onFinalRetry: () => {
+          dropTools = true;
+        },
+      },
+    );
+  }
+
+  private buildStreamResponseOptions(request: ChatRequest): {
+    parseDsmlToolCalls: boolean;
+    expectUsableOutput: boolean;
+    request: ChatRequest;
+  } {
+    return {
+      parseDsmlToolCalls: Boolean(request.tools?.length),
+      expectUsableOutput: Boolean(request.tools?.length),
+      request,
+    };
+  }
+
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
-      let dropTools = false;
-
-      const response = await withRetry(
-        () => this.fetchAndValidate(request, dropTools),
-        {
-          ...createProviderRetryOptions({
-            request,
-            model: this.model,
-            provider: this.name,
-            retryConfig: {
-              maxRetries: this.retryConfig?.maxRetries ?? 3,
-              consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-              baseDelayMs: this.retryConfig?.baseDelayMs ?? 500,
-            },
-            isRetryable: (err) => this.isRetryableError(err),
-            onDiagnosticEvent: (event) => this.emitDiagnostic(event),
-          }),
-          onFinalRetry: () => {
-            dropTools = true;
-          },
-        },
+      const response = await this.fetchStreamResponseWithRetry(request);
+      yield* this.streamResponse(
+        response,
+        this.buildStreamResponseOptions(request),
       );
-
-      yield* this.streamResponse(response, {
-        parseDsmlToolCalls: Boolean(request.tools?.length),
-        expectUsableOutput: Boolean(request.tools?.length),
-        request,
-      });
     } catch (error) {
       if (error instanceof ProviderError) throw error;
       throw this.translateError(error);
     }
   }
 
-  private parseOpenRouterErrorBody(responseBody?: string): {
-    message?: string;
-    providerName?: string;
-    retryAfterSeconds?: number;
-  } {
-    if (!responseBody) {
-      return {};
-    }
-
-    let parsed: OpenRouterErrorEnvelope | undefined;
-    try {
-      parsed = JSON.parse(responseBody) as OpenRouterErrorEnvelope;
-    } catch {
-      return {};
-    }
-
+  private extractEnvelopeFields(
+    parsed: OpenRouterErrorEnvelope,
+  ): OpenRouterErrorDetails {
     const metadata = parsed.error?.metadata;
-    const details: {
-      message?: string;
-      providerName?: string;
-      retryAfterSeconds?: number;
-    } = {};
+    const details: OpenRouterErrorDetails = {};
 
     if (typeof parsed.error?.message === "string") {
       details.message = parsed.error.message;
     }
-
     if (typeof metadata?.provider_name === "string") {
       details.providerName = metadata.provider_name;
     }
-
     if (typeof metadata?.retry_after_seconds === "number") {
       details.retryAfterSeconds = metadata.retry_after_seconds;
     }
 
-    if (typeof metadata?.raw === "string") {
-      try {
-        const raw = JSON.parse(metadata.raw) as {
-          error?: {
-            message?: string;
-            metadata?: { retry_after_seconds?: number };
-          };
-          provider_name?: string;
+    return details;
+  }
+
+  private parseRawMetadataFields(rawJson: string): OpenRouterErrorDetails {
+    try {
+      const raw = JSON.parse(rawJson) as {
+        error?: {
+          message?: string;
+          metadata?: { retry_after_seconds?: number };
         };
-        if (typeof raw.provider_name === "string") {
-          details.providerName = raw.provider_name;
-        }
-        if (typeof raw.error?.message === "string") {
-          details.message = raw.error.message;
-        }
-        if (typeof raw.error?.metadata?.retry_after_seconds === "number") {
-          details.retryAfterSeconds = raw.error.metadata.retry_after_seconds;
-        }
-      } catch {
-        // If the nested raw payload is not JSON, keep the outer envelope values.
+        provider_name?: string;
+      };
+      const details: OpenRouterErrorDetails = {};
+      if (typeof raw.provider_name === "string") {
+        details.providerName = raw.provider_name;
       }
+      if (typeof raw.error?.message === "string") {
+        details.message = raw.error.message;
+      }
+      if (typeof raw.error?.metadata?.retry_after_seconds === "number") {
+        details.retryAfterSeconds = raw.error.metadata.retry_after_seconds;
+      }
+      return details;
+    } catch {
+      return {};
+    }
+  }
+
+  private parseOpenRouterErrorBody(
+    responseBody?: string,
+  ): OpenRouterErrorDetails {
+    if (!responseBody) {
+      return {};
     }
 
-    return details;
+    try {
+      const parsed = JSON.parse(responseBody) as OpenRouterErrorEnvelope;
+      const details = this.extractEnvelopeFields(parsed);
+      const rawJson = parsed.error?.metadata?.raw;
+      return typeof rawJson === "string"
+        ? { ...details, ...this.parseRawMetadataFields(rawJson) }
+        : details;
+    } catch {
+      return {};
+    }
   }
 
   private buildUpstreamDetail(

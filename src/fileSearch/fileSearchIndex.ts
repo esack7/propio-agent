@@ -80,6 +80,51 @@ function collectDirectoryPrefixes(relativePath: string): string[] {
   return prefixes;
 }
 
+function appendEntry(
+  entries: FileSearchEntry[],
+  seen: Set<string>,
+  entryPath: string,
+  kind: FileSearchEntryKind,
+): void {
+  if (seen.has(entryPath)) {
+    return;
+  }
+
+  seen.add(entryPath);
+  entries.push({
+    path: entryPath,
+    lowerPath: entryPath.toLowerCase(),
+    kind,
+  });
+}
+
+function resolveSearchEntryPath(
+  absoluteOrRelative: string,
+  workspaceRoot: string,
+): string | null {
+  const absolutePath = path.isAbsolute(absoluteOrRelative)
+    ? absoluteOrRelative
+    : path.resolve(workspaceRoot, absoluteOrRelative);
+  const relativePath = toWorkspaceRelative(absolutePath, workspaceRoot);
+  if (!relativePath || shouldIgnorePath(relativePath)) {
+    return null;
+  }
+  return relativePath;
+}
+
+function appendDirectoryEntries(
+  entries: FileSearchEntry[],
+  seen: Set<string>,
+  relativePath: string,
+): void {
+  for (const directoryPrefix of collectDirectoryPrefixes(relativePath)) {
+    if (shouldIgnorePath(directoryPrefix)) {
+      continue;
+    }
+    appendEntry(entries, seen, directoryPrefix, "directory");
+  }
+}
+
 function createEntries(
   paths: readonly string[],
   workspaceRoot: string,
@@ -88,37 +133,13 @@ function createEntries(
   const entries: FileSearchEntry[] = [];
 
   for (const absoluteOrRelative of paths) {
-    const absolutePath = path.isAbsolute(absoluteOrRelative)
-      ? absoluteOrRelative
-      : path.resolve(workspaceRoot, absoluteOrRelative);
-    const relativePath = toWorkspaceRelative(absolutePath, workspaceRoot);
-    if (!relativePath || shouldIgnorePath(relativePath)) {
+    const relativePath = resolveSearchEntryPath(absoluteOrRelative, workspaceRoot);
+    if (!relativePath) {
       continue;
     }
 
-    if (!seen.has(relativePath)) {
-      seen.add(relativePath);
-      entries.push({
-        path: relativePath,
-        lowerPath: relativePath.toLowerCase(),
-        kind: "file",
-      });
-    }
-
-    for (const directoryPrefix of collectDirectoryPrefixes(relativePath)) {
-      if (shouldIgnorePath(directoryPrefix)) {
-        continue;
-      }
-      if (seen.has(directoryPrefix)) {
-        continue;
-      }
-      seen.add(directoryPrefix);
-      entries.push({
-        path: directoryPrefix,
-        lowerPath: directoryPrefix.toLowerCase(),
-        kind: "directory",
-      });
-    }
+    appendEntry(entries, seen, relativePath, "file");
+    appendDirectoryEntries(entries, seen, relativePath);
   }
 
   return entries;
@@ -182,17 +203,11 @@ function compareMatches(left: FileSearchMatch, right: FileSearchMatch): number {
   return left.path.localeCompare(right.path);
 }
 
-function scoreCandidate(entry: FileSearchEntry, query: string): number | null {
-  if (query.length === 0) {
-    return (
-      countPathDepth(entry.path) + (entry.kind === "directory" ? -0.25 : 0)
-    );
-  }
-
-  const caseSensitive = /[A-Z]/.test(query);
-  const needle = caseSensitive ? query : query.toLowerCase();
-  const haystack = caseSensitive ? entry.path : entry.lowerPath;
-
+function scoreQueryMatch(
+  needle: string,
+  haystack: string,
+  originalPath: string,
+): number | null {
   let score = 0;
   let previousIndex = -1;
 
@@ -212,33 +227,62 @@ function scoreCandidate(entry: FileSearchEntry, query: string): number | null {
 
     if (index === 0) {
       score -= 4;
-    } else if (isBoundaryCharacter(entry.path[index - 1])) {
+    } else if (isBoundaryCharacter(originalPath[index - 1])) {
       score -= 2;
     }
 
     previousIndex = index;
   }
 
+  return score;
+}
+
+function applyBasenamePenalty(
+  score: number,
+  entry: FileSearchEntry,
+  query: string,
+  caseSensitive: boolean,
+): number {
   const normalizedPath =
     entry.kind === "directory" ? entry.path.slice(0, -1) : entry.path;
   const basename = path.basename(normalizedPath);
   const normalizedNeedle = caseSensitive ? query : query.toLowerCase();
   const normalizedBasename = caseSensitive ? basename : basename.toLowerCase();
 
-  if (normalizedBasename.startsWith(normalizedNeedle)) {
-    score -= 3;
-  }
+  return normalizedBasename.startsWith(normalizedNeedle) ? score - 3 : score;
+}
 
+function applyPathPenalties(score: number, entry: FileSearchEntry): number {
+  let nextScore = score;
   if (entry.lowerPath.includes("test")) {
-    score += 0.35;
+    nextScore += 0.35;
   }
-
-  score += entry.path.length * 0.04;
+  nextScore += entry.path.length * 0.04;
   if (entry.kind === "directory") {
-    score -= 0.1;
+    nextScore -= 0.1;
+  }
+  return nextScore;
+}
+
+function scoreCandidate(entry: FileSearchEntry, query: string): number | null {
+  if (query.length === 0) {
+    return (
+      countPathDepth(entry.path) + (entry.kind === "directory" ? -0.25 : 0)
+    );
   }
 
-  return score;
+  const caseSensitive = /[A-Z]/.test(query);
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const haystack = caseSensitive ? entry.path : entry.lowerPath;
+  const score = scoreQueryMatch(needle, haystack, entry.path);
+  if (score === null) {
+    return null;
+  }
+
+  return applyPathPenalties(
+    applyBasenamePenalty(score, entry, query, caseSensitive),
+    entry,
+  );
 }
 
 export class FileSearchIndex {

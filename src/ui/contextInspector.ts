@@ -160,33 +160,59 @@ export function formatContextOverview(
   return lines;
 }
 
-function formatTurnEntrySummary(entries: ReadonlyArray<TurnEntry>): string {
-  const assistantCount = entries.filter((e) => e.kind === "assistant").length;
-  const toolEntries = entries.filter((e) => e.kind === "tool");
+function summarizeToolEntries(entries: ReadonlyArray<TurnEntry>): {
+  toolNames: string[];
+  statusCounts: { success: number; error: number };
+} {
   const toolNames: string[] = [];
   const statusCounts = { success: 0, error: 0 };
 
-  for (const entry of toolEntries) {
-    if (entry.kind === "tool") {
-      for (const inv of entry.toolInvocations) {
-        if (!toolNames.includes(inv.toolName)) toolNames.push(inv.toolName);
-        statusCounts[inv.status]++;
+  for (const entry of entries) {
+    if (entry.kind !== "tool") {
+      continue;
+    }
+
+    for (const invocation of entry.toolInvocations) {
+      if (!toolNames.includes(invocation.toolName)) {
+        toolNames.push(invocation.toolName);
       }
+      statusCounts[invocation.status] += 1;
     }
   }
 
+  return { toolNames, statusCounts };
+}
+
+function formatToolEntrySummary(
+  toolNames: string[],
+  statusCounts: { success: number; error: number },
+): string | null {
+  if (toolNames.length === 0) {
+    return null;
+  }
+
+  const statusParts: string[] = [];
+  if (statusCounts.success > 0) {
+    statusParts.push(`${statusCounts.success} ok`);
+  }
+  if (statusCounts.error > 0) {
+    statusParts.push(`${statusCounts.error} failed`);
+  }
+  return `tools: ${toolNames.join(", ")} (${statusParts.join(", ")})`;
+}
+
+function formatTurnEntrySummary(entries: ReadonlyArray<TurnEntry>): string {
+  const assistantCount = entries.filter((entry) => entry.kind === "assistant").length;
+  const { toolNames, statusCounts } = summarizeToolEntries(entries);
   const parts: string[] = [];
+
   if (assistantCount > 0) {
     parts.push(`${assistantCount} ${plural(assistantCount, "response")}`);
   }
-  if (toolNames.length > 0) {
-    const toolLabel = toolNames.join(", ");
-    const statusParts: string[] = [];
-    if (statusCounts.success > 0)
-      statusParts.push(`${statusCounts.success} ok`);
-    if (statusCounts.error > 0)
-      statusParts.push(`${statusCounts.error} failed`);
-    parts.push(`tools: ${toolLabel} (${statusParts.join(", ")})`);
+
+  const toolSummary = formatToolEntrySummary(toolNames, statusCounts);
+  if (toolSummary) {
+    parts.push(toolSummary);
   }
 
   return parts.join(" | ");

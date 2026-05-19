@@ -4,6 +4,7 @@ import type {
   ChatRequest,
   ChatTool,
   ChatToolCall,
+  ToolResult,
 } from "./types.js";
 import { ProviderCapacityError } from "./types.js";
 import type { WithRetryOptions } from "./withRetry.js";
@@ -31,7 +32,11 @@ interface OpenAIStreamToolCallAccumulator {
   argsString: string;
 }
 
-function expandToolResults(messages: ChatMessage[]): ChatMessage[] {
+export function expandToolResultMessages(
+  messages: ChatMessage[],
+  toolCallIdForResult: (toolResult: ToolResult) => string =
+    (toolResult) => toolResult.toolCallId,
+): ChatMessage[] {
   const expanded: ChatMessage[] = [];
 
   for (const msg of messages) {
@@ -40,7 +45,7 @@ function expandToolResults(messages: ChatMessage[]): ChatMessage[] {
         expanded.push({
           role: "tool",
           content: toolResult.content,
-          toolCallId: toolResult.toolCallId,
+          toolCallId: toolCallIdForResult(toolResult),
         });
       }
       continue;
@@ -60,7 +65,7 @@ export function buildOpenAIChatCompletionRequestBody<TMessage, TTool>(options: {
   includeTools?: boolean;
   extra?: (body: Record<string, unknown>) => void;
 }): Record<string, unknown> {
-  const messages = expandToolResults(options.request.messages).map(
+  const messages = expandToolResultMessages(options.request.messages).map(
     options.mapMessage,
   );
 

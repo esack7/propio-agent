@@ -72,6 +72,24 @@ async function withSpiedDirs<T>(
   }
 }
 
+/**
+ * Creates fresh cwd and home directories for a skill test.
+ * Any pre-existing directories are removed first.
+ */
+function createSkillDirs(
+  cwdName: string,
+  homeName: string,
+  baseDir: string,
+): { cwdDir: string; homeDir: string } {
+  const cwdDir = path.join(baseDir, cwdName);
+  const homeDir = path.join(baseDir, homeName);
+  fs.rmSync(cwdDir, { recursive: true, force: true });
+  fs.rmSync(homeDir, { recursive: true, force: true });
+  fs.mkdirSync(cwdDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
+  return { cwdDir, homeDir };
+}
+
 describe("Agent with Multi-Provider Configuration", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-agent-tests-"));
 
@@ -80,6 +98,61 @@ describe("Agent with Multi-Provider Configuration", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * Shared base for mock providers that track streamChat calls and invocation
+   * count. Subclasses provide a `name` and implement `streamChat`.
+   */
+  abstract class CountingMockProvider implements LLMProvider {
+    abstract name: string;
+    streamChatCalls: ChatRequest[] = [];
+    callCount = 0;
+
+    getCapabilities() {
+      return { contextWindowTokens: 128000 };
+    }
+
+    abstract streamChat(request: ChatRequest): AsyncIterable<ChatChunk>;
+  }
+
+  /**
+   * Creates a diagnostics-enabled agent (no provider injected) and returns
+   * the mutable events array with the agent.
+   */
+  function createEventsAndAgent(): {
+    events: AgentDiagnosticEvent[];
+    agent: Agent;
+  } {
+    const events: AgentDiagnosticEvent[] = [];
+    const agent = new Agent({
+      providersConfig: testProvidersConfig,
+      diagnosticsEnabled: true,
+      onDiagnosticEvent: (event) => {
+        events.push(event);
+      },
+    });
+    return { events, agent };
+  }
+
+  /**
+   * Creates a diagnostics-enabled agent with a fresh MockProvider injected,
+   * and returns the collected events array alongside the agent and provider.
+   */
+  function createDiagnosticsAgent(): {
+    diagnosticEvents: AgentDiagnosticEvent[];
+    agent: Agent;
+    mockProvider: MockProvider;
+  } {
+    const diagnosticEvents: AgentDiagnosticEvent[] = [];
+    const agent = new Agent({
+      providersConfig: testProvidersConfig,
+      diagnosticsEnabled: true,
+      onDiagnosticEvent: (event) => diagnosticEvents.push(event),
+    });
+    const mockProvider = new MockProvider();
+    (agent as any).provider = mockProvider;
+    return { diagnosticEvents, agent, mockProvider };
+  }
 
   describe("Constructor with ProvidersConfig object", () => {
     it("should require providersConfig parameter", () => {
@@ -440,10 +513,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("skills bridge", () => {
     it("should list and refresh local skills without requiring invocation support", async () => {
-      const cwdDir = path.join(tempDir, "cwd");
-      const homeDir = path.join(tempDir, "home");
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("cwd", "home", tempDir);
 
       await withSpiedDirs(cwdDir, homeDir, () => {
         const agent = new Agent({
@@ -457,13 +527,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should surface an invoked skill body only once in the next prompt", async () => {
-      const cwdDir = path.join(tempDir, "skill-prompt-cwd");
-      const homeDir = path.join(tempDir, "skill-prompt-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("skill-prompt-cwd", "skill-prompt-home", tempDir);
 
       writeSkillDocument(
         cwdDir,
@@ -491,13 +555,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should support an immediate skill turn with an empty user prompt", async () => {
-      const cwdDir = path.join(tempDir, "skill-immediate-cwd");
-      const homeDir = path.join(tempDir, "skill-immediate-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("skill-immediate-cwd", "skill-immediate-home", tempDir);
 
       writeSkillDocument(
         cwdDir,
@@ -522,13 +580,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should not activate path skills from denied tool calls", async () => {
-      const cwdDir = path.join(tempDir, "skill-path-cwd");
-      const homeDir = path.join(tempDir, "skill-path-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("skill-path-cwd", "skill-path-home", tempDir);
 
       writeSkillDocument(
         cwdDir,
@@ -613,13 +665,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should record model and effort warnings when the current model differs", async () => {
-      const cwdDir = path.join(tempDir, "skill-model-cwd");
-      const homeDir = path.join(tempDir, "skill-model-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("skill-model-cwd", "skill-model-home", tempDir);
 
       writeSkillDocument(
         cwdDir,
@@ -657,13 +703,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should record a matching model as applied", async () => {
-      const cwdDir = path.join(tempDir, "skill-model-match-cwd");
-      const homeDir = path.join(tempDir, "skill-model-match-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("skill-model-match-cwd", "skill-model-match-home", tempDir);
 
       writeSkillDocument(
         cwdDir,
@@ -700,13 +740,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should warn when a skill body references an unknown placeholder", async () => {
-      const cwdDir = path.join(tempDir, "skill-placeholder-cwd");
-      const homeDir = path.join(tempDir, "skill-placeholder-home");
-
-      fs.rmSync(cwdDir, { recursive: true, force: true });
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.mkdirSync(cwdDir, { recursive: true });
-      fs.mkdirSync(homeDir, { recursive: true });
+      const { cwdDir, homeDir } = createSkillDirs("skill-placeholder-cwd", "skill-placeholder-home", tempDir);
 
       writeSkillDocument(
         cwdDir,
@@ -890,14 +924,8 @@ describe("Agent with Multi-Provider Configuration", () => {
     /**
      * Mock Provider that yields tool calls and then a final response
      */
-    class MockProviderWithToolCalls implements LLMProvider {
+    class MockProviderWithToolCalls extends CountingMockProvider {
       name = "mock-tools";
-      streamChatCalls: ChatRequest[] = [];
-      callCount = 0;
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
 
       async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
         this.streamChatCalls.push(request);
@@ -1009,14 +1037,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     }
 
-    class MockProviderCapturingToolResult implements LLMProvider {
+    class MockProviderCapturingToolResult extends CountingMockProvider {
       name = "mock-capture";
-      streamChatCalls: ChatRequest[] = [];
-      callCount = 0;
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
 
       async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
         this.streamChatCalls.push(request);
@@ -1071,14 +1093,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new EmptyResponseProvider();
 
       const response = await agent.streamChat("hello", () => {});
@@ -1110,14 +1125,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new FailingProvider();
 
       await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
@@ -1207,6 +1215,19 @@ describe("Agent with Multi-Provider Configuration", () => {
           ],
         };
       }
+    }
+
+    function expectMaxIterationsDiagnostic(
+      events: AgentDiagnosticEvent[],
+      failedToolCount: number,
+      failedTools: string[],
+    ) {
+      const maxEvent = findMaxIterationsDiagnostic(events);
+      expect(maxEvent).toBeDefined();
+      expect(maxEvent?.iterationsCompleted).toBe(2);
+      expect(maxEvent?.pendingToolCalls).toBe(1);
+      expect(maxEvent?.failedToolCount).toBe(failedToolCount);
+      expect(maxEvent?.failedTools).toEqual(failedTools);
     }
 
     it("should break repeated empty tool-call loops with a no-tools fallback response", async () => {
@@ -1329,35 +1350,18 @@ describe("Agent with Multi-Provider Configuration", () => {
         "Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.",
       );
 
-      const maxEvent = findMaxIterationsDiagnostic(events);
-      expect(maxEvent).toBeDefined();
-      expect(maxEvent?.iterationsCompleted).toBe(2);
-      expect(maxEvent?.pendingToolCalls).toBe(1);
-      expect(maxEvent?.failedToolCount).toBe(0);
-      expect(maxEvent?.failedTools).toEqual([]);
+      expectMaxIterationsDiagnostic(events, 0, []);
     });
 
     it("should include failed tool details when max iterations stop an incomplete turn", async () => {
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new RepeatingToolCallProvider("missing_tool");
 
       await expect(
         agent.streamChat("hello", () => {}, { maxIterations: 2 }),
       ).rejects.toThrow("Failed tools: missing_tool.");
 
-      const maxEvent = findMaxIterationsDiagnostic(events);
-      expect(maxEvent).toBeDefined();
-      expect(maxEvent?.iterationsCompleted).toBe(2);
-      expect(maxEvent?.pendingToolCalls).toBe(1);
-      expect(maxEvent?.failedToolCount).toBe(2);
-      expect(maxEvent?.failedTools).toEqual(["missing_tool"]);
+      expectMaxIterationsDiagnostic(events, 2, ["missing_tool"]);
     });
 
     it("should still resolve when a failed tool is followed by a final answer", async () => {
@@ -1392,14 +1396,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should emit context_snapshot and enriched request_started for normal request", async () => {
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       const mockProvider = new MockProvider();
       (agent as any).provider = mockProvider;
 
@@ -1467,14 +1464,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const events: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => {
-          events.push(event);
-        },
-      });
+      const { events, agent } = createEventsAndAgent();
       agent.addTool(new LoopTool());
       (agent as any).provider = new LoopingProvider();
 
@@ -1991,14 +1981,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("prompt_plan diagnostic event", () => {
     it("should emit prompt_plan event with plan metadata on each request", async () => {
-      const diagnosticEvents: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
-      });
-      const mockProvider = new MockProvider();
-      (agent as any).provider = mockProvider;
+      const { diagnosticEvents, agent } = createDiagnosticsAgent();
 
       await agent.streamChat("Hello", jest.fn());
 
@@ -2025,14 +2008,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("summary refresh diagnostics", () => {
     it("should measure summary prompt size before the summary provider call", async () => {
-      const diagnosticEvents: AgentDiagnosticEvent[] = [];
-      const agent = new Agent({
-        providersConfig: testProvidersConfig,
-        diagnosticsEnabled: true,
-        onDiagnosticEvent: (event) => diagnosticEvents.push(event),
-      });
-      const mockProvider = new MockProvider();
-      (agent as any).provider = mockProvider;
+      const { diagnosticEvents, agent } = createDiagnosticsAgent();
       (agent as any).summaryPolicy = {
         rawRecentTurns: 0,
         refreshIntervalTurns: 999,
@@ -2064,6 +2040,13 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent = new Agent({ providersConfig: testProvidersConfig });
     });
 
+    function expectSinglePinnedRecord(id: string) {
+      const records = agent.getPinnedMemory();
+      expect(records).toHaveLength(1);
+      expect(records[0].id).toBe(id);
+      return records[0];
+    }
+
     it("pinFact should add a retrievable active memory record", () => {
       const id = agent.pinFact({
         kind: "fact",
@@ -2072,12 +2055,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       expect(typeof id).toBe("string");
-      const records = agent.getPinnedMemory();
-      expect(records).toHaveLength(1);
-      expect(records[0].id).toBe(id);
-      expect(records[0].kind).toBe("fact");
-      expect(records[0].content).toBe("Node.js 20 is required");
-      expect(records[0].lifecycle).toBe("active");
+      const record = expectSinglePinnedRecord(id);
+      expect(record.kind).toBe("fact");
+      expect(record.content).toBe("Node.js 20 is required");
+      expect(record.lifecycle).toBe("active");
     });
 
     it("addProjectConstraint should pin a project-scoped constraint", () => {
@@ -2087,12 +2068,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         "security policy",
       );
 
-      const records = agent.getPinnedMemory();
-      expect(records).toHaveLength(1);
-      expect(records[0].id).toBe(id);
-      expect(records[0].kind).toBe("constraint");
-      expect(records[0].scope).toBe("project");
-      expect(records[0].rationale).toBe("security policy");
+      const record = expectSinglePinnedRecord(id);
+      expect(record.kind).toBe("constraint");
+      expect(record.scope).toBe("project");
+      expect(record.rationale).toBe("security policy");
     });
 
     it("updateMemory should supersede the old record and return a new one", () => {
@@ -2459,6 +2438,16 @@ describe("Agent with Multi-Provider Configuration", () => {
         .then(() => events);
     }
 
+    function expectSingleToolEvent(
+      events: AgentVisibilityEvent[],
+      type: "tool_finished" | "tool_failed",
+      toolName: string,
+    ) {
+      const matching = events.filter((event) => event.type === type);
+      expect(matching).toHaveLength(1);
+      expect(matching[0]).toMatchObject({ type, toolName });
+    }
+
     it("emits tool_finished for a working tool", async () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new SingleToolCallProvider("read", {
@@ -2466,13 +2455,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       const events = await collectEvents(agent, "list files");
-      const finished = events.filter((e) => e.type === "tool_finished");
 
-      expect(finished).toHaveLength(1);
-      expect(finished[0]).toMatchObject({
-        type: "tool_finished",
-        toolName: "read",
-      });
+      expectSingleToolEvent(events, "tool_finished", "read");
     });
 
     it("emits tool_failed for a disabled tool", async () => {
@@ -2484,13 +2468,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       const events = await collectEvents(agent, "list files");
-      const failed = events.filter((e) => e.type === "tool_failed");
 
-      expect(failed).toHaveLength(1);
-      expect(failed[0]).toMatchObject({
-        type: "tool_failed",
-        toolName: "grep",
-      });
+      expectSingleToolEvent(events, "tool_failed", "grep");
     });
 
     it("emits tool_failed for a missing tool", async () => {
@@ -2501,13 +2480,8 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
 
       const events = await collectEvents(agent, "run tool");
-      const failed = events.filter((e) => e.type === "tool_failed");
 
-      expect(failed).toHaveLength(1);
-      expect(failed[0]).toMatchObject({
-        type: "tool_failed",
-        toolName: "nonexistent_tool_xyz",
-      });
+      expectSingleToolEvent(events, "tool_failed", "nonexistent_tool_xyz");
     });
   });
 });

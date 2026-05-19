@@ -304,44 +304,70 @@ function formatCandidatePath(
   }
 }
 
+interface PathTokenContext {
+  readonly rawToken: string;
+  readonly previousToken: string | null;
+  readonly replaceStart: number;
+  readonly replaceEnd: number;
+  readonly typedPrefix: string;
+  readonly quoted: boolean;
+}
+
+function getPathTokenContext(buffer: string, cursor: number): PathTokenContext {
+  const tokenStart = findTokenStart(buffer, cursor);
+  const tokenEnd = findTokenEnd(buffer, cursor);
+  const rawToken = buffer.slice(tokenStart, tokenEnd);
+  const previousToken = findPreviousToken(buffer, tokenStart);
+  const quote = isQuote(rawToken[0]) ? rawToken[0] : null;
+  const hasClosingQuote = quote !== null && rawToken.endsWith(quote);
+  const replaceStart = quote !== null ? tokenStart + 1 : tokenStart;
+  const replaceEnd = hasClosingQuote ? tokenEnd - 1 : tokenEnd;
+
+  return {
+    rawToken,
+    previousToken,
+    replaceStart,
+    replaceEnd,
+    typedPrefix: buffer
+      .slice(replaceStart, Math.min(cursor, replaceEnd))
+      .replace(/['"]$/, "")
+      .split("#", 1)[0],
+    quoted: quote !== null,
+  };
+}
+
+function hasFileReferenceVerb(previousToken: string | null): boolean {
+  return (
+    previousToken !== null &&
+    FILE_REFERENCE_VERBS.has(previousToken.toLowerCase())
+  );
+}
+
 function createPathTarget(
   buffer: string,
   cursor: number,
   workspaceRoot: string,
 ): TypeaheadTarget | null {
-  const tokenStart = findTokenStart(buffer, cursor);
-  const tokenEnd = findTokenEnd(buffer, cursor);
-  const rawToken = buffer.slice(tokenStart, tokenEnd);
-  const previousToken = findPreviousToken(buffer, tokenStart);
+  const context = getPathTokenContext(buffer, cursor);
 
-  const quoted = isQuote(rawToken[0]) ? rawToken[0] : null;
-  const hasClosingQuote = quoted !== null && rawToken.endsWith(quoted);
-  const replaceStart = quoted !== null ? tokenStart + 1 : tokenStart;
-  const replaceEnd = hasClosingQuote ? tokenEnd - 1 : tokenEnd;
-  const typedPrefix = buffer
-    .slice(replaceStart, Math.min(cursor, replaceEnd))
-    .replace(/['"]$/, "")
-    .split("#", 1)[0];
-
-  if (
-    rawToken.length === 0 &&
-    (previousToken === null ||
-      !FILE_REFERENCE_VERBS.has(previousToken.toLowerCase()))
-  ) {
+  if (context.rawToken.length === 0 && !hasFileReferenceVerb(context.previousToken)) {
     return null;
   }
 
-  if (rawToken.length > 0 && !isPathLikeToken(typedPrefix, previousToken)) {
+  if (
+    context.rawToken.length > 0 &&
+    !isPathLikeToken(context.typedPrefix, context.previousToken)
+  ) {
     return null;
   }
 
   return {
     kind: "path",
-    query: typedPrefix,
-    replaceStart,
-    replaceEnd,
+    query: context.typedPrefix,
+    replaceStart: context.replaceStart,
+    replaceEnd: context.replaceEnd,
     workspaceRoot,
-    quoted: quoted !== null,
+    quoted: context.quoted,
   };
 }
 

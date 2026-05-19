@@ -1,5 +1,6 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
+import type { ToolDisplayAdapter } from "./displayAdapter.js";
 
 const DEFAULT_OUTPUT_LIMIT = 50 * 1024;
 const DEFAULT_TRUNCATION_MARKER = "[output truncated]";
@@ -45,6 +46,29 @@ export async function readUtf8TextFile(filePath: string): Promise<string> {
   }
 
   return buffer.toString("utf8");
+}
+
+export function createPathToolDisplayAdapter(): ToolDisplayAdapter {
+  return {
+    renderUse(input) {
+      const path = input.path;
+      return typeof path === "string" && path.length > 0 ? path : null;
+    },
+    renderResult(result) {
+      return result;
+    },
+  };
+}
+
+export function getPathToolInvocationLabel(
+  args: Record<string, unknown>,
+  verb: string,
+  fallback: string,
+): string {
+  const path = args.path;
+  return typeof path === "string" && path.length > 0
+    ? `${verb} ${path}`
+    : fallback;
 }
 
 export function throwToolPathAccessError(

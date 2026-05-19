@@ -3,6 +3,8 @@ import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
 import {
+  createPathToolDisplayAdapter,
+  getPathToolInvocationLabel,
   normalizeToolPath,
   readUtf8TextFile,
   throwToolPathAccessError,
@@ -30,22 +32,11 @@ export class EditTool implements ExecutableTool {
   readonly description = "Edit a file - replace text.";
 
   getDisplayAdapter(): ToolDisplayAdapter {
-    return {
-      renderUse(input) {
-        const path = input.path;
-        return typeof path === "string" && path.length > 0 ? path : null;
-      },
-      renderResult(result) {
-        return result;
-      },
-    };
+    return createPathToolDisplayAdapter();
   }
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const path = args.path;
-    return typeof path === "string" && path.length > 0
-      ? `Editing ${path}`
-      : "Editing file";
+    return getPathToolInvocationLabel(args, "Editing", "Editing file");
   }
 
   getSchema(): ChatTool {
