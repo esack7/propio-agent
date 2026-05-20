@@ -14,6 +14,7 @@ describe("Configuration Types (New Structure)", () => {
       const model: Model = {
         name: "Llama 3.2 3B",
         key: "llama3.2:3b",
+        contextWindowTokens: 128_000,
       };
       expect(model.name).toBe("Llama 3.2 3B");
       expect(model.key).toBe("llama3.2:3b");
@@ -26,8 +27,16 @@ describe("Configuration Types (New Structure)", () => {
         name: "local-ollama",
         type: "ollama",
         models: [
-          { name: "Llama 3.2 3B", key: "llama3.2:3b" },
-          { name: "Llama 3.2 90B", key: "llama3.2:90b" },
+          {
+            name: "Llama 3.2 3B",
+            key: "llama3.2:3b",
+            contextWindowTokens: 128_000,
+          },
+          {
+            name: "Llama 3.2 90B",
+            key: "llama3.2:90b",
+            contextWindowTokens: 128_000,
+          },
         ],
         defaultModel: "llama3.2:3b",
         host: "http://localhost:11434",
@@ -44,7 +53,9 @@ describe("Configuration Types (New Structure)", () => {
       const config: OllamaProviderConfig = {
         name: "local-ollama",
         type: "ollama",
-        models: [{ name: "Llama 3.2", key: "llama3.2" }],
+        models: [
+          { name: "Llama 3.2", key: "llama3.2", contextWindowTokens: 128_000 },
+        ],
         defaultModel: "llama3.2",
       };
       expect(config.host).toBeUndefined();
@@ -60,6 +71,7 @@ describe("Configuration Types (New Structure)", () => {
           {
             name: "Claude 3.5 Sonnet",
             key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            contextWindowTokens: 128_000,
           },
         ],
         defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -82,6 +94,7 @@ describe("Configuration Types (New Structure)", () => {
           {
             name: "Claude 3.5 Sonnet",
             key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            contextWindowTokens: 128_000,
           },
         ],
         defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -95,7 +108,7 @@ describe("Configuration Types (New Structure)", () => {
       const config: ProviderConfig = {
         name: "ollama",
         type: "ollama",
-        models: [{ name: "Model", key: "model" }],
+        models: [{ name: "Model", key: "model", contextWindowTokens: 128_000 }],
         defaultModel: "model",
       };
       expect(config.type).toBe("ollama");
@@ -105,7 +118,7 @@ describe("Configuration Types (New Structure)", () => {
       const config: ProviderConfig = {
         name: "bedrock",
         type: "bedrock",
-        models: [{ name: "Model", key: "model" }],
+        models: [{ name: "Model", key: "model", contextWindowTokens: 128_000 }],
         defaultModel: "model",
       };
       expect(config.type).toBe("bedrock");
@@ -115,7 +128,13 @@ describe("Configuration Types (New Structure)", () => {
       const config: ProviderConfig = {
         name: "openrouter",
         type: "openrouter",
-        models: [{ name: "GPT-3.5", key: "openai/gpt-3.5-turbo" }],
+        models: [
+          {
+            name: "GPT-3.5",
+            key: "openai/gpt-3.5-turbo",
+            contextWindowTokens: 128_000,
+          },
+        ],
         defaultModel: "openai/gpt-3.5-turbo",
         apiKey: "sk-key",
       };
@@ -126,7 +145,13 @@ describe("Configuration Types (New Structure)", () => {
       const config: ProviderConfig = {
         name: "gemini",
         type: "gemini",
-        models: [{ name: "Gemini 3 Flash", key: "gemini-3-flash-preview" }],
+        models: [
+          {
+            name: "Gemini 3 Flash",
+            key: "gemini-3-flash-preview",
+            contextWindowTokens: 128_000,
+          },
+        ],
         defaultModel: "gemini-3-flash-preview",
         apiKey: "gemini-key",
       };
@@ -139,7 +164,13 @@ describe("Configuration Types (New Structure)", () => {
       const config: OpenRouterProviderConfig = {
         name: "openrouter",
         type: "openrouter",
-        models: [{ name: "GPT-3.5", key: "openai/gpt-3.5-turbo" }],
+        models: [
+          {
+            name: "GPT-3.5",
+            key: "openai/gpt-3.5-turbo",
+            contextWindowTokens: 128_000,
+          },
+        ],
         defaultModel: "openai/gpt-3.5-turbo",
         apiKey: "sk-key",
         httpReferer: "https://app.com",
@@ -175,6 +206,7 @@ describe("Configuration Types (New Structure)", () => {
           {
             name: "Gemini 3.1 Pro Preview",
             key: "gemini-3.1-pro-preview",
+            contextWindowTokens: 128_000,
           },
         ],
         defaultModel: "gemini-3.1-pro-preview",
@@ -193,7 +225,13 @@ describe("Configuration Types (New Structure)", () => {
           {
             name: "local-ollama",
             type: "ollama",
-            models: [{ name: "Llama 3.2", key: "llama3.2" }],
+            models: [
+              {
+                name: "Llama 3.2",
+                key: "llama3.2",
+                contextWindowTokens: 128_000,
+              },
+            ],
             defaultModel: "llama3.2",
             host: "http://localhost:11434",
           },
@@ -204,6 +242,7 @@ describe("Configuration Types (New Structure)", () => {
               {
                 name: "Claude 3.5",
                 key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                contextWindowTokens: 128_000,
               },
             ],
             defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -224,7 +263,9 @@ describe("Configuration Types (New Structure)", () => {
           {
             name: "ollama",
             type: "ollama",
-            models: [{ name: "Model", key: "model" }],
+            models: [
+              { name: "Model", key: "model", contextWindowTokens: 128_000 },
+            ],
             defaultModel: "model",
           },
         ],

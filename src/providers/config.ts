@@ -1,12 +1,12 @@
 /**
  * A model entry containing both human-readable name and technical key.
- * Optional contextWindowTokens overrides the provider's built-in lookup
- * for testing or cost-control purposes.
+ * contextWindowTokens is required because providers do not maintain
+ * hardcoded per-model capability tables.
  */
 export interface Model {
   name: string;
   key: string;
-  contextWindowTokens?: number;
+  contextWindowTokens: number;
 }
 
 /**

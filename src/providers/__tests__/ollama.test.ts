@@ -16,6 +16,48 @@ beforeAll(async () => {
   OllamaProvider = ollamaModule.OllamaProvider;
 });
 
+function createTestProvider(options: Record<string, unknown> = {}) {
+  return new OllamaProvider({
+    model: "test-model",
+    contextWindowTokens: 8192,
+    ...options,
+  });
+}
+
+function restoreEnvVar(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+    return;
+  }
+  process.env[name] = value;
+}
+
+function withOllamaEnv(
+  env: { host?: string; sandbox?: string },
+  testBody: () => void,
+): void {
+  const originalHost = process.env.OLLAMA_HOST;
+  const originalSandbox = process.env.IS_SANDBOX;
+  try {
+    if (env.host === undefined) {
+      delete process.env.OLLAMA_HOST;
+    } else {
+      process.env.OLLAMA_HOST = env.host;
+    }
+
+    if (env.sandbox === undefined) {
+      delete process.env.IS_SANDBOX;
+    } else {
+      process.env.IS_SANDBOX = env.sandbox;
+    }
+
+    testBody();
+  } finally {
+    restoreEnvVar("OLLAMA_HOST", originalHost);
+    restoreEnvVar("IS_SANDBOX", originalSandbox);
+  }
+}
+
 describe("OllamaProvider", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -23,206 +65,116 @@ describe("OllamaProvider", () => {
 
   describe("Initialization", () => {
     it("should initialize with custom host", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        delete process.env.OLLAMA_HOST; // Clear to test constructor option priority
-        delete process.env.IS_SANDBOX; // Ensure regular mode
+      withOllamaEnv({}, () => {
         const host = "http://custom-host:11434";
-        new OllamaProvider({ model: "test-model", host });
+        createTestProvider({ host });
         expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-      }
+      });
     });
 
     it("should use localhost default when no host provided", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      try {
-        delete process.env.OLLAMA_HOST;
-        new OllamaProvider({ model: "test-model" });
+      withOllamaEnv({ sandbox: process.env.IS_SANDBOX }, () => {
+        createTestProvider();
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://localhost:11434",
         });
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.OLLAMA_HOST = originalEnv;
-        } else {
-          delete process.env.OLLAMA_HOST;
-        }
-      }
+      });
     });
 
     it("should use OLLAMA_HOST environment variable if set", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      try {
-        process.env.OLLAMA_HOST = "http://env-host:11434";
-        new OllamaProvider({ model: "test-model" });
+      withOllamaEnv({ host: "http://env-host:11434" }, () => {
+        createTestProvider();
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://env-host:11434",
         });
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.OLLAMA_HOST = originalEnv;
-        } else {
-          delete process.env.OLLAMA_HOST;
-        }
-      }
+      });
     });
 
     it("should prioritize environment variable over explicit host", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      try {
-        process.env.OLLAMA_HOST = "http://env-host:11434";
+      withOllamaEnv({ host: "http://env-host:11434" }, () => {
         const host = "http://explicit-host:11434";
-        new OllamaProvider({ model: "test-model", host });
+        createTestProvider({ host });
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://env-host:11434",
         });
-      } finally {
-        if (originalEnv !== undefined) {
-          process.env.OLLAMA_HOST = originalEnv;
-        } else {
-          delete process.env.OLLAMA_HOST;
-        }
-      }
+      });
     });
   });
 
   describe("Backward compatibility", () => {
     it("should support custom host configuration", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        delete process.env.OLLAMA_HOST; // Clear to test constructor option priority
-        delete process.env.IS_SANDBOX; // Ensure regular mode
+      withOllamaEnv({}, () => {
         const host = "http://custom:11434";
-        new OllamaProvider({ model: "llama3.2", host });
+        createTestProvider({ model: "llama3.2", host });
         expect(mockOllamaConstructor).toHaveBeenCalledWith({ host });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-      }
+      });
     });
 
     it("should handle model parameter in constructor", () => {
-      const provider = new OllamaProvider({ model: "llama3.2" });
+      const provider = createTestProvider({ model: "llama3.2" });
       expect(provider).toBeDefined();
     });
   });
 
   describe("Sandbox mode host resolution", () => {
     it("should use host.docker.internal default in sandbox mode", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        process.env.IS_SANDBOX = "true";
-        delete process.env.OLLAMA_HOST;
-        new OllamaProvider({ model: "test-model" });
+      withOllamaEnv({ sandbox: "true" }, () => {
+        createTestProvider();
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://host.docker.internal:11434",
         });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        else delete process.env.OLLAMA_HOST;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-        else delete process.env.IS_SANDBOX;
-      }
+      });
     });
 
     it("should convert localhost to host.docker.internal in sandbox", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        process.env.IS_SANDBOX = "true";
-        delete process.env.OLLAMA_HOST;
+      withOllamaEnv({ sandbox: "true" }, () => {
         const host = "http://localhost:12345";
-        new OllamaProvider({ model: "test-model", host });
+        createTestProvider({ host });
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://host.docker.internal:12345",
         });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        else delete process.env.OLLAMA_HOST;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-        else delete process.env.IS_SANDBOX;
-      }
+      });
     });
 
     it("should preserve custom hosts in sandbox mode", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        process.env.IS_SANDBOX = "true";
-        delete process.env.OLLAMA_HOST;
+      withOllamaEnv({ sandbox: "true" }, () => {
         const host = "http://custom-host:11434";
-        new OllamaProvider({ model: "test-model", host });
+        createTestProvider({ host });
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://custom-host:11434",
         });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        else delete process.env.OLLAMA_HOST;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-        else delete process.env.IS_SANDBOX;
-      }
+      });
     });
 
     it("should use localhost default in regular mode", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        delete process.env.IS_SANDBOX;
-        delete process.env.OLLAMA_HOST;
-        new OllamaProvider({ model: "test-model" });
+      withOllamaEnv({}, () => {
+        createTestProvider();
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://localhost:11434",
         });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        else delete process.env.OLLAMA_HOST;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-        else delete process.env.IS_SANDBOX;
-      }
+      });
     });
 
     it("should respect OLLAMA_HOST without conversion in sandbox", () => {
-      const originalEnv = process.env.OLLAMA_HOST;
-      const originalSandbox = process.env.IS_SANDBOX;
-      try {
-        process.env.OLLAMA_HOST = "http://localhost:9999";
-        process.env.IS_SANDBOX = "true";
-        new OllamaProvider({ model: "test-model" });
+      withOllamaEnv({ host: "http://localhost:9999", sandbox: "true" }, () => {
+        createTestProvider();
         expect(mockOllamaConstructor).toHaveBeenCalledWith({
           host: "http://localhost:9999",
         });
-      } finally {
-        if (originalEnv !== undefined) process.env.OLLAMA_HOST = originalEnv;
-        else delete process.env.OLLAMA_HOST;
-        if (originalSandbox !== undefined)
-          process.env.IS_SANDBOX = originalSandbox;
-        else delete process.env.IS_SANDBOX;
-      }
+      });
     });
   });
 
   describe("Provider identification", () => {
     it("should have name property set to ollama", () => {
-      const provider = new OllamaProvider({ model: "test-model" });
+      const provider = createTestProvider();
       expect(provider.name).toBe("ollama");
     });
   });
 
   describe("streamChat", () => {
     it("should call ollama.chat with correct parameters", async () => {
-      const provider = new OllamaProvider({ model: "test-model" });
+      const provider = createTestProvider();
 
       // Mock async generator
       mockChat.mockReturnValue(
@@ -253,7 +205,7 @@ describe("OllamaProvider", () => {
     });
 
     it("should yield content deltas from ollama response", async () => {
-      const provider = new OllamaProvider({ model: "test-model" });
+      const provider = createTestProvider();
 
       mockChat.mockReturnValue(
         (async function* () {
@@ -278,7 +230,7 @@ describe("OllamaProvider", () => {
     });
 
     it("should handle tool calls in response", async () => {
-      const provider = new OllamaProvider({ model: "test-model" });
+      const provider = createTestProvider();
 
       mockChat.mockReturnValue(
         (async function* () {
@@ -323,7 +275,7 @@ describe("OllamaProvider", () => {
     });
 
     it("should pass tools to ollama when provided", async () => {
-      const provider = new OllamaProvider({ model: "test-model" });
+      const provider = createTestProvider();
 
       mockChat.mockReturnValue(
         (async function* () {
@@ -365,7 +317,7 @@ describe("OllamaProvider", () => {
     });
 
     it("should expand batched tool results into separate messages", async () => {
-      const provider = new OllamaProvider({ model: "test-model" });
+      const provider = createTestProvider();
 
       mockChat.mockReturnValue(
         (async function* () {

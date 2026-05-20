@@ -1,5 +1,6 @@
 import { Ollama, Message, Tool, ToolCall } from "ollama";
 import { LLMProvider, ProviderCapabilities } from "./interface.js";
+import { createProviderCapabilities } from "./capabilities.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -83,13 +84,13 @@ export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
   private ollama: Ollama;
   private model: string;
+  private capabilities: ProviderCapabilities;
   private retryConfig?: { maxRetries: number; consecutive529Limit: number };
   private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
-  private static readonly DEFAULT_CONTEXT_WINDOW = 8192;
-
   constructor(options: {
     model: string;
+    contextWindowTokens: number;
     host?: string;
     retryConfig?: { maxRetries: number; consecutive529Limit: number };
     onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
@@ -102,14 +103,13 @@ export class OllamaProvider implements LLMProvider {
 
     this.ollama = new Ollama({ host });
     this.model = options.model;
+    this.capabilities = createProviderCapabilities(options.contextWindowTokens);
     this.retryConfig = options.retryConfig;
     this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
   getCapabilities(): ProviderCapabilities {
-    return {
-      contextWindowTokens: OllamaProvider.DEFAULT_CONTEXT_WINDOW,
-    };
+    return this.capabilities;
   }
 
   /**

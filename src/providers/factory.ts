@@ -6,6 +6,7 @@ import {
   OpenRouterProviderConfig,
   GeminiProviderConfig,
   XaiProviderConfig,
+  Model,
 } from "./config.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { OllamaProvider } from "./ollama.js";
@@ -31,7 +32,7 @@ import { XaiProvider } from "./xai.js";
  * const ollamaProvider = createProvider({
  *   name: 'local-ollama',
  *   type: 'ollama',
- *   models: [{ name: 'Llama', key: 'llama3.2' }],
+ *   models: [{ name: 'Llama', key: 'llama3.2', contextWindowTokens: 8192 }],
  *   defaultModel: 'llama3.2',
  *   host: 'http://localhost:11434'
  * });
@@ -41,7 +42,7 @@ import { XaiProvider } from "./xai.js";
  * const bedrockProvider = createProvider({
  *   name: 'bedrock',
  *   type: 'bedrock',
- *   models: [{ name: 'Claude 3.5', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0' }],
+ *   models: [{ name: 'Claude 3.5', key: 'anthropic.claude-3-5-sonnet-20241022-v2:0', contextWindowTokens: 200000 }],
  *   defaultModel: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
  *   region: 'us-west-2'
  * }, 'anthropic.claude-3-5-sonnet-20241022-v2:0');
@@ -55,27 +56,48 @@ export function createProvider(
 ): LLMProvider {
   const model = modelKey || config.defaultModel;
 
+  const resolveModelConfig = (): Model => {
+    const modelConfig = config.models.find((entry) => entry.key === model);
+    if (!modelConfig) {
+      const availableModels = config.models
+        .map((entry) => entry.key)
+        .join(", ");
+      throw new Error(
+        `Model "${model}" not found in provider "${config.name}". Available: ${availableModels}`,
+      );
+    }
+    return modelConfig;
+  };
+
   // Switch statement pattern for mapping provider type to implementation.
   // Each case instantiates the appropriate provider class with extracted config.
   switch (config.type) {
-    case "ollama":
+    case "ollama": {
+      const modelConfig = resolveModelConfig();
       return new OllamaProvider({
         model: model,
+        contextWindowTokens: modelConfig.contextWindowTokens,
         host: (config as OllamaProviderConfig).host,
         retryConfig,
         onDiagnosticEvent,
       });
-    case "bedrock":
+    }
+    case "bedrock": {
+      const modelConfig = resolveModelConfig();
       return new BedrockProvider({
         model: model,
+        contextWindowTokens: modelConfig.contextWindowTokens,
         region: (config as BedrockProviderConfig).region,
         retryConfig,
         onDiagnosticEvent,
       });
+    }
     case "openrouter": {
       const openRouterConfig = config as OpenRouterProviderConfig;
+      const modelConfig = resolveModelConfig();
       return new OpenRouterProvider({
         model,
+        contextWindowTokens: modelConfig.contextWindowTokens,
         apiKey: openRouterConfig.apiKey,
         httpReferer: openRouterConfig.httpReferer,
         xTitle: openRouterConfig.xTitle,
@@ -89,8 +111,10 @@ export function createProvider(
     }
     case "gemini": {
       const geminiConfig = config as GeminiProviderConfig;
+      const modelConfig = resolveModelConfig();
       return new GeminiProvider({
         model,
+        contextWindowTokens: modelConfig.contextWindowTokens,
         apiKey: geminiConfig.apiKey,
         retryConfig,
         onDiagnosticEvent,
@@ -98,8 +122,10 @@ export function createProvider(
     }
     case "xai": {
       const xaiConfig = config as XaiProviderConfig;
+      const modelConfig = resolveModelConfig();
       return new XaiProvider({
         model,
+        contextWindowTokens: modelConfig.contextWindowTokens,
         apiKey: xaiConfig.apiKey,
         retryConfig,
         onDiagnosticEvent,
@@ -125,7 +151,7 @@ export function createProvider(
  * const model = extractModelFromConfig({
  *   name: 'ollama',
  *   type: 'ollama',
- *   models: [{ name: 'Llama', key: 'llama3.2' }],
+ *   models: [{ name: 'Llama', key: 'llama3.2', contextWindowTokens: 8192 }],
  *   defaultModel: 'llama3.2'
  * });
  * console.log(model); // 'llama3.2'

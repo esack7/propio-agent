@@ -1,4 +1,5 @@
 import { ProviderContextLengthError, ProviderError } from "../types.js";
+import { validateContextWindowTokens } from "../capabilities.js";
 
 describe("ProviderContextLengthError", () => {
   it("should be an instance of ProviderError", () => {
@@ -27,27 +28,19 @@ describe("ProviderContextLengthError", () => {
   });
 });
 
-describe("Provider capability resolution precedence", () => {
-  it("per-model config override should take priority over provider default", () => {
-    const configOverride = 32000;
-    const providerDefault = 128000;
-
-    const modelConfig = { contextWindowTokens: configOverride };
-    const providerCapabilities = { contextWindowTokens: providerDefault };
-
-    const resolved =
-      modelConfig.contextWindowTokens ??
-      providerCapabilities.contextWindowTokens;
-    expect(resolved).toBe(configOverride);
+describe("Provider capability validation", () => {
+  it("should accept positive integer context windows", () => {
+    expect(validateContextWindowTokens(32_000, "contextWindowTokens")).toBe(
+      32_000,
+    );
   });
 
-  it("provider default should be used when config override is absent", () => {
-    const modelConfig: { contextWindowTokens?: number } = {};
-    const providerCapabilities = { contextWindowTokens: 128000 };
-
-    const resolved =
-      modelConfig.contextWindowTokens ??
-      providerCapabilities.contextWindowTokens;
-    expect(resolved).toBe(128000);
-  });
+  it.each([undefined, 0, -1, 1.5, "128000"])(
+    "should reject invalid context window %p",
+    (value) => {
+      expect(() =>
+        validateContextWindowTokens(value, "contextWindowTokens"),
+      ).toThrow(/positive integer/);
+    },
+  );
 });

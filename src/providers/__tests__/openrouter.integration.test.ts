@@ -33,8 +33,16 @@ const openRouterProviderConfig: OpenRouterProviderConfig = {
   name: "openrouter",
   type: "openrouter",
   models: [
-    { name: "GPT-3.5 Turbo", key: "openai/gpt-3.5-turbo" },
-    { name: "DeepSeek Chat", key: "deepseek/deepseek-chat" },
+    {
+      name: "GPT-3.5 Turbo",
+      key: "openai/gpt-3.5-turbo",
+      contextWindowTokens: 128_000,
+    },
+    {
+      name: "DeepSeek Chat",
+      key: "deepseek/deepseek-chat",
+      contextWindowTokens: 128_000,
+    },
   ],
   defaultModel: "openai/gpt-3.5-turbo",
   ...(apiKey ? { apiKey } : {}),
@@ -172,14 +180,26 @@ describe("OpenRouter integration (real API)", () => {
             {
               name: "openrouter-primary",
               type: "openrouter",
-              models: [{ name: "GPT-3.5", key: "openai/gpt-3.5-turbo" }],
+              models: [
+                {
+                  name: "GPT-3.5",
+                  key: "openai/gpt-3.5-turbo",
+                  contextWindowTokens: 128_000,
+                },
+              ],
               defaultModel: "openai/gpt-3.5-turbo",
               apiKey: apiKey!,
             },
             {
               name: "openrouter-alt",
               type: "openrouter",
-              models: [{ name: "DeepSeek", key: "deepseek/deepseek-chat" }],
+              models: [
+                {
+                  name: "DeepSeek",
+                  key: "deepseek/deepseek-chat",
+                  contextWindowTokens: 128_000,
+                },
+              ],
               defaultModel: "deepseek/deepseek-chat",
               apiKey: apiKey!,
             },

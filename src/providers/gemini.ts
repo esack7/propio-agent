@@ -1,4 +1,3 @@
-import { ProviderCapabilities } from "./interface.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -6,7 +5,6 @@ import {
   ChatToolCall,
   ProviderAuthenticationError,
   ProviderError,
-  ProviderModelNotFoundError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { withRetry } from "./withRetry.js";
@@ -101,17 +99,6 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
   };
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
-  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
-    "gemini-3.1-pro-preview": 1_048_576,
-    "gemini-3-flash-preview": 1_048_576,
-    "gemini-3.1-flash-lite-preview": 1_048_576,
-  };
-  private static readonly SUPPORTED_MODELS = new Set([
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite-preview",
-  ]);
-
   constructor(options: OpenAiCompatibleProviderOptions) {
     super();
     const apiKey =
@@ -124,29 +111,11 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
         "Gemini API key is required. Set GEMINI_API_KEY or GOOGLE_API_KEY, or pass apiKey in options.",
       );
     }
-    this.model = this.validateModel(options.model);
+    this.model = options.model;
+    this.configureCapabilities(options.contextWindowTokens);
     this.apiKey = apiKey;
     this.retryConfig = options.retryConfig;
     this.onDiagnosticEvent = options.onDiagnosticEvent;
-  }
-
-  getCapabilities(): ProviderCapabilities {
-    return {
-      contextWindowTokens: GeminiProvider.CONTEXT_WINDOWS[this.model],
-    };
-  }
-
-  private validateModel(model: string): string {
-    if (!GeminiProvider.SUPPORTED_MODELS.has(model)) {
-      throw new ProviderModelNotFoundError(
-        model,
-        `Unsupported Gemini model: ${model}. Supported models: ${[
-          ...GeminiProvider.SUPPORTED_MODELS,
-        ].join(", ")}`,
-      );
-    }
-
-    return model;
   }
 
   private imageToUrl(image: Uint8Array | string): string {
@@ -331,7 +300,7 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
   private async createGeminiStreamReader(
     request: ChatRequest,
   ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
-    const effectiveModel = this.validateModel(request.model || this.model);
+    const effectiveModel = request.model || this.model;
     const body = buildOpenAIChatCompletionRequestBody({
       request,
       model: effectiveModel,
