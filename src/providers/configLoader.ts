@@ -1,7 +1,13 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import {
+  readJsonFile,
+  readJsonFileAsync,
+  writeJsonFileAtomic,
+} from "../config/jsonFile.js";
 import { ProvidersConfig, ProviderConfig } from "./config.js";
+import { validateContextWindowTokens } from "./capabilities.js";
 
 export interface ProviderModelSelection {
   readonly providerName: string;
@@ -48,57 +54,39 @@ export function getConfigPath(): string {
  * @throws Error if file not found, invalid JSON, validation fails, or references are invalid
  */
 export function loadProvidersConfig(filePath: string): ProvidersConfig {
-  let fileContent: string;
-
-  try {
-    fileContent = fs.readFileSync(filePath, "utf-8");
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
-      throw new Error(
-        `Configuration file not found: ${filePath}\n` +
-          `Please create ~/.propio/providers.json with your provider settings.\n` +
-          `See README for configuration examples.`,
-      );
-    }
-    throw new Error(`Failed to read configuration file: ${error.message}`);
-  }
-
-  let config: any;
-  try {
-    config = JSON.parse(fileContent);
-  } catch (error: any) {
-    throw new Error(`Invalid JSON in configuration file: ${error.message}`);
-  }
-
-  return validateProvidersConfig(config);
+  return validateProvidersConfig(readProvidersConfigJson(filePath));
 }
 
 export async function loadProvidersConfigAsync(
   filePath: string,
 ): Promise<ProvidersConfig> {
-  let fileContent: string;
+  return validateProvidersConfig(await readProvidersConfigJsonAsync(filePath));
+}
 
-  try {
-    fileContent = await fs.promises.readFile(filePath, "utf-8");
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
-      throw new Error(
-        `Configuration file not found: ${filePath}\n` +
-          `Please create ~/.propio/providers.json with your provider settings.\n` +
-          `See README for configuration examples.`,
-      );
-    }
-    throw new Error(`Failed to read configuration file: ${error.message}`);
-  }
+function providersConfigMissingMessage(filePath: string): string {
+  return (
+    `Configuration file not found: ${filePath}\n` +
+    `Please create ~/.propio/providers.json with your provider settings.\n` +
+    `See README for configuration examples.`
+  );
+}
 
-  let config: any;
-  try {
-    config = JSON.parse(fileContent);
-  } catch (error: any) {
-    throw new Error(`Invalid JSON in configuration file: ${error.message}`);
-  }
+function readProvidersConfigJson(filePath: string): unknown {
+  return readJsonFile(filePath, {
+    invalidJsonPrefix: "Invalid JSON in configuration file",
+    missingMessage: providersConfigMissingMessage(filePath),
+    readErrorPrefix: "Failed to read configuration file",
+  });
+}
 
-  return validateProvidersConfig(config);
+async function readProvidersConfigJsonAsync(
+  filePath: string,
+): Promise<unknown> {
+  return readJsonFileAsync(filePath, {
+    invalidJsonPrefix: "Invalid JSON in configuration file",
+    missingMessage: providersConfigMissingMessage(filePath),
+    readErrorPrefix: "Failed to read configuration file",
+  });
 }
 
 function validateProvidersConfig(config: any): ProvidersConfig {
@@ -140,34 +128,25 @@ function validateProvidersConfig(config: any): ProvidersConfig {
 }
 
 function writeProvidersConfig(filePath: string, config: ProvidersConfig): void {
-  const directory = path.dirname(filePath);
-  fs.mkdirSync(directory, { recursive: true });
-
-  const tempFilePath = path.join(
-    directory,
-    `.providers.${process.pid}.${Date.now()}.tmp`,
-  );
-
-  try {
-    fs.writeFileSync(tempFilePath, `${JSON.stringify(config, null, 2)}\n`, {
-      encoding: "utf8",
-    });
-    fs.renameSync(tempFilePath, filePath);
-  } catch (error) {
-    try {
-      fs.rmSync(tempFilePath, { force: true });
-    } catch {
-      // Best-effort cleanup only.
-    }
-    throw error;
-  }
+  writeJsonFileAtomic(filePath, "providers", config);
 }
 
 /**
  * Validate a single provider configuration
  */
 function validateProviderConfig(provider: any, seenNames: Set<string>): void {
-  // Check required fields
+  validateProviderRequiredFields(provider);
+  validateUniqueProviderName(provider.name, seenNames);
+  validateProviderModels(provider);
+
+  if (provider.type === "openrouter") {
+    validateOpenRouterProviderConfig(provider);
+  }
+
+  validateDefaultModel(provider);
+}
+
+function validateProviderRequiredFields(provider: any): void {
   const requiredFields = ["name", "type", "models", "defaultModel"];
   const missingFields = requiredFields.filter((field) => !provider[field]);
   if (missingFields.length > 0) {
@@ -175,45 +154,74 @@ function validateProviderConfig(provider: any, seenNames: Set<string>): void {
       `Provider is missing required fields: ${missingFields.join(", ")}`,
     );
   }
+}
 
-  // Check unique provider names
-  if (seenNames.has(provider.name)) {
+function validateUniqueProviderName(
+  providerName: string,
+  seenNames: Set<string>,
+): void {
+  if (seenNames.has(providerName)) {
     throw new Error(
-      `Duplicate provider name: "${provider.name}". Provider names must be unique.`,
+      `Duplicate provider name: "${providerName}". Provider names must be unique.`,
     );
   }
-  seenNames.add(provider.name);
+  seenNames.add(providerName);
+}
 
-  // Validate models array
+function validateProviderModels(provider: any): void {
   if (!Array.isArray(provider.models) || provider.models.length === 0) {
     throw new Error(
       `Provider "${provider.name}" must have at least one model in the models array`,
     );
   }
 
-  // Validate each model has required fields
   const seenModelKeys = new Set<string>();
   for (const model of provider.models) {
-    if (!model.name || !model.key) {
-      throw new Error(
-        `Provider "${provider.name}" has model missing required fields: each model must have "name" and "key"`,
-      );
-    }
+    validateProviderModel(provider.name, model, seenModelKeys);
+  }
+}
 
-    // Check unique model keys within provider
-    if (seenModelKeys.has(model.key)) {
-      throw new Error(
-        `Provider "${provider.name}" has duplicate model key: "${model.key}". Model keys must be unique within a provider.`,
-      );
-    }
-    seenModelKeys.add(model.key);
+function validateProviderModel(
+  providerName: string,
+  model: any,
+  seenModelKeys: Set<string>,
+): void {
+  validateModelRequiredFields(providerName, model);
+  validateContextWindowTokens(
+    model.contextWindowTokens,
+    `Provider "${providerName}" model "${model.key}" contextWindowTokens`,
+  );
+  validateUniqueModelKey(providerName, model.key, seenModelKeys);
+}
+
+function validateModelRequiredFields(providerName: string, model: any): void {
+  if (!model.name || !model.key) {
+    throw new Error(
+      `Provider "${providerName}" has model missing required fields: each model must have "name", "key", and "contextWindowTokens"`,
+    );
   }
 
-  if (provider.type === "openrouter") {
-    validateOpenRouterProviderConfig(provider);
+  if (model.contextWindowTokens === undefined) {
+    throw new Error(
+      `Provider "${providerName}" model "${model.key}" is missing required field "contextWindowTokens"`,
+    );
   }
+}
 
-  // Validate defaultModel references valid model key
+function validateUniqueModelKey(
+  providerName: string,
+  modelKey: string,
+  seenModelKeys: Set<string>,
+): void {
+  if (seenModelKeys.has(modelKey)) {
+    throw new Error(
+      `Provider "${providerName}" has duplicate model key: "${modelKey}". Model keys must be unique within a provider.`,
+    );
+  }
+  seenModelKeys.add(modelKey);
+}
+
+function validateDefaultModel(provider: any): void {
   const defaultModelExists = provider.models.some(
     (m: any) => m.key === provider.defaultModel,
   );
@@ -227,53 +235,64 @@ function validateProviderConfig(provider: any, seenNames: Set<string>): void {
 
 function validateOpenRouterProviderConfig(provider: any): void {
   if (provider.provider !== undefined) {
-    if (!isPlainObject(provider.provider)) {
-      throw new Error(
-        `Provider "${provider.name}" OpenRouter "provider" field must be an object`,
-      );
-    }
-
-    if (
-      provider.provider.allowFallbacks !== undefined &&
-      typeof provider.provider.allowFallbacks !== "boolean"
-    ) {
-      throw new Error(
-        `Provider "${provider.name}" OpenRouter "provider.allowFallbacks" must be a boolean`,
-      );
-    }
-
-    if (
-      provider.provider.requireParameters !== undefined &&
-      typeof provider.provider.requireParameters !== "boolean"
-    ) {
-      throw new Error(
-        `Provider "${provider.name}" OpenRouter "provider.requireParameters" must be a boolean`,
-      );
-    }
-
-    if (provider.provider.order !== undefined) {
-      if (!isNonEmptyStringArray(provider.provider.order)) {
-        throw new Error(
-          `Provider "${provider.name}" OpenRouter "provider.order" must be a non-empty array of non-empty strings`,
-        );
-      }
-    }
+    validateOpenRouterRoutingConfig(provider.name, provider.provider);
   }
 
-  if (provider.fallbackModels !== undefined) {
-    if (!isNonEmptyStringArray(provider.fallbackModels)) {
-      throw new Error(
-        `Provider "${provider.name}" OpenRouter "fallbackModels" must be a non-empty array of non-empty strings`,
-      );
-    }
-  }
+  validateOptionalStringArray(
+    provider.name,
+    "fallbackModels",
+    provider.fallbackModels,
+  );
+  validateOptionalBoolean(
+    provider.name,
+    "debugEchoUpstreamBody",
+    provider.debugEchoUpstreamBody,
+  );
+}
 
-  if (
-    provider.debugEchoUpstreamBody !== undefined &&
-    typeof provider.debugEchoUpstreamBody !== "boolean"
-  ) {
+function validateOpenRouterRoutingConfig(
+  providerName: string,
+  routing: unknown,
+): void {
+  if (!isPlainObject(routing)) {
     throw new Error(
-      `Provider "${provider.name}" OpenRouter "debugEchoUpstreamBody" must be a boolean`,
+      `Provider "${providerName}" OpenRouter "provider" field must be an object`,
+    );
+  }
+
+  validateOptionalBoolean(
+    providerName,
+    "provider.allowFallbacks",
+    routing.allowFallbacks,
+  );
+  validateOptionalBoolean(
+    providerName,
+    "provider.requireParameters",
+    routing.requireParameters,
+  );
+  validateOptionalStringArray(providerName, "provider.order", routing.order);
+}
+
+function validateOptionalBoolean(
+  providerName: string,
+  fieldName: string,
+  value: unknown,
+): void {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new Error(
+      `Provider "${providerName}" OpenRouter "${fieldName}" must be a boolean`,
+    );
+  }
+}
+
+function validateOptionalStringArray(
+  providerName: string,
+  fieldName: string,
+  value: unknown,
+): void {
+  if (value !== undefined && !isNonEmptyStringArray(value)) {
+    throw new Error(
+      `Provider "${providerName}" OpenRouter "${fieldName}" must be a non-empty array of non-empty strings`,
     );
   }
 }

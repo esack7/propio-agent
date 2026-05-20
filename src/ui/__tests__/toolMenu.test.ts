@@ -1,10 +1,5 @@
 import { showToolMenu } from "../toolMenu.js";
-import type {
-  PromptComposer,
-  PromptConfirmRequest,
-  PromptRequest,
-  PromptResult,
-} from "../promptComposer.js";
+import { createMockMenuUi, MockPromptComposer } from "./menuTestHelpers.js";
 
 class MockAgent {
   private tools = new Map([
@@ -118,38 +113,6 @@ class MockAgent {
   }
 }
 
-class MockPromptComposer implements PromptComposer {
-  readonly prompts: string[] = [];
-
-  constructor(private readonly responses: Array<string | null>) {}
-
-  async compose({ promptText }: PromptRequest): Promise<PromptResult> {
-    this.prompts.push(promptText);
-    if (this.responses.length === 0) {
-      return { status: "closed" };
-    }
-    const next = this.responses.shift();
-    if (next === null || next === undefined) {
-      return { status: "closed" };
-    }
-    return { status: "submitted", text: next };
-  }
-
-  async confirm(_request: PromptConfirmRequest): Promise<boolean> {
-    throw new Error("confirm() is not used by the tool menu");
-  }
-
-  getCloseReason(): "closed" | "interrupted" | null {
-    return null;
-  }
-
-  getState() {
-    return null;
-  }
-
-  close(): void {}
-}
-
 describe("showToolMenu", () => {
   let mockAgent: MockAgent;
   let outputLines: string[];
@@ -165,20 +128,20 @@ describe("showToolMenu", () => {
   beforeEach(() => {
     mockAgent = new MockAgent();
     outputLines = [];
-    mockUi = {
-      command: (text: string) => outputLines.push(text),
-      error: (text: string) => outputLines.push(text),
-      info: (text: string) => outputLines.push(text),
-      prompt: (text: string) => text,
-      section: (text: string) => outputLines.push(text),
-      success: (text: string) => outputLines.push(text),
-    };
+    mockUi = createMockMenuUi(outputLines);
   });
 
-  it("shows the seven built-in tools in order", async () => {
-    const input = new MockPromptComposer([null]);
+  async function renderToolMenu(
+    responses: Array<string | null>,
+    agent: MockAgent = mockAgent,
+  ): Promise<MockPromptComposer> {
+    const input = new MockPromptComposer(responses);
+    await showToolMenu(input, agent as any, mockUi as any);
+    return input;
+  }
 
-    await showToolMenu(input, mockAgent as any, mockUi as any);
+  it("shows the seven built-in tools in order", async () => {
+    await renderToolMenu([null]);
 
     const output = outputLines.join("\n");
     expect(output).toContain("read");
@@ -192,9 +155,7 @@ describe("showToolMenu", () => {
   });
 
   it("numbers tools from 1 to 7", async () => {
-    const input = new MockPromptComposer([null]);
-
-    await showToolMenu(input, mockAgent as any, mockUi as any);
+    await renderToolMenu([null]);
 
     const output = outputLines.join("\n");
     expect(output).toContain("1.");

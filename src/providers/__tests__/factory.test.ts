@@ -20,7 +20,7 @@ describe("Provider Factory", () => {
       const config: OllamaProviderConfig = {
         name: "local-ollama",
         type: "ollama",
-        models: [{ name: "Llama", key: "llama3.2" }],
+        models: [{ name: "Llama", key: "llama3.2", contextWindowTokens: 8192 }],
         defaultModel: "llama3.2",
         host: "http://localhost:11434",
       };
@@ -36,7 +36,11 @@ describe("Provider Factory", () => {
         name: "bedrock",
         type: "bedrock",
         models: [
-          { name: "Claude", key: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
+          {
+            name: "Claude",
+            key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            contextWindowTokens: 200_000,
+          },
         ],
         defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
         region: "us-west-2",
@@ -52,7 +56,13 @@ describe("Provider Factory", () => {
       const config: OpenRouterProviderConfig = {
         name: "openrouter",
         type: "openrouter",
-        models: [{ name: "GPT-3.5", key: "openai/gpt-3.5-turbo" }],
+        models: [
+          {
+            name: "GPT-3.5",
+            key: "openai/gpt-3.5-turbo",
+            contextWindowTokens: 128_000,
+          },
+        ],
         defaultModel: "openai/gpt-3.5-turbo",
         apiKey: "sk-test-key",
       };
@@ -67,7 +77,13 @@ describe("Provider Factory", () => {
       const config: GeminiProviderConfig = {
         name: "gemini",
         type: "gemini",
-        models: [{ name: "Gemini 3 Flash", key: "gemini-3-flash-preview" }],
+        models: [
+          {
+            name: "Gemini 3 Flash",
+            key: "gemini-3-flash-preview",
+            contextWindowTokens: 1_048_576,
+          },
+        ],
         defaultModel: "gemini-3-flash-preview",
         apiKey: "gemini-test-key",
       };
@@ -83,8 +99,12 @@ describe("Provider Factory", () => {
         name: "local-ollama",
         type: "ollama",
         models: [
-          { name: "Llama 3B", key: "llama3.2:3b" },
-          { name: "Llama 90B", key: "llama3.2:90b" },
+          { name: "Llama 3B", key: "llama3.2:3b", contextWindowTokens: 8192 },
+          {
+            name: "Llama 90B",
+            key: "llama3.2:90b",
+            contextWindowTokens: 8192,
+          },
         ],
         defaultModel: "llama3.2:3b",
         host: "http://localhost:11434",
@@ -99,7 +119,7 @@ describe("Provider Factory", () => {
       const config: OllamaProviderConfig = {
         name: "ollama",
         type: "ollama",
-        models: [{ name: "Llama", key: "llama3.2" }],
+        models: [{ name: "Llama", key: "llama3.2", contextWindowTokens: 8192 }],
         defaultModel: "llama3.2",
       };
 
@@ -114,7 +134,7 @@ describe("Provider Factory", () => {
       const config: any = {
         name: "test",
         type: "unknown",
-        models: [{ name: "Test", key: "test" }],
+        models: [{ name: "Test", key: "test", contextWindowTokens: 128_000 }],
         defaultModel: "test",
       };
 
@@ -125,7 +145,7 @@ describe("Provider Factory", () => {
       const config: any = {
         name: "test",
         type: "unknown",
-        models: [{ name: "Test", key: "test" }],
+        models: [{ name: "Test", key: "test", contextWindowTokens: 128_000 }],
         defaultModel: "test",
       };
 
@@ -138,7 +158,13 @@ describe("Provider Factory", () => {
       const config: XaiProviderConfig = {
         name: "xai",
         type: "xai",
-        models: [{ name: "Grok Fast", key: "grok-4-1-fast-reasoning" }],
+        models: [
+          {
+            name: "Grok Fast",
+            key: "grok-4-1-fast-reasoning",
+            contextWindowTokens: 2_000_000,
+          },
+        ],
         defaultModel: "grok-4-1-fast-reasoning",
         apiKey: "xai-test-key",
       };
@@ -149,11 +175,53 @@ describe("Provider Factory", () => {
       expect(provider.name).toBe("xai");
     });
 
+    it("should use configured context windows for newly added xAI models", () => {
+      const config: XaiProviderConfig = {
+        name: "xai",
+        type: "xai",
+        models: [
+          {
+            name: "Grok 4.3",
+            key: "grok-4.3",
+            contextWindowTokens: 1_000_000,
+          },
+        ],
+        defaultModel: "grok-4.3",
+        apiKey: "xai-test-key",
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(XaiProvider);
+      expect(provider.getCapabilities().contextWindowTokens).toBe(1_000_000);
+    });
+
+    it("should create arbitrary configured Gemini models", () => {
+      const config: GeminiProviderConfig = {
+        name: "gemini",
+        type: "gemini",
+        models: [
+          {
+            name: "Gemini Future Preview",
+            key: "gemini-future-preview",
+            contextWindowTokens: 2_000_000,
+          },
+        ],
+        defaultModel: "gemini-future-preview",
+        apiKey: "gemini-test-key",
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(GeminiProvider);
+      expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
+    });
+
     it("should use flat host field for Ollama", () => {
       const config: OllamaProviderConfig = {
         name: "ollama",
         type: "ollama",
-        models: [{ name: "Llama", key: "llama3.2" }],
+        models: [{ name: "Llama", key: "llama3.2", contextWindowTokens: 8192 }],
         defaultModel: "llama3.2",
         host: "http://custom.host:11434",
       };
@@ -167,7 +235,11 @@ describe("Provider Factory", () => {
         name: "bedrock",
         type: "bedrock",
         models: [
-          { name: "Claude", key: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
+          {
+            name: "Claude",
+            key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            contextWindowTokens: 200_000,
+          },
         ],
         defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
         region: "eu-west-1",
@@ -183,7 +255,7 @@ describe("Provider Factory", () => {
       const config: OllamaProviderConfig = {
         name: "ollama",
         type: "ollama",
-        models: [{ name: "Llama", key: "llama3.2" }],
+        models: [{ name: "Llama", key: "llama3.2", contextWindowTokens: 8192 }],
         defaultModel: "llama3.2",
       };
 
@@ -197,7 +269,11 @@ describe("Provider Factory", () => {
         name: "bedrock",
         type: "bedrock",
         models: [
-          { name: "Claude", key: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
+          {
+            name: "Claude",
+            key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            contextWindowTokens: 200_000,
+          },
         ],
         defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
       };
@@ -211,7 +287,9 @@ describe("Provider Factory", () => {
       const config: ProviderConfig = {
         name: "test",
         type: "ollama",
-        models: [{ name: "Test", key: "test-model" }],
+        models: [
+          { name: "Test", key: "test-model", contextWindowTokens: 128_000 },
+        ],
         defaultModel: "test-model",
       };
 

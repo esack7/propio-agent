@@ -5,6 +5,7 @@ const DEFAULT_CHAT_REQUEST: ChatRequest = {
   model: "openai/gpt-3.5-turbo",
   messages: [{ role: "user", content: "Hi" }] satisfies ChatMessage[],
 };
+const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 type RetryConfig = {
   maxRetries: number;
@@ -82,7 +83,12 @@ export class OpenRouterTestFixture {
       consecutive529Limit: number;
     },
   ): OpenRouterProvider {
-    return new OpenRouterProvider({ model, apiKey, retryConfig });
+    return new OpenRouterProvider({
+      model,
+      contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
+      apiKey,
+      retryConfig,
+    });
   }
 
   static createRequest(overrides: Partial<ChatRequest> = {}): ChatRequest {
@@ -139,7 +145,12 @@ export class OpenRouterTestFixture {
   ): Promise<jest.Mock> {
     const fetchMock = jest.fn().mockResolvedValue(fetchResponse);
     globalThis.fetch = fetchMock;
-    const provider = new OpenRouterProvider({ model, apiKey, retryConfig });
+    const provider = new OpenRouterProvider({
+      model,
+      contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
+      apiKey,
+      retryConfig,
+    });
     await OpenRouterTestFixture.expectStreamChatToThrow(provider, errorMatcher);
     return fetchMock;
   }
@@ -162,6 +173,7 @@ export class OpenRouterTestFixture {
     globalThis.fetch = fetchMock;
     const provider = new OpenRouterProvider({
       model: "openai/gpt-3.5-turbo",
+      contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
       apiKey: "sk-test",
       retryConfig,
     });
@@ -214,6 +226,7 @@ export class OpenRouterTestFixture {
     globalThis.fetch = fetchMock;
     const provider = new OpenRouterProvider({
       model: "openai/gpt-3.5-turbo",
+      contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
       apiKey: "sk-test",
       retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       ...extraProviderOpts,

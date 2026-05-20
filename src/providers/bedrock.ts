@@ -4,6 +4,7 @@ import {
   ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { LLMProvider, ProviderCapabilities } from "./interface.js";
+import { createProviderCapabilities } from "./capabilities.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -20,6 +21,19 @@ import {
 import { withRetry } from "./withRetry.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
+interface BedrockStreamState {
+  toolCalls: ChatToolCall[];
+  currentToolCall: Partial<ChatToolCall> | null;
+  currentToolInput: string;
+  stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+}
+
+interface BedrockErrorDetails {
+  message: string;
+  name: string;
+  originalError?: Error;
+}
+
 /**
  * Bedrock implementation of LLMProvider
  */
@@ -27,40 +41,27 @@ export class BedrockProvider implements LLMProvider {
   readonly name = "bedrock";
   private client: BedrockRuntimeClient;
   private model: string;
+  private capabilities: ProviderCapabilities;
   private retryConfig?: { maxRetries: number; consecutive529Limit: number };
   private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
-  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
-    "anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "anthropic.claude-3-5-sonnet-20241022-v2:0": 200000,
-    "anthropic.claude-3-5-haiku-20241022-v1:0": 200000,
-    "anthropic.claude-3-opus-20240229-v1:0": 200000,
-    "anthropic.claude-3-haiku-20240307-v1:0": 200000,
-    "amazon.nova-pro-v1:0": 300000,
-    "amazon.nova-lite-v1:0": 300000,
-  };
-
-  private static readonly DEFAULT_CONTEXT_WINDOW = 200000;
-
   constructor(options: {
     model: string;
+    contextWindowTokens: number;
     region?: string;
     retryConfig?: { maxRetries: number; consecutive529Limit: number };
     onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
   }) {
     const region = options.region || "us-east-1";
-    this.client = new BedrockRuntimeClient({ region });
-    this.model = options.model;
     this.retryConfig = options.retryConfig;
+    this.client = new BedrockRuntimeClient({ region });
     this.onDiagnosticEvent = options.onDiagnosticEvent;
+    this.capabilities = createProviderCapabilities(options.contextWindowTokens);
+    this.model = options.model;
   }
 
   getCapabilities(): ProviderCapabilities {
-    return {
-      contextWindowTokens:
-        BedrockProvider.CONTEXT_WINDOWS[this.model] ??
-        BedrockProvider.DEFAULT_CONTEXT_WINDOW,
-    };
+    return this.capabilities;
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
@@ -68,33 +69,7 @@ export class BedrockProvider implements LLMProvider {
       const command = this.createConverseStreamCommand(request);
       const response = await withRetry(
         () => this.client.send(command, { abortSignal: request.signal }),
-        {
-          maxRetries: this.retryConfig?.maxRetries ?? 3,
-          baseDelayMs: 500,
-          isRetryable: (err) => {
-            const name = (err as any)?.name ?? "";
-            const msg = err instanceof Error ? err.message : String(err);
-            return (
-              name === "ThrottlingException" ||
-              name === "ServiceUnavailableException" ||
-              name === "InternalServerException" ||
-              msg.includes("rate limit") ||
-              msg.includes("throttl")
-            );
-          },
-          consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-          onRetry: (ctx) =>
-            this.onDiagnosticEvent?.({
-              type: "provider_retry",
-              provider: this.name,
-              model: request.model || this.model,
-              iteration: request.iteration ?? 0,
-              reason:
-                ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-              attemptNumber: ctx.attempt + 1,
-              delayMs: ctx.delayMs,
-            }),
-        },
+        this.createRetryOptions(request),
       );
       const stream = this.getStreamFromResponse(response);
 
@@ -102,29 +77,15 @@ export class BedrockProvider implements LLMProvider {
         throw new Error("No stream output");
       }
 
-      const state = {
-        toolCalls: [] as ChatToolCall[],
-        currentToolCall: null as Partial<ChatToolCall> | null,
+      const state: BedrockStreamState = {
+        toolCalls: [],
+        currentToolCall: null,
         currentToolInput: "",
-        stopReason: "end_turn" as any,
+        stopReason: "end_turn",
       };
 
       for await (const event of stream as AsyncIterable<any>) {
-        // Capture stop reason from messageStop event
-        if (event.messageStop?.stopReason) {
-          const bedrockReason = event.messageStop.stopReason;
-          // Map Bedrock stop_reason to normalized StopReason
-          if (bedrockReason === "stop_sequence") {
-            state.stopReason = "stop_sequence";
-          } else if (bedrockReason === "max_tokens") {
-            state.stopReason = "max_tokens";
-          } else if (bedrockReason === "tool_use") {
-            state.stopReason = "tool_use";
-          } else {
-            state.stopReason = "end_turn";
-          }
-        }
-
+        this.captureStopReason(event, state);
         const assistantText = this.handleStreamEvent(event, state);
         if (assistantText) {
           yield { type: "assistant_text", delta: assistantText };
@@ -139,6 +100,53 @@ export class BedrockProvider implements LLMProvider {
       yield { type: "terminal", stopReason: state.stopReason };
     } catch (error) {
       throw this.translateError(error);
+    }
+  }
+
+  private createRetryOptions(request: ChatRequest) {
+    return {
+      maxRetries: this.retryConfig?.maxRetries ?? 3,
+      baseDelayMs: 500,
+      isRetryable: (error: unknown) => this.isRetryableError(error),
+      consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
+      onRetry: (ctx: {
+        err: unknown;
+        attempt: number;
+        delayMs: number;
+      }): void => this.emitRetryDiagnostic(request, ctx),
+    };
+  }
+
+  private isRetryableError(error: unknown): boolean {
+    const name = (error as any)?.name ?? "";
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      name === "ThrottlingException" ||
+      name === "ServiceUnavailableException" ||
+      name === "InternalServerException" ||
+      message.includes("rate limit") ||
+      message.includes("throttl")
+    );
+  }
+
+  private emitRetryDiagnostic(
+    request: ChatRequest,
+    ctx: { err: unknown; attempt: number; delayMs: number },
+  ): void {
+    this.onDiagnosticEvent?.({
+      type: "provider_retry",
+      provider: this.name,
+      model: request.model || this.model,
+      iteration: request.iteration ?? 0,
+      reason: ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
+      attemptNumber: ctx.attempt + 1,
+      delayMs: ctx.delayMs,
+    });
+  }
+
+  private captureStopReason(event: any, state: BedrockStreamState): void {
+    if (event.messageStop?.stopReason) {
+      state.stopReason = this.mapStopReason(event.messageStop.stopReason);
     }
   }
 
@@ -462,34 +470,56 @@ export class BedrockProvider implements LLMProvider {
   /**
    * Clean JSON schema by removing unsupported fields like descriptions from properties
    */
+  private isSchemaObject(schema: any): schema is Record<string, any> {
+    return Boolean(schema) && typeof schema === "object";
+  }
+
   private cleanSchema(schema: any): any {
-    if (!schema || typeof schema !== "object") {
+    if (!this.isSchemaObject(schema)) {
       return schema;
     }
 
     const cleaned = { ...schema };
 
-    // If this schema has properties, clean each property
-    if (cleaned.properties && typeof cleaned.properties === "object") {
-      cleaned.properties = { ...cleaned.properties };
-      for (const [key, value] of Object.entries(cleaned.properties)) {
-        if (value && typeof value === "object") {
-          const cleanedProp: any = {};
-          // Only copy type and enum fields, skip description
-          if ((value as any).type) cleanedProp.type = (value as any).type;
-          if ((value as any).enum) cleanedProp.enum = (value as any).enum;
-          if ((value as any).items)
-            cleanedProp.items = this.cleanSchema((value as any).items);
-          if ((value as any).properties)
-            cleanedProp.properties = this.cleanSchema(
-              (value as any).properties,
-            );
-          cleaned.properties[key] = cleanedProp;
-        }
-      }
+    if (this.isSchemaObject(cleaned.properties)) {
+      cleaned.properties = Object.fromEntries(
+        Object.entries(cleaned.properties).map(([key, value]) => [
+          key,
+          this.cleanSchemaProperty(value),
+        ]),
+      );
     }
 
     return cleaned;
+  }
+
+  private cleanSchemaProperty(value: any): any {
+    if (!this.isSchemaObject(value)) {
+      return value;
+    }
+
+    const cleaned: any = {};
+    this.copySchemaField(cleaned, value, "type");
+    this.copySchemaField(cleaned, value, "enum");
+
+    if (value.items) {
+      cleaned.items = this.cleanSchema(value.items);
+    }
+    if (value.properties) {
+      cleaned.properties = this.cleanSchema(value.properties);
+    }
+
+    return cleaned;
+  }
+
+  private copySchemaField(
+    target: Record<string, unknown>,
+    source: Record<string, unknown>,
+    field: string,
+  ): void {
+    if (source[field] !== undefined) {
+      target[field] = source[field];
+    }
   }
 
   /**
@@ -526,69 +556,99 @@ export class BedrockProvider implements LLMProvider {
     );
   }
 
-  private translateError(error: any): ProviderError {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorName = (error as any).name || "";
+  private getErrorDetails(error: any): BedrockErrorDetails {
+    return {
+      message: error instanceof Error ? error.message : String(error),
+      name: (error as any).name || "",
+      ...(error instanceof Error ? { originalError: error } : {}),
+    };
+  }
 
-    if (this.isContextLengthError(errorMessage, errorName)) {
+  private translateError(error: any): ProviderError {
+    const details = this.getErrorDetails(error);
+    return (
+      this.translateContextLengthError(details) ??
+      this.translateAuthenticationError(details) ??
+      this.translateModelNotFoundError(details) ??
+      this.translateRateLimitError(details) ??
+      this.translateServiceError(details) ??
+      new ProviderError(details.message, details.originalError)
+    );
+  }
+
+  private translateContextLengthError(
+    details: BedrockErrorDetails,
+  ): ProviderContextLengthError | null {
+    if (this.isContextLengthError(details.message, details.name)) {
       return new ProviderContextLengthError(
-        `Context length exceeded: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
+        `Context length exceeded: ${details.message}`,
+        details.originalError,
       );
     }
+    return null;
+  }
 
-    // Authentication/authorization errors
+  private translateAuthenticationError(
+    details: BedrockErrorDetails,
+  ): ProviderAuthenticationError | null {
     if (
-      errorName.includes("ValidationException") ||
-      errorMessage.includes("Invalid") ||
-      errorMessage.includes("credentials")
+      details.name.includes("ValidationException") ||
+      details.message.includes("Invalid") ||
+      details.message.includes("credentials")
     ) {
       return new ProviderAuthenticationError(
-        `Bedrock authentication failed: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
+        `Bedrock authentication failed: ${details.message}`,
+        details.originalError,
       );
     }
+    return null;
+  }
 
-    // Model not found
+  private translateModelNotFoundError(
+    details: BedrockErrorDetails,
+  ): ProviderModelNotFoundError | null {
     if (
-      errorName.includes("ResourceNotFoundException") ||
-      errorMessage.includes("model not found")
+      details.name.includes("ResourceNotFoundException") ||
+      details.message.includes("model not found")
     ) {
       return new ProviderModelNotFoundError(
         this.model,
-        `Model ${this.model} not found in Bedrock: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
+        `Model ${this.model} not found in Bedrock: ${details.message}`,
+        details.originalError,
       );
     }
+    return null;
+  }
 
-    // Rate limiting
+  private translateRateLimitError(
+    details: BedrockErrorDetails,
+  ): ProviderRateLimitError | null {
     if (
-      errorName.includes("ThrottlingException") ||
-      errorMessage.includes("rate limit") ||
-      errorMessage.includes("throttl")
+      details.name.includes("ThrottlingException") ||
+      details.message.includes("rate limit") ||
+      details.message.includes("throttl")
     ) {
       return new ProviderRateLimitError(
-        `Bedrock rate limited: ${errorMessage}`,
+        `Bedrock rate limited: ${details.message}`,
         undefined,
-        error instanceof Error ? error : undefined,
+        details.originalError,
       );
     }
+    return null;
+  }
 
-    // Service errors
+  private translateServiceError(
+    details: BedrockErrorDetails,
+  ): ProviderError | null {
     if (
-      errorName.includes("ServiceUnavailableException") ||
-      errorName.includes("InternalServerException")
+      details.name.includes("ServiceUnavailableException") ||
+      details.name.includes("InternalServerException")
     ) {
       return new ProviderError(
-        `Bedrock service error: ${errorMessage}`,
-        error instanceof Error ? error : undefined,
+        `Bedrock service error: ${details.message}`,
+        details.originalError,
       );
     }
-
-    // Generic error
-    return new ProviderError(
-      errorMessage,
-      error instanceof Error ? error : undefined,
-    );
+    return null;
   }
 }

@@ -15,6 +15,56 @@ import { ProvidersConfig, ProviderConfig } from "../config.js";
 
 describe("Configuration Loader", () => {
   const tempDir = "/tmp/config-loader-tests";
+  const defaultOllamaModel = {
+    name: "Llama",
+    key: "llama3.2",
+    contextWindowTokens: 128_000,
+  };
+
+  function createOllamaProvider(
+    overrides: Partial<ProviderConfig> = {},
+  ): ProviderConfig {
+    return {
+      name: "ollama",
+      type: "ollama",
+      models: [defaultOllamaModel],
+      defaultModel: "llama3.2",
+      ...overrides,
+    } as ProviderConfig;
+  }
+
+  function createProvidersConfig(
+    overrides: Partial<ProvidersConfig> = {},
+  ): ProvidersConfig {
+    return {
+      default: "ollama",
+      providers: [createOllamaProvider()],
+      ...overrides,
+    };
+  }
+
+  function writeTempConfig(fileName: string, config: unknown): string {
+    const configPath = path.join(tempDir, fileName);
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    return configPath;
+  }
+
+  function expectErrorMessage(
+    action: () => void,
+    expectedPatterns: RegExp[],
+  ): void {
+    try {
+      action();
+      fail("Expected error to be thrown");
+    } catch (error) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+      for (const pattern of expectedPatterns) {
+        expect(error.message).toMatch(pattern);
+      }
+    }
+  }
 
   beforeAll(() => {
     if (!fs.existsSync(tempDir)) {
@@ -55,19 +105,10 @@ describe("Configuration Loader", () => {
 
   describe("loadProvidersConfig()", () => {
     it("should load valid JSON file and return ProvidersConfig", () => {
-      const configPath = path.join(tempDir, "valid-config.json");
-      const config: ProvidersConfig = {
-        default: "ollama",
-        providers: [
-          {
-            name: "ollama",
-            type: "ollama",
-            models: [{ name: "Llama", key: "llama3.2" }],
-            defaultModel: "llama3.2",
-          },
-        ],
-      };
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      const configPath = writeTempConfig(
+        "valid-config.json",
+        createProvidersConfig(),
+      );
 
       const loaded = loadProvidersConfig(configPath);
       expect(loaded.default).toBe("ollama");
@@ -84,8 +125,16 @@ describe("Configuration Loader", () => {
             name: "openrouter",
             type: "openrouter",
             models: [
-              { name: "GPT-4o", key: "openai/gpt-4o" },
-              { name: "DeepSeek", key: "deepseek/deepseek-chat" },
+              {
+                name: "GPT-4o",
+                key: "openai/gpt-4o",
+                contextWindowTokens: 128_000,
+              },
+              {
+                name: "DeepSeek",
+                key: "deepseek/deepseek-chat",
+                contextWindowTokens: 128_000,
+              },
             ],
             defaultModel: "openai/gpt-4o",
             apiKey: "sk-or-test",
@@ -141,18 +190,10 @@ describe("Configuration Loader", () => {
     });
 
     it("should throw error when default field is missing", () => {
-      const configPath = path.join(tempDir, "no-default.json");
       const config = {
-        providers: [
-          {
-            name: "ollama",
-            type: "ollama",
-            models: [{ name: "Llama", key: "llama3.2" }],
-            defaultModel: "llama3.2",
-          },
-        ],
+        providers: [createOllamaProvider()],
       };
-      fs.writeFileSync(configPath, JSON.stringify(config));
+      const configPath = writeTempConfig("no-default.json", config);
 
       expect(() => loadProvidersConfig(configPath)).toThrow(
         /default|required|missing/i,
@@ -160,19 +201,10 @@ describe("Configuration Loader", () => {
     });
 
     it("should validate that default references existing provider", () => {
-      const configPath = path.join(tempDir, "invalid-default-ref.json");
-      const config: ProvidersConfig = {
+      const configPath = writeTempConfig("invalid-default-ref.json", {
         default: "nonexistent",
-        providers: [
-          {
-            name: "ollama",
-            type: "ollama",
-            models: [{ name: "Llama", key: "llama3.2" }],
-            defaultModel: "llama3.2",
-          },
-        ],
-      };
-      fs.writeFileSync(configPath, JSON.stringify(config));
+        providers: [createOllamaProvider()],
+      } satisfies ProvidersConfig);
 
       expect(() => loadProvidersConfig(configPath)).toThrow(
         /default.*provider|provider.*not found|unknown provider/i,
@@ -180,19 +212,14 @@ describe("Configuration Loader", () => {
     });
 
     it("should validate defaultModel references valid model key", () => {
-      const configPath = path.join(tempDir, "invalid-model-ref.json");
-      const config: ProvidersConfig = {
-        default: "ollama",
-        providers: [
-          {
-            name: "ollama",
-            type: "ollama",
-            models: [{ name: "Llama", key: "llama3.2" }],
-            defaultModel: "nonexistent-model",
-          },
-        ],
-      };
-      fs.writeFileSync(configPath, JSON.stringify(config));
+      const configPath = writeTempConfig(
+        "invalid-model-ref.json",
+        createProvidersConfig({
+          providers: [
+            createOllamaProvider({ defaultModel: "nonexistent-model" } as any),
+          ],
+        }),
+      );
 
       expect(() => loadProvidersConfig(configPath)).toThrow(
         /defaultModel|model.*not found|unknown model/i,
@@ -238,8 +265,8 @@ describe("Configuration Loader", () => {
       );
     });
 
-    it("should validate unique provider names", () => {
-      const configPath = path.join(tempDir, "duplicate-names.json");
+    it("should require contextWindowTokens for each configured model", () => {
+      const configPath = path.join(tempDir, "missing-context-window.json");
       const config: any = {
         default: "ollama",
         providers: [
@@ -249,10 +276,60 @@ describe("Configuration Loader", () => {
             models: [{ name: "Llama", key: "llama3.2" }],
             defaultModel: "llama3.2",
           },
+        ],
+      };
+      fs.writeFileSync(configPath, JSON.stringify(config));
+
+      expect(() => loadProvidersConfig(configPath)).toThrow(
+        /contextWindowTokens|required|missing/i,
+      );
+    });
+
+    it.each([0, -1, 1.5, "128000", null])(
+      "should reject invalid contextWindowTokens value %p",
+      (contextWindowTokens) => {
+        const configPath = path.join(
+          tempDir,
+          `invalid-context-window-${String(contextWindowTokens)}.json`,
+        );
+        const config: any = {
+          default: "ollama",
+          providers: [
+            {
+              name: "ollama",
+              type: "ollama",
+              models: [{ name: "Llama", key: "llama3.2", contextWindowTokens }],
+              defaultModel: "llama3.2",
+            },
+          ],
+        };
+        fs.writeFileSync(configPath, JSON.stringify(config));
+
+        expect(() => loadProvidersConfig(configPath)).toThrow(
+          /contextWindowTokens|positive integer/i,
+        );
+      },
+    );
+
+    it("should validate unique provider names", () => {
+      const configPath = path.join(tempDir, "duplicate-names.json");
+      const config: any = {
+        default: "ollama",
+        providers: [
+          {
+            name: "ollama",
+            type: "ollama",
+            models: [
+              { name: "Llama", key: "llama3.2", contextWindowTokens: 128_000 },
+            ],
+            defaultModel: "llama3.2",
+          },
           {
             name: "ollama", // duplicate
             type: "bedrock",
-            models: [{ name: "Claude", key: "claude" }],
+            models: [
+              { name: "Claude", key: "claude", contextWindowTokens: 128_000 },
+            ],
             defaultModel: "claude",
           },
         ],
@@ -265,22 +342,20 @@ describe("Configuration Loader", () => {
     });
 
     it("should validate unique model keys within provider", () => {
-      const configPath = path.join(tempDir, "duplicate-model-keys.json");
-      const config: any = {
-        default: "ollama",
-        providers: [
-          {
-            name: "ollama",
-            type: "ollama",
-            models: [
-              { name: "Llama 3.2", key: "llama3.2" },
-              { name: "Llama 3.2 Duplicate", key: "llama3.2" }, // duplicate key
-            ],
-            defaultModel: "llama3.2",
-          },
-        ],
+      const duplicateModel = {
+        ...defaultOllamaModel,
+        name: "Llama Duplicate",
       };
-      fs.writeFileSync(configPath, JSON.stringify(config));
+      const configPath = writeTempConfig(
+        "duplicate-model-keys.json",
+        createProvidersConfig({
+          providers: [
+            createOllamaProvider({
+              models: [defaultOllamaModel, duplicateModel],
+            } as any),
+          ],
+        }),
+      );
 
       expect(() => loadProvidersConfig(configPath)).toThrow(
         /duplicate|unique|model.*key/i,
@@ -295,7 +370,13 @@ describe("Configuration Loader", () => {
           {
             name: "openrouter",
             type: "openrouter",
-            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            models: [
+              {
+                name: "GPT-4o",
+                key: "openai/gpt-4o",
+                contextWindowTokens: 128_000,
+              },
+            ],
             defaultModel: "openai/gpt-4o",
             provider: {
               allowFallbacks: "yes",
@@ -318,7 +399,13 @@ describe("Configuration Loader", () => {
           {
             name: "openrouter",
             type: "openrouter",
-            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            models: [
+              {
+                name: "GPT-4o",
+                key: "openai/gpt-4o",
+                contextWindowTokens: 128_000,
+              },
+            ],
             defaultModel: "openai/gpt-4o",
             provider: [],
           },
@@ -339,7 +426,13 @@ describe("Configuration Loader", () => {
           {
             name: "openrouter",
             type: "openrouter",
-            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            models: [
+              {
+                name: "GPT-4o",
+                key: "openai/gpt-4o",
+                contextWindowTokens: 128_000,
+              },
+            ],
             defaultModel: "openai/gpt-4o",
             fallbackModels: [""],
           },
@@ -360,7 +453,13 @@ describe("Configuration Loader", () => {
           {
             name: "openrouter",
             type: "openrouter",
-            models: [{ name: "GPT-4o", key: "openai/gpt-4o" }],
+            models: [
+              {
+                name: "GPT-4o",
+                key: "openai/gpt-4o",
+                contextWindowTokens: 128_000,
+              },
+            ],
             defaultModel: "openai/gpt-4o",
             debugEchoUpstreamBody: "true",
           },
@@ -382,8 +481,16 @@ describe("Configuration Loader", () => {
             name: "ollama",
             type: "ollama",
             models: [
-              { name: "Llama 3.2", key: "llama3.2:3b" },
-              { name: "Llama 3.2 Large", key: "llama3.2:90b" },
+              {
+                name: "Llama 3.2",
+                key: "llama3.2:3b",
+                contextWindowTokens: 128_000,
+              },
+              {
+                name: "Llama 3.2 Large",
+                key: "llama3.2:90b",
+                contextWindowTokens: 128_000,
+              },
             ],
             defaultModel: "llama3.2:3b",
             host: "http://localhost:11434",
@@ -395,6 +502,7 @@ describe("Configuration Loader", () => {
               {
                 name: "Claude 3.5",
                 key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                contextWindowTokens: 128_000,
               },
             ],
             defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
@@ -414,19 +522,8 @@ describe("Configuration Loader", () => {
 
   describe("loadProvidersConfigAsync()", () => {
     it("should load valid JSON file and return ProvidersConfig", async () => {
-      const configPath = path.join(tempDir, "valid-async-config.json");
-      const config: ProvidersConfig = {
-        default: "ollama",
-        providers: [
-          {
-            name: "ollama",
-            type: "ollama",
-            models: [{ name: "Llama", key: "llama3.2" }],
-            defaultModel: "llama3.2",
-          },
-        ],
-      };
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      const config = createProvidersConfig();
+      const configPath = writeTempConfig("valid-async-config.json", config);
 
       await expect(loadProvidersConfigAsync(configPath)).resolves.toEqual(
         config,
@@ -449,13 +546,17 @@ describe("Configuration Loader", () => {
         {
           name: "ollama",
           type: "ollama",
-          models: [{ name: "Llama", key: "llama3.2" }],
+          models: [
+            { name: "Llama", key: "llama3.2", contextWindowTokens: 128_000 },
+          ],
           defaultModel: "llama3.2",
         },
         {
           name: "bedrock",
           type: "bedrock",
-          models: [{ name: "Claude", key: "claude" }],
+          models: [
+            { name: "Claude", key: "claude", contextWindowTokens: 128_000 },
+          ],
           defaultModel: "claude",
         },
       ],
@@ -479,13 +580,10 @@ describe("Configuration Loader", () => {
     });
 
     it("should list available providers in error message", () => {
-      try {
-        resolveProvider(testConfig, "unknown");
-        fail("Expected error to be thrown");
-      } catch (error: any) {
-        expect(error.message).toMatch(/ollama/);
-        expect(error.message).toMatch(/bedrock/);
-      }
+      expectErrorMessage(
+        () => resolveProvider(testConfig, "unknown"),
+        [/ollama/, /bedrock/],
+      );
     });
   });
 
@@ -494,8 +592,16 @@ describe("Configuration Loader", () => {
       name: "ollama",
       type: "ollama" as const,
       models: [
-        { name: "Llama 3.2 3B", key: "llama3.2:3b" },
-        { name: "Llama 3.2 90B", key: "llama3.2:90b" },
+        {
+          name: "Llama 3.2 3B",
+          key: "llama3.2:3b",
+          contextWindowTokens: 128_000,
+        },
+        {
+          name: "Llama 3.2 90B",
+          key: "llama3.2:90b",
+          contextWindowTokens: 128_000,
+        },
       ],
       defaultModel: "llama3.2:3b",
     };
@@ -517,13 +623,10 @@ describe("Configuration Loader", () => {
     });
 
     it("should list available model keys in error message", () => {
-      try {
-        resolveModelKey(testProvider, "nonexistent");
-        fail("Expected error to be thrown");
-      } catch (error: any) {
-        expect(error.message).toMatch(/llama3.2:3b/);
-        expect(error.message).toMatch(/llama3.2:90b/);
-      }
+      expectErrorMessage(
+        () => resolveModelKey(testProvider, "nonexistent"),
+        [/llama3.2:3b/, /llama3.2:90b/],
+      );
     });
   });
 
@@ -535,15 +638,25 @@ describe("Configuration Loader", () => {
           name: "ollama",
           type: "ollama",
           models: [
-            { name: "Llama 3.2 3B", key: "llama3.2:3b" },
-            { name: "Llama 3.2 90B", key: "llama3.2:90b" },
+            {
+              name: "Llama 3.2 3B",
+              key: "llama3.2:3b",
+              contextWindowTokens: 128_000,
+            },
+            {
+              name: "Llama 3.2 90B",
+              key: "llama3.2:90b",
+              contextWindowTokens: 128_000,
+            },
           ],
           defaultModel: "llama3.2:3b",
         },
         {
           name: "bedrock",
           type: "bedrock",
-          models: [{ name: "Claude", key: "claude" }],
+          models: [
+            { name: "Claude", key: "claude", contextWindowTokens: 128_000 },
+          ],
           defaultModel: "claude",
         },
       ],

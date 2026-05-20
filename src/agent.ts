@@ -827,16 +827,9 @@ export class Agent {
   }
 
   /**
-   * Resolve the effective context window size. Per-model config override
-   * takes precedence over the provider's built-in capability default.
+   * Resolve the effective context window size from the configured provider.
    */
   private resolveContextWindowTokens(): number {
-    const modelEntry = this.resolvedProviderConfig.models.find(
-      (m) => m.key === this.model,
-    );
-    if (modelEntry?.contextWindowTokens) {
-      return modelEntry.contextWindowTokens;
-    }
     return this.provider.getCapabilities().contextWindowTokens;
   }
 

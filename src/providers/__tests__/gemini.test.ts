@@ -18,6 +18,24 @@ import {
 
 const createSseStream = OpenRouterTestFixture.createSseStream;
 
+function createGeminiProvider(
+  options: Partial<ConstructorParameters<typeof GeminiProvider>[0]> = {},
+): GeminiProvider {
+  return new GeminiProvider({
+    model: "gemini-3.1-pro-preview",
+    contextWindowTokens: 1_048_576,
+    apiKey: "gemini-test-key",
+    ...options,
+  });
+}
+
+function setupGeminiSuccessMock(captureBody?: (body: unknown) => void): void {
+  globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
+    ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"],
+    captureBody,
+  );
+}
+
 describe("GeminiProvider", () => {
   registerProviderTestLifecycle(originalEnv, originalFetch);
 
@@ -27,7 +45,7 @@ describe("GeminiProvider", () => {
     model = "gemini-3.1-pro-preview",
   ): Promise<void> {
     fetchSetup();
-    const provider = new GeminiProvider({ model, apiKey: "gemini-test-key" });
+    const provider = createGeminiProvider({ model });
     await expect(async () => {
       for await (const _chunk of provider.streamChat({
         model,
@@ -40,27 +58,20 @@ describe("GeminiProvider", () => {
 
   describe("constructor", () => {
     it("should accept API key from options", () => {
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
+      const provider = createGeminiProvider();
       expect(provider.name).toBe("gemini");
     });
 
     it("should use GEMINI_API_KEY env var when apiKey not in options", () => {
       process.env.GEMINI_API_KEY = "gemini-env-key";
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-      });
+      const provider = createGeminiProvider({ apiKey: undefined });
       expect(provider.name).toBe("gemini");
     });
 
     it("should fall back to GOOGLE_API_KEY when GEMINI_API_KEY is missing", () => {
       delete process.env.GEMINI_API_KEY;
       process.env.GOOGLE_API_KEY = "google-env-key";
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-      });
+      const provider = createGeminiProvider({ apiKey: undefined });
       expect(provider.name).toBe("gemini");
     });
 
@@ -68,10 +79,10 @@ describe("GeminiProvider", () => {
       delete process.env.GEMINI_API_KEY;
       delete process.env.GOOGLE_API_KEY;
       expect(() => {
-        new GeminiProvider({ model: "gemini-3.1-pro-preview" });
+        createGeminiProvider({ apiKey: undefined });
       }).toThrow(ProviderAuthenticationError);
       expect(() => {
-        new GeminiProvider({ model: "gemini-3.1-pro-preview" });
+        createGeminiProvider({ apiKey: undefined });
       }).toThrow(/API key|Gemini/);
     });
 
@@ -83,42 +94,29 @@ describe("GeminiProvider", () => {
       ];
 
       for (const model of models) {
-        const provider = new GeminiProvider({
-          model,
-          apiKey: "gemini-test-key",
-        });
+        const provider = createGeminiProvider({ model });
         expect(provider.getCapabilities().contextWindowTokens).toBe(1_048_576);
       }
     });
 
-    it("should reject unsupported Gemini models at construction time", () => {
-      expect(
-        () =>
-          new GeminiProvider({
-            model: "gemini-unknown-preview",
-            apiKey: "gemini-test-key",
-          }),
-      ).toThrow(ProviderModelNotFoundError);
+    it("should accept configured Gemini models without a local allow-list", () => {
+      const provider = createGeminiProvider({
+        model: "gemini-future-preview",
+        contextWindowTokens: 2_000_000,
+      });
+
+      expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
     });
   });
 
   describe("streamChat()", () => {
     it("should translate messages, images, and batched tool results into the Gemini request body", async () => {
       let capturedBody: unknown = null;
-      globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
-        [
-          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-          "data: [DONE]\n\n",
-        ],
-        (body) => {
-          capturedBody = body;
-        },
-      );
-
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
+      setupGeminiSuccessMock((body) => {
+        capturedBody = body;
       });
+
+      const provider = createGeminiProvider();
 
       const request: ChatRequest = {
         model: "gemini-3.1-pro-preview",
@@ -290,10 +288,7 @@ describe("GeminiProvider", () => {
         ]),
       });
 
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
+      const provider = createGeminiProvider();
 
       const request: ChatRequest = {
         model: "gemini-3.1-pro-preview",
@@ -356,10 +351,7 @@ describe("GeminiProvider", () => {
         ]),
       });
 
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
+      const provider = createGeminiProvider();
 
       const request: ChatRequest = {
         model: "gemini-3.1-pro-preview",
@@ -436,23 +428,28 @@ describe("GeminiProvider", () => {
       }, ProviderError);
     });
 
-    it("should reject unsupported request model overrides", async () => {
-      globalThis.fetch = jest.fn();
+    it("should pass request model overrides through to the upstream API", async () => {
+      let capturedBody: any = null;
+      globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
+        [
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        (body) => {
+          capturedBody = body;
+        },
+      );
 
-      const provider = new GeminiProvider({
-        model: "gemini-3.1-pro-preview",
-        apiKey: "gemini-test-key",
-      });
+      const provider = createGeminiProvider();
 
-      await expect(async () => {
-        for await (const chunk of provider.streamChat({
-          model: "gemini-unknown-preview",
-          messages: [{ role: "user", content: "Hi" }],
-        })) {
-          // consume
-        }
-      }).rejects.toThrow(ProviderModelNotFoundError);
-      expect(fetch).not.toHaveBeenCalled();
+      for await (const _chunk of provider.streamChat({
+        model: "gemini-future-preview",
+        messages: [{ role: "user", content: "Hi" }],
+      })) {
+        // consume
+      }
+
+      expect(capturedBody.model).toBe("gemini-future-preview");
     });
   });
 });

@@ -157,12 +157,20 @@ MCP server configuration lives in `~/.propio/mcp.json`:
     {
       "name": "string — unique identifier for this entry",
       "type": "ollama | bedrock | openrouter | gemini | xai",
-      "models": [{ "name": "Human label", "key": "provider-model-id" }],
+      "models": [
+        {
+          "name": "Human label",
+          "key": "provider-model-id",
+          "contextWindowTokens": 128000
+        }
+      ],
       "defaultModel": "provider-model-id"
     }
   ]
 }
 ```
+
+Every model entry must include `contextWindowTokens`. Provider implementations do not keep built-in model capability tables, so adding a model to an existing provider only requires updating `~/.propio/providers.json`.
 
 ### Ollama
 
@@ -172,8 +180,16 @@ MCP server configuration lives in `~/.propio/mcp.json`:
   "type": "ollama",
   "host": "http://localhost:11434",
   "models": [
-    { "name": "Qwen3 Coder 30b", "key": "qwen3-coder:30b" },
-    { "name": "Llama 3.1 8b", "key": "llama3.1:8b" }
+    {
+      "name": "Qwen3 Coder 30b",
+      "key": "qwen3-coder:30b",
+      "contextWindowTokens": 8192
+    },
+    {
+      "name": "Llama 3.1 8b",
+      "key": "llama3.1:8b",
+      "contextWindowTokens": 131072
+    }
   ],
   "defaultModel": "qwen3-coder:30b"
 }
@@ -198,7 +214,8 @@ ollama serve
   "models": [
     {
       "name": "Claude Sonnet 4.5",
-      "key": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      "key": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "contextWindowTokens": 200000
     }
   ],
   "defaultModel": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
@@ -220,8 +237,16 @@ Provides access to 300+ models through a single API key.
   "name": "openrouter",
   "type": "openrouter",
   "models": [
-    { "name": "GPT-4o", "key": "openai/gpt-4o" },
-    { "name": "DeepSeek Chat", "key": "deepseek/deepseek-chat" }
+    {
+      "name": "GPT-4o",
+      "key": "openai/gpt-4o",
+      "contextWindowTokens": 128000
+    },
+    {
+      "name": "DeepSeek Chat",
+      "key": "deepseek/deepseek-chat",
+      "contextWindowTokens": 128000
+    }
   ],
   "defaultModel": "openai/gpt-4o",
   "apiKey": "sk-or-v1-...",
@@ -256,11 +281,20 @@ When OpenRouter returns a `429` or `503` for a tool-enabled request, the provide
   "name": "gemini",
   "type": "gemini",
   "models": [
-    { "name": "Gemini 3.1 Pro Preview", "key": "gemini-3.1-pro-preview" },
-    { "name": "Gemini 3 Flash Preview", "key": "gemini-3-flash-preview" },
+    {
+      "name": "Gemini 3.1 Pro Preview",
+      "key": "gemini-3.1-pro-preview",
+      "contextWindowTokens": 1048576
+    },
+    {
+      "name": "Gemini 3 Flash Preview",
+      "key": "gemini-3-flash-preview",
+      "contextWindowTokens": 1048576
+    },
     {
       "name": "Gemini 3.1 Flash-Lite Preview",
-      "key": "gemini-3.1-flash-lite-preview"
+      "key": "gemini-3.1-flash-lite-preview",
+      "contextWindowTokens": 1048576
     }
   ],
   "defaultModel": "gemini-3.1-pro-preview",
@@ -276,8 +310,14 @@ The `apiKey` can also be set via the `GEMINI_API_KEY` environment variable, with
 {
   "name": "xai",
   "type": "xai",
-  "models": [{ "name": "Grok Beta", "key": "grok-beta" }],
-  "defaultModel": "grok-beta",
+  "models": [
+    {
+      "name": "Grok 4.3",
+      "key": "grok-4.3",
+      "contextWindowTokens": 1000000
+    }
+  ],
+  "defaultModel": "grok-4.3",
   "apiKey": "xai-..."
 }
 ```

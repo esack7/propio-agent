@@ -1,6 +1,11 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import {
+  readJsonFile,
+  readJsonFileAsync,
+  writeJsonFileAtomic,
+} from "../config/jsonFile.js";
 import { normalizeMcpNameSegment } from "./toolName.js";
 import type { McpConfigFile, McpServerConfigEntry } from "./types.js";
 
@@ -40,54 +45,48 @@ export function isMcpServerEnabled(entry: McpServerConfigEntry): boolean {
 }
 
 export function loadMcpConfig(filePath: string): McpConfigFile {
-  let fileContent: string;
-
-  try {
-    fileContent = fs.readFileSync(filePath, "utf8");
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
-      return { mcpServers: {} };
-    }
-
-    throw new Error(`Failed to read MCP config file: ${error.message}`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fileContent);
-  } catch (error: any) {
-    throw new Error(`Invalid JSON in MCP config file: ${error.message}`);
-  }
-
-  return validateMcpConfig(parsed);
+  return validateMcpConfig(readMcpConfigJson(filePath));
 }
 
 export async function loadMcpConfigAsync(
   filePath: string,
 ): Promise<McpConfigFile> {
-  let fileContent: string;
+  return validateMcpConfig(await readMcpConfigJsonAsync(filePath));
+}
 
-  try {
-    fileContent = await fs.promises.readFile(filePath, "utf8");
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
-      return { mcpServers: {} };
-    }
+function readMcpConfigJson(filePath: string): unknown {
+  return readJsonFile(filePath, {
+    invalidJsonPrefix: "Invalid JSON in MCP config file",
+    onMissing: () => ({ mcpServers: {} }),
+    readErrorPrefix: "Failed to read MCP config file",
+  });
+}
 
-    throw new Error(`Failed to read MCP config file: ${error.message}`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fileContent);
-  } catch (error: any) {
-    throw new Error(`Invalid JSON in MCP config file: ${error.message}`);
-  }
-
-  return validateMcpConfig(parsed);
+async function readMcpConfigJsonAsync(filePath: string): Promise<unknown> {
+  return readJsonFileAsync(filePath, {
+    invalidJsonPrefix: "Invalid JSON in MCP config file",
+    onMissing: () => ({ mcpServers: {} }),
+    readErrorPrefix: "Failed to read MCP config file",
+  });
 }
 
 export function validateMcpConfig(config: unknown): McpConfigFile {
+  const rawServers = getRawMcpServers(config);
+  const normalizedNames = new Map<string, string>();
+  const validatedServers: Record<string, McpServerConfigEntry> = {};
+
+  for (const [serverName, rawEntry] of Object.entries(rawServers)) {
+    validatedServers[serverName] = validateMcpServerConfig(
+      serverName,
+      rawEntry,
+      normalizedNames,
+    );
+  }
+
+  return { mcpServers: validatedServers };
+}
+
+function getRawMcpServers(config: unknown): Record<string, unknown> {
   if (!isPlainObject(config)) {
     throw new Error("MCP configuration root must be a JSON object");
   }
@@ -101,92 +100,89 @@ export function validateMcpConfig(config: unknown): McpConfigFile {
     throw new Error('MCP configuration field "mcpServers" must be an object');
   }
 
-  const normalizedNames = new Map<string, string>();
-  const validatedServers: Record<string, McpServerConfigEntry> = {};
+  return rawServers;
+}
 
-  for (const [serverName, rawEntry] of Object.entries(rawServers)) {
-    if (!isPlainObject(rawEntry)) {
-      throw new Error(`MCP server "${serverName}" must be an object`);
-    }
-
-    const unsupportedFields = ["url", "http", "sse", "ws"].filter(
-      (field) => field in rawEntry,
-    );
-    if (unsupportedFields.length > 0) {
-      throw new Error(
-        `MCP server "${serverName}" uses ${unsupportedFields.join(", ")}, which is not yet supported in v1. Only stdio servers are supported.`,
-      );
-    }
-
-    if (!isNonEmptyString(rawEntry.command)) {
-      throw new Error(
-        `MCP server "${serverName}" must define a non-empty "command"`,
-      );
-    }
-
-    if (rawEntry.args !== undefined && !isStringArray(rawEntry.args)) {
-      throw new Error(
-        `MCP server "${serverName}" field "args" must be an array of non-empty strings`,
-      );
-    }
-
-    if (rawEntry.env !== undefined && !isStringRecord(rawEntry.env)) {
-      throw new Error(
-        `MCP server "${serverName}" field "env" must be an object with string values`,
-      );
-    }
-
-    if (
-      rawEntry.enabled !== undefined &&
-      typeof rawEntry.enabled !== "boolean"
-    ) {
-      throw new Error(
-        `MCP server "${serverName}" field "enabled" must be a boolean`,
-      );
-    }
-
-    const normalizedName = normalizeMcpNameSegment(serverName);
-    const existing = normalizedNames.get(normalizedName);
-    if (existing && existing !== serverName) {
-      throw new Error(
-        `MCP server names "${existing}" and "${serverName}" normalize to the same identifier "${normalizedName}"`,
-      );
-    }
-    normalizedNames.set(normalizedName, serverName);
-
-    validatedServers[serverName] = {
-      command: rawEntry.command.trim(),
-      ...(rawEntry.args ? { args: [...rawEntry.args] } : {}),
-      ...(rawEntry.env ? { env: { ...rawEntry.env } } : {}),
-      ...(rawEntry.enabled !== undefined ? { enabled: rawEntry.enabled } : {}),
-    };
+function validateMcpServerConfig(
+  serverName: string,
+  rawEntry: unknown,
+  normalizedNames: Map<string, string>,
+): McpServerConfigEntry {
+  if (!isPlainObject(rawEntry)) {
+    throw new Error(`MCP server "${serverName}" must be an object`);
   }
 
-  return { mcpServers: validatedServers };
+  validateMcpServerTransport(serverName, rawEntry);
+  validateMcpServerFields(serverName, rawEntry);
+  validateUniqueMcpServerName(serverName, normalizedNames);
+
+  return {
+    command: rawEntry.command.trim(),
+    ...(rawEntry.args ? { args: [...rawEntry.args] } : {}),
+    ...(rawEntry.env ? { env: { ...rawEntry.env } } : {}),
+    ...(rawEntry.enabled !== undefined ? { enabled: rawEntry.enabled } : {}),
+  };
+}
+
+function validateMcpServerTransport(
+  serverName: string,
+  rawEntry: Record<string, unknown>,
+): void {
+  const unsupportedFields = ["url", "http", "sse", "ws"].filter(
+    (field) => field in rawEntry,
+  );
+  if (unsupportedFields.length > 0) {
+    throw new Error(
+      `MCP server "${serverName}" uses ${unsupportedFields.join(", ")}, which is not yet supported in v1. Only stdio servers are supported.`,
+    );
+  }
+}
+
+function validateMcpServerFields(
+  serverName: string,
+  rawEntry: Record<string, unknown>,
+): asserts rawEntry is Record<string, unknown> & McpServerConfigEntry {
+  if (!isNonEmptyString(rawEntry.command)) {
+    throw new Error(
+      `MCP server "${serverName}" must define a non-empty "command"`,
+    );
+  }
+
+  if (rawEntry.args !== undefined && !isStringArray(rawEntry.args)) {
+    throw new Error(
+      `MCP server "${serverName}" field "args" must be an array of non-empty strings`,
+    );
+  }
+
+  if (rawEntry.env !== undefined && !isStringRecord(rawEntry.env)) {
+    throw new Error(
+      `MCP server "${serverName}" field "env" must be an object with string values`,
+    );
+  }
+
+  if (rawEntry.enabled !== undefined && typeof rawEntry.enabled !== "boolean") {
+    throw new Error(
+      `MCP server "${serverName}" field "enabled" must be a boolean`,
+    );
+  }
+}
+
+function validateUniqueMcpServerName(
+  serverName: string,
+  normalizedNames: Map<string, string>,
+): void {
+  const normalizedName = normalizeMcpNameSegment(serverName);
+  const existing = normalizedNames.get(normalizedName);
+  if (existing && existing !== serverName) {
+    throw new Error(
+      `MCP server names "${existing}" and "${serverName}" normalize to the same identifier "${normalizedName}"`,
+    );
+  }
+  normalizedNames.set(normalizedName, serverName);
 }
 
 export function writeMcpConfig(filePath: string, config: McpConfigFile): void {
-  const directory = path.dirname(filePath);
-  fs.mkdirSync(directory, { recursive: true });
-
-  const tempFilePath = path.join(
-    directory,
-    `.mcp.${process.pid}.${Date.now()}.tmp`,
-  );
-
-  try {
-    fs.writeFileSync(tempFilePath, `${JSON.stringify(config, null, 2)}\n`, {
-      encoding: "utf8",
-    });
-    fs.renameSync(tempFilePath, filePath);
-  } catch (error) {
-    try {
-      fs.rmSync(tempFilePath, { force: true });
-    } catch {
-      // Best-effort cleanup only.
-    }
-    throw error;
-  }
+  writeJsonFileAtomic(filePath, "mcp", config);
 }
 
 export function updateMcpServerEnabledInFile(

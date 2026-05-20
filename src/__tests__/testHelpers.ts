@@ -12,8 +12,16 @@ export const testProvidersConfig: ProvidersConfig = {
       name: "local-ollama",
       type: "ollama",
       models: [
-        { name: "Llama 3.2 3B", key: "llama3.2:3b" },
-        { name: "Llama 3.2 90B", key: "llama3.2:90b" },
+        {
+          name: "Llama 3.2 3B",
+          key: "llama3.2:3b",
+          contextWindowTokens: 128_000,
+        },
+        {
+          name: "Llama 3.2 90B",
+          key: "llama3.2:90b",
+          contextWindowTokens: 128_000,
+        },
       ],
       defaultModel: "llama3.2:3b",
       host: "http://localhost:11434",
@@ -25,6 +33,7 @@ export const testProvidersConfig: ProvidersConfig = {
         {
           name: "Claude 3.5 Sonnet",
           key: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+          contextWindowTokens: 128_000,
         },
       ],
       defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",

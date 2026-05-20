@@ -1,4 +1,3 @@
-import { ProviderCapabilities } from "./interface.js";
 import {
   ChatRequest,
   ChatStreamEvent,
@@ -96,25 +95,9 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     baseDelayMs?: number;
   };
 
-  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
-    "anthropic/claude-sonnet-4": 200000,
-    "anthropic/claude-3.5-sonnet": 200000,
-    "anthropic/claude-3-opus": 200000,
-    "anthropic/claude-3-haiku": 200000,
-    "google/gemini-2.5-pro-preview": 1000000,
-    "google/gemini-2.0-flash": 1000000,
-    "openai/gpt-4o": 128000,
-    "openai/gpt-4-turbo": 128000,
-    "openai/o3-mini": 200000,
-    "meta-llama/llama-3.3-70b-instruct": 131072,
-    "deepseek/deepseek-v4-pro": 1_000_000,
-    "deepseek/deepseek-v4-flash": 1_000_000,
-  };
-
-  private static readonly DEFAULT_CONTEXT_WINDOW = 128000;
-
   constructor(options: {
     model: string;
+    contextWindowTokens: number;
     apiKey?: string;
     httpReferer?: string;
     xTitle?: string;
@@ -137,6 +120,7 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
       );
     }
     this.model = options.model;
+    this.configureCapabilities(options.contextWindowTokens);
     this.apiKey = apiKey;
     this.httpReferer = options.httpReferer;
     this.xTitle = options.xTitle;
@@ -146,14 +130,6 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     this.debugLoggingEnabled = options.debugLoggingEnabled ?? false;
     this.onDiagnosticEvent = options.onDiagnosticEvent;
     this.retryConfig = options.retryConfig;
-  }
-
-  getCapabilities(): ProviderCapabilities {
-    return {
-      contextWindowTokens:
-        OpenRouterProvider.CONTEXT_WINDOWS[this.model] ??
-        OpenRouterProvider.DEFAULT_CONTEXT_WINDOW,
-    };
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {

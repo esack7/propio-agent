@@ -16,6 +16,7 @@ import {
 const originalEnv = process.env;
 const originalFetch = globalThis.fetch;
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
+const DEFAULT_CONTEXT_WINDOW = 2_000_000;
 const DEFAULT_REQUEST: ChatRequest = {
   model: DEFAULT_MODEL,
   messages: [{ role: "user", content: "Hi" }],
@@ -28,6 +29,7 @@ function createProvider(
 ): XaiProvider {
   return new XaiProvider({
     model: DEFAULT_MODEL,
+    contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
     apiKey: "xai-test",
     ...options,
   });
@@ -103,42 +105,54 @@ describe("XaiProvider", () => {
       createProvider: () =>
         new XaiProvider({
           model: "grok-4-1-fast-reasoning",
+          contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
           apiKey: "xai-test-key",
         }),
     });
 
     it("should use XAI_API_KEY env var when apiKey not in options", () => {
       process.env.XAI_API_KEY = "xai-env-key";
-      const provider = new XaiProvider({ model: "grok-4-1-fast-reasoning" });
+      const provider = new XaiProvider({
+        model: "grok-4-1-fast-reasoning",
+        contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
+      });
       expect(provider.name).toBe("xai");
     });
 
     it("should throw ProviderAuthenticationError when no API key is provided", () => {
       delete process.env.XAI_API_KEY;
       expect(() => {
-        new XaiProvider({ model: "grok-4-1-fast-reasoning" });
+        new XaiProvider({
+          model: "grok-4-1-fast-reasoning",
+          contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
+        });
       }).toThrow(ProviderAuthenticationError);
       expect(() => {
-        new XaiProvider({ model: "grok-4-1-fast-reasoning" });
+        new XaiProvider({
+          model: "grok-4-1-fast-reasoning",
+          contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
+        });
       }).toThrow(/API key|xAI/);
     });
 
-    it("should report the updated 2M token context window for current Grok models", () => {
+    it("should report the configured context window for current Grok models", () => {
       const provider = new XaiProvider({
         model: "grok-4-1-fast-reasoning",
+        contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
         apiKey: "xai-test-key",
       });
 
       expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
     });
 
-    it("should default unknown xAI models to the updated 2M token context window", () => {
+    it("should report the configured context window for newly configured xAI models", () => {
       const provider = new XaiProvider({
-        model: "grok-future-model",
+        model: "grok-4.3",
+        contextWindowTokens: 1_000_000,
         apiKey: "xai-test-key",
       });
 
-      expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
+      expect(provider.getCapabilities().contextWindowTokens).toBe(1_000_000);
     });
   });
 
@@ -329,6 +343,7 @@ describe("XaiProvider", () => {
 
       const provider = new XaiProvider({
         model: "grok-4-1-fast-reasoning",
+        contextWindowTokens: DEFAULT_CONTEXT_WINDOW,
         apiKey: "xai-test",
       });
 

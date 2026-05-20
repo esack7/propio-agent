@@ -1,4 +1,3 @@
-import { ProviderCapabilities } from "./interface.js";
 import {
   ChatRequest,
   ChatStreamEvent,
@@ -41,16 +40,6 @@ export class XaiProvider extends OpenAiCompatibleProvider {
   };
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
-  private static readonly CONTEXT_WINDOWS: Record<string, number> = {
-    "grok-4.20-0309-reasoning": 2_000_000,
-    "grok-4.20-0309-non-reasoning": 2_000_000,
-    "grok-4.20-multi-agent-0309": 2_000_000,
-    "grok-4-1-fast-reasoning": 2_000_000,
-    "grok-4-1-fast-non-reasoning": 2_000_000,
-  };
-
-  private static readonly DEFAULT_CONTEXT_WINDOW = 2_000_000;
-
   constructor(options: OpenAiCompatibleProviderOptions) {
     super();
     const apiKey = options.apiKey ?? process.env.XAI_API_KEY ?? "";
@@ -62,15 +51,8 @@ export class XaiProvider extends OpenAiCompatibleProvider {
     this.retryConfig = options.retryConfig;
     this.onDiagnosticEvent = options.onDiagnosticEvent;
     this.model = options.model;
+    this.configureCapabilities(options.contextWindowTokens);
     this.apiKey = apiKey;
-  }
-
-  getCapabilities(): ProviderCapabilities {
-    return {
-      contextWindowTokens:
-        XaiProvider.CONTEXT_WINDOWS[this.model] ??
-        XaiProvider.DEFAULT_CONTEXT_WINDOW,
-    };
   }
 
   private shouldRetryEndpoint(status?: number): boolean {

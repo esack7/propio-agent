@@ -151,6 +151,7 @@ describe("OpenRouterProvider", () => {
       createProvider: () =>
         new OpenRouterProvider({
           model: "openai/gpt-3.5-turbo",
+          contextWindowTokens: 128_000,
           apiKey: "sk-test-key",
         }),
     });
@@ -159,13 +160,15 @@ describe("OpenRouterProvider", () => {
       process.env.OPENROUTER_API_KEY = "sk-env-key";
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
       });
       expect(provider.name).toBe("openrouter");
     });
 
-    it("should report DeepSeek V4 context windows", () => {
+    it("should report configured context windows", () => {
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 1_000_000,
         apiKey: "sk-test-key",
       });
       expect(provider.getCapabilities().contextWindowTokens).toBe(1_000_000);
@@ -195,6 +198,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
       const request: ChatRequest = {
@@ -233,6 +237,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
       const messages: ChatMessage[] = [
@@ -278,6 +283,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
       const request: ChatRequest = {
@@ -316,6 +322,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
         httpReferer: "https://myapp.com",
         xTitle: "My App",
@@ -390,6 +397,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v3.1",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
         retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
@@ -439,6 +447,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
 
@@ -477,6 +486,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
 
@@ -585,6 +595,7 @@ describe("OpenRouterProvider", () => {
       await OpenRouterTestFixture.expectStreamChatToThrow(
         new OpenRouterProvider({
           model: "openai/gpt-3.5-turbo",
+          contextWindowTokens: 128_000,
           apiKey: "sk-test",
         }),
         /Invalid OpenRouter API key/,
@@ -602,6 +613,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
         retryConfig: { maxRetries: 0, baseDelayMs: 0, consecutive529Limit: 3 },
       });
@@ -706,6 +718,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
         retryConfig: { maxRetries: 1, baseDelayMs: 0, consecutive529Limit: 3 },
       });
@@ -743,6 +756,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
       await expect(async () => {
@@ -775,6 +789,7 @@ describe("OpenRouterProvider", () => {
       const diagnosticEvents: AgentDiagnosticEvent[] = [];
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
         provider: {
           allowFallbacks: false,
@@ -928,6 +943,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
       const request: ChatRequest = {
@@ -967,6 +983,7 @@ describe("OpenRouterProvider", () => {
 
       const provider = new OpenRouterProvider({
         model: "openai/gpt-3.5-turbo",
+        contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
 

@@ -6,6 +6,7 @@ import type {
   ChatStreamEvent,
   ChatTool,
 } from "./types.js";
+import { createProviderCapabilities } from "./capabilities.js";
 import type { WithRetryOptions } from "./withRetry.js";
 import {
   ProviderError,
@@ -34,6 +35,7 @@ export interface OpenAiCompatibleRetryConfig {
 
 export interface OpenAiCompatibleProviderOptions {
   readonly model: string;
+  readonly contextWindowTokens: number;
   readonly apiKey?: string;
   readonly retryConfig?: OpenAiCompatibleRetryConfig;
   readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
@@ -50,8 +52,8 @@ interface StandardOpenAiErrorOptions {
 
 export abstract class OpenAiCompatibleProvider implements LLMProvider {
   abstract readonly name: string;
+  private capabilities?: ProviderCapabilities;
 
-  abstract getCapabilities(): ProviderCapabilities;
   abstract streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent>;
   protected abstract translateError(
     error: unknown,
@@ -67,6 +69,17 @@ export abstract class OpenAiCompatibleProvider implements LLMProvider {
 
   protected chatToolToOpenAITool(tool: ChatTool): OpenAIToolDefinition {
     return createOpenAIToolDefinition(tool);
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    if (!this.capabilities) {
+      throw new ProviderError("Provider capabilities were not configured");
+    }
+    return this.capabilities;
+  }
+
+  protected configureCapabilities(contextWindowTokens: number): void {
+    this.capabilities = createProviderCapabilities(contextWindowTokens);
   }
 
   protected createOriginalError(error: unknown): Error {

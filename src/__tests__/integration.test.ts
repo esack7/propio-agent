@@ -15,7 +15,9 @@ const defaultTestProvidersConfig: ProvidersConfig = {
     {
       name: "local-ollama",
       type: "ollama",
-      models: [{ name: "Test Model", key: "test-model" }],
+      models: [
+        { name: "Test Model", key: "test-model", contextWindowTokens: 128_000 },
+      ],
       defaultModel: "test-model",
       host: "http://localhost:11434",
     },
@@ -44,6 +46,42 @@ class MockIntegrationProvider implements LLMProvider {
   }
 }
 
+function createAgentWithProvider(
+  provider: LLMProvider,
+  providersConfig = defaultTestProvidersConfig,
+): Agent {
+  const agent = new Agent({ providersConfig });
+  (agent as unknown as { provider: LLMProvider }).provider = provider;
+  return agent;
+}
+
+function createLsToolCallChunk(delta: string): ChatChunk {
+  return {
+    delta,
+    toolCalls: [
+      {
+        function: {
+          name: "ls",
+          arguments: { path: "." },
+        },
+      },
+    ],
+  };
+}
+
+async function streamWithTokenCapture(
+  agent: Agent,
+  prompt: string,
+): Promise<{ response: string; tokens: string[] }> {
+  const tokens: string[] = [];
+  const response = await agent.streamChat(prompt, (token) => {
+    if (token) {
+      tokens.push(token);
+    }
+  });
+  return { response, tokens };
+}
+
 describe("Agent Integration Tests", () => {
   describe("Public API", () => {
     it("should maintain existing chat interface", async () => {
@@ -67,7 +105,13 @@ describe("Agent Integration Tests", () => {
           {
             name: "ollama",
             type: "ollama",
-            models: [{ name: "Model", key: "custom-model" }],
+            models: [
+              {
+                name: "Model",
+                key: "custom-model",
+                contextWindowTokens: 128_000,
+              },
+            ],
             defaultModel: "custom-model",
             host: "http://custom:11434",
           },
@@ -88,6 +132,7 @@ describe("Agent Integration Tests", () => {
               {
                 name: "Claude",
                 key: "anthropic.claude-3-sonnet-20240229-v1:0",
+                contextWindowTokens: 128_000,
               },
             ],
             defaultModel: "anthropic.claude-3-sonnet-20240229-v1:0",
@@ -107,7 +152,11 @@ describe("Agent Integration Tests", () => {
             name: "gemini",
             type: "gemini",
             models: [
-              { name: "Gemini 3.1 Pro Preview", key: "gemini-3.1-pro-preview" },
+              {
+                name: "Gemini 3.1 Pro Preview",
+                key: "gemini-3.1-pro-preview",
+                contextWindowTokens: 128_000,
+              },
             ],
             defaultModel: "gemini-3.1-pro-preview",
             apiKey: "gemini-test-key",
@@ -122,8 +171,7 @@ describe("Agent Integration Tests", () => {
   describe("Session context management", () => {
     it("should maintain session context across multiple chat calls", async () => {
       const mockProvider = new MockIntegrationProvider("test");
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       await agent.streamChat("First message", () => {});
       expect(agent.getContext().length).toBeGreaterThan(0);
@@ -136,8 +184,7 @@ describe("Agent Integration Tests", () => {
 
     it("should clear context correctly", async () => {
       const mockProvider = new MockIntegrationProvider("test");
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       await agent.streamChat("Test message", () => {});
       expect(agent.getContext().length).toBeGreaterThan(0);
@@ -162,7 +209,7 @@ describe("Agent Integration Tests", () => {
         providersConfig: defaultTestProvidersConfig,
         systemPrompt: "Original prompt",
       });
-      (agent as any).provider = mockProvider;
+      (agent as unknown as { provider: LLMProvider }).provider = mockProvider;
 
       const newPrompt = "Updated prompt";
       agent.setSystemPrompt(newPrompt);
@@ -197,8 +244,7 @@ describe("Agent Integration Tests", () => {
         };
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       // Tool errors remain recoverable when the model provides a final answer.
       await expect(agent.streamChat("Test", () => {})).resolves.toBe(
@@ -221,17 +267,7 @@ describe("Agent Integration Tests", () => {
         callCount++;
 
         if (callCount === 1) {
-          yield {
-            delta: "",
-            toolCalls: [
-              {
-                function: {
-                  name: "ls",
-                  arguments: { path: "." },
-                },
-              },
-            ],
-          };
+          yield createLsToolCallChunk("");
           return;
         }
 
@@ -251,8 +287,7 @@ describe("Agent Integration Tests", () => {
         yield { delta: "Done" };
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       const response = await agent.streamChat("Run tool", () => {});
 
@@ -267,36 +302,15 @@ describe("Agent Integration Tests", () => {
       mockProvider.streamChat = async function* () {
         callCount++;
         if (callCount === 1) {
-          yield {
-            delta: "First tool call",
-            toolCalls: [
-              {
-                function: {
-                  name: "ls",
-                  arguments: { path: "." },
-                },
-              },
-            ],
-          };
+          yield createLsToolCallChunk("First tool call");
         } else if (callCount === 2) {
-          yield {
-            delta: "Second tool call",
-            toolCalls: [
-              {
-                function: {
-                  name: "ls",
-                  arguments: { path: "." },
-                },
-              },
-            ],
-          };
+          yield createLsToolCallChunk("Second tool call");
         } else {
           yield { delta: "Done" };
         }
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       const response = await agent.streamChat("Execute tools", () => {});
       expect(response).toBe("Done");
@@ -307,13 +321,9 @@ describe("Agent Integration Tests", () => {
   describe("Streaming functionality", () => {
     it("should stream tokens correctly", async () => {
       const mockProvider = new MockIntegrationProvider("test");
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
-      const tokens: string[] = [];
-      const response = await agent.streamChat("Test", (token) => {
-        if (token) tokens.push(token);
-      });
+      const { response, tokens } = await streamWithTokenCapture(agent, "Test");
 
       expect(tokens.length).toBeGreaterThan(0);
       expect(response.length).toBeGreaterThan(0);
@@ -327,8 +337,7 @@ describe("Agent Integration Tests", () => {
         yield { delta: "!" };
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       const response = await agent.streamChat("Test", () => {});
       expect(response).toBe("Hello world!");
@@ -344,30 +353,16 @@ describe("Agent Integration Tests", () => {
           // First stream: with tool calls
           yield { delta: "Calling " };
           yield { delta: "tool" };
-          yield {
-            delta: "",
-            toolCalls: [
-              {
-                function: {
-                  name: "ls",
-                  arguments: { path: "." },
-                },
-              },
-            ],
-          };
+          yield createLsToolCallChunk("");
         } else {
           // Second stream: after tool execution
           yield { delta: "Done" };
         }
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
-      const tokens: string[] = [];
-      const response = await agent.streamChat("Test", (token) => {
-        if (token) tokens.push(token);
-      });
+      const { response } = await streamWithTokenCapture(agent, "Test");
 
       // Response should be 'Done' from second iteration (after tool execution)
       expect(response).toBe("Done");
@@ -383,8 +378,7 @@ describe("Agent Integration Tests", () => {
           yield { type: "assistant_text", delta: "Typed response" };
         };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       const response = await agent.streamChat("Test typed stream", () => {});
       const summary = agent.getLastTurnReasoningSummary();
@@ -404,13 +398,17 @@ describe("Agent Integration Tests", () => {
           {
             name: "ollama",
             type: "ollama",
-            models: [{ name: "Model1", key: "model1" }],
+            models: [
+              { name: "Model1", key: "model1", contextWindowTokens: 128_000 },
+            ],
             defaultModel: "model1",
           },
           {
             name: "ollama-alt",
             type: "ollama",
-            models: [{ name: "Model2", key: "model2" }],
+            models: [
+              { name: "Model2", key: "model2", contextWindowTokens: 128_000 },
+            ],
             defaultModel: "model2",
           },
         ],
@@ -436,15 +434,16 @@ describe("Agent Integration Tests", () => {
           {
             name: "ollama",
             type: "ollama",
-            models: [{ name: "Model", key: "model" }],
+            models: [
+              { name: "Model", key: "model", contextWindowTokens: 128_000 },
+            ],
             defaultModel: "model",
           },
         ],
       };
 
-      const agent = new Agent({ providersConfig: config });
       const mockProvider = new MockIntegrationProvider("switched");
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider, config);
 
       const response = await agent.streamChat("After switch", () => {});
       expect(response).toContain("switched");
@@ -458,8 +457,7 @@ describe("Agent Integration Tests", () => {
         throw new Error("Provider error");
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       await expect(agent.streamChat("Test", () => {})).rejects.toThrow();
     });
@@ -470,8 +468,7 @@ describe("Agent Integration Tests", () => {
         throw new Error("Connection failed");
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       try {
         await agent.streamChat("Test", () => {});
@@ -490,8 +487,7 @@ describe("Agent Integration Tests", () => {
         yield { delta: `Received ${request.messages.length} messages` };
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       await agent.streamChat("Message 1", () => {});
       const contextAfter1 = agent.getContext().length;
@@ -521,7 +517,7 @@ describe("Agent Integration Tests", () => {
         providersConfig: defaultTestProvidersConfig,
         systemPrompt: customPrompt,
       });
-      (agent as any).provider = mockProvider;
+      (agent as unknown as { provider: LLMProvider }).provider = mockProvider;
 
       await agent.streamChat("Test 1", () => {});
       await agent.streamChat("Test 2", () => {});
@@ -553,8 +549,7 @@ describe("Agent Integration Tests", () => {
         yield { delta: "Response" };
       };
 
-      const agent = new Agent({ providersConfig: defaultTestProvidersConfig });
-      (agent as any).provider = mockProvider;
+      const agent = createAgentWithProvider(mockProvider);
 
       await agent.streamChat("Test with tools", () => {});
 

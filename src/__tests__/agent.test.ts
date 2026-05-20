@@ -400,7 +400,9 @@ describe("Agent with Multi-Provider Configuration", () => {
           {
             name: "ollama",
             type: "ollama",
-            models: [{ name: "Model A", key: "model-a" }],
+            models: [
+              { name: "Model A", key: "model-a", contextWindowTokens: 128_000 },
+            ],
             defaultModel: "model-a",
           },
         ],
