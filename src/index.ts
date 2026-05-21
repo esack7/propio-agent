@@ -14,7 +14,6 @@ import {
   discoverAgentsMdFilesAsync,
   loadAgentsMdContentAsync,
 } from "./agentsMd.js";
-import { defaultSystemPrompt } from "./defaultSystemPrompt.js";
 import { setColorEnabled } from "./ui/textColors.js";
 import { showToolMenu } from "./ui/toolMenu.js";
 import { showModelMenu } from "./ui/modelMenu.js";
@@ -873,7 +872,6 @@ async function createInitializedAgent(
     providersConfig,
     mcpConfig,
     mcpConfigPath,
-    systemPrompt: defaultSystemPrompt,
     agentsMdContent,
     diagnosticsEnabled,
     onDiagnosticEvent: diagnosticLogger.onEvent,

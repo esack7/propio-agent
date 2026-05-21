@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { ChatMessage, ChatToolCall, ToolResult } from "../providers/types.js";
 import {
   estimateTokens,
+  messageChars,
   measureMessages,
   RESERVED_OUTPUT_TOKENS,
 } from "../diagnostics.js";
@@ -49,6 +50,23 @@ import { findLastAssistantEntryIndex } from "./turnUtils.js";
 // Default values for summary and rehydration limits
 const DEFAULT_SUMMARY_MAX_CHARS = 1500;
 const DEFAULT_REHYDRATION_MAX_CHARS = 12000;
+
+interface BuildPromptPlanOptions {
+  contextWindowTokens?: number;
+  policy?: PromptBudgetPolicy;
+  retryLevel?: number;
+  rollingSummary?: string;
+  summaryPolicy?: SummaryPolicy;
+  runtimeContextOverflowBlock?: string;
+}
+
+interface NormalizedBuildPromptPlanOptions {
+  contextWindowTokens: number;
+  policy: PromptBudgetPolicy;
+  retryLevel?: number;
+  rollingSummary?: string;
+  runtimeContextOverflowBlock?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Internal mutable counterparts of the public readonly types.  The public
@@ -248,24 +266,6 @@ function contentSizeChars(content: string | Uint8Array): number {
   return typeof content === "string" ? content.length : content.byteLength;
 }
 
-// ---------------------------------------------------------------------------
-// Token estimation helpers (reuses the chars/4 heuristic from diagnostics)
-// ---------------------------------------------------------------------------
-
-function messageChars(msg: ChatMessage): number {
-  let chars = msg.content.length;
-  if (msg.reasoningContent) {
-    chars += msg.reasoningContent.length;
-  }
-  if (msg.toolCalls) {
-    chars += JSON.stringify(msg.toolCalls).length;
-  }
-  if (msg.toolResults) {
-    chars += JSON.stringify(msg.toolResults).length;
-  }
-  return chars;
-}
-
 /**
  * ContextManager owns conversational state for an Agent session.
  *
@@ -451,6 +451,7 @@ export class ContextManager {
     });
   }
 
+  // fallow-ignore-next-line complexity
   removeLastUnresolvedAssistantMessage(): void {
     if (this.turns.length === 0) {
       const last = this.preTurnMessages[this.preTurnMessages.length - 1];
@@ -689,19 +690,10 @@ export class ContextManager {
   updateMemory(id: string, input: UpdateMemoryInput): string {
     validateUpdateInput(input, this.pinnedMemoryMaxContentLength);
 
-    const idx = this.pinnedMemory.findIndex((r) => r.id === id);
-    if (idx === -1) {
-      throw new MemoryValidationError(
-        `No pinned memory record with id "${id}"`,
-      );
-    }
-
-    const existing = this.pinnedMemory[idx];
-    if (existing.lifecycle !== "active") {
-      throw new MemoryValidationError(
-        `Cannot update record "${id}": lifecycle is "${existing.lifecycle}"`,
-      );
-    }
+    const { idx, record: existing } = this.getActivePinnedMemoryRecord(
+      id,
+      "update",
+    );
 
     const newContent = input.content ?? existing.content;
     const newRationale = input.rationale ?? existing.rationale;
@@ -750,6 +742,18 @@ export class ContextManager {
    * in prompt output but remains in the inspectable history.
    */
   unpinFact(id: string, rationale?: string): void {
+    const { idx, record: existing } = this.getActivePinnedMemoryRecord(
+      id,
+      "unpin",
+    );
+
+    this.pinnedMemory[idx] = removeRecord(existing, rationale);
+  }
+
+  private getActivePinnedMemoryRecord(
+    id: string,
+    action: "update" | "unpin",
+  ): { idx: number; record: PinnedMemoryRecord } {
     const idx = this.pinnedMemory.findIndex((r) => r.id === id);
     if (idx === -1) {
       throw new MemoryValidationError(
@@ -760,11 +764,11 @@ export class ContextManager {
     const existing = this.pinnedMemory[idx];
     if (existing.lifecycle !== "active") {
       throw new MemoryValidationError(
-        `Cannot unpin record "${id}": lifecycle is "${existing.lifecycle}"`,
+        `Cannot ${action} record "${id}": lifecycle is "${existing.lifecycle}"`,
       );
     }
 
-    this.pinnedMemory[idx] = removeRecord(existing, rationale);
+    return { idx, record: existing };
   }
 
   /**
@@ -800,26 +804,39 @@ export class ContextManager {
   buildPromptPlan(
     systemPrompt: string,
     extraUserInstruction?: string,
-    options?: {
-      contextWindowTokens?: number;
-      policy?: PromptBudgetPolicy;
-      retryLevel?: number;
-      rollingSummary?: string;
-      summaryPolicy?: SummaryPolicy;
-    },
+    options?: BuildPromptPlanOptions,
   ): PromptPlan {
-    const policy = options?.policy ?? DEFAULT_BUDGET_POLICY;
-    const contextWindow = options?.contextWindowTokens ?? 1_000_000;
-
-    const summaryContent =
-      options?.rollingSummary ?? this.rollingSummary?.content;
-    const coveredTurnIds = this.getSummaryCoveredTurnIds();
-
-    const pinnedMemoryBlock = renderPinnedMemoryBlock(this.pinnedMemory);
-
-    const request: PromptBuildRequest = {
+    const resolved = this.normalizePromptPlanOptions(options);
+    const request = this.createPromptBuildRequest(
       systemPrompt,
-      pinnedMemoryBlock,
+      extraUserInstruction,
+      resolved,
+    );
+
+    return this.promptBuilder.buildPlan(request);
+  }
+
+  private normalizePromptPlanOptions(
+    options?: BuildPromptPlanOptions,
+  ): NormalizedBuildPromptPlanOptions {
+    return {
+      contextWindowTokens: options?.contextWindowTokens ?? 1_000_000,
+      policy: options?.policy ?? DEFAULT_BUDGET_POLICY,
+      retryLevel: options?.retryLevel,
+      rollingSummary: options?.rollingSummary,
+      runtimeContextOverflowBlock: options?.runtimeContextOverflowBlock,
+    };
+  }
+
+  private createPromptBuildRequest(
+    systemPrompt: string,
+    extraUserInstruction: string | undefined,
+    options: NormalizedBuildPromptPlanOptions,
+  ): PromptBuildRequest {
+    return {
+      systemPrompt,
+      runtimeContextOverflowBlock: options.runtimeContextOverflowBlock,
+      pinnedMemoryBlock: renderPinnedMemoryBlock(this.pinnedMemory),
       invokedSkillsBlock: renderInvokedSkillBlock(this.invokedSkills),
       conversationState: {
         preamble: this.preTurnMessages,
@@ -829,13 +846,13 @@ export class ContextManager {
         pinnedMemory: this.pinnedMemory,
         invokedSkills: this.invokedSkills,
       },
-      contextWindowTokens: contextWindow,
-      policy,
+      contextWindowTokens: options.contextWindowTokens,
+      policy: options.policy,
       extraUserInstruction,
-      rollingSummary: summaryContent,
+      rollingSummary: options.rollingSummary ?? this.rollingSummary?.content,
       rollingSummarySections: this.rollingSummary?.sections,
-      summaryCoveredTurnIds: coveredTurnIds,
-      retryLevel: options?.retryLevel,
+      summaryCoveredTurnIds: this.getSummaryCoveredTurnIds(),
+      retryLevel: options.retryLevel,
       rehydrationMaxChars: this.rehydrationMaxChars,
       artifactLookup: (id: string) => this.artifacts.get(id),
       isCurrentTurnUnresolved: (turnId: string) => {
@@ -843,8 +860,6 @@ export class ContextManager {
         return turn != null && !turn.completedAt;
       },
     };
-
-    return this.promptBuilder.buildPlan(request);
   }
 
   // -------------------------------------------------------------------

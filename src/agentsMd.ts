@@ -113,24 +113,3 @@ export async function loadAgentsMdContentAsync(
 
   return sections.join("\n\n");
 }
-
-/**
- * Compose system prompt with AGENTS.md content.
- *
- * Combines AGENTS.md content with the default system prompt. If AGENTS.md content
- * is provided, it is prepended to the default prompt separated by two newlines.
- *
- * @param agentsMdContent - Content from AGENTS.md files (may be empty)
- * @param defaultPrompt - Default system prompt
- * @returns Composed system prompt
- */
-export function composeSystemPrompt(
-  agentsMdContent: string,
-  defaultPrompt: string,
-): string {
-  if (!agentsMdContent) {
-    return defaultPrompt;
-  }
-
-  return `${agentsMdContent}\n\n${defaultPrompt}`;
-}

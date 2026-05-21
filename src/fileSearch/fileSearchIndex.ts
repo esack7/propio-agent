@@ -153,7 +153,7 @@ function runCommand(
   command: string,
   args: string[],
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -171,7 +171,13 @@ function runCommand(
     child.stderr?.on("data", (chunk: string) => {
       stderr += chunk;
     });
-    child.once("error", reject);
+    child.once("error", () => {
+      resolve({
+        code: 127,
+        stdout,
+        stderr,
+      });
+    });
     child.once("close", (code) => {
       resolve({
         code: code ?? 1,
@@ -353,7 +359,53 @@ export class FileSearchIndex {
       return parseCommandLines(rgResult.stdout);
     }
 
-    return [];
+    return this.readFilesystemPaths();
+  }
+
+  // fallow-ignore-next-line complexity
+  private readFilesystemPaths(): string[] {
+    const paths: string[] = [];
+    const stack = [this.workspaceRoot];
+
+    while (stack.length > 0) {
+      const currentDir = stack.pop();
+      if (!currentDir) {
+        continue;
+      }
+
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (IGNORED_DIRECTORIES.has(entry.name)) {
+          continue;
+        }
+
+        const absolutePath = path.join(currentDir, entry.name);
+        const relativePath = toWorkspaceRelative(
+          absolutePath,
+          this.workspaceRoot,
+        );
+        if (!relativePath || shouldIgnorePath(relativePath)) {
+          continue;
+        }
+
+        if (entry.isDirectory()) {
+          stack.push(absolutePath);
+          continue;
+        }
+
+        if (entry.isFile()) {
+          paths.push(relativePath);
+        }
+      }
+    }
+
+    return paths;
   }
 
   private loadGitIndexMtime(): number {

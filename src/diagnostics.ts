@@ -6,6 +6,20 @@ export function estimateTokens(chars: number): number {
   return Math.ceil(chars / 4);
 }
 
+export function messageChars(msg: Readonly<ChatMessage>): number {
+  let chars = msg.content.length;
+  if (msg.reasoningContent) {
+    chars += msg.reasoningContent.length;
+  }
+  if (msg.toolCalls) {
+    chars += JSON.stringify(msg.toolCalls).length;
+  }
+  if (msg.toolResults) {
+    chars += JSON.stringify(msg.toolResults).length;
+  }
+  return chars;
+}
+
 export function measureMessages(
   messages: ReadonlyArray<Readonly<ChatMessage>>,
 ): {
@@ -15,16 +29,7 @@ export function measureMessages(
 } {
   let totalChars = 0;
   for (const msg of messages) {
-    totalChars += msg.content.length;
-    if (msg.reasoningContent) {
-      totalChars += msg.reasoningContent.length;
-    }
-    if (msg.toolCalls) {
-      totalChars += JSON.stringify(msg.toolCalls).length;
-    }
-    if (msg.toolResults) {
-      totalChars += JSON.stringify(msg.toolResults).length;
-    }
+    totalChars += messageChars(msg);
   }
   return {
     messageCount: messages.length,
