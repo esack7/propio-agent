@@ -156,25 +156,11 @@ export class XaiProvider extends OpenAiCompatibleProvider {
       }
 
       const body = this.createChatCompletionRequestBody(request);
-      const response = await withRetry(
-        () =>
-          this.createPostResponse(
-            XAI_CHAT_COMPLETIONS_API_URLS,
-            body,
-            request.signal,
-          ),
-        this.buildRetryOptions(
-          request,
-          this.model,
-          this.retryConfig,
-          this.onDiagnosticEvent,
-        ),
+      const reader = await this.postStreamReader(
+        request,
+        XAI_CHAT_COMPLETIONS_API_URLS,
+        body,
       );
-
-      const reader = this.getResponseReader(response);
-      if (!reader) {
-        throw this.translateError(new Error("No response body"));
-      }
       const toolCallsByIndex = new Map<number, AccumulatedToolCall>();
       yield* this.consumeChatCompletionsStream(reader, toolCallsByIndex);
     } catch (error) {
@@ -187,13 +173,22 @@ export class XaiProvider extends OpenAiCompatibleProvider {
     request: ChatRequest,
   ): AsyncIterable<ChatStreamEvent> {
     const body = this.createResponsesRequestBody(request);
+    const reader = await this.postStreamReader(
+      request,
+      XAI_RESPONSES_API_URLS,
+      body,
+    );
+
+    yield* this.consumeResponsesStream(reader);
+  }
+
+  private async postStreamReader(
+    request: ChatRequest,
+    apiUrls: readonly string[],
+    body: Record<string, unknown>,
+  ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
     const response = await withRetry(
-      () =>
-        this.createPostResponse(
-          XAI_RESPONSES_API_URLS,
-          body,
-          request.signal,
-        ),
+      () => this.createPostResponse(apiUrls, body, request.signal),
       this.buildRetryOptions(
         request,
         this.model,
@@ -207,7 +202,7 @@ export class XaiProvider extends OpenAiCompatibleProvider {
       throw this.translateError(new Error("No response body"));
     }
 
-    yield* this.consumeResponsesStream(reader);
+    return reader;
   }
 
   private createResponsesRequestBody(
@@ -250,57 +245,79 @@ export class XaiProvider extends OpenAiCompatibleProvider {
     const input: Record<string, unknown>[] = [];
 
     for (const msg of expandToolResultMessages(messages)) {
-      if (msg.role === "system") {
-        input.push({ role: "system", content: msg.content ?? "" });
-        continue;
-      }
-
-      if (msg.role === "user") {
-        const content: Record<string, unknown>[] = [];
-        if (msg.content) {
-          content.push({ type: "input_text", text: msg.content });
-        }
-        input.push({
-          role: "user",
-          content:
-            content.length > 0 ? content : [{ type: "input_text", text: "" }],
-        });
-        continue;
-      }
-
-      if (msg.role === "assistant") {
-        if (msg.content) {
-          input.push({ role: "assistant", content: msg.content });
-        }
-        if (msg.toolCalls) {
-          for (const toolCall of msg.toolCalls) {
-            const callId =
-              toolCall.id ?? `call_${toolCall.function.name}_${input.length}`;
-            input.push({
-              type: "function_call",
-              id: callId,
-              call_id: callId,
-              name: toolCall.function.name,
-              arguments: this.serializeToolArguments(
-                toolCall.function.arguments,
-              ),
-              status: "completed",
-            });
-          }
-        }
-        continue;
-      }
-
-      if (msg.role === "tool" && msg.toolCallId) {
-        input.push({
-          type: "function_call_output",
-          call_id: msg.toolCallId,
-          output: msg.content ?? "",
-        });
-      }
+      this.appendResponsesInputMessage(msg, input);
     }
 
     return input;
+  }
+
+  private appendResponsesInputMessage(
+    msg: ChatMessage,
+    input: Record<string, unknown>[],
+  ): void {
+    if (msg.role === "system") {
+      input.push({ role: "system", content: msg.content ?? "" });
+      return;
+    }
+
+    if (msg.role === "user") {
+      this.appendResponsesUserMessage(msg, input);
+      return;
+    }
+
+    if (msg.role === "assistant") {
+      this.appendResponsesAssistantMessage(msg, input);
+      return;
+    }
+
+    if (msg.role === "tool" && msg.toolCallId) {
+      input.push({
+        type: "function_call_output",
+        call_id: msg.toolCallId,
+        output: msg.content ?? "",
+      });
+    }
+  }
+
+  private appendResponsesUserMessage(
+    msg: ChatMessage,
+    input: Record<string, unknown>[],
+  ): void {
+    const content: Record<string, unknown>[] = [];
+    if (msg.content) {
+      content.push({ type: "input_text", text: msg.content });
+    }
+    input.push({
+      role: "user",
+      content:
+        content.length > 0 ? content : [{ type: "input_text", text: "" }],
+    });
+  }
+
+  private appendResponsesAssistantMessage(
+    msg: ChatMessage,
+    input: Record<string, unknown>[],
+  ): void {
+    if (msg.content) {
+      input.push({ role: "assistant", content: msg.content });
+    }
+
+    if (!msg.toolCalls) {
+      return;
+    }
+
+    for (const toolCall of msg.toolCalls) {
+      const callId =
+        toolCall.id ?? `call_${toolCall.function.name}_${input.length}`;
+      input.push({
+        type: "function_call",
+        id: callId,
+        call_id: callId,
+        name: toolCall.function.name,
+        arguments: this.serializeToolArguments(toolCall.function.arguments),
+        status: "completed",
+      });
+    }
   }
 
   private async *consumeResponsesStream(
@@ -523,10 +540,7 @@ export class XaiProvider extends OpenAiCompatibleProvider {
   private parseResponsesStreamLine(
     data: string,
     state: XaiResponsesStreamState,
-  ): {
-    events: ChatStreamEvent[];
-    stopReason?: "end_turn" | "tool_use" | "max_tokens" | "error";
-  } {
+  ): ResponsesStreamLineResult {
     if (data === "[DONE]") {
       return { events: [] };
     }
@@ -536,94 +550,130 @@ export class XaiProvider extends OpenAiCompatibleProvider {
       return { events: [] };
     }
 
-    const events: ChatStreamEvent[] = [];
+    return this.handleResponsesStreamEvent(event, state);
+  }
 
-    if (
-      event.type === "response.reasoning_summary_text.delta" ||
-      event.type === "response.reasoning_text.delta"
-    ) {
-      if (event.delta) {
-        events.push({ type: "thinking_delta", delta: event.delta });
-      }
-      return { events };
+  // fallow-ignore-next-line complexity
+  private handleResponsesStreamEvent(
+    event: XaiResponsesStreamEvent,
+    state: XaiResponsesStreamState,
+  ): ResponsesStreamLineResult {
+    switch (event.type) {
+      case "response.reasoning_summary_text.delta":
+      case "response.reasoning_text.delta":
+        return this.handleResponsesReasoningDelta(event);
+      case "response.output_text.delta":
+        return this.handleResponsesOutputTextDelta(event);
+      case "response.output_item.added":
+        return this.handleResponsesOutputItemAdded(event, state);
+      case "response.function_call_arguments.delta":
+        return this.handleResponsesFunctionCallArgumentsDelta(event, state);
+      case "response.output_item.done":
+        return this.handleResponsesOutputItemDone(event, state);
+      case "response.completed":
+      case "response.done":
+      case "response.incomplete":
+        return this.handleResponsesTerminalEvent(event, state);
+      case "response.failed":
+        return {
+          events: [],
+          stopReason: this.mapXaiResponsesStopReason("failed", false),
+        };
+      default:
+        return { events: [] };
+    }
+  }
+
+  private handleResponsesReasoningDelta(
+    event: XaiResponsesStreamEvent,
+  ): ResponsesStreamLineResult {
+    if (!event.delta) {
+      return { events: [] };
     }
 
-    if (event.type === "response.output_text.delta") {
-      if (event.delta) {
-        events.push({ type: "assistant_text", delta: event.delta });
-      }
-      return { events };
+    return { events: [{ type: "thinking_delta", delta: event.delta }] };
+  }
+
+  private handleResponsesOutputTextDelta(
+    event: XaiResponsesStreamEvent,
+  ): ResponsesStreamLineResult {
+    if (!event.delta) {
+      return { events: [] };
     }
 
-    if (event.type === "response.output_item.added") {
-      const item = event.item;
-      if (item?.type === "function_call") {
-        const outputIndex = event.output_index ?? 0;
-        state.functionCallsByOutputIndex.set(outputIndex, {
-          id: item.call_id ?? item.id,
-          name: item.name ?? "",
-          argsString: item.arguments ?? "",
-        });
-      }
-      return { events };
+    return { events: [{ type: "assistant_text", delta: event.delta }] };
+  }
+
+  private handleResponsesOutputItemAdded(
+    event: XaiResponsesStreamEvent,
+    state: XaiResponsesStreamState,
+  ): ResponsesStreamLineResult {
+    const item = event.item;
+    if (item?.type !== "function_call") {
+      return { events: [] };
     }
 
-    if (event.type === "response.function_call_arguments.delta") {
-      const accumulated = state.functionCallsByOutputIndex.get(
-        event.output_index ?? 0,
-      );
-      if (accumulated && event.delta) {
-        accumulated.argsString += event.delta;
-      }
-      return { events };
+    const outputIndex = event.output_index ?? 0;
+    state.functionCallsByOutputIndex.set(outputIndex, {
+      id: item.call_id ?? item.id,
+      name: item.name ?? "",
+      argsString: item.arguments ?? "",
+    });
+    return { events: [] };
+  }
+
+  private handleResponsesFunctionCallArgumentsDelta(
+    event: XaiResponsesStreamEvent,
+    state: XaiResponsesStreamState,
+  ): ResponsesStreamLineResult {
+    const accumulated = state.functionCallsByOutputIndex.get(
+      event.output_index ?? 0,
+    );
+    if (accumulated && event.delta) {
+      accumulated.argsString += event.delta;
+    }
+    return { events: [] };
+  }
+
+  // fallow-ignore-next-line complexity
+  private handleResponsesOutputItemDone(
+    event: XaiResponsesStreamEvent,
+    state: XaiResponsesStreamState,
+  ): ResponsesStreamLineResult {
+    const item = event.item;
+    if (item?.type !== "function_call") {
+      return { events: [] };
     }
 
-    if (event.type === "response.output_item.done") {
-      const item = event.item;
-      if (item?.type === "function_call") {
-        const outputIndex = event.output_index ?? 0;
-        const accumulated = state.functionCallsByOutputIndex.get(outputIndex);
-        const toolCallsEvent = this.buildResponsesToolCallsEvent({
-          id: item.id,
-          call_id: item.call_id ?? accumulated?.id,
-          name: item.name ?? accumulated?.name,
-          arguments: item.arguments ?? accumulated?.argsString,
-        });
-        state.functionCallsByOutputIndex.delete(outputIndex);
-        if (toolCallsEvent) {
-          state.hasFunctionCall = true;
-          events.push(toolCallsEvent);
-        }
-      }
-      return { events };
+    const outputIndex = event.output_index ?? 0;
+    const accumulated = state.functionCallsByOutputIndex.get(outputIndex);
+    const toolCallsEvent = this.buildResponsesToolCallsEvent({
+      id: item.id,
+      call_id: item.call_id ?? accumulated?.id,
+      name: item.name ?? accumulated?.name,
+      arguments: item.arguments ?? accumulated?.argsString,
+    });
+    state.functionCallsByOutputIndex.delete(outputIndex);
+    if (!toolCallsEvent) {
+      return { events: [] };
     }
 
-    if (
-      event.type === "response.completed" ||
-      event.type === "response.done" ||
+    state.hasFunctionCall = true;
+    return { events: [toolCallsEvent] };
+  }
+
+  private handleResponsesTerminalEvent(
+    event: XaiResponsesStreamEvent,
+    state: XaiResponsesStreamState,
+  ): ResponsesStreamLineResult {
+    const status =
       event.type === "response.incomplete"
-    ) {
-      const status =
-        event.type === "response.incomplete"
-          ? "incomplete"
-          : event.response?.status;
-      return {
-        events,
-        stopReason: this.mapXaiResponsesStopReason(
-          status,
-          state.hasFunctionCall,
-        ),
-      };
-    }
-
-    if (event.type === "response.failed") {
-      return {
-        events,
-        stopReason: this.mapXaiResponsesStopReason("failed", false),
-      };
-    }
-
-    return { events };
+        ? "incomplete"
+        : event.response?.status;
+    return {
+      events: [],
+      stopReason: this.mapXaiResponsesStopReason(status, state.hasFunctionCall),
+    };
   }
 
   protected translateError(
@@ -654,6 +704,11 @@ interface ResponsesFunctionCall {
   name?: string;
   arguments?: string;
   argsString?: string;
+}
+
+interface ResponsesStreamLineResult {
+  events: ChatStreamEvent[];
+  stopReason?: "end_turn" | "tool_use" | "max_tokens" | "error";
 }
 
 interface XaiResponsesStreamState {

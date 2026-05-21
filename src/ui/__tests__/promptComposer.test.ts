@@ -201,6 +201,20 @@ function createTtyHarness(options?: {
   };
 }
 
+async function startMultilineChatPrompt() {
+  const harness = createTtyHarness({
+    enableReverseHistorySearch: false,
+    enableTypeahead: false,
+  });
+  const prompt = harness.composer.compose({
+    mode: "chat",
+    promptText: "Name? ",
+  });
+  await flush();
+  harness.takeOutput();
+  return { harness, prompt };
+}
+
 describe("createPromptComposer", () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -1256,17 +1270,7 @@ describe("createPromptComposer reverse history search", () => {
 
 describe("createPromptComposer multiline chat editing", () => {
   it("inserts newlines with Ctrl+J, then submits the full buffer", async () => {
-    const harness = createTtyHarness({
-      enableReverseHistorySearch: false,
-      enableTypeahead: false,
-    });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
-    });
-    await flush();
-    harness.takeOutput();
+    const { harness, prompt } = await startMultilineChatPrompt();
 
     harness.typeText("hello");
     harness.emitKeypress({ name: "j", ctrl: true }, "\n");
@@ -1296,17 +1300,7 @@ describe("createPromptComposer multiline chat editing", () => {
   });
 
   it("inserts a newline when Ctrl+J arrives as a control keypress", async () => {
-    const harness = createTtyHarness({
-      enableReverseHistorySearch: false,
-      enableTypeahead: false,
-    });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
-    });
-    await flush();
-    harness.takeOutput();
+    const { harness, prompt } = await startMultilineChatPrompt();
 
     harness.typeText("hello");
     harness.emitKeypress({ name: "j", ctrl: true }, "\n");
@@ -1329,17 +1323,7 @@ describe("createPromptComposer multiline chat editing", () => {
   });
 
   it("inserts a newline when Ctrl+J arrives as a line-feed return keypress", async () => {
-    const harness = createTtyHarness({
-      enableReverseHistorySearch: false,
-      enableTypeahead: false,
-    });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
-    });
-    await flush();
-    harness.takeOutput();
+    const { harness, prompt } = await startMultilineChatPrompt();
 
     harness.typeText("hello");
     harness.emitKeypress({ name: "return" }, "\n");

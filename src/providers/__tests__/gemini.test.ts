@@ -64,6 +64,43 @@ async function collectGeminiTextStreams(
   return { thinkingEvents, assistantText };
 }
 
+async function captureGeminiRequestBody(
+  request: ChatRequest,
+  sseLines: string[] = [
+    'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+    "data: [DONE]\n\n",
+  ],
+): Promise<unknown> {
+  let capturedBody: unknown = null;
+  globalThis.fetch = OpenRouterTestFixture.setupFetchMock(sseLines, (body) => {
+    capturedBody = body;
+  });
+
+  const provider = createGeminiProvider();
+  await consumeGeminiStream(provider, request);
+  return capturedBody;
+}
+
+async function expectGeminiThinkingStream(
+  sseLines: string[],
+  expected: { thinkingEvents: string[]; assistantText: string[] },
+): Promise<void> {
+  globalThis.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    body: createSseStream(sseLines),
+  });
+
+  const provider = createGeminiProvider();
+  const result = await collectGeminiTextStreams(provider, {
+    model: "gemini-3.1-pro-preview",
+    messages: [{ role: "user", content: "Hi" }],
+    requestReasoning: true,
+  });
+
+  expect(result.thinkingEvents).toEqual(expected.thinkingEvents);
+  expect(result.assistantText).toEqual(expected.assistantText);
+}
+
 describe("GeminiProvider", () => {
   registerProviderTestLifecycle(originalEnv, originalFetch);
 
@@ -342,23 +379,11 @@ describe("GeminiProvider", () => {
     });
 
     it("should request Gemini thought summaries when live thinking is requested", async () => {
-      let capturedBody: any = null;
-      globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
-        [
-          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-          "data: [DONE]\n\n",
-        ],
-        (body) => {
-          capturedBody = body;
-        },
-      );
-
-      const provider = createGeminiProvider();
-      await consumeGeminiStream(provider, {
+      const capturedBody = (await captureGeminiRequestBody({
         model: "gemini-3.1-pro-preview",
         messages: [{ role: "user", content: "Hi" }],
         requestReasoning: true,
-      });
+      })) as { extra_body: unknown };
 
       expect(capturedBody.extra_body).toEqual({
         google: {
@@ -370,103 +395,56 @@ describe("GeminiProvider", () => {
     });
 
     it("should emit Gemini thought summaries as live thinking deltas", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream([
+      await expectGeminiThinkingStream(
+        [
           'data: {"choices":[{"delta":{"reasoning_content":"<thought>I should inspect "}}]}\n\n',
           'data: {"choices":[{"delta":{"extra_content":{"google":{"thought_summary":"the repo.</thought>"}}}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"Final answer."}}]}\n\n',
           "data: [DONE]\n\n",
-        ]),
-      });
-
-      const provider = createGeminiProvider();
-
-      const { thinkingEvents, assistantText } = await collectGeminiTextStreams(
-        provider,
+        ],
         {
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-          requestReasoning: true,
+          thinkingEvents: ["I should inspect ", "the repo."],
+          assistantText: ["Final answer."],
         },
       );
-
-      expect(thinkingEvents).toEqual(["I should inspect ", "the repo."]);
-      expect(assistantText).toEqual(["Final answer."]);
     });
 
     it("should extract thought blocks from string content into thinking deltas", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream([
+      await expectGeminiThinkingStream(
+        [
           'data: {"choices":[{"delta":{"content":"<thought>Analyzing UI\\n</thought>"}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"\\n\\nFinal answer."}}]}\n\n',
           "data: [DONE]\n\n",
-        ]),
-      });
-
-      const provider = createGeminiProvider();
-
-      const { thinkingEvents, assistantText } = await collectGeminiTextStreams(
-        provider,
+        ],
         {
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-          requestReasoning: true,
+          thinkingEvents: ["Analyzing UI\n"],
+          assistantText: ["\n\nFinal answer."],
         },
       );
-
-      expect(thinkingEvents).toEqual(["Analyzing UI\n"]);
-      expect(assistantText).toEqual(["\n\nFinal answer."]);
     });
 
     it("should stream thought blocks split across string content chunks", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream([
+      await expectGeminiThinkingStream(
+        [
           'data: {"choices":[{"delta":{"content":"<thought>Analyzing "}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"UI</thought>"}}]}\n\n',
           "data: [DONE]\n\n",
-        ]),
-      });
-
-      const provider = createGeminiProvider();
-
-      const { thinkingEvents, assistantText } = await collectGeminiTextStreams(
-        provider,
-        {
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-          requestReasoning: true,
-        },
+        ],
+        { thinkingEvents: ["Analyzing UI"], assistantText: [] },
       );
-
-      expect(thinkingEvents).toEqual(["Analyzing UI"]);
-      expect(assistantText).toEqual([]);
     });
 
     it("should split Gemini content parts into thought and assistant streams", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream([
+      await expectGeminiThinkingStream(
+        [
           'data: {"choices":[{"delta":{"content":[{"text":"Thinking part.","thought":true},{"text":"Answer part."}]}}]}\n\n',
           "data: [DONE]\n\n",
-        ]),
-      });
-
-      const provider = createGeminiProvider();
-
-      const { thinkingEvents, assistantText } = await collectGeminiTextStreams(
-        provider,
+        ],
         {
-          model: "gemini-3.1-pro-preview",
-          messages: [{ role: "user", content: "Hi" }],
-          requestReasoning: true,
+          thinkingEvents: ["Thinking part."],
+          assistantText: ["Answer part."],
         },
       );
-
-      expect(thinkingEvents).toEqual(["Thinking part."]);
-      expect(assistantText).toEqual(["Answer part."]);
     });
 
     it("should emit tool calls when Gemini uses camelCase toolCalls and stop finish reasons", async () => {
@@ -612,22 +590,10 @@ describe("GeminiProvider", () => {
     });
 
     it("should pass request model overrides through to the upstream API", async () => {
-      let capturedBody: any = null;
-      globalThis.fetch = OpenRouterTestFixture.setupFetchMock(
-        [
-          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
-          "data: [DONE]\n\n",
-        ],
-        (body) => {
-          capturedBody = body;
-        },
-      );
-
-      const provider = createGeminiProvider();
-      await consumeGeminiStream(provider, {
+      const capturedBody = (await captureGeminiRequestBody({
         model: "gemini-future-preview",
         messages: [{ role: "user", content: "Hi" }],
-      });
+      })) as { model: string };
 
       expect(capturedBody.model).toBe("gemini-future-preview");
     });

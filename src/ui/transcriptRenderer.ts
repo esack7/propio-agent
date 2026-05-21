@@ -51,19 +51,17 @@ export class TranscriptRenderer {
   }
 
   beginAssistantResponse(): void {
-    this.options.clearStatus();
-
-    if (this.options.interactive) {
-      this.options.writer.writeStderrLine("");
-      return;
-    }
-
-    this.options.writer.writeStderr(
-      this.options.style("Assistant: ", formatAssistantMessage),
-    );
+    this.beginLabeledStream("Assistant: ", formatAssistantMessage);
   }
 
   beginThinkingResponse(): void {
+    this.beginLabeledStream("Thinking: ", formatSubtle);
+  }
+
+  private beginLabeledStream(
+    label: string,
+    formatter: (value: string) => string,
+  ): void {
     this.options.clearStatus();
 
     if (this.options.interactive) {
@@ -71,9 +69,7 @@ export class TranscriptRenderer {
       return;
     }
 
-    this.options.writer.writeStderr(
-      this.options.style("Thinking: ", formatSubtle),
-    );
+    this.options.writer.writeStderr(this.options.style(label, formatter));
   }
 
   reasoningSummary(summary: string, source: "agent" | "provider"): void {

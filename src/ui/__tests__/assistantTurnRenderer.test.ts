@@ -127,6 +127,21 @@ function emptyConversationState(): ConversationState {
   };
 }
 
+function createInlineAssistantTurnAgent(
+  streamChat: AssistantTurnAgent["streamChat"],
+  options: {
+    reasoningSummary?: TurnReasoningSummary | null;
+    conversationState?: ConversationState;
+  } = {},
+): AssistantTurnAgent {
+  return {
+    streamChat,
+    getLastTurnReasoningSummary: () => options.reasoningSummary ?? null,
+    getConversationState: () =>
+      options.conversationState ?? emptyConversationState(),
+  };
+}
+
 function createPromptPlanSnapshot(): PromptPlanSnapshot {
   return {
     provider: "mock",
@@ -555,15 +570,15 @@ describe("streamAssistantTurn", () => {
   it("applies thinking visibility changes to future deltas during a turn", async () => {
     const { ui, stderr } = createUi();
     let showThinking = true;
-    const agent: AssistantTurnAgent = {
-      async streamChat(
+    const agent = createInlineAssistantTurnAgent(
+      async (
         _userInput: string,
         onToken: (token: string) => void,
         callbacks?: {
           onEvent?: (event: AgentVisibilityEvent) => void;
           abortSignal?: AbortSignal;
         },
-      ): Promise<string> {
+      ): Promise<string> => {
         callbacks?.onEvent?.({
           type: "thinking_delta",
           delta: "Visible reasoning.",
@@ -576,13 +591,7 @@ describe("streamAssistantTurn", () => {
         onToken("Final answer.");
         return "Final answer.";
       },
-      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
-        return null;
-      },
-      getConversationState(): ConversationState {
-        return emptyConversationState();
-      },
-    };
+    );
 
     await streamAssistantTurn(
       agent,
@@ -605,15 +614,15 @@ describe("streamAssistantTurn", () => {
   it("streams answer text immediately while visible thinking remains enabled", async () => {
     const { ui } = createUi();
     const beginAssistantSpy = jest.spyOn(ui, "beginAssistantResponse");
-    const agent: AssistantTurnAgent = {
-      async streamChat(
+    const agent = createInlineAssistantTurnAgent(
+      async (
         _userInput: string,
         onToken: (token: string) => void,
         callbacks?: {
           onEvent?: (event: AgentVisibilityEvent) => void;
           abortSignal?: AbortSignal;
         },
-      ): Promise<string> {
+      ): Promise<string> => {
         callbacks?.onEvent?.({
           type: "thinking_delta",
           delta: "Visible reasoning.",
@@ -622,13 +631,7 @@ describe("streamAssistantTurn", () => {
         expect(beginAssistantSpy).toHaveBeenCalled();
         return "Final answer.";
       },
-      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
-        return null;
-      },
-      getConversationState(): ConversationState {
-        return emptyConversationState();
-      },
-    };
+    );
 
     await streamAssistantTurn(
       agent,
@@ -679,8 +682,8 @@ describe("streamAssistantTurn", () => {
 
   it("requests provider reasoning when visible thinking is enabled", async () => {
     const { ui } = createUi();
-    const agent: AssistantTurnAgent = {
-      async streamChat(
+    const agent = createInlineAssistantTurnAgent(
+      async (
         _userInput: string,
         onToken: (token: string) => void,
         callbacks?: {
@@ -688,18 +691,12 @@ describe("streamAssistantTurn", () => {
           abortSignal?: AbortSignal;
           requestReasoning?: boolean;
         },
-      ): Promise<string> {
+      ): Promise<string> => {
         expect(callbacks?.requestReasoning).toBe(true);
         onToken("Final answer.");
         return "Final answer.";
       },
-      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
-        return null;
-      },
-      getConversationState(): ConversationState {
-        return emptyConversationState();
-      },
-    };
+    );
 
     await streamAssistantTurn(
       agent,
@@ -734,15 +731,15 @@ describe("streamAssistantTurn", () => {
     const { ui } = createUi();
     const doneSpy = jest.spyOn(ui, "done");
     const abortController = new AbortController();
-    const agent: AssistantTurnAgent = {
-      async streamChat(
+    const agent = createInlineAssistantTurnAgent(
+      async (
         _userInput: string,
         _onToken: (token: string) => void,
         callbacks?: {
           onEvent?: (event: AgentVisibilityEvent) => void;
           abortSignal?: AbortSignal;
         },
-      ): Promise<string> {
+      ): Promise<string> => {
         callbacks?.onEvent?.({
           type: "thinking_delta",
           delta: "Reasoning before cancel.",
@@ -753,13 +750,7 @@ describe("streamAssistantTurn", () => {
         }
         return "";
       },
-      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
-        return null;
-      },
-      getConversationState(): ConversationState {
-        return emptyConversationState();
-      },
-    };
+    );
 
     await expect(
       streamAssistantTurn(
