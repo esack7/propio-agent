@@ -8,7 +8,7 @@ Add live, provider-supplied thinking as an optional UI surface. Thinking is hidd
 - Wire it through `Agent.normalizeStreamEvent()` and `normalizeAndEmitStreamEvent()` so thinking deltas call `emitVisibilityEvent(...)` but do not call `onToken`, do not affect `recordStreamChunk()` response text, and do not enter conversation history.
 - Keep `thinking_delta` available to programmatic `onEvent` consumers; suppress it only from assistant response text, persisted session context, and CLI `--json` payloads.
 - Update OpenRouter to emit `thinking_delta` immediately for every streamed `reasoning_content` chunk while still accumulating that same content for existing `reasoningContent` tool-call replay.
-- Leave Gemini `thoughtSignature` as replay-only, not user-visible thinking. Leave xAI/Bedrock/Ollama no-op for v1 unless they already expose an explicit reasoning stream.
+- Update Gemini to request visible thought summaries through its OpenAI-compatible `extra_body.google.thinking_config.include_thoughts` flag when live thinking is requested, while keeping `thoughtSignature` replay-only for tool-call rounds. Leave xAI/Bedrock/Ollama no-op for v1 unless they already expose an explicit reasoning stream.
 
 ## UI Behavior
 - Rename `toolCallVisibility.ts` to `sessionVisibility.ts` and keep the same stateful toggle pattern, now with `showToolCalls` and `showThinking`; default `showThinking: false`.
