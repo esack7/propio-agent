@@ -9,6 +9,8 @@ import {
 import { ChatRequest, ChatMessage } from "../types.js";
 import { AgentDiagnosticEvent } from "../../diagnostics.js";
 import {
+  collectOpenRouterThinkingAndToolEvents,
+  collectOpenRouterThinkingEvents,
   OpenRouterTestFixture,
   registerAcceptsApiKeyTest,
   registerProviderTestLifecycle,
@@ -268,6 +270,38 @@ describe("OpenRouterProvider", () => {
       expect(body.messages[1]).toEqual({ role: "user", content: "Hi" });
     });
 
+    it("should request OpenRouter reasoning when live thinking is requested", async () => {
+      let capturedBody: unknown = null;
+      globalThis.fetch = setupFetchMock(
+        [
+          'data: {"choices":[{"delta":{"content":"Ok"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        (body) => {
+          capturedBody = body;
+        },
+      );
+
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 128_000,
+        apiKey: "sk-test",
+      });
+
+      await consumeStream(
+        provider,
+        OpenRouterTestFixture.createRequest({
+          model: "deepseek/deepseek-v4-pro",
+          messages: [{ role: "user", content: "Think" }],
+          requestReasoning: true,
+        }),
+      );
+
+      expect(capturedBody).toMatchObject({
+        reasoning: { enabled: true, exclude: false },
+      });
+    });
+
     it("should include tools and handle tool_calls in request and response", async () => {
       let capturedBody: unknown = null;
       const chunks = [
@@ -434,25 +468,12 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should preserve reasoning content on streamed tool calls", async () => {
-      const chunks = [
-        'data: {"choices":[{"delta":{"reasoning_content":"I should inspect the file."}}]}\n\n',
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":\\"package.json\\"}"}}]}}]}\n\n',
-        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
-        "data: [DONE]\n\n",
-      ];
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream(chunks),
-      });
-
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v4-pro",
         contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
-
-      const toolEvents: unknown[] = [];
-      for await (const event of provider.streamChat({
+      const request = {
         model: "deepseek/deepseek-v4-pro",
         messages: [{ role: "user", content: "Inspect package" }],
         tools: [
@@ -465,16 +486,74 @@ describe("OpenRouterProvider", () => {
             },
           },
         ],
+      } as const;
+      const { thinkingEvents, toolEvents } =
+        await collectOpenRouterThinkingAndToolEvents(
+          provider,
+          [
+            'data: {"choices":[{"delta":{"reasoning_content":"I should inspect the file."}}]}\n\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":\\"package.json\\"}"}}]}}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+            "data: [DONE]\n\n",
+          ],
+          request,
+        );
+
+      expect(thinkingEvents).toEqual(["I should inspect the file."]);
+      expect(toolEvents).toHaveLength(1);
+      expect(toolEvents[0].reasoningContent).toBe("I should inspect the file.");
+    });
+
+    it("should emit each reasoning_content chunk as a live thinking delta", async () => {
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 128_000,
+        apiKey: "sk-test",
+      });
+      const thinkingEvents = await collectOpenRouterThinkingEvents(
+        provider,
+        [
+          'data: {"choices":[{"delta":{"reasoning_content":"I should inspect "}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"the file."}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        {
+          model: "deepseek/deepseek-v4-pro",
+          messages: [{ role: "user", content: "Inspect package" }],
+        },
+      );
+
+      expect(thinkingEvents).toEqual(["I should inspect ", "the file."]);
+    });
+
+    it("should emit reasoning_details text chunks as live thinking deltas", async () => {
+      const chunks = [
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"Step one. "}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"Summarized step."},{"type":"reasoning.encrypted","data":"redacted"}]}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(chunks),
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "anthropic/claude-sonnet-4.5",
+        contextWindowTokens: 128_000,
+        apiKey: "sk-test",
+      });
+
+      const thinkingEvents: string[] = [];
+      for await (const event of provider.streamChat({
+        model: "anthropic/claude-sonnet-4.5",
+        messages: [{ role: "user", content: "Inspect package" }],
       })) {
-        if (event.type === "tool_calls") {
-          toolEvents.push(event);
+        if (event.type === "thinking_delta") {
+          thinkingEvents.push(event.delta);
         }
       }
 
-      expect(toolEvents).toHaveLength(1);
-      expect((toolEvents[0] as any).reasoningContent).toBe(
-        "I should inspect the file.",
-      );
+      expect(thinkingEvents).toEqual(["Step one. ", "Summarized step."]);
     });
 
     it("should send reasoning content back on assistant tool-call messages", async () => {

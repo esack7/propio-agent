@@ -6,21 +6,14 @@ import { StatusRenderer } from "../statusRenderer.js";
 import { TerminalWriter } from "../terminalWriter.js";
 import { TranscriptRenderer } from "../transcriptRenderer.js";
 import { createTtyTestStream } from "./ttyTestStream.js";
+import { createMockSpinner } from "./testUtils.js";
 
 function createHarness() {
   const stdout = createTtyTestStream();
   const stderr = createTtyTestStream();
   const writer = new TerminalWriter({ stdout, stderr });
   const clearStderrLinesSpy = jest.spyOn(writer, "clearStderrLines");
-  const spinner = {
-    start: jest.fn(),
-    setPhase: jest.fn(),
-    setText: jest.fn(),
-    succeed: jest.fn(),
-    fail: jest.fn(),
-    stop: jest.fn(),
-  };
-  const createSpinner = jest.fn(() => spinner);
+  const { spinner, createSpinner } = createMockSpinner();
   let statusRenderer: StatusRenderer;
   statusRenderer = new StatusRenderer({
     stream: stderr,
@@ -175,6 +168,23 @@ describe("ReplRenderer", () => {
     store.setFooter("Idle footer");
     renderer.flush(store.getState());
     expect(stderr.chunks.join("")).toContain("Idle footer");
+  });
+
+  it("renders thinking transcript entries without clearing them as ephemeral state", () => {
+    const { renderer, stderr, store, clearStderrLinesSpy } = createHarness();
+
+    store.appendTranscriptEntry({ kind: "thinking_start" });
+    store.appendTranscriptEntry({
+      kind: "thinking_token",
+      text: "Reasoning block",
+    });
+    renderer.flush(store.getState());
+
+    store.clearEphemeralSurfaces();
+    renderer.flush(store.getState());
+
+    expect(stderr.chunks.join("")).toContain("Reasoning block");
+    expect(clearStderrLinesSpy).not.toHaveBeenCalled();
   });
 
   it("does not rerender equivalent ephemeral state objects", () => {

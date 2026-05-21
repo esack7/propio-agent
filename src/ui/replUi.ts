@@ -12,6 +12,8 @@ export type TranscriptEntry =
   | { kind: "user_message"; text: string }
   | { kind: "assistant_start" }
   | { kind: "assistant_token"; text: string }
+  | { kind: "thinking_start" }
+  | { kind: "thinking_token"; text: string }
   | { kind: "info"; text: string }
   | { kind: "command"; text: string }
   | { kind: "subtle"; text: string }
@@ -117,92 +119,144 @@ export class ReplUiStore {
   }
 
   dispatch(action: ReplUiAction): void {
-    switch (action.type) {
-      case "appendTranscriptEntry":
-        this.state = {
-          ...this.state,
-          status: null,
-          transcript: [...this.state.transcript, { ...action.entry }],
-        };
-        break;
-      case "setPrompt":
-        this.state = {
-          ...this.state,
-          prompt: action.prompt ? clonePromptState(action.prompt) : null,
-        };
-        break;
-      case "setStatus":
-        this.state = {
-          ...this.state,
-          status: action.status ? { ...action.status } : null,
-        };
-        break;
-      case "setFooter":
-        this.state = {
-          ...this.state,
-          status: null,
-          footer: action.footer,
-        };
-        break;
-      case "setMode":
-        this.state = {
-          ...this.state,
-          mode: action.mode,
-        };
-        break;
-      case "openOverlay":
-        this.state = {
-          ...this.state,
-          status: null,
-          overlay: cloneOverlayState(action.overlay),
-        };
-        break;
-      case "closeOverlay":
-        this.state = {
-          ...this.state,
-          overlay: null,
-        };
-        break;
-      case "clearEphemeralSurfaces":
-        this.state = {
-          ...this.state,
-          status: null,
-          toolCallViews: new Map(),
-          toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
-        };
-        break;
-      case "upsertToolCallView": {
-        let base = this.state.toolCallViews;
-        const existing = base.get(action.view.id);
-        if (
-          existing &&
-          existing.status === action.view.status &&
-          existing.useLabel === action.view.useLabel &&
-          existing.resultLabel === action.view.resultLabel
-        ) {
-          break;
-        }
-        if (
-          action.view.status === "running" &&
-          base.size > 0 &&
-          [...base.values()].every((v) => v.status !== "running")
-        ) {
-          base = new Map();
-        }
-        const newViews = new Map(base);
-        newViews.set(action.view.id, action.view);
-        this.state = {
-          ...this.state,
-          toolCallViews: newViews,
-          toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
-        };
-        break;
-      }
+    if (!this.applyAction(action)) {
+      return;
     }
 
     for (const listener of this.listeners) {
       listener();
     }
+  }
+
+  private applyAction(action: ReplUiAction): boolean {
+    if (action.type === "upsertToolCallView") {
+      return this.applyUpsertToolCallView(action.view);
+    }
+
+    this.applyStateAction(action);
+    return true;
+  }
+
+  private applyStateAction(
+    action: Exclude<ReplUiAction, { type: "upsertToolCallView" }>,
+  ): void {
+    switch (action.type) {
+      case "appendTranscriptEntry":
+        this.dispatchAppendTranscriptEntry(action.entry);
+        break;
+      case "setPrompt":
+        this.dispatchSetPrompt(action.prompt);
+        break;
+      case "setStatus":
+        this.dispatchSetStatus(action.status);
+        break;
+      case "setFooter":
+        this.dispatchSetFooter(action.footer);
+        break;
+      case "setMode":
+        this.dispatchSetMode(action.mode);
+        break;
+      case "openOverlay":
+        this.dispatchOpenOverlay(action.overlay);
+        break;
+      case "closeOverlay":
+        this.dispatchCloseOverlay();
+        break;
+      case "clearEphemeralSurfaces":
+        this.dispatchClearEphemeralSurfaces();
+        break;
+    }
+  }
+
+  private dispatchAppendTranscriptEntry(entry: TranscriptEntry): void {
+    this.state = {
+      ...this.state,
+      status: null,
+      transcript: [...this.state.transcript, { ...entry }],
+    };
+  }
+
+  private dispatchSetPrompt(prompt: PromptState | null): void {
+    this.state = {
+      ...this.state,
+      prompt: prompt ? clonePromptState(prompt) : null,
+    };
+  }
+
+  private dispatchSetStatus(status: EphemeralStatus | null): void {
+    this.state = {
+      ...this.state,
+      status: status ? { ...status } : null,
+    };
+  }
+
+  private dispatchSetFooter(footer: string | null): void {
+    this.state = {
+      ...this.state,
+      status: null,
+      footer,
+    };
+  }
+
+  private dispatchSetMode(mode: ReplAppMode): void {
+    this.state = {
+      ...this.state,
+      mode,
+    };
+  }
+
+  private dispatchOpenOverlay(overlay: OverlayState): void {
+    this.state = {
+      ...this.state,
+      status: null,
+      overlay: cloneOverlayState(overlay),
+    };
+  }
+
+  private dispatchCloseOverlay(): void {
+    this.state = {
+      ...this.state,
+      overlay: null,
+    };
+  }
+
+  private dispatchClearEphemeralSurfaces(): void {
+    this.state = {
+      ...this.state,
+      status: null,
+      toolCallViews: new Map(),
+      toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
+    };
+  }
+
+  private applyUpsertToolCallView(view: ToolCallView): boolean {
+    let base = this.state.toolCallViews;
+    const existing = base.get(view.id);
+    if (
+      existing &&
+      existing.status === view.status &&
+      existing.useLabel === view.useLabel &&
+      existing.resultLabel === view.resultLabel
+    ) {
+      return false;
+    }
+
+    if (
+      view.status === "running" &&
+      base.size > 0 &&
+      [...base.values()].every((entry) => entry.status !== "running")
+    ) {
+      base = new Map();
+    }
+
+    const newViews = new Map(base);
+    newViews.set(view.id, view);
+    this.state = {
+      ...this.state,
+      toolCallViews: newViews,
+      toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
+    };
+    return true;
   }
 
   appendTranscriptEntry(entry: TranscriptEntry): void {

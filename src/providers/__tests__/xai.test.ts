@@ -179,6 +179,51 @@ describe("XaiProvider", () => {
       expect(deltas).toEqual(["Hello", " Grok"]);
     });
 
+    it("should use the Responses API and emit thinking deltas when reasoning is requested", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream([
+          'data: {"type":"response.reasoning_summary_text.delta","delta":"Planning. "}\n\n',
+          'data: {"type":"response.output_text.delta","delta":"Answer."}\n\n',
+          'data: {"type":"response.completed","response":{"status":"completed"}}\n\n',
+        ]),
+      });
+
+      const provider = createProvider();
+      const thinkingEvents: string[] = [];
+      const assistantText: string[] = [];
+
+      for await (const chunk of provider.streamChat(
+        createRequest({ requestReasoning: true }),
+      )) {
+        if (chunk.type === "thinking_delta") {
+          thinkingEvents.push(chunk.delta);
+        }
+        if (chunk.type === "assistant_text") {
+          assistantText.push(chunk.delta);
+        }
+      }
+
+      expect(thinkingEvents).toEqual(["Planning. "]);
+      expect(assistantText).toEqual(["Answer."]);
+      expect(fetch).toHaveBeenCalledWith(
+        "https://api.x.ai/v1/responses",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            Authorization: "Bearer xai-test",
+          }),
+        }),
+      );
+      const requestBody = JSON.parse(
+        (fetch as jest.Mock).mock.calls[0][1].body,
+      );
+      expect(requestBody.stream).toBe(true);
+      expect(requestBody.input).toEqual([
+        { role: "user", content: [{ type: "input_text", text: "Hi" }] },
+      ]);
+    });
+
     it("should call the xAI API endpoint with correct auth header", async () => {
       const chunks = [
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',

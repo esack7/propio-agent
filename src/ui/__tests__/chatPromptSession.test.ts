@@ -11,6 +11,7 @@ function createTestSession(
     typeaheadProviders?: TypeaheadProvider[];
     onRender?: (state: ChatPromptSessionState) => void;
     toggleToolCalls?: () => string | null | undefined;
+    toggleThinking?: () => string | null | undefined;
     enableTypeahead?: boolean;
     enableReverseHistorySearch?: boolean;
     historySnapshot?: string[];
@@ -53,6 +54,7 @@ function createTestSession(
       interrupt: options.interrupt ?? (() => {}),
       close: options.close ?? (() => {}),
       toggleToolCalls: options.toggleToolCalls,
+      toggleThinking: options.toggleThinking,
     },
   });
 
@@ -109,6 +111,25 @@ describe("chatPromptSession", () => {
         shift: false,
       });
       expect(toggleToolCalls).toHaveBeenCalledTimes(1);
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("invokes the thinking toggle callback on Ctrl+T without changing the buffer", () => {
+    const toggleThinking = jest.fn();
+    const { inputStream, session } = createTestSession({
+      toggleThinking,
+    });
+
+    try {
+      inputStream.emit("keypress", "t", {
+        name: "t",
+        ctrl: true,
+        meta: false,
+        shift: false,
+      });
+      expect(toggleThinking).toHaveBeenCalledTimes(1);
     } finally {
       session.cleanup();
     }

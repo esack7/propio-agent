@@ -12,6 +12,7 @@ A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedr
 - [Tools](#tools)
 - [Project Structure](#project-structure)
 - [Architecture](#architecture)
+- [Development](#development)
 - [Sandbox Mode](#sandbox-mode)
 - [Troubleshooting](#troubleshooting)
 
@@ -544,6 +545,65 @@ The CLI exposes this state through `/context`, `/context prompt`, `/context memo
 ### Tool registry
 
 `src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.
+
+---
+
+## Development
+
+### Pre-commit checks
+
+Before committing TypeScript changes on a feature branch, run the full validation set below. A green test run alone is not enough; formatting and Fallow must also be clean on your branch delta.
+
+```bash
+npm run build
+npm test
+npm run format:check
+npx fallow audit
+```
+
+All four commands should exit `0`.
+
+| Check      | Command                | Required outcome                              |
+| ---------- | ---------------------- | --------------------------------------------- |
+| Type-check | `npm run build`        | Compiles with no errors                       |
+| Tests      | `npm test`             | All suites pass                               |
+| Formatting | `npm run format:check` | No Prettier drift (fix with `npm run format`) |
+| Structure  | `npx fallow audit`     | See [Fallow audit](#fallow-audit)             |
+
+Run `npx fallow audit` after substantial edits, refactors, or agent-generated changes. It complements tests and type-checking; it does not replace them.
+
+### Fallow audit
+
+[Fallow](https://docs.fallow.tools/) audits **files changed on your branch vs `main`**, not the entire repository on every run. That keeps the gate focused on what you are about to commit.
+
+**Target state before commit:**
+
+```text
+✓ No issues in <N> changed files
+```
+
+In practice that means:
+
+- **Exit code `0`** for `npx fallow audit`
+- **Complexity:** no functions above threshold in the changed-file gate (summary should show `complexity 0`, not `complexity N (warn, …)`)
+- **Duplication:** no clone groups reported as failing the gate (summary should not list `✗ … clone groups` under Duplication)
+- **Dead code:** `0` dead files / dead exports in the metrics line
+
+If Fallow reports complexity or duplication failures, fix them in the changed code (extract helpers, dedupe tests, split large functions) rather than relying on a passing test suite alone.
+
+**What is out of scope for the default gate**
+
+Fallow may note `audit gate excluded … inherited findings` for complexity or duplication that already exists on `main` in files you only touched lightly. Those inherited items do not block the default pre-commit audit. To enforce the full repo instead of the branch delta:
+
+```bash
+npx fallow audit --gate all
+```
+
+Use `--gate all` when doing a broader cleanup; for day-to-day feature work, the default branch-delta audit is the bar to clear before commit.
+
+**Suppressions**
+
+Prefer refactoring over `// fallow-ignore-next-line` comments. When a suppression is unavoidable, keep it on the specific line and document why in the PR if the reason is not obvious from the code.
 
 ---
 

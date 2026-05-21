@@ -38,6 +38,7 @@ export interface ChatPromptSessionCallbacks {
   submit(text: string): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
+  toggleThinking?: () => string | null | undefined;
   close(): void;
 }
 
@@ -1405,13 +1406,23 @@ export function createChatPromptSession(
   };
 
   const handleToolToggleKeys = (key: readline.Key): boolean => {
-    if (key.name === "o" && key.ctrl) {
-      const nextFooter = callbacks.toggleToolCalls?.();
+    const applyFooterToggle = (
+      toggle: (() => string | null | undefined) | undefined,
+    ): boolean => {
+      const nextFooter = toggle?.();
       if (nextFooter !== undefined) {
         activeFooter = nextFooter ?? undefined;
         render();
       }
       return true;
+    };
+
+    if (key.name === "o" && key.ctrl) {
+      return applyFooterToggle(callbacks.toggleToolCalls);
+    }
+
+    if (key.name === "t" && key.ctrl) {
+      return applyFooterToggle(callbacks.toggleThinking);
     }
 
     return false;

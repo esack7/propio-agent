@@ -172,7 +172,7 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     request: ChatRequest,
     includeTools: boolean,
   ): Record<string, unknown> {
-    return buildOpenAIChatCompletionRequestBody({
+    const body = buildOpenAIChatCompletionRequestBody({
       request,
       model: this.model,
       mapMessage: (msg) => this.chatMessageToOpenAIMessage(msg),
@@ -182,6 +182,10 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
         this.applyRequestBodyExtras(body);
       },
     });
+    if (request.requestReasoning) {
+      body.reasoning = { enabled: true, exclude: false };
+    }
+    return body;
   }
 
   private buildHeaders(): Record<string, string> {
@@ -516,6 +520,11 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
         delta?: {
           content?: string;
           reasoning_content?: string;
+          reasoning_details?: Array<{
+            type?: string;
+            text?: string;
+            summary?: string;
+          }>;
           tool_calls?: Array<{
             index?: number;
             id?: string;
@@ -528,13 +537,51 @@ export class OpenRouterProvider extends OpenAiCompatibleProvider {
     if (!choice?.delta) return { events: [], done: false };
     if (choice.finish_reason)
       state.stopReason = this.mapOpenRouterFinishReason(choice.finish_reason);
-    if (choice.delta.reasoning_content)
+    const events: ChatStreamEvent[] = [];
+    if (choice.delta.reasoning_content) {
       state.reasoningContent += choice.delta.reasoning_content;
-    const events = [
+      events.push({
+        type: "thinking_delta",
+        delta: choice.delta.reasoning_content,
+      });
+    }
+    const reasoningDetailsText = this.extractReasoningDetailsText(
+      choice.delta.reasoning_details,
+    );
+    if (reasoningDetailsText.length > 0) {
+      state.reasoningContent += reasoningDetailsText;
+      events.push({
+        type: "thinking_delta",
+        delta: reasoningDetailsText,
+      });
+    }
+    events.push(
       ...this.processContentDelta(choice.delta, state, parseDsmlToolCalls),
       ...this.processToolCallsDelta(choice.delta, choice.finish_reason, state),
-    ];
+    );
     return { events, done: false };
+  }
+
+  private extractReasoningDetailsText(
+    reasoningDetails:
+      | Array<{ type?: string; text?: string; summary?: string }>
+      | undefined,
+  ): string {
+    if (!reasoningDetails || reasoningDetails.length === 0) {
+      return "";
+    }
+
+    return reasoningDetails
+      .map((detail) => {
+        if (detail.type === "reasoning.text" && detail.text) {
+          return detail.text;
+        }
+        if (detail.type === "reasoning.summary" && detail.summary) {
+          return detail.summary;
+        }
+        return "";
+      })
+      .join("");
   }
 
   private async *streamResponse(

@@ -51,6 +51,17 @@ export class TranscriptRenderer {
   }
 
   beginAssistantResponse(): void {
+    this.beginLabeledStream("Assistant: ", formatAssistantMessage);
+  }
+
+  beginThinkingResponse(): void {
+    this.beginLabeledStream("Thinking: ", formatSubtle);
+  }
+
+  private beginLabeledStream(
+    label: string,
+    formatter: (value: string) => string,
+  ): void {
     this.options.clearStatus();
 
     if (this.options.interactive) {
@@ -58,9 +69,7 @@ export class TranscriptRenderer {
       return;
     }
 
-    this.options.writer.writeStderr(
-      this.options.style("Assistant: ", formatAssistantMessage),
-    );
+    this.options.writer.writeStderr(this.options.style(label, formatter));
   }
 
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
@@ -128,26 +137,25 @@ export class TranscriptRenderer {
     );
   }
 
+  writeThinking(text: string): void {
+    this.options.clearStatus();
+    this.options.writer.writeStderr(this.options.style(text, formatSubtle));
+  }
+
   writeJson(value: unknown): void {
     this.options.clearStatus();
     this.options.writer.writeStdoutLine(JSON.stringify(value, null, 2));
   }
 
   turnComplete(durationMs: number): void {
-    if (this.options.json || !this.options.interactive) {
-      return;
-    }
-
-    this.options.clearStatus();
-    this.options.writer.writeStderrLine(
-      this.options.style(
-        `Turn complete in ${formatDurationSeconds(durationMs)}`,
-        formatSubtle,
-      ),
-    );
+    this.writeTurnTimingLine("Turn complete", durationMs);
   }
 
   turnFailed(durationMs: number): void {
+    this.writeTurnTimingLine("Turn failed", durationMs);
+  }
+
+  private writeTurnTimingLine(label: string, durationMs: number): void {
     if (this.options.json || !this.options.interactive) {
       return;
     }
@@ -155,7 +163,7 @@ export class TranscriptRenderer {
     this.options.clearStatus();
     this.options.writer.writeStderrLine(
       this.options.style(
-        `Turn failed in ${formatDurationSeconds(durationMs)}`,
+        `${label} in ${formatDurationSeconds(durationMs)}`,
         formatSubtle,
       ),
     );

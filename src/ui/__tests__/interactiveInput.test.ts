@@ -1,17 +1,15 @@
 import * as readline from "readline";
-import { PassThrough } from "stream";
 import { createInteractiveInput } from "../interactiveInput.js";
 import { createPromptComposer } from "../promptComposer.js";
+import {
+  createCapturingPassThroughStreams,
+  createFakeReadlineHarness,
+  flush,
+} from "./promptComposerTestHelpers.js";
 
 function createHarness() {
-  const inputStream = new PassThrough();
-  const outputStream = new PassThrough();
-  outputStream.setEncoding("utf8");
-  let output = "";
-  outputStream.on("data", (chunk) => {
-    output += chunk;
-  });
-
+  const { inputStream, outputStream, getOutput } =
+    createCapturingPassThroughStreams();
   const composer = createPromptComposer({
     input: inputStream as unknown as NodeJS.ReadStream,
     output: outputStream as unknown as NodeJS.WriteStream,
@@ -21,7 +19,7 @@ function createHarness() {
     composer,
     inputStream,
     outputStream,
-    getOutput: () => output,
+    getOutput,
   };
 }
 
@@ -41,13 +39,8 @@ function createCountingHarness() {
 function createHarnessWithFactory(
   createInterface: typeof readline.createInterface,
 ) {
-  const inputStream = new PassThrough();
-  const outputStream = new PassThrough();
-  outputStream.setEncoding("utf8");
-  let output = "";
-  outputStream.on("data", (chunk) => {
-    output += chunk;
-  });
+  const { inputStream, outputStream, getOutput } =
+    createCapturingPassThroughStreams();
 
   const composer = createPromptComposer({
     input: inputStream as unknown as NodeJS.ReadStream,
@@ -61,10 +54,6 @@ function createHarnessWithFactory(
     outputStream,
     getOutput: () => output,
   };
-}
-
-function flush(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
 }
 
 describe("createPromptComposer", () => {
@@ -227,31 +216,11 @@ describe("createPromptComposer", () => {
   });
 
   it("preserves interrupted close reason when SIGINT is received", async () => {
-    let closeHandler: (() => void) | null = null;
-    let sigintHandler: (() => void) | null = null;
-    const fakeRl: any = {
-      question: jest.fn(),
-      once: jest.fn((event: string, handler: () => void) => {
-        if (event === "close") {
-          closeHandler = handler;
-        }
-        return fakeRl;
-      }),
-      on: jest.fn((event: string, handler: () => void) => {
-        if (event === "SIGINT") {
-          sigintHandler = handler;
-        }
-        return fakeRl;
-      }),
-      close: jest.fn(() => {
-        closeHandler?.();
-      }),
-    };
-
+    const readlineHarness = createFakeReadlineHarness();
     const killSpy = jest.spyOn(process, "kill").mockImplementation(() => true);
 
     const composer = createPromptComposer({
-      createInterface: () => fakeRl as readline.Interface,
+      createInterface: readlineHarness.createInterface,
     });
     const prompt = composer.compose({
       mode: "chat",
@@ -259,7 +228,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
 
-    sigintHandler?.();
+    readlineHarness.emitSigint();
     expect(composer.getCloseReason()).toBe("interrupted");
 
     composer.close();
