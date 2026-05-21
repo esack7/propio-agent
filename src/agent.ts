@@ -32,7 +32,13 @@ import type {
 import { persistToolOutput } from "./tools/outputPersistence.js";
 import { measureMessages, RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
-import { composeSystemPrompt } from "./agentsMd.js";
+import {
+  compileSystemPrompt,
+  DEFAULT_CORE_IDENTITY,
+  joinSections,
+} from "./prompt/compileSystemPrompt.js";
+import { SystemPromptSectionRegistry } from "./prompt/systemPromptSectionRegistry.js";
+import { buildSystemPromptContext } from "./prompt/systemPromptContext.js";
 import { ContextManager } from "./context/contextManager.js";
 import {
   ArtifactToolResult,
@@ -178,7 +184,9 @@ export class Agent {
   private model!: string;
   private resolvedProviderConfig!: ProviderConfig;
   private contextManager: ContextManager;
-  private systemPrompt: string;
+  private baseRules: string;
+  private agentsMdContent: string;
+  private systemPromptRegistry: SystemPromptSectionRegistry;
   private toolRegistry: ToolRegistry;
   private mcpManager: McpManager;
   private providersConfig: ProvidersConfig;
@@ -225,13 +233,9 @@ export class Agent {
       );
     }
 
-    const basePrompt =
-      options.systemPrompt || "You are a helpful AI assistant.";
-
-    this.systemPrompt = composeSystemPrompt(
-      options.agentsMdContent ?? "",
-      basePrompt,
-    );
+    this.baseRules = options.systemPrompt ?? DEFAULT_CORE_IDENTITY;
+    this.agentsMdContent = options.agentsMdContent ?? "";
+    this.systemPromptRegistry = new SystemPromptSectionRegistry();
 
     this.providersConfig = Agent.normalizeProvidersConfig(
       options.providersConfig,
@@ -795,13 +799,48 @@ export class Agent {
     );
   }
 
-  private getEffectiveSystemPrompt(): string {
-    const discoveryBlock = this.composeSkillDiscoveryBlock();
-    if (!discoveryBlock) {
-      return this.systemPrompt;
-    }
+  private collectEnabledToolNames(
+    allowedTools?: ReadonlySet<string>,
+  ): string[] {
+    return this.getMergedToolSchemas(allowedTools).map(
+      (schema) => schema.function.name,
+    );
+  }
 
-    return `${this.systemPrompt}\n\n${discoveryBlock}`;
+  private compileSystemCore(allowedTools?: ReadonlySet<string>): {
+    core: string;
+    runtimeContextOverflowBlock?: string;
+  } {
+    const ctx = buildSystemPromptContext({
+      cwd: this.skillContext.cwd,
+      enabledToolNames: this.collectEnabledToolNames(allowedTools),
+    });
+    const { compiled, runtimeContextOverflowBlock } = compileSystemPrompt(
+      ctx,
+      {
+        baseRules: this.baseRules,
+        agentsMdContent: this.agentsMdContent,
+      },
+      this.systemPromptRegistry,
+    );
+    return {
+      core: joinSections(compiled),
+      runtimeContextOverflowBlock,
+    };
+  }
+
+  private buildEffectiveSystemPrompt(allowedTools?: ReadonlySet<string>): {
+    systemPrompt: string;
+    runtimeContextOverflowBlock?: string;
+  } {
+    const { core, runtimeContextOverflowBlock } =
+      this.compileSystemCore(allowedTools);
+    const discoveryBlock = this.composeSkillDiscoveryBlock();
+    const systemPrompt = discoveryBlock
+      ? `${core}\n\n${discoveryBlock}`
+      : core;
+
+    return { systemPrompt, runtimeContextOverflowBlock };
   }
 
   private deriveAllowedToolScope(
@@ -1000,6 +1039,7 @@ export class Agent {
     extraUserInstruction?: string,
     retryLevel?: number,
     iteration?: number,
+    allowedTools?: ReadonlySet<string>,
   ): PromptPlan {
     const contextWindowTokens = this.resolveContextWindowTokens();
     const policy: PromptBudgetPolicy = {
@@ -1007,13 +1047,17 @@ export class Agent {
       maxRecentTurns: this.runtimeConfig.maxRecentTurns,
       artifactInlineCharCap: this.runtimeConfig.artifactInlineCharCap,
     };
+    const { systemPrompt, runtimeContextOverflowBlock } =
+      this.buildEffectiveSystemPrompt(allowedTools);
+
     const plan = this.contextManager.buildPromptPlan(
-      this.getEffectiveSystemPrompt(),
+      systemPrompt,
       extraUserInstruction,
       {
         contextWindowTokens,
         retryLevel,
         policy,
+        runtimeContextOverflowBlock,
       },
     );
     if (iteration != null) {
@@ -1190,8 +1234,17 @@ export class Agent {
     let retryLevel = 0;
     let shrinkCount = 0;
 
+    const allowedTools = this.deriveAllowedToolScope(
+      this.getActiveSkillScopes(),
+    );
+
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
-      const plan = this.buildPlan(noToolsInstruction, retryLevel, iteration);
+      const plan = this.buildPlan(
+        noToolsInstruction,
+        retryLevel,
+        iteration,
+        allowedTools,
+      );
       const messages = plan.messages as ChatMessage[];
       this.emitPromptPlanAndRequestStartedDiagnostics(
         plan,
@@ -2058,6 +2111,7 @@ export class Agent {
           extraUserInstruction,
           contextRetryLevel,
           iterationCount,
+          allowedTools,
         );
         const messages = plan.messages as ChatMessage[];
         this.emitPromptPlanAndRequestStartedDiagnostics(
@@ -2205,7 +2259,7 @@ export class Agent {
     const metadata: SessionMetadata = {
       providerName: this.provider.name,
       modelKey: this.model,
-      systemPrompt: this.systemPrompt,
+      systemPrompt: this.baseRules,
       promptBudgetPolicy: DEFAULT_BUDGET_POLICY,
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
@@ -2282,7 +2336,8 @@ export class Agent {
   }
 
   setSystemPrompt(prompt: string): void {
-    this.systemPrompt = prompt;
+    this.baseRules = prompt;
+    this.systemPromptRegistry.invalidateCoreIdentity();
   }
 
   getTools(): ChatTool[] {

@@ -216,7 +216,8 @@ describe("Agent Integration Tests", () => {
 
       await agent.streamChat("Test", () => {});
       // Verify new prompt is used in provider call
-      expect(receivedSystemPrompt).toBe(newPrompt);
+      expect(receivedSystemPrompt).toContain(newPrompt);
+      expect(receivedSystemPrompt).toContain("# Tool Utilization");
     });
   });
 
@@ -523,8 +524,9 @@ describe("Agent Integration Tests", () => {
       await agent.streamChat("Test 2", () => {});
 
       expect(systemPromptUsed).toHaveLength(2);
-      expect(systemPromptUsed[0]).toBe(customPrompt);
-      expect(systemPromptUsed[1]).toBe(customPrompt);
+      expect(systemPromptUsed[0]).toContain(customPrompt);
+      expect(systemPromptUsed[1]).toContain(customPrompt);
+      expect(systemPromptUsed[0]).toContain("# Runtime Environment");
     });
   });
 

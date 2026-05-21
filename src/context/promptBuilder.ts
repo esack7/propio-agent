@@ -19,6 +19,8 @@ import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
 export interface PromptBuildRequest {
   readonly systemPrompt: string;
+  /** Optional overflow runtime context appended after the system prompt core. */
+  readonly runtimeContextOverflowBlock?: string;
   /** Pre-rendered pinned memory block (from memoryManager.renderPinnedMemoryBlock). */
   readonly pinnedMemoryBlock?: string;
   /** Pre-rendered invoked skill block. */
@@ -89,6 +91,9 @@ export class PromptBuilder {
    */
   private composeSystemBase(request: PromptBuildRequest): string {
     const blocks: string[] = [request.systemPrompt];
+    if (request.runtimeContextOverflowBlock) {
+      blocks.push(request.runtimeContextOverflowBlock);
+    }
     if (request.pinnedMemoryBlock) {
       blocks.push(request.pinnedMemoryBlock);
     }

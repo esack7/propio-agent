@@ -675,6 +675,13 @@ describe("Agent with Multi-Provider Configuration", () => {
         expect(requestToolNames).toEqual(["write"]);
         expect(activeSkillNames).toContain("scope-lock");
         expect(activeSkillNames).not.toContain("path-activation");
+
+        const systemMsg = mockProvider.streamChatCalls[0].messages.find(
+          (m) => m.role === "system",
+        );
+        expect(systemMsg?.content).toContain("Enabled tools: write");
+        expect(systemMsg?.content).not.toMatch(/\bEnabled tools:.*\bread\b/);
+        expect(systemMsg?.content).not.toMatch(/\bEnabled tools:.*\bbash\b/);
       });
     });
 
@@ -1571,7 +1578,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(agent).toBeDefined();
     });
 
-    it("should prepend agentsMdContent to system prompt when provided", () => {
+    it("should place agentsMdContent in a dedicated section after core identity", () => {
       const agentsMdContent = "Project-specific instructions";
       const customPrompt = "Custom system prompt";
       const agent = new Agent({
@@ -1580,26 +1587,24 @@ describe("Agent with Multi-Provider Configuration", () => {
         agentsMdContent: agentsMdContent,
       });
 
-      const systemPrompt = (agent as any).systemPrompt;
-      expect(systemPrompt).toContain(agentsMdContent);
-      expect(systemPrompt).toContain(customPrompt);
-      expect(systemPrompt).toBe(`${agentsMdContent}\n\n${customPrompt}`);
+      expect((agent as any).baseRules).toBe(customPrompt);
+      expect((agent as any).agentsMdContent).toBe(agentsMdContent);
     });
 
-    it("should prepend agentsMdContent to default prompt when systemPrompt not provided", () => {
+    it("should store default core identity when systemPrompt not provided", () => {
       const agentsMdContent = "Project-specific instructions";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
         agentsMdContent: agentsMdContent,
       });
 
-      const systemPrompt = (agent as any).systemPrompt;
-      expect(systemPrompt).toContain(agentsMdContent);
-      expect(systemPrompt).toContain("You are a helpful AI assistant.");
-      expect(systemPrompt.startsWith(agentsMdContent)).toBe(true);
+      expect((agent as any).agentsMdContent).toBe(agentsMdContent);
+      expect((agent as any).baseRules).toContain(
+        "You are a helpful AI coding assistant",
+      );
     });
 
-    it("should use system prompt unchanged when agentsMdContent is empty", () => {
+    it("should keep custom core when agentsMdContent is empty", () => {
       const customPrompt = "Custom system prompt";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
@@ -1607,28 +1612,27 @@ describe("Agent with Multi-Provider Configuration", () => {
         agentsMdContent: "",
       });
 
-      const systemPrompt = (agent as any).systemPrompt;
-      expect(systemPrompt).toBe(customPrompt);
+      expect((agent as any).baseRules).toBe(customPrompt);
     });
 
-    it("should use system prompt unchanged when agentsMdContent is not provided", () => {
+    it("should keep custom core when agentsMdContent is not provided", () => {
       const customPrompt = "Custom system prompt";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
         systemPrompt: customPrompt,
       });
 
-      const systemPrompt = (agent as any).systemPrompt;
-      expect(systemPrompt).toBe(customPrompt);
+      expect((agent as any).baseRules).toBe(customPrompt);
     });
 
-    it("should use default prompt unchanged when agentsMdContent is not provided and systemPrompt is not provided", () => {
+    it("should use default core identity when agentsMdContent and systemPrompt are not provided", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
       });
 
-      const systemPrompt = (agent as any).systemPrompt;
-      expect(systemPrompt).toBe("You are a helpful AI assistant.");
+      expect((agent as any).baseRules).toContain(
+        "You are a helpful AI coding assistant",
+      );
     });
 
     it("should include agentsMdContent in messages sent to provider", async () => {
@@ -1673,9 +1677,12 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(firstIdx).toBeGreaterThanOrEqual(0);
       expect(secondIdx).toBe(-1);
 
-      // Both parts are present
+      // Both parts are present in compiled sections
       expect(systemContent).toContain(agentsMdContent);
       expect(systemContent).toContain(defaultPrompt);
+      expect(systemContent.indexOf("# Core Identity")).toBeLessThan(
+        systemContent.indexOf("# Project Instructions"),
+      );
     });
   });
 

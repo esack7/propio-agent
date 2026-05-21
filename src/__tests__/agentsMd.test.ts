@@ -5,7 +5,6 @@ import {
   discoverAgentsMdFilesAsync,
   loadAgentsMdContent,
   loadAgentsMdContentAsync,
-  composeSystemPrompt,
 } from "../agentsMd.js";
 
 describe("agentsMd", () => {
@@ -210,33 +209,4 @@ describe("agentsMd", () => {
     });
   });
 
-  describe("composeSystemPrompt()", () => {
-    it("should prepend non-empty AGENTS.md content with two-newline separator", () => {
-      const agentsMdContent = "Project-specific instructions";
-      const defaultPrompt = "Default system prompt";
-
-      const result = composeSystemPrompt(agentsMdContent, defaultPrompt);
-
-      expect(result).toBe(
-        "Project-specific instructions\n\nDefault system prompt",
-      );
-    });
-
-    it("should return default prompt unchanged when AGENTS.md content is empty", () => {
-      const defaultPrompt = "Default system prompt";
-
-      const result = composeSystemPrompt("", defaultPrompt);
-
-      expect(result).toBe(defaultPrompt);
-    });
-
-    it("should handle multi-line AGENTS.md content", () => {
-      const agentsMdContent = "Line 1\nLine 2\nLine 3";
-      const defaultPrompt = "Default prompt";
-
-      const result = composeSystemPrompt(agentsMdContent, defaultPrompt);
-
-      expect(result).toBe("Line 1\nLine 2\nLine 3\n\nDefault prompt");
-    });
-  });
 });

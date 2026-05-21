@@ -806,6 +806,7 @@ export class ContextManager {
       retryLevel?: number;
       rollingSummary?: string;
       summaryPolicy?: SummaryPolicy;
+      runtimeContextOverflowBlock?: string;
     },
   ): PromptPlan {
     const policy = options?.policy ?? DEFAULT_BUDGET_POLICY;
@@ -819,6 +820,7 @@ export class ContextManager {
 
     const request: PromptBuildRequest = {
       systemPrompt,
+      runtimeContextOverflowBlock: options?.runtimeContextOverflowBlock,
       pinnedMemoryBlock,
       invokedSkillsBlock: renderInvokedSkillBlock(this.invokedSkills),
       conversationState: {
