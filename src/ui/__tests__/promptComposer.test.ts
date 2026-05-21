@@ -1,21 +1,25 @@
-import { PassThrough } from "stream";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import * as readline from "readline";
-import { createPromptComposer } from "../promptComposer.js";
-import { createPromptHistoryStore } from "../promptHistory.js";
-import { getIdleFooterText } from "../slashCommands.js";
 import type { PromptEditorRunner } from "../promptEditor.js";
 import {
+  closeHistoryPromptHarness,
   composeChatPrompt,
   createFakeReadlineHarness,
-  createTempHistoryStore,
+  createNonTtyPromptHarness,
+  createPromptComposer,
+  createReadlinePromptComposer,
   createTtyHarness,
   createVisibilityFooterToggles,
+  expectReadlineConfirm,
   flush,
+  getIdleFooterText,
+  startChatPrompt,
   startDisabledSearchChatPrompt,
+  startHistoryChatPrompt,
+  submitDraftAfterSearchCancel,
   submitPromptText,
+  triggerReverseHistorySearch,
   type TtyHarness,
 } from "./promptComposerTestHelpers.js";
 
@@ -23,32 +27,6 @@ jest.setTimeout(10000);
 
 function stripAnsiControls(text: string): string {
   return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
-}
-
-function createHarness(options?: {
-  renderFooter?: (footer: string) => void;
-  renderState?: (state: unknown) => void;
-  onToggleToolCalls?: () => string | null | undefined;
-  onToggleThinking?: () => string | null | undefined;
-}) {
-  const inputStream = new PassThrough();
-  const outputStream = new PassThrough();
-  outputStream.setEncoding("utf8");
-
-  const composer = createPromptComposer({
-    input: inputStream as unknown as NodeJS.ReadStream,
-    output: outputStream as unknown as NodeJS.WriteStream,
-    renderFooter: options?.renderFooter,
-    renderState: options?.renderState as ((state: unknown) => void) | undefined,
-    onToggleToolCalls: options?.onToggleToolCalls,
-    onToggleThinking: options?.onToggleThinking,
-  });
-
-  return {
-    composer,
-    inputStream,
-    outputStream,
-  };
 }
 
 async function submitTwoLineMultilineDraft(
@@ -93,7 +71,7 @@ describe("createPromptComposer", () => {
   });
 
   it("exposes the current prompt state while composing", async () => {
-    const harness = createHarness();
+    const harness = createNonTtyPromptHarness();
 
     const prompt = harness.composer.compose({
       mode: "chat",
@@ -176,7 +154,7 @@ describe("createPromptComposer", () => {
 
   it("renders the supplied footer through the injected renderer", async () => {
     const renderFooter = jest.fn();
-    const harness = createHarness({ renderFooter });
+    const harness = createNonTtyPromptHarness({ renderFooter });
 
     const prompt = harness.composer.compose({
       mode: "chat",
@@ -392,7 +370,7 @@ describe("createPromptComposer", () => {
 
   it("surfaces prompt state snapshots through the render callback", async () => {
     const renderState = jest.fn();
-    const harness = createHarness({ renderState });
+    const harness = createNonTtyPromptHarness({ renderState });
 
     const prompt = harness.composer.compose({
       mode: "chat",
@@ -459,13 +437,8 @@ describe("createPromptComposer", () => {
   });
 
   it("records submitted chat input", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-chat-");
-    const readlineHarness = createFakeReadlineHarness();
-
-    const composer = createPromptComposer({
-      createInterface: readlineHarness.createInterface,
-      historyStore,
-    });
+    const { historyStore, cleanup, readlineHarness, composer } =
+      createReadlinePromptComposer("propio-chat-");
 
     const prompt = composer.compose({
       mode: "chat",
@@ -486,13 +459,8 @@ describe("createPromptComposer", () => {
   });
 
   it("does not record blank input, confirm input, or control commands", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-history-");
-    const readlineHarness = createFakeReadlineHarness();
-
-    const composer = createPromptComposer({
-      createInterface: readlineHarness.createInterface,
-      historyStore,
-    });
+    const { historyStore, cleanup, readlineHarness, composer } =
+      createReadlinePromptComposer("propio-history-");
 
     const blank = composer.compose({
       mode: "chat",
@@ -514,12 +482,7 @@ describe("createPromptComposer", () => {
       text: "/clear",
     });
 
-    const confirm = composer.confirm({
-      promptText: "Continue? ",
-      defaultValue: false,
-    });
-    readlineHarness.submit("y");
-    await expect(confirm).resolves.toBe(true);
+    await expectReadlineConfirm(readlineHarness, composer);
 
     const exit = composer.compose({
       mode: "chat",
@@ -548,13 +511,8 @@ describe("createPromptComposer", () => {
   });
 
   it("records useful slash commands", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-slash-");
-    const readlineHarness = createFakeReadlineHarness();
-
-    const composer = createPromptComposer({
-      createInterface: readlineHarness.createInterface,
-      historyStore,
-    });
+    const { historyStore, cleanup, readlineHarness, composer } =
+      createReadlinePromptComposer("propio-slash-");
 
     const prompt = composer.compose({
       mode: "chat",
@@ -613,12 +571,7 @@ describe("createPromptComposer", () => {
     });
     expect(readlineHarness.getHistory()).toEqual([]);
 
-    const confirm = composer.confirm({
-      promptText: "Continue? ",
-      defaultValue: false,
-    });
-    readlineHarness.submit("y");
-    await expect(confirm).resolves.toBe(true);
+    await expectReadlineConfirm(readlineHarness, composer);
     expect(readlineHarness.getHistory()).toEqual([]);
 
     const exit = composer.compose({
@@ -646,13 +599,7 @@ describe("createPromptComposer", () => {
       historyStore,
     });
 
-    const confirm = composer.confirm({
-      promptText: "Continue? ",
-      defaultValue: false,
-    });
-    readlineHarness.submit("y");
-
-    await expect(confirm).resolves.toBe(true);
+    await expectReadlineConfirm(readlineHarness, composer);
     expect(readlineHarness.getHistory()).toEqual(["y"]);
 
     composer.close();
@@ -661,18 +608,13 @@ describe("createPromptComposer", () => {
 
 describe("createPromptComposer reverse history search", () => {
   it("starts reverse search only for chat prompts and records recalled submissions", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-search-");
-    historyStore.record("older");
-    historyStore.record("newer");
-    const harness = createTtyHarness({ historyStore });
+    const { harness, prompt, historyStore, cleanup } =
+      await startHistoryChatPrompt({
+        prefix: "propio-search-",
+        entries: ["older", "newer"],
+      });
 
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
-    });
-    await flush();
-
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     expect(harness.composer.getState()).toMatchObject({
       buffer: "newer",
       cursor: 5,
@@ -688,7 +630,7 @@ describe("createPromptComposer reverse history search", () => {
     expect(harness.getOutput()).toContain("history search:   match: newer");
     expect(harness.getOutput()).not.toContain("reverse search:");
 
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     expect(harness.composer.getState()).toMatchObject({
       buffer: "older",
       cursor: 5,
@@ -723,15 +665,10 @@ describe("createPromptComposer reverse history search", () => {
   });
 
   it("handles raw bytes without readline echo during reverse search", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-bytes-");
-    historyStore.record("hello world");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-bytes-",
+      entries: ["hello world"],
     });
-    await flush();
 
     harness.inputStream.write("h");
     harness.inputStream.write("e");
@@ -788,7 +725,7 @@ describe("createPromptComposer reverse history search", () => {
     });
     await flush();
 
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     expect(harness.composer.getState()).toMatchObject({
       mode: "confirm",
       historySearch: undefined,
@@ -801,18 +738,13 @@ describe("createPromptComposer reverse history search", () => {
   });
 
   it("cancels reverse search and restores the draft", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-cancel-");
-    historyStore.record("first");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-cancel-",
+      entries: ["first"],
     });
-    await flush();
 
     harness.typeText("draft");
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     harness.typeText("fi");
     expect(harness.composer.getState()).toMatchObject({
       buffer: "first",
@@ -826,28 +758,14 @@ describe("createPromptComposer reverse history search", () => {
     });
 
     harness.emitKeypress({ name: "escape" }, "\u001b");
-    expect(harness.composer.getState()).toMatchObject({
-      buffer: "draft",
-      historySearch: undefined,
-    });
-
-    await submitPromptText(harness, prompt, "draft");
-
-    harness.composer.close();
-    cleanup();
+    await submitDraftAfterSearchCancel(harness, prompt, { cleanup });
   });
 
   it("shows a no-match status without discarding the draft", async () => {
-    const harness = createTtyHarness();
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
-    });
-    await flush();
+    const { harness, prompt } = await startChatPrompt();
 
     harness.typeText("draft");
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     harness.typeText("zzz");
 
     expect(harness.composer.getState()).toMatchObject({
@@ -869,19 +787,13 @@ describe("createPromptComposer reverse history search", () => {
   });
 
   it("renders only the first line of multiline history matches", async () => {
-    const { historyStore, cleanup } =
-      createTempHistoryStore("propio-multiline-");
-    historyStore.record("first line\nsecond line");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-multiline-",
+      entries: ["first line\nsecond line"],
+      clearOutput: true,
     });
-    await flush();
-    harness.takeOutput();
 
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
 
     expect(harness.composer.getState()).toMatchObject({
       buffer: "first line\nsecond line",
@@ -902,79 +814,51 @@ describe("createPromptComposer reverse history search", () => {
       text: "first line\nsecond line",
     });
 
-    harness.composer.close();
-    cleanup();
+    await closeHistoryPromptHarness(harness, cleanup);
   });
 
   it("clips long history search previews to one terminal row", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-long-");
-    historyStore.record("abcdefghijklmnopqrstuvwxyz0123456789");
-    const harness = createTtyHarness({ columns: 32, historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-long-",
+      entries: ["abcdefghijklmnopqrstuvwxyz0123456789"],
+      columns: 32,
+      clearOutput: true,
     });
-    await flush();
-    harness.takeOutput();
 
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
 
     const rendered = stripAnsiControls(harness.takeOutput()).replace(/\r/g, "");
     expect(rendered).toContain("...");
     expect(rendered).not.toContain("abcdefghijklmnopqrstuvwxyz0123456789");
     expect(rendered.length).toBeLessThanOrEqual(31);
 
-    harness.composer.close();
+    await closeHistoryPromptHarness(harness, cleanup);
     await expect(prompt).resolves.toEqual({
       status: "closed",
     });
-    cleanup();
   });
 
   it("cancels reverse search with Ctrl+G", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-ctrlg-");
-    historyStore.record("first");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-ctrlg-",
+      entries: ["first"],
     });
-    await flush();
 
     harness.typeText("draft");
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     harness.typeText("fi");
     harness.emitKeypress({ name: "g", ctrl: true }, "\u0007");
 
-    expect(harness.composer.getState()).toMatchObject({
-      buffer: "draft",
-      historySearch: undefined,
-    });
-
-    harness.emitKeypress({ name: "return" }, "\r");
-    await expect(prompt).resolves.toEqual({
-      status: "submitted",
-      text: "draft",
-    });
-
-    harness.composer.close();
-    cleanup();
+    await submitDraftAfterSearchCancel(harness, prompt, { cleanup });
   });
 
   it("lets recalled search text be edited before submission", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-edit-");
-    historyStore.record("hello world");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-edit-",
+      entries: ["hello world"],
     });
-    await flush();
 
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     harness.typeText("hello");
     harness.emitKeypress({ name: "return" }, "\r");
     harness.typeText("!");
@@ -990,8 +874,7 @@ describe("createPromptComposer reverse history search", () => {
       text: "hello world!",
     });
 
-    harness.composer.close();
-    cleanup();
+    await closeHistoryPromptHarness(harness, cleanup);
   });
 
   it("closes the custom prompt on Ctrl+D", async () => {
@@ -1012,16 +895,10 @@ describe("createPromptComposer reverse history search", () => {
   });
 
   it("preserves unsent drafts while navigating history", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-nav-");
-    historyStore.record("newest");
-    historyStore.record("older");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-nav-",
+      entries: ["newest", "older"],
     });
-    await flush();
 
     harness.typeText("draft");
     harness.emitKeypress({ name: "up" });
@@ -1034,28 +911,17 @@ describe("createPromptComposer reverse history search", () => {
       buffer: "draft",
     });
 
-    harness.emitKeypress({ name: "return" }, "\r");
-    await expect(prompt).resolves.toEqual({
-      status: "submitted",
-      text: "draft",
-    });
-
-    harness.composer.close();
-    cleanup();
+    await submitPromptText(harness, prompt, "draft");
+    await closeHistoryPromptHarness(harness, cleanup);
   });
 
   it("exposes active search summary without leaking mutable arrays", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-state-");
-    historyStore.record("match");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-state-",
+      entries: ["match"],
     });
-    await flush();
 
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
     const state = harness.composer.getState();
 
     expect(state).toMatchObject({
@@ -1567,19 +1433,14 @@ describe("createPromptComposer typeahead", () => {
   });
 
   it("clears typeahead before reverse search and restores the draft on cancel", async () => {
-    const { historyStore, cleanup } = createTempHistoryStore("propio-search-");
-    historyStore.record("older");
-    const harness = createTtyHarness({ historyStore });
-
-    const prompt = harness.composer.compose({
-      mode: "chat",
-      promptText: "Name? ",
+    const { harness, prompt, cleanup } = await startHistoryChatPrompt({
+      prefix: "propio-search-",
+      entries: ["older"],
     });
-    await flush();
 
     harness.typeText("/con");
     harness.emitKeypress({ name: "tab" }, "\t");
-    harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+    triggerReverseHistorySearch(harness);
 
     expect(harness.composer.getState()).toMatchObject({
       historySearch: {

@@ -7,6 +7,8 @@ import * as readline from "readline";
 import { createPromptComposer } from "../promptComposer.js";
 import { createPromptHistoryStore } from "../promptHistory.js";
 import { getIdleFooterText } from "../slashCommands.js";
+
+export { createPromptComposer, getIdleFooterText };
 import type { PromptEditorRunner } from "../promptEditor.js";
 import type { PromptResult } from "../promptComposer.js";
 
@@ -112,7 +114,7 @@ export function createFakeReadlineHarness() {
   };
 }
 
-export function createTtyStreams(columns = 80): {
+export function createCapturingPassThroughStreams(): {
   inputStream: PassThrough;
   outputStream: PassThrough;
   getOutput: () => string;
@@ -126,6 +128,27 @@ export function createTtyStreams(columns = 80): {
   outputStream.on("data", (chunk) => {
     output += chunk;
   });
+
+  return {
+    inputStream,
+    outputStream,
+    getOutput: () => output,
+    takeOutput: () => {
+      const current = output;
+      output = "";
+      return current;
+    },
+  };
+}
+
+export function createTtyStreams(columns = 80): {
+  inputStream: PassThrough;
+  outputStream: PassThrough;
+  getOutput: () => string;
+  takeOutput: () => string;
+} {
+  const streams = createCapturingPassThroughStreams();
+  const { inputStream, outputStream } = streams;
   inputStream.setEncoding("utf8");
 
   (
@@ -138,16 +161,7 @@ export function createTtyStreams(columns = 80): {
   ttyOutput.isTTY = true;
   ttyOutput.columns = columns;
 
-  return {
-    inputStream,
-    outputStream,
-    getOutput: () => output,
-    takeOutput: () => {
-      const current = output;
-      output = "";
-      return current;
-    },
-  };
+  return streams;
 }
 
 export type TtyHarness = ReturnType<typeof createTtyHarness>;
@@ -267,4 +281,131 @@ export async function submitPromptText(
     status: "submitted",
     text,
   });
+}
+
+export function createNonTtyPromptHarness(options?: {
+  renderFooter?: (footer: string) => void;
+  renderState?: (state: unknown) => void;
+  onToggleToolCalls?: () => string | null | undefined;
+  onToggleThinking?: () => string | null | undefined;
+}) {
+  const inputStream = new PassThrough();
+  const outputStream = new PassThrough();
+  outputStream.setEncoding("utf8");
+
+  const composer = createPromptComposer({
+    input: inputStream as unknown as NodeJS.ReadStream,
+    output: outputStream as unknown as NodeJS.WriteStream,
+    renderFooter: options?.renderFooter,
+    renderState: options?.renderState as ((state: unknown) => void) | undefined,
+    onToggleToolCalls: options?.onToggleToolCalls,
+    onToggleThinking: options?.onToggleThinking,
+  });
+
+  return {
+    composer,
+    inputStream,
+    outputStream,
+  };
+}
+
+export function createReadlinePromptComposer(prefix: string): {
+  historyStore: ReturnType<typeof createPromptHistoryStore>;
+  cleanup: () => void;
+  readlineHarness: ReturnType<typeof createFakeReadlineHarness>;
+  composer: ReturnType<typeof createPromptComposer>;
+} {
+  const { historyStore, cleanup } = createTempHistoryStore(prefix);
+  const readlineHarness = createFakeReadlineHarness();
+  const composer = createPromptComposer({
+    createInterface: readlineHarness.createInterface,
+    historyStore,
+  });
+
+  return { historyStore, cleanup, readlineHarness, composer };
+}
+
+export async function startChatPrompt(
+  harnessOptions?: Parameters<typeof createTtyHarness>[0],
+): Promise<{ harness: TtyHarness; prompt: Promise<PromptResult> }> {
+  const harness = createTtyHarness(harnessOptions);
+  const prompt = harness.composer.compose({
+    mode: "chat",
+    promptText: "Name? ",
+  });
+  await flush();
+  return { harness, prompt };
+}
+
+export async function startHistoryChatPrompt(options: {
+  prefix: string;
+  entries?: string[];
+  columns?: number;
+  clearOutput?: boolean;
+  enableReverseHistorySearch?: boolean;
+  enableTypeahead?: boolean;
+}): Promise<{
+  harness: TtyHarness;
+  prompt: Promise<PromptResult>;
+  historyStore: ReturnType<typeof createPromptHistoryStore>;
+  cleanup: () => void;
+}> {
+  const { historyStore, cleanup } = createTempHistoryStore(options.prefix);
+  for (const entry of options.entries ?? []) {
+    historyStore.record(entry);
+  }
+  const harness = createTtyHarness({
+    historyStore,
+    columns: options.columns,
+    enableReverseHistorySearch: options.enableReverseHistorySearch,
+    enableTypeahead: options.enableTypeahead,
+  });
+  const prompt = harness.composer.compose({
+    mode: "chat",
+    promptText: "Name? ",
+  });
+  await flush();
+  if (options.clearOutput) {
+    harness.takeOutput();
+  }
+  return { harness, prompt, historyStore, cleanup };
+}
+
+export function triggerReverseHistorySearch(harness: TtyHarness): void {
+  harness.emitKeypress({ name: "r", ctrl: true }, "\u0012");
+}
+
+export async function expectReadlineConfirm(
+  readlineHarness: ReturnType<typeof createFakeReadlineHarness>,
+  composer: ReturnType<typeof createPromptComposer>,
+  answer = "y",
+): Promise<void> {
+  const confirm = composer.confirm({
+    promptText: "Continue? ",
+    defaultValue: false,
+  });
+  readlineHarness.submit(answer);
+  await expect(confirm).resolves.toBe(true);
+}
+
+export async function closeHistoryPromptHarness(
+  harness: TtyHarness,
+  cleanup?: () => void,
+): Promise<void> {
+  harness.composer.close();
+  cleanup?.();
+}
+
+export async function submitDraftAfterSearchCancel(
+  harness: TtyHarness,
+  prompt: Promise<PromptResult>,
+  options?: { cleanup?: () => void; draftText?: string },
+): Promise<void> {
+  const draftText = options?.draftText ?? "draft";
+  expect(harness.composer.getState()).toMatchObject({
+    buffer: draftText,
+    historySearch: undefined,
+  });
+  await submitPromptText(harness, prompt, draftText);
+  await closeHistoryPromptHarness(harness, options?.cleanup);
 }
