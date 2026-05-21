@@ -9,6 +9,8 @@ import {
 import { ChatRequest, ChatMessage } from "../types.js";
 import { AgentDiagnosticEvent } from "../../diagnostics.js";
 import {
+  collectOpenRouterThinkingAndToolEvents,
+  collectOpenRouterThinkingEvents,
   OpenRouterTestFixture,
   registerAcceptsApiKeyTest,
   registerProviderTestLifecycle,
@@ -466,26 +468,12 @@ describe("OpenRouterProvider", () => {
     });
 
     it("should preserve reasoning content on streamed tool calls", async () => {
-      const chunks = [
-        'data: {"choices":[{"delta":{"reasoning_content":"I should inspect the file."}}]}\n\n',
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":\\"package.json\\"}"}}]}}]}\n\n',
-        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
-        "data: [DONE]\n\n",
-      ];
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream(chunks),
-      });
-
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v4-pro",
         contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
-
-      const thinkingEvents: string[] = [];
-      const toolEvents: unknown[] = [];
-      for await (const event of provider.streamChat({
+      const request = {
         model: "deepseek/deepseek-v4-pro",
         messages: [{ role: "user", content: "Inspect package" }],
         tools: [
@@ -498,48 +486,42 @@ describe("OpenRouterProvider", () => {
             },
           },
         ],
-      })) {
-        if (event.type === "thinking_delta") {
-          thinkingEvents.push(event.delta);
-        }
-        if (event.type === "tool_calls") {
-          toolEvents.push(event);
-        }
-      }
+      } as const;
+      const { thinkingEvents, toolEvents } =
+        await collectOpenRouterThinkingAndToolEvents(
+          provider,
+          [
+            'data: {"choices":[{"delta":{"reasoning_content":"I should inspect the file."}}]}\n\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":\\"package.json\\"}"}}]}}]}\n\n',
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+            "data: [DONE]\n\n",
+          ],
+          request,
+        );
 
       expect(thinkingEvents).toEqual(["I should inspect the file."]);
       expect(toolEvents).toHaveLength(1);
-      expect((toolEvents[0] as any).reasoningContent).toBe(
-        "I should inspect the file.",
-      );
+      expect(toolEvents[0].reasoningContent).toBe("I should inspect the file.");
     });
 
     it("should emit each reasoning_content chunk as a live thinking delta", async () => {
-      const chunks = [
-        'data: {"choices":[{"delta":{"reasoning_content":"I should inspect "}}]}\n\n',
-        'data: {"choices":[{"delta":{"reasoning_content":"the file."}}]}\n\n',
-        "data: [DONE]\n\n",
-      ];
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: createSseStream(chunks),
-      });
-
       const provider = new OpenRouterProvider({
         model: "deepseek/deepseek-v4-pro",
         contextWindowTokens: 128_000,
         apiKey: "sk-test",
       });
-
-      const thinkingEvents: string[] = [];
-      for await (const event of provider.streamChat({
-        model: "deepseek/deepseek-v4-pro",
-        messages: [{ role: "user", content: "Inspect package" }],
-      })) {
-        if (event.type === "thinking_delta") {
-          thinkingEvents.push(event.delta);
-        }
-      }
+      const thinkingEvents = await collectOpenRouterThinkingEvents(
+        provider,
+        [
+          'data: {"choices":[{"delta":{"reasoning_content":"I should inspect "}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_content":"the file."}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        {
+          model: "deepseek/deepseek-v4-pro",
+          messages: [{ role: "user", content: "Inspect package" }],
+        },
+      );
 
       expect(thinkingEvents).toEqual(["I should inspect ", "the file."]);
     });

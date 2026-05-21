@@ -19,6 +19,7 @@ import {
 } from "./replUi.js";
 import type { ToolCallView } from "./toolCallView.js";
 import type { PromptState } from "./promptState.js";
+import { renderTranscriptEntry } from "./transcriptEntryOps.js";
 
 export interface TerminalUiOptions {
   interactive: boolean;
@@ -492,68 +493,12 @@ export class TerminalUi {
       return;
     }
 
-    this.renderLegacyTranscriptEntry(entry);
-  }
-
-  private renderLegacyTranscriptEntry(entry: TranscriptEntry): void {
-    switch (entry.kind) {
-      case "user_message":
-        this.transcript.userMessage(entry.text);
-        break;
-      case "assistant_start":
-        this.transcript.beginAssistantResponse();
-        break;
-      case "assistant_token":
-        this.transcript.writeAssistant(entry.text);
-        break;
-      case "thinking_start":
-        this.transcript.beginThinkingResponse();
-        break;
-      case "thinking_token":
-        this.transcript.writeThinking(entry.text);
-        break;
-      case "info":
-        this.transcript.info(entry.text);
-        break;
-      case "command":
-        this.transcript.command(entry.text);
-        break;
-      case "subtle":
-        this.transcript.subtle(entry.text);
-        break;
-      case "warn":
-        this.transcript.warn(entry.text);
-        break;
-      case "success":
-        this.transcript.success(entry.text);
-        break;
-      case "error":
-        this.transcript.error(entry.text);
-        break;
-      case "section":
-        this.transcript.section(entry.text);
-        break;
-      case "indent":
-        this.transcript.indent(entry.text);
-        break;
-      case "reasoning_summary":
-        this.transcript.reasoningSummary(entry.summary, entry.source);
-        break;
-      case "turn_complete":
-        this.transcript.turnComplete(entry.durationMs);
-        break;
-      case "turn_failed":
-        this.transcript.turnFailed(entry.durationMs);
-        break;
-      case "json":
-        this.transcript.writeJson(entry.value);
-        break;
-    }
+    renderTranscriptEntry(this.transcript, entry);
   }
 
   private renderOverlayEntries(entries: readonly TranscriptEntry[]): void {
     for (const entry of entries) {
-      this.renderLegacyTranscriptEntry(entry);
+      renderTranscriptEntry(this.transcript, entry);
     }
   }
 

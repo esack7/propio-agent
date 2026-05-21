@@ -8,6 +8,7 @@ import {
   streamAssistantTurn,
   type AssistantTurnAgent,
   type AssistantTurnVisibilityOptions,
+  type AssistantTurnVisibilitySource,
 } from "../assistantTurnRenderer.js";
 import { TerminalUi } from "../terminal.js";
 import { createTtyTestStream, stripAnsi } from "./ttyTestStream.js";
@@ -140,6 +141,67 @@ function createInlineAssistantTurnAgent(
     getConversationState: () =>
       options.conversationState ?? emptyConversationState(),
   };
+}
+
+async function runInlineAssistantTurn(options: {
+  ui: TerminalUi;
+  streamChat: AssistantTurnAgent["streamChat"];
+  userInput: string;
+  abortSignal?: AbortSignal;
+  visibility: AssistantTurnVisibilitySource;
+}): Promise<string> {
+  const agent = createInlineAssistantTurnAgent(options.streamChat);
+
+  return streamAssistantTurn(
+    agent,
+    options.userInput,
+    options.ui,
+    options.abortSignal ?? new AbortController().signal,
+    options.visibility,
+  );
+}
+
+async function runPlainThinkingOutputTest(options: {
+  userInput: string;
+  visibility: AssistantTurnVisibilityOptions;
+  forbiddenSubstrings: readonly string[];
+}): Promise<string> {
+  const { ui, stderr } = createUi({ interactive: false, plain: true });
+  const agent = new ScriptedAssistantTurnAgent(
+    [
+      thinkingStep("Reasoning that should stay hidden."),
+      { type: "token", value: "Final answer." },
+    ],
+    { response: "Final answer." },
+  );
+
+  await streamAssistantTurn(
+    agent,
+    options.userInput,
+    ui,
+    new AbortController().signal,
+    options.visibility,
+  );
+
+  const output = normalizeOutput(stderr.chunks);
+  for (const forbidden of options.forbiddenSubstrings) {
+    expect(output).not.toContain(forbidden);
+  }
+
+  return output;
+}
+
+async function runInlineAssistantTurnAndNormalize(options: {
+  ui: TerminalUi;
+  stderr: { chunks: string[] };
+  streamChat: AssistantTurnAgent["streamChat"];
+  userInput: string;
+  visibility:
+    | AssistantTurnVisibilityOptions
+    | (() => AssistantTurnVisibilityOptions);
+}): Promise<string> {
+  await runInlineAssistantTurn(options);
+  return normalizeOutput(options.stderr.chunks);
 }
 
 function createPromptPlanSnapshot(): PromptPlanSnapshot {
@@ -515,70 +577,37 @@ describe("streamAssistantTurn", () => {
   });
 
   it("suppresses visible thinking in plain non-interactive output", async () => {
-    const { ui, stderr } = createUi({ interactive: false, plain: true });
-    const agent = new ScriptedAssistantTurnAgent(
-      [
-        thinkingStep("Reasoning that should stay hidden."),
-        { type: "token", value: "Final answer." },
-      ],
-      { response: "Final answer." },
-    );
-
-    await streamAssistantTurn(
-      agent,
-      "plain thinking test",
-      ui,
-      new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showThinking: true,
-      },
-    );
-
-    const output = normalizeOutput(stderr.chunks);
+    const output = await runPlainThinkingOutputTest({
+      userInput: "plain thinking test",
+      visibility: { ...defaultVisibility, showThinking: true },
+      forbiddenSubstrings: ["Reasoning that should stay hidden.", "Thinking:"],
+    });
 
     expect(output).toContain("Final answer.");
-    expect(output).not.toContain("Reasoning that should stay hidden.");
-    expect(output).not.toContain("Thinking:");
   });
 
   it("keeps hidden thinking silent in plain non-interactive output", async () => {
-    const { ui, stderr } = createUi({ interactive: false, plain: true });
-    const agent = new ScriptedAssistantTurnAgent(
-      [
-        thinkingStep("Reasoning that should stay hidden."),
-        { type: "token", value: "Final answer." },
-      ],
-      { response: "Final answer." },
-    );
-
-    await streamAssistantTurn(
-      agent,
-      "plain hidden thinking test",
-      ui,
-      new AbortController().signal,
-      { ...defaultVisibility, showThinking: false },
-    );
-
-    const output = normalizeOutput(stderr.chunks);
+    const output = await runPlainThinkingOutputTest({
+      userInput: "plain hidden thinking test",
+      visibility: { ...defaultVisibility, showThinking: false },
+      forbiddenSubstrings: ["Reasoning that should stay hidden.", "Thinking"],
+    });
 
     expect(output).toContain("Final answer.");
-    expect(output).not.toContain("Reasoning that should stay hidden.");
-    expect(output).not.toContain("Thinking");
   });
 
   it("applies thinking visibility changes to future deltas during a turn", async () => {
     const { ui, stderr } = createUi();
     let showThinking = true;
-    const agent = createInlineAssistantTurnAgent(
-      async (
-        _userInput: string,
-        onToken: (token: string) => void,
-        callbacks?: {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-          abortSignal?: AbortSignal;
-        },
-      ): Promise<string> => {
+    const output = await runInlineAssistantTurnAndNormalize({
+      ui,
+      stderr,
+      userInput: "live thinking toggle",
+      visibility: () => ({
+        ...defaultVisibility,
+        showThinking,
+      }),
+      streamChat: async (_userInput, onToken, callbacks) => {
         callbacks?.onEvent?.({
           type: "thinking_delta",
           delta: "Visible reasoning.",
@@ -591,20 +620,7 @@ describe("streamAssistantTurn", () => {
         onToken("Final answer.");
         return "Final answer.";
       },
-    );
-
-    await streamAssistantTurn(
-      agent,
-      "live thinking toggle",
-      ui,
-      new AbortController().signal,
-      () => ({
-        ...defaultVisibility,
-        showThinking,
-      }),
-    );
-
-    const output = normalizeOutput(stderr.chunks);
+    });
 
     expect(output).toContain("Visible reasoning.");
     expect(output).not.toContain("Hidden reasoning.");
@@ -614,15 +630,12 @@ describe("streamAssistantTurn", () => {
   it("streams answer text immediately while visible thinking remains enabled", async () => {
     const { ui } = createUi();
     const beginAssistantSpy = jest.spyOn(ui, "beginAssistantResponse");
-    const agent = createInlineAssistantTurnAgent(
-      async (
-        _userInput: string,
-        onToken: (token: string) => void,
-        callbacks?: {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-          abortSignal?: AbortSignal;
-        },
-      ): Promise<string> => {
+
+    await runInlineAssistantTurn({
+      ui,
+      userInput: "visible thinking streams answer",
+      visibility: { ...defaultVisibility, showThinking: true },
+      streamChat: async (_userInput, onToken, callbacks) => {
         callbacks?.onEvent?.({
           type: "thinking_delta",
           delta: "Visible reasoning.",
@@ -631,18 +644,7 @@ describe("streamAssistantTurn", () => {
         expect(beginAssistantSpy).toHaveBeenCalled();
         return "Final answer.";
       },
-    );
-
-    await streamAssistantTurn(
-      agent,
-      "visible thinking streams answer",
-      ui,
-      new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showThinking: true,
-      },
-    );
+    });
   });
 
   it("commits tool output as transcript lines while visible thinking is streaming", async () => {
@@ -682,29 +684,17 @@ describe("streamAssistantTurn", () => {
 
   it("requests provider reasoning when visible thinking is enabled", async () => {
     const { ui } = createUi();
-    const agent = createInlineAssistantTurnAgent(
-      async (
-        _userInput: string,
-        onToken: (token: string) => void,
-        callbacks?: {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-          abortSignal?: AbortSignal;
-          requestReasoning?: boolean;
-        },
-      ): Promise<string> => {
+
+    await runInlineAssistantTurn({
+      ui,
+      userInput: "request thinking",
+      visibility: defaultVisibility,
+      streamChat: async (_userInput, onToken, callbacks) => {
         expect(callbacks?.requestReasoning).toBe(true);
         onToken("Final answer.");
         return "Final answer.";
       },
-    );
-
-    await streamAssistantTurn(
-      agent,
-      "request thinking",
-      ui,
-      new AbortController().signal,
-      defaultVisibility,
-    );
+    });
   });
 
   it("cleans up hidden status surfaces when the stream fails", async () => {
@@ -731,35 +721,24 @@ describe("streamAssistantTurn", () => {
     const { ui } = createUi();
     const doneSpy = jest.spyOn(ui, "done");
     const abortController = new AbortController();
-    const agent = createInlineAssistantTurnAgent(
-      async (
-        _userInput: string,
-        _onToken: (token: string) => void,
-        callbacks?: {
-          onEvent?: (event: AgentVisibilityEvent) => void;
-          abortSignal?: AbortSignal;
-        },
-      ): Promise<string> => {
-        callbacks?.onEvent?.({
-          type: "thinking_delta",
-          delta: "Reasoning before cancel.",
-        });
-        abortController.abort();
-        if (callbacks?.abortSignal?.aborted) {
-          throw new Error("Request cancelled");
-        }
-        return "";
-      },
-    );
-
     await expect(
-      streamAssistantTurn(
-        agent,
-        "aborted thinking stream",
+      runInlineAssistantTurn({
         ui,
-        abortController.signal,
-        { ...defaultVisibility, showThinking: false },
-      ),
+        abortSignal: abortController.signal,
+        userInput: "aborted thinking stream",
+        visibility: { ...defaultVisibility, showThinking: false },
+        streamChat: async (_userInput, _onToken, callbacks) => {
+          callbacks?.onEvent?.({
+            type: "thinking_delta",
+            delta: "Reasoning before cancel.",
+          });
+          abortController.abort();
+          if (callbacks?.abortSignal?.aborted) {
+            throw new Error("Request cancelled");
+          }
+          return "";
+        },
+      }),
     ).rejects.toThrow("Request cancelled");
 
     expect(doneSpy).toHaveBeenCalled();

@@ -234,3 +234,48 @@ export class OpenRouterTestFixture {
     return { fetchMock, provider };
   }
 }
+
+export function mockOpenRouterSseStream(chunks: string[]): void {
+  globalThis.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    body: OpenRouterTestFixture.createSseStream(chunks),
+  });
+}
+
+export async function collectOpenRouterThinkingEvents(
+  provider: StreamingProvider,
+  chunks: string[],
+  request: ChatRequest = DEFAULT_CHAT_REQUEST,
+): Promise<string[]> {
+  mockOpenRouterSseStream(chunks);
+
+  const thinkingEvents: string[] = [];
+  for await (const event of provider.streamChat(request)) {
+    if (event.type === "thinking_delta") {
+      thinkingEvents.push(event.delta);
+    }
+  }
+
+  return thinkingEvents;
+}
+
+export async function collectOpenRouterThinkingAndToolEvents(
+  provider: StreamingProvider,
+  chunks: string[],
+  request: ChatRequest,
+): Promise<{ thinkingEvents: string[]; toolEvents: ChatStreamEvent[] }> {
+  mockOpenRouterSseStream(chunks);
+
+  const thinkingEvents: string[] = [];
+  const toolEvents: ChatStreamEvent[] = [];
+  for await (const event of provider.streamChat(request)) {
+    if (event.type === "thinking_delta") {
+      thinkingEvents.push(event.delta);
+    }
+    if (event.type === "tool_calls") {
+      toolEvents.push(event);
+    }
+  }
+
+  return { thinkingEvents, toolEvents };
+}

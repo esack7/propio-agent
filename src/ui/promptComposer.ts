@@ -197,6 +197,34 @@ export function createPromptComposer(
     options.renderState?.(clonePromptState(currentState));
   };
 
+  const persistSubmittedPrompt = (text: string): void => {
+    if (!currentState || !activePrompt) {
+      return;
+    }
+
+    currentState = applySubmittedText(currentState, text);
+    const shouldKeepHistory = shouldKeepLiveHistoryEntry(
+      activePrompt.request,
+      text,
+    );
+
+    if (shouldKeepHistory) {
+      try {
+        options.historyStore?.record(text);
+      } catch {
+        // Prompt history is best-effort and must not block submission.
+      }
+
+      const updatedHistory = updateLiveHistorySnapshot(liveHistory, text);
+      liveHistory.splice(0, liveHistory.length, ...updatedHistory);
+      return;
+    }
+
+    if (!activePrompt.isCustomChat) {
+      restoreLiveHistory(rl, activePrompt.historySnapshot);
+    }
+  };
+
   const settlePending = (result: PromptResult): void => {
     if (!pendingResolve) {
       return;
@@ -210,28 +238,8 @@ export function createPromptComposer(
       activeChatSession = null;
     }
 
-    if (result.status === "submitted" && currentState && activePrompt) {
-      currentState = applySubmittedText(currentState, result.text);
-      const shouldKeepHistory = shouldKeepLiveHistoryEntry(
-        activePrompt.request,
-        result.text,
-      );
-
-      if (shouldKeepHistory) {
-        try {
-          options.historyStore?.record(result.text);
-        } catch {
-          // Prompt history is best-effort and must not block submission.
-        }
-
-        const updatedHistory = updateLiveHistorySnapshot(
-          liveHistory,
-          result.text,
-        );
-        liveHistory.splice(0, liveHistory.length, ...updatedHistory);
-      } else if (!activePrompt.isCustomChat) {
-        restoreLiveHistory(rl, activePrompt.historySnapshot);
-      }
+    if (result.status === "submitted") {
+      persistSubmittedPrompt(result.text);
     }
 
     activePrompt = null;

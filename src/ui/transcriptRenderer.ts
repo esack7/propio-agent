@@ -148,20 +148,14 @@ export class TranscriptRenderer {
   }
 
   turnComplete(durationMs: number): void {
-    if (this.options.json || !this.options.interactive) {
-      return;
-    }
-
-    this.options.clearStatus();
-    this.options.writer.writeStderrLine(
-      this.options.style(
-        `Turn complete in ${formatDurationSeconds(durationMs)}`,
-        formatSubtle,
-      ),
-    );
+    this.writeTurnTimingLine("Turn complete", durationMs);
   }
 
   turnFailed(durationMs: number): void {
+    this.writeTurnTimingLine("Turn failed", durationMs);
+  }
+
+  private writeTurnTimingLine(label: string, durationMs: number): void {
     if (this.options.json || !this.options.interactive) {
       return;
     }
@@ -169,7 +163,7 @@ export class TranscriptRenderer {
     this.options.clearStatus();
     this.options.writer.writeStderrLine(
       this.options.style(
-        `Turn failed in ${formatDurationSeconds(durationMs)}`,
+        `${label} in ${formatDurationSeconds(durationMs)}`,
         formatSubtle,
       ),
     );

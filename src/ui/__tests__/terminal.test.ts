@@ -3,6 +3,28 @@ import { symbols } from "../symbols.js";
 import { createTtyTestStream, stripAnsi } from "./ttyTestStream.js";
 import { createPromptState } from "../promptState.js";
 
+function expectTurnOutputSuppressed(options: {
+  interactive: boolean;
+  json: boolean;
+}): void {
+  const stdout = createTtyTestStream();
+  const stderr = createTtyTestStream();
+  const ui = new TerminalUi({
+    interactive: options.interactive,
+    json: options.json,
+    plain: true,
+    stdout,
+    stderr,
+  });
+
+  ui.idleFooter("ignored");
+  ui.turnComplete(1200);
+  ui.turnFailed(1200);
+
+  expect(stderr.chunks.join("")).toBe("");
+  expect(stdout.chunks.join("")).toBe("");
+}
+
 describe("TerminalUi", () => {
   it("writes informational lines to stderr", () => {
     const stdout = createTtyTestStream();
@@ -466,40 +488,10 @@ describe("TerminalUi", () => {
   });
 
   it("suppresses idle footer and turn result lines in JSON mode", () => {
-    const stdout = createTtyTestStream();
-    const stderr = createTtyTestStream();
-    const ui = new TerminalUi({
-      interactive: true,
-      json: true,
-      plain: true,
-      stdout,
-      stderr,
-    });
-
-    ui.idleFooter("ignored");
-    ui.turnComplete(1200);
-    ui.turnFailed(1200);
-
-    expect(stderr.chunks.join("")).toBe("");
-    expect(stdout.chunks.join("")).toBe("");
+    expectTurnOutputSuppressed({ interactive: true, json: true });
   });
 
   it("suppresses idle footer and turn result lines in non-interactive mode", () => {
-    const stdout = createTtyTestStream();
-    const stderr = createTtyTestStream();
-    const ui = new TerminalUi({
-      interactive: false,
-      json: false,
-      plain: true,
-      stdout,
-      stderr,
-    });
-
-    ui.idleFooter("ignored");
-    ui.turnComplete(1200);
-    ui.turnFailed(1200);
-
-    expect(stderr.chunks.join("")).toBe("");
-    expect(stdout.chunks.join("")).toBe("");
+    expectTurnOutputSuppressed({ interactive: false, json: false });
   });
 });
