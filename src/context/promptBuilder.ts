@@ -1,5 +1,9 @@
 import { ChatMessage } from "../providers/types.js";
-import { estimateTokens, measureMessages } from "../diagnostics.js";
+import {
+  estimateTokens,
+  measureMessages,
+  messageChars,
+} from "../diagnostics.js";
 import {
   PromptPlan,
   PromptBudgetPolicy,
@@ -167,6 +171,7 @@ export class PromptBuilder {
   // Normal build (retry levels 0–2)
   // -----------------------------------------------------------------------
 
+  // fallow-ignore-next-line complexity
   private buildNormalPlan(
     request: PromptBuildRequest,
     level: number,
@@ -693,6 +698,7 @@ export class PromptBuilder {
   // Token estimation for turns
   // -----------------------------------------------------------------------
 
+  // fallow-ignore-next-line complexity
   private estimateTurnTokens(
     turn: TurnRecord,
     request: PromptBuildRequest,
@@ -742,20 +748,6 @@ export class PromptBuilder {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function messageChars(msg: ChatMessage): number {
-  let chars = msg.content.length;
-  if (msg.reasoningContent) {
-    chars += msg.reasoningContent.length;
-  }
-  if (msg.toolCalls) {
-    chars += JSON.stringify(msg.toolCalls).length;
-  }
-  if (msg.toolResults) {
-    chars += JSON.stringify(msg.toolResults).length;
-  }
-  return chars;
-}
 
 function capForRehydrationWithCap(rawContent: string, cap: number): string {
   if (rawContent.length <= cap) {

@@ -113,4 +113,3 @@ export async function loadAgentsMdContentAsync(
 
   return sections.join("\n\n");
 }
-

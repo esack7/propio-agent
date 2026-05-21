@@ -836,9 +836,7 @@ export class Agent {
     const { core, runtimeContextOverflowBlock } =
       this.compileSystemCore(allowedTools);
     const discoveryBlock = this.composeSkillDiscoveryBlock();
-    const systemPrompt = discoveryBlock
-      ? `${core}\n\n${discoveryBlock}`
-      : core;
+    const systemPrompt = discoveryBlock ? `${core}\n\n${discoveryBlock}` : core;
 
     return { systemPrompt, runtimeContextOverflowBlock };
   }

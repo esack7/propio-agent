@@ -37,7 +37,9 @@ describe("compileSystemPrompt", () => {
 
   it("lists enabled tools in runtime environment", () => {
     const { compiled } = compileSystemPrompt(ctx);
-    const runtime = compiled.sections.find((s) => s.id === "runtimeEnvironment");
+    const runtime = compiled.sections.find(
+      (s) => s.id === "runtimeEnvironment",
+    );
 
     expect(runtime?.content).toContain("grep");
     expect(runtime?.content).toContain("mcp_search");

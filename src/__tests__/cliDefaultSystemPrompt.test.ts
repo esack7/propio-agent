@@ -2,7 +2,11 @@ import { execSync } from "child_process";
 import { Agent } from "../agent.js";
 import { defaultSystemPrompt } from "../defaultSystemPrompt.js";
 import { DEFAULT_CORE_IDENTITY } from "../prompt/compileSystemPrompt.js";
-import { ChatRequest, LLMProvider, ChatStreamEvent } from "../providers/types.js";
+import {
+  ChatRequest,
+  LLMProvider,
+  ChatStreamEvent,
+} from "../providers/types.js";
 import { testProvidersConfig } from "./testHelpers.js";
 
 class MockProvider implements LLMProvider {

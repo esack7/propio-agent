@@ -3,8 +3,8 @@ import * as os from "os";
 import * as path from "path";
 
 export const SYSTEM_PROMPT_ENV_MAX_CHARS = 2000;
-export const GIT_CACHE_TTL_MS = 5000;
-export const GIT_PROBE_TIMEOUT_MS = 150;
+const GIT_CACHE_TTL_MS = 5000;
+const GIT_PROBE_TIMEOUT_MS = 150;
 
 export interface SystemPromptContext {
   os: string;

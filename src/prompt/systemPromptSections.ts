@@ -36,6 +36,49 @@ Keep summaries concise after completing work.`;
 
 export type RuntimeToolListMode = "full" | "summary" | "omit";
 
+function formatGitState(ctx: SystemPromptContext): string {
+  if (ctx.gitBranch === undefined) {
+    return "- Git: not available or not a repository";
+  }
+
+  const dirty =
+    ctx.isGitDirty === true
+      ? "dirty"
+      : ctx.isGitDirty === false
+        ? "clean"
+        : "unknown";
+  return `- Git branch: ${ctx.gitBranch} (${dirty})`;
+}
+
+function formatEnabledTools(ctx: SystemPromptContext): string {
+  if (ctx.enabledToolNames.length === 0) {
+    return "- Enabled tools: (none)";
+  }
+
+  return `- Enabled tools: ${ctx.enabledToolNames.slice().sort().join(", ")}`;
+}
+
+function formatEnabledToolSummary(ctx: SystemPromptContext): string {
+  if (ctx.enabledToolNames.length === 0) {
+    return "- Enabled tools: (none)";
+  }
+
+  return `- Enabled tools: ${ctx.enabledToolNames.length} tools (full list in overflow block below)`;
+}
+
+function formatToolLine(
+  ctx: SystemPromptContext,
+  mode: RuntimeToolListMode,
+): string | null {
+  if (mode === "omit") {
+    return null;
+  }
+
+  return mode === "summary"
+    ? formatEnabledToolSummary(ctx)
+    : formatEnabledTools(ctx);
+}
+
 export function formatRuntimeEnvironmentSection(
   ctx: SystemPromptContext,
   opts?: {
@@ -55,32 +98,13 @@ export function formatRuntimeEnvironmentSection(
     `- Shell: ${ctx.shell}`,
   ];
 
-  if (includeGit && ctx.gitBranch !== undefined) {
-    const dirty =
-      ctx.isGitDirty === true
-        ? "dirty"
-        : ctx.isGitDirty === false
-          ? "clean"
-          : "unknown";
-    lines.push(`- Git branch: ${ctx.gitBranch} (${dirty})`);
-  } else if (includeGit && ctx.gitBranch === undefined) {
-    lines.push("- Git: not available or not a repository");
+  if (includeGit) {
+    lines.push(formatGitState(ctx));
   }
 
-  if (toolListMode !== "omit") {
-    if (ctx.enabledToolNames.length > 0) {
-      if (toolListMode === "summary") {
-        lines.push(
-          `- Enabled tools: ${ctx.enabledToolNames.length} tools (full list in overflow block below)`,
-        );
-      } else {
-        lines.push(
-          `- Enabled tools: ${ctx.enabledToolNames.slice().sort().join(", ")}`,
-        );
-      }
-    } else {
-      lines.push("- Enabled tools: (none)");
-    }
+  const toolLine = formatToolLine(ctx, toolListMode);
+  if (toolLine) {
+    lines.push(toolLine);
   }
 
   return lines.join("\n");
@@ -88,28 +112,9 @@ export function formatRuntimeEnvironmentSection(
 
 export function formatRuntimeOverflowBlock(ctx: SystemPromptContext): string {
   const lines = ["# Runtime Context (overflow)", ""];
-  if (ctx.gitBranch !== undefined) {
-    const dirty =
-      ctx.isGitDirty === true
-        ? "dirty"
-        : ctx.isGitDirty === false
-          ? "clean"
-          : "unknown";
-    lines.push(`- Git branch: ${ctx.gitBranch} (${dirty})`);
-  } else {
-    lines.push("- Git: not available or not a repository");
-  }
+  lines.push(formatGitState(ctx));
   lines.push(`- Working directory: ${ctx.cwd}`);
   lines.push(`- Date and time: ${ctx.dateTime}`);
-  if (ctx.enabledToolNames.length > 0) {
-    lines.push(
-      `- Enabled tools: ${ctx.enabledToolNames.slice().sort().join(", ")}`,
-    );
-  } else {
-    lines.push("- Enabled tools: (none)");
-  }
+  lines.push(formatEnabledTools(ctx));
   return lines.join("\n");
 }
-
-/** @deprecated Use formatRuntimeOverflowBlock */
-export const formatGitOverflowBlock = formatRuntimeOverflowBlock;

@@ -208,5 +208,4 @@ describe("agentsMd", () => {
       await expect(loadAgentsMdContentAsync([])).resolves.toBe("");
     });
   });
-
 });

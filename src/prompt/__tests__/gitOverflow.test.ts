@@ -4,34 +4,46 @@ import {
   buildEmptySystemPromptContext,
   SYSTEM_PROMPT_ENV_MAX_CHARS,
 } from "../systemPromptContext.js";
+import type { SystemPromptContext } from "../systemPromptContext.js";
+
+function expectRuntimeEnvOverflow(
+  ctx: SystemPromptContext,
+): ReturnType<typeof compileSystemPrompt> {
+  const result = compileSystemPrompt(ctx);
+  const runtime = result.compiled.sections.find(
+    (s) => s.id === "runtimeEnvironment",
+  );
+
+  expect(runtime?.content.length).toBeLessThanOrEqual(
+    SYSTEM_PROMPT_ENV_MAX_CHARS,
+  );
+  expect(result.runtimeContextOverflowBlock).toBeDefined();
+  return result;
+}
 
 describe("git overflow", () => {
   it("routes detailed git context to overflow when runtime section exceeds budget", () => {
     const longBranch = "feature/" + "x".repeat(SYSTEM_PROMPT_ENV_MAX_CHARS);
-    const ctx = buildEmptySystemPromptContext({
-      cwd: "/workspace",
-      enabledToolNames: ["read"],
-    });
     const bloated = {
-      ...ctx,
+      ...buildEmptySystemPromptContext({
+        cwd: "/workspace",
+        enabledToolNames: ["read"],
+      }),
       gitBranch: longBranch,
       isGitDirty: true,
     };
 
-    const full = formatRuntimeEnvironmentSection(bloated);
-    expect(full.length).toBeGreaterThan(SYSTEM_PROMPT_ENV_MAX_CHARS);
+    expect(formatRuntimeEnvironmentSection(bloated).length).toBeGreaterThan(
+      SYSTEM_PROMPT_ENV_MAX_CHARS,
+    );
 
     const { compiled, runtimeContextOverflowBlock } =
-      compileSystemPrompt(bloated);
+      expectRuntimeEnvOverflow(bloated);
     const runtime = compiled.sections.find(
       (s) => s.id === "runtimeEnvironment",
     );
 
-    expect(runtime?.content.length).toBeLessThanOrEqual(
-      SYSTEM_PROMPT_ENV_MAX_CHARS,
-    );
     expect(runtime?.content).not.toContain(longBranch);
-    expect(runtimeContextOverflowBlock).toBeDefined();
     expect(runtimeContextOverflowBlock).toContain(longBranch);
   });
 
@@ -42,19 +54,17 @@ describe("git overflow", () => {
       enabledToolNames: toolNames,
     });
 
-    const full = formatRuntimeEnvironmentSection(ctx);
-    expect(full.length).toBeGreaterThan(SYSTEM_PROMPT_ENV_MAX_CHARS);
+    expect(formatRuntimeEnvironmentSection(ctx).length).toBeGreaterThan(
+      SYSTEM_PROMPT_ENV_MAX_CHARS,
+    );
 
-    const { compiled, runtimeContextOverflowBlock } = compileSystemPrompt(ctx);
+    const { compiled, runtimeContextOverflowBlock } =
+      expectRuntimeEnvOverflow(ctx);
     const runtime = compiled.sections.find(
       (s) => s.id === "runtimeEnvironment",
     );
 
-    expect(runtime?.content.length).toBeLessThanOrEqual(
-      SYSTEM_PROMPT_ENV_MAX_CHARS,
-    );
     expect(runtime?.content).toMatch(/Enabled tools: 400 tools/);
-    expect(runtimeContextOverflowBlock).toBeDefined();
     expect(runtimeContextOverflowBlock).toContain("mcp_tool_0");
     expect(runtimeContextOverflowBlock).toContain("mcp_tool_399");
   });

@@ -46,9 +46,10 @@ const SECTION_ORDER: readonly SystemPromptSectionId[] = [
 const OVERFLOW_POINTER =
   "\n\nDetailed runtime context follows in the overflow block below.";
 
-function resolveRuntimeSection(
-  ctx: SystemPromptContext,
-): { section: string; overflowBlock?: string } {
+function resolveRuntimeSection(ctx: SystemPromptContext): {
+  section: string;
+  overflowBlock?: string;
+} {
   const full = formatRuntimeEnvironmentSection(ctx, {
     includeGitDetails: true,
     toolListMode: "full",

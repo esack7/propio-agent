@@ -68,16 +68,4 @@ export class SystemPromptSectionRegistry {
   invalidateCoreIdentity(): void {
     this.coreIdentityCache.clear();
   }
-
-  invalidateAgentsMd(): void {
-    this.agentsMdCache.clear();
-  }
-
-  invalidate(): void {
-    this.invalidateCoreIdentity();
-    this.invalidateAgentsMd();
-    this.toolUtilizationCache = null;
-    this.responseFormattingCache = null;
-    this.lastRuntimeEnvironment = null;
-  }
 }
