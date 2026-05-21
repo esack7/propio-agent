@@ -1,7 +1,7 @@
-import { createToolCallVisibilityState } from "../toolCallVisibility.js";
+import { createSessionVisibilityState } from "../sessionVisibility.js";
 
-describe("toolCallVisibility", () => {
-  it("defaults to showing tool calls while preserving baseline visibility flags", () => {
+describe("sessionVisibility", () => {
+  it("defaults to showing tool calls and hiding thinking while preserving baseline visibility flags", () => {
     const baseline = {
       showStatus: false,
       showReasoningSummary: true,
@@ -9,11 +9,12 @@ describe("toolCallVisibility", () => {
       showPromptPlan: true,
     };
 
-    const state = createToolCallVisibilityState(baseline);
+    const state = createSessionVisibilityState(baseline);
 
     expect(state.getSnapshot()).toEqual({
       ...baseline,
       showToolCalls: true,
+      showThinking: false,
     });
     expect(baseline).toEqual({
       showStatus: false,
@@ -23,7 +24,7 @@ describe("toolCallVisibility", () => {
     });
   });
 
-  it("toggles tool calls without mutating the baseline snapshot", () => {
+  it("toggles tool calls and thinking without mutating the baseline snapshot", () => {
     const baseline = {
       showStatus: true,
       showReasoningSummary: false,
@@ -31,19 +32,27 @@ describe("toolCallVisibility", () => {
       showPromptPlan: false,
     };
 
-    const state = createToolCallVisibilityState(baseline);
+    const state = createSessionVisibilityState(baseline);
 
     expect(state.toggleToolCalls()).toEqual({
       ...baseline,
       showToolCalls: false,
+      showThinking: false,
     });
     expect(state.getSnapshot()).toEqual({
       ...baseline,
       showToolCalls: false,
+      showThinking: false,
+    });
+    expect(state.toggleThinking()).toEqual({
+      ...baseline,
+      showToolCalls: false,
+      showThinking: true,
     });
     expect(state.toggleToolCalls()).toEqual({
       ...baseline,
       showToolCalls: true,
+      showThinking: true,
     });
   });
 });

@@ -1747,6 +1747,42 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(statuses).toContain("Tool call received");
     });
 
+    it("forwards thinking deltas through visibility events without persisting them", async () => {
+      class ThinkingMockProvider implements LLMProvider {
+        name = "thinking-mock";
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(
+          request: ChatRequest,
+        ): AsyncIterable<ChatStreamEvent> {
+          yield { type: "thinking_delta", delta: "Considering the answer." };
+          yield { type: "assistant_text", delta: "Final answer." };
+        }
+      }
+
+      const events: AgentVisibilityEvent[] = [];
+      const agent = createTestAgent(new ThinkingMockProvider());
+
+      const response = await agent.streamChat("Test thinking", jest.fn(), {
+        onEvent: (event) => {
+          events.push(event);
+        },
+      });
+
+      expect(response).toBe("Final answer.");
+      expect(events.some((event) => event.type === "thinking_delta")).toBe(
+        true,
+      );
+      const contextText = agent
+        .getContext()
+        .map((message) => message.content)
+        .join("\n");
+      expect(contextText).not.toContain("Considering the answer.");
+    });
+
     it("should fall back to a generic activity label for custom tools", async () => {
       class CustomTool implements ExecutableTool {
         readonly name = "custom_tool";

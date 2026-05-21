@@ -88,6 +88,7 @@ import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
+  | { type: "thinking_delta"; delta: string }
   | {
       type: "tool_started";
       toolName: string;
@@ -129,6 +130,7 @@ export interface TurnReasoningSummary {
 
 type AgentEventOptions = {
   readonly onEvent?: (event: AgentVisibilityEvent) => void;
+  readonly requestReasoning?: boolean;
 };
 
 type AgentToolOptions = AgentEventOptions & {
@@ -422,6 +424,7 @@ export class Agent {
 
   private normalizeStreamEvent(event: ChatStreamEvent): {
     delta?: string;
+    thinkingDelta?: string;
     toolCalls?: ChatToolCall[];
     reasoningContent?: string;
     status?: { status: string; phase?: string };
@@ -440,6 +443,10 @@ export class Agent {
 
     if (event.type === "assistant_text") {
       return { delta: event.delta };
+    }
+
+    if (event.type === "thinking_delta") {
+      return { thinkingDelta: event.delta };
     }
 
     if (event.type === "tool_calls") {
@@ -1130,6 +1137,7 @@ export class Agent {
     onToken: (token: string) => void,
   ): void {
     const token = normalizedEvent.delta ?? "";
+    const thinkingToken = normalizedEvent.thinkingDelta ?? "";
     if (token) {
       state.fullResponse += token;
     }
@@ -1140,7 +1148,7 @@ export class Agent {
       model: this.model,
       iteration,
       chunkIndex: state.chunkCount,
-      chunkChars: token.length,
+      chunkChars: token.length + thinkingToken.length,
       accumulatedChars: state.fullResponse.length,
     });
     if (token) {
@@ -1167,6 +1175,13 @@ export class Agent {
       );
     }
 
+    if (normalizedEvent.thinkingDelta) {
+      this.emitVisibilityEvent(options, {
+        type: "thinking_delta",
+        delta: normalizedEvent.thinkingDelta,
+      });
+    }
+
     return normalizedEvent;
   }
 
@@ -1185,6 +1200,7 @@ export class Agent {
         messages,
         signal: abortSignal,
         iteration,
+        requestReasoning: options?.requestReasoning,
       }),
       iteration,
     )) {
@@ -1278,6 +1294,9 @@ export class Agent {
     throw new Error("Exhausted all context retry levels");
   }
 
+  // Provider stream handling branches by event shape; keep the loop centralized
+  // so response text, tool calls, reasoning, and stop reasons stay in order.
+  // fallow-ignore-next-line complexity
   private async collectProviderStream(
     messages: ChatMessage[],
     allowedTools: ReadonlySet<string> | undefined,
@@ -1306,6 +1325,7 @@ export class Agent {
         tools: this.getMergedToolSchemas(allowedTools),
         signal: options?.abortSignal,
         iteration,
+        requestReasoning: options?.requestReasoning,
       }),
       iteration,
     )) {

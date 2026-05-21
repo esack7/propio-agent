@@ -58,6 +58,7 @@ export interface PromptComposerOptions {
   renderFooter?: (footer: string) => void;
   renderState?: (state: PromptState | null) => void;
   onToggleToolCalls?: () => string | null | undefined;
+  onToggleThinking?: () => string | null | undefined;
   historyStore?: PromptHistoryStore;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -298,6 +299,9 @@ export function createPromptComposer(
             },
             toggleToolCalls: () => {
               return options.onToggleToolCalls?.();
+            },
+            toggleThinking: () => {
+              return options.onToggleThinking?.();
             },
             close,
           },

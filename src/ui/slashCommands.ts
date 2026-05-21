@@ -135,6 +135,10 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
     style: "info",
   });
   lines.push({
+    text: formatLabelLine("Ctrl+T", "toggle thinking output"),
+    style: "info",
+  });
+  lines.push({
     text: formatLabelLine("Ctrl+X Ctrl+E", "open the editor"),
     style: "info",
   });
@@ -150,10 +154,22 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
   return lines;
 }
 
-export function getIdleFooterText(showToolCalls = true): string {
+export function getIdleFooterText(
+  visibility:
+    | boolean
+    | {
+        showToolCalls: boolean;
+        showThinking: boolean;
+      } = true,
+): string {
+  const showToolCalls =
+    typeof visibility === "boolean" ? visibility : visibility.showToolCalls;
+  const showThinking =
+    typeof visibility === "boolean" ? false : visibility.showThinking;
+
   return `Enter to send | ? help | Ctrl+O tools: ${
     showToolCalls ? "shown" : "hidden"
-  }`;
+  } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
 }
 
 export function isHelpCommand(input: string): boolean {

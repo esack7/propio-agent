@@ -12,6 +12,8 @@ export type TranscriptEntry =
   | { kind: "user_message"; text: string }
   | { kind: "assistant_start" }
   | { kind: "assistant_token"; text: string }
+  | { kind: "thinking_start" }
+  | { kind: "thinking_token"; text: string }
   | { kind: "info"; text: string }
   | { kind: "command"; text: string }
   | { kind: "subtle"; text: string }

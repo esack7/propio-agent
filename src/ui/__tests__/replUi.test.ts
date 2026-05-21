@@ -177,6 +177,23 @@ describe("ReplRenderer", () => {
     expect(stderr.chunks.join("")).toContain("Idle footer");
   });
 
+  it("renders thinking transcript entries without clearing them as ephemeral state", () => {
+    const { renderer, stderr, store, clearStderrLinesSpy } = createHarness();
+
+    store.appendTranscriptEntry({ kind: "thinking_start" });
+    store.appendTranscriptEntry({
+      kind: "thinking_token",
+      text: "Reasoning block",
+    });
+    renderer.flush(store.getState());
+
+    store.clearEphemeralSurfaces();
+    renderer.flush(store.getState());
+
+    expect(stderr.chunks.join("")).toContain("Reasoning block");
+    expect(clearStderrLinesSpy).not.toHaveBeenCalled();
+  });
+
   it("does not rerender equivalent ephemeral state objects", () => {
     const { renderer, spinner, store, clearStderrLinesSpy } = createHarness();
 

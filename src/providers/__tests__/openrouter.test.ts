@@ -268,6 +268,38 @@ describe("OpenRouterProvider", () => {
       expect(body.messages[1]).toEqual({ role: "user", content: "Hi" });
     });
 
+    it("should request OpenRouter reasoning when live thinking is requested", async () => {
+      let capturedBody: unknown = null;
+      globalThis.fetch = setupFetchMock(
+        [
+          'data: {"choices":[{"delta":{"content":"Ok"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+        (body) => {
+          capturedBody = body;
+        },
+      );
+
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 128_000,
+        apiKey: "sk-test",
+      });
+
+      await consumeStream(
+        provider,
+        OpenRouterTestFixture.createRequest({
+          model: "deepseek/deepseek-v4-pro",
+          messages: [{ role: "user", content: "Think" }],
+          requestReasoning: true,
+        }),
+      );
+
+      expect(capturedBody).toMatchObject({
+        reasoning: { enabled: true, exclude: false },
+      });
+    });
+
     it("should include tools and handle tool_calls in request and response", async () => {
       let capturedBody: unknown = null;
       const chunks = [
@@ -451,6 +483,7 @@ describe("OpenRouterProvider", () => {
         apiKey: "sk-test",
       });
 
+      const thinkingEvents: string[] = [];
       const toolEvents: unknown[] = [];
       for await (const event of provider.streamChat({
         model: "deepseek/deepseek-v4-pro",
@@ -466,15 +499,79 @@ describe("OpenRouterProvider", () => {
           },
         ],
       })) {
+        if (event.type === "thinking_delta") {
+          thinkingEvents.push(event.delta);
+        }
         if (event.type === "tool_calls") {
           toolEvents.push(event);
         }
       }
 
+      expect(thinkingEvents).toEqual(["I should inspect the file."]);
       expect(toolEvents).toHaveLength(1);
       expect((toolEvents[0] as any).reasoningContent).toBe(
         "I should inspect the file.",
       );
+    });
+
+    it("should emit each reasoning_content chunk as a live thinking delta", async () => {
+      const chunks = [
+        'data: {"choices":[{"delta":{"reasoning_content":"I should inspect "}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":"the file."}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(chunks),
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "deepseek/deepseek-v4-pro",
+        contextWindowTokens: 128_000,
+        apiKey: "sk-test",
+      });
+
+      const thinkingEvents: string[] = [];
+      for await (const event of provider.streamChat({
+        model: "deepseek/deepseek-v4-pro",
+        messages: [{ role: "user", content: "Inspect package" }],
+      })) {
+        if (event.type === "thinking_delta") {
+          thinkingEvents.push(event.delta);
+        }
+      }
+
+      expect(thinkingEvents).toEqual(["I should inspect ", "the file."]);
+    });
+
+    it("should emit reasoning_details text chunks as live thinking deltas", async () => {
+      const chunks = [
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"Step one. "}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"Summarized step."},{"type":"reasoning.encrypted","data":"redacted"}]}}]}\n\n',
+        "data: [DONE]\n\n",
+      ];
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream(chunks),
+      });
+
+      const provider = new OpenRouterProvider({
+        model: "anthropic/claude-sonnet-4.5",
+        contextWindowTokens: 128_000,
+        apiKey: "sk-test",
+      });
+
+      const thinkingEvents: string[] = [];
+      for await (const event of provider.streamChat({
+        model: "anthropic/claude-sonnet-4.5",
+        messages: [{ role: "user", content: "Inspect package" }],
+      })) {
+        if (event.type === "thinking_delta") {
+          thinkingEvents.push(event.delta);
+        }
+      }
+
+      expect(thinkingEvents).toEqual(["Step one. ", "Summarized step."]);
     });
 
     it("should send reasoning content back on assistant tool-call messages", async () => {

@@ -34,7 +34,7 @@ import {
   isHelpCommand,
   getIdleFooterText,
 } from "./ui/slashCommands.js";
-import { createToolCallVisibilityState } from "./ui/toolCallVisibility.js";
+import { createSessionVisibilityState } from "./ui/sessionVisibility.js";
 import {
   createDefaultTypeaheadProviders,
   createSkillCommandTypeaheadProvider,
@@ -245,7 +245,7 @@ export async function runNonInteractiveSession(
       stdinInput,
       ui,
       abortController.signal,
-      visibility,
+      () => visibility,
     );
     ui.setMode("showingResults");
     writeNonInteractiveSuccessResponse(result, ui, visibility);
@@ -317,12 +317,8 @@ async function runInteractiveTurn(
       await options.beforeTurn();
     }
 
-    await streamAssistantTurn(
-      agent,
-      input,
-      ui,
-      abortController.signal,
-      visibility,
+    await streamAssistantTurn(agent, input, ui, abortController.signal, () =>
+      context.getVisibility(),
     );
     ui.setMode("showingResults");
     ui.command("");
@@ -603,7 +599,7 @@ async function runInteractiveSession(
   shouldExit: () => boolean,
   visibility: VisibilityOptions,
 ): Promise<number> {
-  const visibilityState = createToolCallVisibilityState(visibility);
+  const visibilityState = createSessionVisibilityState(visibility);
   const typeaheadProviders = [
     ...createDefaultTypeaheadProviders(process.cwd()),
     createSkillCommandTypeaheadProvider(() => agent.listUserInvocableSkills()),
@@ -618,7 +614,11 @@ async function runInteractiveSession(
     },
     onToggleToolCalls: () => {
       const snapshot = visibilityState.toggleToolCalls();
-      return getIdleFooterText(snapshot.showToolCalls);
+      return getIdleFooterText(snapshot);
+    },
+    onToggleThinking: () => {
+      const snapshot = visibilityState.toggleThinking();
+      return getIdleFooterText(snapshot);
     },
     renderState: (state) => {
       ui.setPromptState(state);
@@ -642,7 +642,7 @@ async function runInteractiveSession(
       const nextInput = await composer.compose({
         mode: "chat",
         promptText: ui.chatPrompt(),
-        footer: getIdleFooterText(visibilityState.getSnapshot().showToolCalls),
+        footer: getIdleFooterText(visibilityState.getSnapshot()),
       });
 
       if (nextInput.status === "closed") {
@@ -772,6 +772,7 @@ function buildVisibilityOptions(
   const showTrace = flags.showTrace;
   return {
     showToolCalls: true,
+    showThinking: false,
     showStatus: flags.showStatus || showTrace,
     showReasoningSummary: flags.showReasoningSummary || showTrace,
     showContextStats: flags.showContextStats,

@@ -67,6 +67,11 @@ export interface ChatRequest {
   stream?: boolean;
   signal?: AbortSignal;
   iteration?: number;
+  /**
+   * Ask providers that support exposed reasoning to return live thinking
+   * tokens. Providers that do not support this should ignore it.
+   */
+  requestReasoning?: boolean;
 }
 
 /**
@@ -81,6 +86,11 @@ export type ProviderReasoningSummarySource = "provider" | "agent";
 
 export interface AssistantTextStreamEvent {
   type: "assistant_text";
+  delta: string;
+}
+
+export interface ThinkingDeltaStreamEvent {
+  type: "thinking_delta";
   delta: string;
 }
 
@@ -133,6 +143,7 @@ export interface ChatChunk {
  */
 export type ChatStreamEvent =
   | AssistantTextStreamEvent
+  | ThinkingDeltaStreamEvent
   | ToolCallsStreamEvent
   | StatusStreamEvent
   | ReasoningSummaryStreamEvent

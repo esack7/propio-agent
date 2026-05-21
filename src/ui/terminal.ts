@@ -123,6 +123,19 @@ export class TerminalUi {
     return this.json;
   }
 
+  supportsVisibleThinking(): boolean {
+    return this.supportsEphemeralStatus();
+  }
+
+  supportsEphemeralStatus(): boolean {
+    return (
+      this.interactive &&
+      !this.plain &&
+      !this.json &&
+      this.writer.getStderrStream().isTTY
+    );
+  }
+
   setMode(mode: ReplAppMode): void {
     if (!this.retainedStore) {
       return;
@@ -174,6 +187,14 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "assistant_start" });
   }
 
+  beginThinkingResponse(): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "thinking_start" });
+  }
+
   persistSubmittedInput(text: string): void {
     if (!this.retainedStore || this.json) {
       return;
@@ -206,6 +227,18 @@ export class TerminalUi {
       return;
     }
 
+    this.appendToolCallTranscriptEntry(view);
+  }
+
+  appendToolCallView(view: ToolCallView): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendToolCallTranscriptEntry(view);
+  }
+
+  private appendToolCallTranscriptEntry(view: ToolCallView): void {
     if (view.status === "running") {
       this.appendTranscriptEntry({ kind: "info", text: `◆ ${view.useLabel}` });
     } else if (view.status === "success") {
@@ -382,6 +415,14 @@ export class TerminalUi {
     this.appendTranscriptEntry({ kind: "assistant_token", text });
   }
 
+  writeThinking(text: string): void {
+    if (this.json) {
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "thinking_token", text });
+  }
+
   writeJson(value: unknown): void {
     this.clearStatusIfNeeded();
     this.transcript.writeJson(value);
@@ -464,6 +505,12 @@ export class TerminalUi {
         break;
       case "assistant_token":
         this.transcript.writeAssistant(entry.text);
+        break;
+      case "thinking_start":
+        this.transcript.beginThinkingResponse();
+        break;
+      case "thinking_token":
+        this.transcript.writeThinking(entry.text);
         break;
       case "info":
         this.transcript.info(entry.text);

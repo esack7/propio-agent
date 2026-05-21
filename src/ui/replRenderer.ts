@@ -74,8 +74,10 @@ function transcriptEntriesEqual(
     case "section":
     case "indent":
     case "assistant_token":
+    case "thinking_token":
       return right.kind === left.kind && left.text === right.text;
     case "assistant_start":
+    case "thinking_start":
       return true;
     case "reasoning_summary":
       return (
@@ -207,6 +209,12 @@ export class ReplRenderer {
         break;
       case "assistant_token":
         this.options.transcriptRenderer.writeAssistant(entry.text);
+        break;
+      case "thinking_start":
+        this.options.transcriptRenderer.beginThinkingResponse();
+        break;
+      case "thinking_token":
+        this.options.transcriptRenderer.writeThinking(entry.text);
         break;
       case "info":
         this.options.transcriptRenderer.info(entry.text);

@@ -59,6 +59,45 @@ describe("TerminalUi", () => {
     expect(stripAnsi(ui.chatPrompt())).toBe(`${symbols.prompt} `);
   });
 
+  it("supports visible thinking only for retained interactive TTY output", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: false,
+      stdout,
+      stderr,
+    });
+
+    expect(ui.supportsVisibleThinking()).toBe(true);
+    expect(ui.supportsEphemeralStatus()).toBe(true);
+  });
+
+  it("does not support visible thinking in plain, json, or non-TTY output", () => {
+    const cases = [
+      { interactive: true, json: false, plain: true, isTTY: true },
+      { interactive: true, json: true, plain: false, isTTY: true },
+      { interactive: true, json: false, plain: false, isTTY: false },
+      { interactive: false, json: false, plain: false, isTTY: true },
+    ];
+
+    for (const options of cases) {
+      const stdout = createTtyTestStream();
+      const stderr = createTtyTestStream(options.isTTY);
+      const ui = new TerminalUi({
+        interactive: options.interactive,
+        json: options.json,
+        plain: options.plain,
+        stdout,
+        stderr,
+      });
+
+      expect(ui.supportsVisibleThinking()).toBe(false);
+      expect(ui.supportsEphemeralStatus()).toBe(false);
+    }
+  });
+
   it("begins interactive assistant turns with a blank line and gutter", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
@@ -71,6 +110,22 @@ describe("TerminalUi", () => {
     });
 
     ui.beginAssistantResponse();
+
+    expect(stderr.chunks.join("")).toBe("\n");
+  });
+
+  it("begins interactive thinking turns with a blank line and gutter", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: true,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginThinkingResponse();
 
     expect(stderr.chunks.join("")).toBe("\n");
   });
@@ -108,6 +163,22 @@ describe("TerminalUi", () => {
     expect(stderr.chunks.join("")).toBe("Assistant: ");
   });
 
+  it("preserves the Thinking prefix in non-interactive human-readable mode", () => {
+    const stdout = createTtyTestStream();
+    const stderr = createTtyTestStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      json: false,
+      plain: true,
+      stdout,
+      stderr,
+    });
+
+    ui.beginThinkingResponse();
+
+    expect(stderr.chunks.join("")).toBe("Thinking: ");
+  });
+
   it("preserves the Assistant prefix in non-interactive rich mode", () => {
     const stdout = createTtyTestStream();
     const stderr = createTtyTestStream();
@@ -136,7 +207,9 @@ describe("TerminalUi", () => {
     });
 
     ui.beginAssistantResponse();
+    ui.beginThinkingResponse();
     ui.writeAssistant("ignored");
+    ui.writeThinking("ignored");
 
     expect(stderr.chunks.join("")).toBe("");
     expect(stdout.chunks.join("")).toBe("");

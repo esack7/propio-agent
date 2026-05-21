@@ -60,6 +60,40 @@ class ScriptedAssistantTurnAgent implements AssistantTurnAgent {
   }
 }
 
+class ThrowingAssistantTurnAgent implements AssistantTurnAgent {
+  constructor(
+    private readonly onStreamStep?: (
+      callbacks:
+        | { onEvent?: (event: AgentVisibilityEvent) => void }
+        | undefined,
+    ) => void,
+  ) {}
+
+  async streamChat(
+    _userInput: string,
+    _onToken: (token: string) => void,
+    callbacks?: {
+      onEvent?: (event: AgentVisibilityEvent) => void;
+      abortSignal?: AbortSignal;
+    },
+  ): Promise<string> {
+    callbacks?.onEvent?.({
+      type: "thinking_delta",
+      delta: "Reasoning before failure.",
+    });
+    this.onStreamStep?.(callbacks);
+    throw new Error("stream failed");
+  }
+
+  getLastTurnReasoningSummary(): TurnReasoningSummary | null {
+    return null;
+  }
+
+  getConversationState(): ConversationState {
+    return emptyConversationState();
+  }
+}
+
 function createUi(
   options: {
     interactive?: boolean;
@@ -115,6 +149,7 @@ function createPromptPlanSnapshot(): PromptPlanSnapshot {
 
 const defaultVisibility: AssistantTurnVisibilityOptions = {
   showToolCalls: true,
+  showThinking: false,
   showStatus: false,
   showReasoningSummary: false,
   showContextStats: false,
@@ -155,6 +190,16 @@ function toolFinishedStep(
       toolCallId,
       activityLabel,
       resultPreview,
+    },
+  };
+}
+
+function thinkingStep(value: string): ScriptStep {
+  return {
+    type: "event",
+    value: {
+      type: "thinking_delta",
+      delta: value,
     },
   };
 }
@@ -361,6 +406,374 @@ describe("streamAssistantTurn", () => {
     expect(doneSpy).toHaveBeenCalledTimes(2);
     expect(output).not.toContain("Starting read...");
     expect(output).not.toContain("completed:");
+  });
+
+  it("shows a thinking spinner before hidden answer text arrives", async () => {
+    const { output, statusSpy, doneSpy } = await runHiddenToolScenario(
+      [thinkingStep("Reasoning."), { type: "token", value: "Answer." }],
+      "hidden thinking test",
+    );
+
+    expect(output).toContain("Answer.");
+    expect(statusSpy).toHaveBeenCalledWith("Thinking", "thinking");
+    expect(doneSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not show a thinking spinner for token-only streams", async () => {
+    const { ui } = createUi();
+    const statusSpy = jest.spyOn(ui, "status");
+    const agent = new ScriptedAssistantTurnAgent([
+      { type: "token", value: "Answer." },
+    ]);
+
+    await streamAssistantTurn(
+      agent,
+      "non-thinking stream",
+      ui,
+      new AbortController().signal,
+      defaultVisibility,
+    );
+
+    expect(statusSpy).not.toHaveBeenCalledWith("Thinking", "thinking");
+  });
+
+  it("hands hidden thinking back off after a hidden tool finishes", async () => {
+    const { output, statusSpy, doneSpy } = await runHiddenToolScenario(
+      [
+        toolStartedStep(
+          "read",
+          "tool_1",
+          "Reading package.json",
+          '{"path":"package.json"}',
+        ),
+        toolFinishedStep(
+          "read",
+          "tool_1",
+          "Reading package.json",
+          "package content",
+        ),
+        thinkingStep("More reasoning."),
+        { type: "token", value: "Answer." },
+      ],
+      "hidden tool thinking handoff",
+    );
+
+    expect(output).toContain("Answer.");
+    expect(statusSpy).toHaveBeenNthCalledWith(1, "Working", "tool call");
+    expect(statusSpy).toHaveBeenNthCalledWith(2, "Thinking", "thinking");
+    expect(doneSpy).toHaveBeenCalled();
+  });
+
+  it("renders visible thinking separately from assistant text", async () => {
+    const { ui, stderr } = createUi();
+    const agent = new ScriptedAssistantTurnAgent(
+      [
+        thinkingStep("Reasoning 1."),
+        { type: "token", value: "Final answer." },
+        thinkingStep(" More reasoning."),
+      ],
+      { response: "Final answer." },
+    );
+
+    await streamAssistantTurn(
+      agent,
+      "thinking test",
+      ui,
+      new AbortController().signal,
+      {
+        ...defaultVisibility,
+        showThinking: true,
+      },
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+    expect(output.indexOf("Reasoning 1.")).toBeGreaterThan(-1);
+    expect(output.indexOf("Final answer.")).toBeGreaterThan(-1);
+    expect(output.indexOf("Reasoning 1.")).toBeLessThan(
+      output.indexOf("Final answer."),
+    );
+    expect(output).toContain("More reasoning.");
+    expect(output.indexOf("More reasoning.")).toBeGreaterThan(
+      output.indexOf("Final answer."),
+    );
+  });
+
+  it("suppresses visible thinking in plain non-interactive output", async () => {
+    const { ui, stderr } = createUi({ interactive: false, plain: true });
+    const agent = new ScriptedAssistantTurnAgent(
+      [
+        thinkingStep("Reasoning that should stay hidden."),
+        { type: "token", value: "Final answer." },
+      ],
+      { response: "Final answer." },
+    );
+
+    await streamAssistantTurn(
+      agent,
+      "plain thinking test",
+      ui,
+      new AbortController().signal,
+      {
+        ...defaultVisibility,
+        showThinking: true,
+      },
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(output).toContain("Final answer.");
+    expect(output).not.toContain("Reasoning that should stay hidden.");
+    expect(output).not.toContain("Thinking:");
+  });
+
+  it("keeps hidden thinking silent in plain non-interactive output", async () => {
+    const { ui, stderr } = createUi({ interactive: false, plain: true });
+    const agent = new ScriptedAssistantTurnAgent(
+      [
+        thinkingStep("Reasoning that should stay hidden."),
+        { type: "token", value: "Final answer." },
+      ],
+      { response: "Final answer." },
+    );
+
+    await streamAssistantTurn(
+      agent,
+      "plain hidden thinking test",
+      ui,
+      new AbortController().signal,
+      defaultVisibility,
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(output).toContain("Final answer.");
+    expect(output).not.toContain("Reasoning that should stay hidden.");
+    expect(output).not.toContain("Thinking");
+  });
+
+  it("applies thinking visibility changes to future deltas during a turn", async () => {
+    const { ui, stderr } = createUi();
+    let showThinking = false;
+    const agent: AssistantTurnAgent = {
+      async streamChat(
+        _userInput: string,
+        onToken: (token: string) => void,
+        callbacks?: {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+          abortSignal?: AbortSignal;
+        },
+      ): Promise<string> {
+        callbacks?.onEvent?.({
+          type: "thinking_delta",
+          delta: "Hidden reasoning.",
+        });
+        showThinking = true;
+        callbacks?.onEvent?.({
+          type: "thinking_delta",
+          delta: " Visible reasoning.",
+        });
+        onToken("Final answer.");
+        return "Final answer.";
+      },
+      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
+        return null;
+      },
+      getConversationState(): ConversationState {
+        return emptyConversationState();
+      },
+    };
+
+    await streamAssistantTurn(
+      agent,
+      "live thinking toggle",
+      ui,
+      new AbortController().signal,
+      () => ({
+        ...defaultVisibility,
+        showThinking,
+      }),
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(output).not.toContain("Hidden reasoning.");
+    expect(output).toContain("Visible reasoning.");
+    expect(output).toContain("Final answer.");
+  });
+
+  it("streams answer text immediately while visible thinking remains enabled", async () => {
+    const { ui } = createUi();
+    const beginAssistantSpy = jest.spyOn(ui, "beginAssistantResponse");
+    const agent: AssistantTurnAgent = {
+      async streamChat(
+        _userInput: string,
+        onToken: (token: string) => void,
+        callbacks?: {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+          abortSignal?: AbortSignal;
+        },
+      ): Promise<string> {
+        callbacks?.onEvent?.({
+          type: "thinking_delta",
+          delta: "Visible reasoning.",
+        });
+        onToken("Final answer.");
+        expect(beginAssistantSpy).toHaveBeenCalled();
+        return "Final answer.";
+      },
+      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
+        return null;
+      },
+      getConversationState(): ConversationState {
+        return emptyConversationState();
+      },
+    };
+
+    await streamAssistantTurn(
+      agent,
+      "visible thinking streams answer",
+      ui,
+      new AbortController().signal,
+      {
+        ...defaultVisibility,
+        showThinking: true,
+      },
+    );
+  });
+
+  it("commits tool output as transcript lines while visible thinking is streaming", async () => {
+    const { ui, stderr } = createUi();
+    const appendToolSpy = jest.spyOn(ui, "appendToolCallView");
+    const upsertToolSpy = jest.spyOn(ui, "upsertToolCallView");
+    const agent = new ScriptedAssistantTurnAgent([
+      thinkingStep("Thinking before tool."),
+      ...readPackageJsonSteps(),
+      thinkingStep("Thinking after tool."),
+      { type: "token", value: "Final answer." },
+    ]);
+
+    await streamAssistantTurn(
+      agent,
+      "visible thinking and tools",
+      ui,
+      new AbortController().signal,
+      {
+        ...defaultVisibility,
+        showThinking: true,
+      },
+    );
+
+    const output = normalizeOutput(stderr.chunks);
+
+    expect(appendToolSpy).toHaveBeenCalledTimes(2);
+    expect(upsertToolSpy).not.toHaveBeenCalled();
+    expect(output.indexOf("Thinking before tool.")).toBeLessThan(
+      output.indexOf("Reading package.json"),
+    );
+    expect(output.indexOf("package content")).toBeLessThan(
+      output.indexOf("Thinking after tool."),
+    );
+    expect(output).toContain("Final answer.");
+  });
+
+  it("requests provider reasoning when visible thinking is enabled", async () => {
+    const { ui } = createUi();
+    const agent: AssistantTurnAgent = {
+      async streamChat(
+        _userInput: string,
+        onToken: (token: string) => void,
+        callbacks?: {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+          abortSignal?: AbortSignal;
+          requestReasoning?: boolean;
+        },
+      ): Promise<string> {
+        expect(callbacks?.requestReasoning).toBe(true);
+        onToken("Final answer.");
+        return "Final answer.";
+      },
+      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
+        return null;
+      },
+      getConversationState(): ConversationState {
+        return emptyConversationState();
+      },
+    };
+
+    await streamAssistantTurn(
+      agent,
+      "request thinking",
+      ui,
+      new AbortController().signal,
+      {
+        ...defaultVisibility,
+        showThinking: true,
+      },
+    );
+  });
+
+  it("cleans up hidden status surfaces when the stream fails", async () => {
+    const { ui } = createUi();
+    const doneSpy = jest.spyOn(ui, "done");
+    const statusSpy = jest.spyOn(ui, "status");
+    const agent = new ThrowingAssistantTurnAgent();
+
+    await expect(
+      streamAssistantTurn(
+        agent,
+        "failing thinking stream",
+        ui,
+        new AbortController().signal,
+        defaultVisibility,
+      ),
+    ).rejects.toThrow("stream failed");
+
+    expect(statusSpy).toHaveBeenCalledWith("Thinking", "thinking");
+    expect(doneSpy).toHaveBeenCalled();
+  });
+
+  it("cleans up hidden status surfaces when the stream is aborted", async () => {
+    const { ui } = createUi();
+    const doneSpy = jest.spyOn(ui, "done");
+    const abortController = new AbortController();
+    const agent: AssistantTurnAgent = {
+      async streamChat(
+        _userInput: string,
+        _onToken: (token: string) => void,
+        callbacks?: {
+          onEvent?: (event: AgentVisibilityEvent) => void;
+          abortSignal?: AbortSignal;
+        },
+      ): Promise<string> {
+        callbacks?.onEvent?.({
+          type: "thinking_delta",
+          delta: "Reasoning before cancel.",
+        });
+        abortController.abort();
+        if (callbacks?.abortSignal?.aborted) {
+          throw new Error("Request cancelled");
+        }
+        return "";
+      },
+      getLastTurnReasoningSummary(): TurnReasoningSummary | null {
+        return null;
+      },
+      getConversationState(): ConversationState {
+        return emptyConversationState();
+      },
+    };
+
+    await expect(
+      streamAssistantTurn(
+        agent,
+        "aborted thinking stream",
+        ui,
+        abortController.signal,
+        defaultVisibility,
+      ),
+    ).rejects.toThrow("Request cancelled");
+
+    expect(doneSpy).toHaveBeenCalled();
   });
 
   it("keeps the hidden tool spinner active through consecutive tool calls in the same turn", async () => {
@@ -658,7 +1071,10 @@ describe("streamAssistantTurn", () => {
   it("suppresses human-readable output in JSON mode while returning the response", async () => {
     const { ui, stdout, stderr } = createUi({ json: true });
     const agent = new ScriptedAssistantTurnAgent(
-      [{ type: "token", value: "json response" }],
+      [
+        thinkingStep("Planning in JSON."),
+        { type: "token", value: "json response" },
+      ],
       {
         reasoningSummary: {
           summary: "provider summary",

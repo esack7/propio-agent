@@ -249,6 +249,20 @@ describe("Provider Types", () => {
     });
   });
 
+  describe("ChatStreamEvent", () => {
+    it("should support thinking deltas", () => {
+      const event: ChatStreamEvent = {
+        type: "thinking_delta",
+        delta: "Reasoning",
+      };
+
+      expect(event.type).toBe("thinking_delta");
+      if (event.type === "thinking_delta") {
+        expect(event.delta).toBe("Reasoning");
+      }
+    });
+  });
+
   describe("ChatChunk", () => {
     it("should contain delta content", () => {
       const chunk: ChatChunk = {

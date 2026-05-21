@@ -27,6 +27,8 @@ describe("slashCommands", () => {
     expect(text).not.toContain("Alt+Enter");
     expect(text).toContain("Ctrl+O");
     expect(text).toContain("toggle tool output");
+    expect(text).toContain("Ctrl+T");
+    expect(text).toContain("toggle thinking output");
     expect(text).toContain("Ctrl+X Ctrl+E");
     expect(text).toContain("Ctrl+X Ctrl+E    - open the editor");
     expect(text).toContain("/help");
@@ -40,10 +42,15 @@ describe("slashCommands", () => {
 
   it("keeps the idle footer concise", () => {
     expect(getIdleFooterText()).toBe(
-      "Enter to send | ? help | Ctrl+O tools: shown",
+      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden",
     );
     expect(getIdleFooterText(false)).toBe(
-      "Enter to send | ? help | Ctrl+O tools: hidden",
+      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: hidden",
+    );
+    expect(
+      getIdleFooterText({ showToolCalls: false, showThinking: true }),
+    ).toBe(
+      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
     );
   });
 

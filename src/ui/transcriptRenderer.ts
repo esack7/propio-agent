@@ -63,6 +63,19 @@ export class TranscriptRenderer {
     );
   }
 
+  beginThinkingResponse(): void {
+    this.options.clearStatus();
+
+    if (this.options.interactive) {
+      this.options.writer.writeStderrLine("");
+      return;
+    }
+
+    this.options.writer.writeStderr(
+      this.options.style("Thinking: ", formatSubtle),
+    );
+  }
+
   reasoningSummary(summary: string, source: "agent" | "provider"): void {
     this.options.clearStatus();
     this.options.writer.writeStderrLine("");
@@ -126,6 +139,11 @@ export class TranscriptRenderer {
     this.options.writer.writeStderr(
       this.options.style(text, formatAssistantMessage),
     );
+  }
+
+  writeThinking(text: string): void {
+    this.options.clearStatus();
+    this.options.writer.writeStderr(this.options.style(text, formatSubtle));
   }
 
   writeJson(value: unknown): void {
