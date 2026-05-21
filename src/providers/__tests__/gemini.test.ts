@@ -395,6 +395,56 @@ describe("GeminiProvider", () => {
       expect(assistantText).toEqual(["Final answer."]);
     });
 
+    it("should extract thought blocks from string content into thinking deltas", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream([
+          'data: {"choices":[{"delta":{"content":"<thought>Analyzing UI\\n</thought>"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"\\n\\nFinal answer."}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      });
+
+      const provider = createGeminiProvider();
+
+      const { thinkingEvents, assistantText } = await collectGeminiTextStreams(
+        provider,
+        {
+          model: "gemini-3.1-pro-preview",
+          messages: [{ role: "user", content: "Hi" }],
+          requestReasoning: true,
+        },
+      );
+
+      expect(thinkingEvents).toEqual(["Analyzing UI\n"]);
+      expect(assistantText).toEqual(["\n\nFinal answer."]);
+    });
+
+    it("should stream thought blocks split across string content chunks", async () => {
+      globalThis.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        body: createSseStream([
+          'data: {"choices":[{"delta":{"content":"<thought>Analyzing "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"UI</thought>"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      });
+
+      const provider = createGeminiProvider();
+
+      const { thinkingEvents, assistantText } = await collectGeminiTextStreams(
+        provider,
+        {
+          model: "gemini-3.1-pro-preview",
+          messages: [{ role: "user", content: "Hi" }],
+          requestReasoning: true,
+        },
+      );
+
+      expect(thinkingEvents).toEqual(["Analyzing UI"]);
+      expect(assistantText).toEqual([]);
+    });
+
     it("should split Gemini content parts into thought and assistant streams", async () => {
       globalThis.fetch = jest.fn().mockResolvedValue({
         ok: true,

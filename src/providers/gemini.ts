@@ -25,7 +25,10 @@ import {
 
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-const GEMINI_THOUGHT_TAG_PATTERN = /<\/?thought>/gi;
+const GEMINI_THOUGHT_TAG_PATTERN = /<\/?thought(?:\s[^>]*)?>/gi;
+const GEMINI_THOUGHT_BLOCK_PATTERN =
+  /<thought(?:\s[^>]*)?>([\s\S]*?)<\/thought>/gi;
+const GEMINI_PARTIAL_THOUGHT_TAG_PATTERN = /<\/?(?:th(?:ought)?)?$/i;
 
 interface OpenAIMessageContentPart {
   type: "text" | "image_url";
@@ -122,6 +125,7 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
     consecutive529Limit: number;
   };
   private readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  private streamContentBuffer = "";
 
   constructor(options: OpenAiCompatibleProviderOptions) {
     super();
@@ -350,21 +354,102 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
     return text.replace(GEMINI_THOUGHT_TAG_PATTERN, "");
   }
 
+  private resetGeminiStreamState(): void {
+    this.streamContentBuffer = "";
+  }
+
+  private processGeminiStreamingContent(chunk: string): {
+    thinking: string;
+    assistant: string;
+  } {
+    this.streamContentBuffer += chunk;
+    const buffer = this.streamContentBuffer;
+
+    let thinking = "";
+    let assistant = "";
+    let consumed = 0;
+
+    GEMINI_THOUGHT_BLOCK_PATTERN.lastIndex = 0;
+    for (const match of buffer.matchAll(GEMINI_THOUGHT_BLOCK_PATTERN)) {
+      if (match.index === undefined) {
+        continue;
+      }
+
+      assistant += buffer.slice(consumed, match.index);
+      thinking += match[1] ?? "";
+      consumed = match.index + match[0].length;
+    }
+
+    const tail = buffer.slice(consumed);
+    const openThoughtMatch = tail.match(/<thought(?:\s[^>]*)?>/i);
+    if (openThoughtMatch?.index !== undefined) {
+      assistant += tail.slice(0, openThoughtMatch.index);
+      this.streamContentBuffer = tail.slice(openThoughtMatch.index);
+    } else {
+      const partialTagMatch = tail.match(GEMINI_PARTIAL_THOUGHT_TAG_PATTERN);
+      if (partialTagMatch?.index !== undefined) {
+        assistant += tail.slice(0, partialTagMatch.index);
+        this.streamContentBuffer = tail.slice(partialTagMatch.index);
+      } else {
+        assistant += tail;
+        this.streamContentBuffer = "";
+      }
+    }
+
+    return {
+      thinking: this.cleanGeminiThinkingText(thinking),
+      assistant: this.cleanGeminiThinkingText(assistant),
+    };
+  }
+
+  private flushGeminiStreamContentBuffer(): {
+    thinking: string;
+    assistant: string;
+  } {
+    if (this.streamContentBuffer.length === 0) {
+      return { thinking: "", assistant: "" };
+    }
+
+    const tail = this.streamContentBuffer;
+    this.streamContentBuffer = "";
+    const cleaned = this.cleanGeminiThinkingText(tail);
+    if (/<thought/i.test(tail)) {
+      return { thinking: cleaned, assistant: "" };
+    }
+
+    return { thinking: "", assistant: cleaned };
+  }
+
   private extractGeminiAssistantText(
     delta: NonNullable<GeminiStreamChoice["delta"]>,
   ): string {
     if (typeof delta.content === "string") {
-      return delta.content;
+      return "";
     }
 
     if (!Array.isArray(delta.content)) {
       return "";
     }
 
-    return delta.content
-      .filter((part) => part.thought !== true)
-      .map((part) => part.text ?? "")
-      .join("");
+    return this.cleanGeminiThinkingText(
+      delta.content
+        .filter((part) => part.thought !== true)
+        .map((part) => part.text ?? "")
+        .join(""),
+    );
+  }
+
+  private extractGeminiContentText(
+    delta: NonNullable<GeminiStreamChoice["delta"]>,
+  ): { thinking: string; assistant: string } {
+    if (typeof delta.content === "string") {
+      return this.processGeminiStreamingContent(delta.content);
+    }
+
+    return {
+      thinking: "",
+      assistant: this.extractGeminiAssistantText(delta),
+    };
   }
 
   private parseGeminiStreamChunk(
@@ -382,12 +467,14 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
     }
 
     const events: ChatStreamEvent[] = [];
-    const thinkingText = this.extractGeminiThinkingText(choice.delta);
+    const contentText = this.extractGeminiContentText(choice.delta);
+    const thinkingText =
+      this.extractGeminiThinkingText(choice.delta) + contentText.thinking;
     if (thinkingText.length > 0) {
       events.push({ type: "thinking_delta", delta: thinkingText });
     }
 
-    const assistantText = this.extractGeminiAssistantText(choice.delta);
+    const assistantText = contentText.assistant;
     if (assistantText.length > 0) {
       events.push({ type: "assistant_text", delta: assistantText });
     }
@@ -478,6 +565,7 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
+      this.resetGeminiStreamState();
       const reader = await this.createGeminiStreamReader(request);
       const toolCallsByIndex = new Map<number, GeminiAccumulatedToolCall>();
       let stopReason: any = "end_turn";
@@ -491,6 +579,20 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
         if (result.done) {
           break;
         }
+      }
+
+      const flushedContent = this.flushGeminiStreamContentBuffer();
+      if (flushedContent.thinking.length > 0) {
+        yield {
+          type: "thinking_delta",
+          delta: flushedContent.thinking,
+        };
+      }
+      if (flushedContent.assistant.length > 0) {
+        yield {
+          type: "assistant_text",
+          delta: flushedContent.assistant,
+        };
       }
 
       const toolCallsEvent = this.buildGeminiToolCallsEvent(toolCallsByIndex);
