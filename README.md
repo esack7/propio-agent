@@ -563,12 +563,12 @@ npx fallow audit
 
 All four commands should exit `0`.
 
-| Check | Command | Required outcome |
-| ----- | ------- | ---------------- |
-| Type-check | `npm run build` | Compiles with no errors |
-| Tests | `npm test` | All suites pass |
+| Check      | Command                | Required outcome                              |
+| ---------- | ---------------------- | --------------------------------------------- |
+| Type-check | `npm run build`        | Compiles with no errors                       |
+| Tests      | `npm test`             | All suites pass                               |
 | Formatting | `npm run format:check` | No Prettier drift (fix with `npm run format`) |
-| Structure | `npx fallow audit` | See [Fallow audit](#fallow-audit) |
+| Structure  | `npx fallow audit`     | See [Fallow audit](#fallow-audit)             |
 
 Run `npx fallow audit` after substantial edits, refactors, or agent-generated changes. It complements tests and type-checking; it does not replace them.
 
