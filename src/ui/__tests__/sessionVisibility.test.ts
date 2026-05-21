@@ -1,7 +1,7 @@
 import { createSessionVisibilityState } from "../sessionVisibility.js";
 
 describe("sessionVisibility", () => {
-  it("defaults to showing tool calls and hiding thinking while preserving baseline visibility flags", () => {
+  it("defaults to showing tool calls and thinking while preserving baseline visibility flags", () => {
     const baseline = {
       showStatus: false,
       showReasoningSummary: true,
@@ -14,7 +14,7 @@ describe("sessionVisibility", () => {
     expect(state.getSnapshot()).toEqual({
       ...baseline,
       showToolCalls: true,
-      showThinking: false,
+      showThinking: true,
     });
     expect(baseline).toEqual({
       showStatus: false,
@@ -37,22 +37,22 @@ describe("sessionVisibility", () => {
     expect(state.toggleToolCalls()).toEqual({
       ...baseline,
       showToolCalls: false,
-      showThinking: false,
+      showThinking: true,
     });
     expect(state.getSnapshot()).toEqual({
       ...baseline,
       showToolCalls: false,
-      showThinking: false,
+      showThinking: true,
     });
     expect(state.toggleThinking()).toEqual({
       ...baseline,
       showToolCalls: false,
-      showThinking: true,
+      showThinking: false,
     });
     expect(state.toggleToolCalls()).toEqual({
       ...baseline,
       showToolCalls: true,
-      showThinking: true,
+      showThinking: false,
     });
   });
 });

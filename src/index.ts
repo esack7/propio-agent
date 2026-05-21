@@ -772,7 +772,7 @@ function buildVisibilityOptions(
   const showTrace = flags.showTrace;
   return {
     showToolCalls: true,
-    showThinking: false,
+    showThinking: true,
     showStatus: flags.showStatus || showTrace,
     showReasoningSummary: flags.showReasoningSummary || showTrace,
     showContextStats: flags.showContextStats,

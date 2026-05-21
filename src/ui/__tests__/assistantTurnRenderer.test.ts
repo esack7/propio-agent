@@ -149,7 +149,7 @@ function createPromptPlanSnapshot(): PromptPlanSnapshot {
 
 const defaultVisibility: AssistantTurnVisibilityOptions = {
   showToolCalls: true,
-  showThinking: false,
+  showThinking: true,
   showStatus: false,
   showReasoningSummary: false,
   showContextStats: false,
@@ -283,6 +283,7 @@ async function runHiddenToolScenario(
     {
       ...defaultVisibility,
       showToolCalls: false,
+      showThinking: false,
     },
   );
 
@@ -541,7 +542,7 @@ describe("streamAssistantTurn", () => {
       "plain hidden thinking test",
       ui,
       new AbortController().signal,
-      defaultVisibility,
+      { ...defaultVisibility, showThinking: false },
     );
 
     const output = normalizeOutput(stderr.chunks);
@@ -553,7 +554,7 @@ describe("streamAssistantTurn", () => {
 
   it("applies thinking visibility changes to future deltas during a turn", async () => {
     const { ui, stderr } = createUi();
-    let showThinking = false;
+    let showThinking = true;
     const agent: AssistantTurnAgent = {
       async streamChat(
         _userInput: string,
@@ -565,12 +566,12 @@ describe("streamAssistantTurn", () => {
       ): Promise<string> {
         callbacks?.onEvent?.({
           type: "thinking_delta",
-          delta: "Hidden reasoning.",
+          delta: "Visible reasoning.",
         });
-        showThinking = true;
+        showThinking = false;
         callbacks?.onEvent?.({
           type: "thinking_delta",
-          delta: " Visible reasoning.",
+          delta: " Hidden reasoning.",
         });
         onToken("Final answer.");
         return "Final answer.";
@@ -596,8 +597,8 @@ describe("streamAssistantTurn", () => {
 
     const output = normalizeOutput(stderr.chunks);
 
-    expect(output).not.toContain("Hidden reasoning.");
     expect(output).toContain("Visible reasoning.");
+    expect(output).not.toContain("Hidden reasoning.");
     expect(output).toContain("Final answer.");
   });
 
@@ -705,10 +706,7 @@ describe("streamAssistantTurn", () => {
       "request thinking",
       ui,
       new AbortController().signal,
-      {
-        ...defaultVisibility,
-        showThinking: true,
-      },
+      defaultVisibility,
     );
   });
 
@@ -724,7 +722,7 @@ describe("streamAssistantTurn", () => {
         "failing thinking stream",
         ui,
         new AbortController().signal,
-        defaultVisibility,
+        { ...defaultVisibility, showThinking: false },
       ),
     ).rejects.toThrow("stream failed");
 
@@ -769,7 +767,7 @@ describe("streamAssistantTurn", () => {
         "aborted thinking stream",
         ui,
         abortController.signal,
-        defaultVisibility,
+        { ...defaultVisibility, showThinking: false },
       ),
     ).rejects.toThrow("Request cancelled");
 

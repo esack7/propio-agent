@@ -31,7 +31,7 @@ function buildSnapshot(
 export function createSessionVisibilityState(
   baseline: SessionVisibilityBaseline,
   initialShowToolCalls = true,
-  initialShowThinking = false,
+  initialShowThinking = true,
 ): SessionVisibilityState {
   const baselineSnapshot: SessionVisibilityBaseline = { ...baseline };
   let showToolCalls = initialShowToolCalls;

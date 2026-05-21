@@ -1,7 +1,7 @@
 # Optional Thinking UI
 
 ## Summary
-Add live, provider-supplied thinking as an optional UI surface. Thinking is hidden by default, toggled with `Ctrl+T` for the current interactive session, never persisted to session context, never included in final response text, and never emitted in `--json`.
+Add live, provider-supplied thinking as an optional UI surface. Thinking is shown by default, toggled with `Ctrl+T` for the current interactive session, never persisted to session context, never included in final response text, and never emitted in `--json`.
 
 ## Implementation Changes
 - Add `{ type: "thinking_delta"; delta: string }` to `ChatStreamEvent`, plus a matching `AgentVisibilityEvent`.
@@ -11,8 +11,8 @@ Add live, provider-supplied thinking as an optional UI surface. Thinking is hidd
 - Update Gemini to request visible thought summaries through its OpenAI-compatible `extra_body.google.thinking_config.include_thoughts` flag when live thinking is requested, while keeping `thoughtSignature` replay-only for tool-call rounds. Leave xAI/Bedrock/Ollama no-op for v1 unless they already expose an explicit reasoning stream.
 
 ## UI Behavior
-- Rename `toolCallVisibility.ts` to `sessionVisibility.ts` and keep the same stateful toggle pattern, now with `showToolCalls` and `showThinking`; default `showThinking: false`.
-- Change `getIdleFooterText(...)` to accept the visibility snapshot and render both shortcuts, for example: `Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden`.
+- Rename `toolCallVisibility.ts` to `sessionVisibility.ts` and keep the same stateful toggle pattern, now with `showToolCalls` and `showThinking`; default `showThinking: true`.
+- Change `getIdleFooterText(...)` to accept the visibility snapshot and render both shortcuts, for example: `Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown`.
 - Add `Ctrl+T` to `chatPromptSession.ts`, `promptComposer.ts`, footer refresh tests, and `/help` chat shortcuts.
 - Hidden mode state rules:
   - Start `Thinking` / phase `thinking` only on first `thinking_delta`; non-thinking models do not get a synthetic thinking spinner.

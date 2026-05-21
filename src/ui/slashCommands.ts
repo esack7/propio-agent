@@ -165,7 +165,7 @@ export function getIdleFooterText(
   const showToolCalls =
     typeof visibility === "boolean" ? visibility : visibility.showToolCalls;
   const showThinking =
-    typeof visibility === "boolean" ? false : visibility.showThinking;
+    typeof visibility === "boolean" ? true : visibility.showThinking;
 
   return `Enter to send | ? help | Ctrl+O tools: ${
     showToolCalls ? "shown" : "hidden"

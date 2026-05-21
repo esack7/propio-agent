@@ -42,10 +42,10 @@ describe("slashCommands", () => {
 
   it("keeps the idle footer concise", () => {
     expect(getIdleFooterText()).toBe(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden",
+      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown",
     );
     expect(getIdleFooterText(false)).toBe(
-      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: hidden",
+      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
     );
     expect(
       getIdleFooterText({ showToolCalls: false, showThinking: true }),

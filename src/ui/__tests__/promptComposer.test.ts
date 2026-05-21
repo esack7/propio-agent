@@ -314,7 +314,7 @@ describe("createPromptComposer", () => {
     const renderFooter = jest.fn();
     const renderState = jest.fn();
     let showToolCalls = true;
-    let showThinking = false;
+    let showThinking = true;
     const harness = createTtyHarness({
       renderFooter,
       renderState,
@@ -339,7 +339,7 @@ describe("createPromptComposer", () => {
     await flush();
     expect(renderFooter).not.toHaveBeenCalled();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -351,16 +351,16 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown\nName? ",
     );
     expect(toggleOutput).not.toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden",
+      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown",
     );
     expect(renderState).toHaveBeenLastCalledWith(
       expect.objectContaining({
         buffer: "",
         footer:
-          "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: hidden",
+          "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
       }),
     );
 
@@ -370,7 +370,7 @@ describe("createPromptComposer", () => {
   it("updates the active footer when thinking is toggled", async () => {
     const renderFooter = jest.fn();
     let showToolCalls = true;
-    let showThinking = false;
+    let showThinking = true;
     const harness = createTtyHarness({
       renderFooter,
       enableReverseHistorySearch: false,
@@ -389,7 +389,7 @@ describe("createPromptComposer", () => {
 
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u0014", {
@@ -401,7 +401,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden\nName? ",
     );
 
     harness.composer.close();
@@ -412,7 +412,7 @@ describe("createPromptComposer", () => {
 
   it("wraps the active footer before repainting narrow chat prompts", async () => {
     let showToolCalls = true;
-    let showThinking = false;
+    let showThinking = true;
     const harness = createTtyHarness({
       columns: 40,
       enableReverseHistorySearch: false,
@@ -435,7 +435,7 @@ describe("createPromptComposer", () => {
 
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Ctrl+O tools:\nshown | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Ctrl+O tools:\nshown | Ctrl+T thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -447,10 +447,10 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Ctrl+O tools:\nhidden | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Ctrl+O tools:\nhidden | Ctrl+T thinking: shown\nName? ",
     );
     expect(toggleOutput).not.toContain(
-      "shown | Ctrl+T thinking: hidden\nName? ",
+      "shown | Ctrl+T thinking: shown\nName? ",
     );
 
     harness.composer.close();
