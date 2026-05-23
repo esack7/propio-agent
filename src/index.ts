@@ -683,7 +683,7 @@ export async function runInteractiveSession(
     ui.command(
       "Exit with /exit or Ctrl+C. Press Esc to cancel a running turn.",
     );
-    ui.command("Type ! at the prompt to enter bash mode for local shell commands.");
+    ui.command("Type ! before a message to run one local shell command.");
     ui.command("");
 
     let shownReadyPromptMessage = false;
@@ -740,6 +740,7 @@ export async function runInteractiveSession(
           });
         } finally {
           bashCancelListener.detach();
+          inputMode = "prompt";
         }
         continue;
       }

@@ -2,11 +2,11 @@
 
 ## Goal
 
-When the user types `!` at the start of the prompt, switch into **sticky bash mode**: show a `!` indicator, strip the leading `!` from the editable buffer, and on submit run the command locally (same shell runner as the agent `bash` tool) and render output in the transcript **without** calling `streamAssistantTurn` / `ContextManager.beginUserTurn`.
+When the user types `!` at the start of the prompt, switch into **one-shot bash mode**: show a `!` indicator, strip the leading `!` from the editable buffer, and on submit run the command locally (same shell runner as the agent `bash` tool) and render output in the transcript **without** calling `streamAssistantTurn` / `ContextManager.beginUserTurn`. After that single bash submission finishes (including timeout or user cancellation), the next prompt returns to normal Propio input mode.
 
 ```mermaid
 flowchart TD
-  sessionState["runInteractiveSession: sticky inputMode"]
+  sessionState["runInteractiveSession: current inputMode"]
   compose[composer.compose passes inputMode in]
   session[ChatPromptSession per compose]
   detect["syncBufferInputMode after any buffer change"]
@@ -14,7 +14,7 @@ flowchart TD
   bashHandler[processBashCommand]
   runShell[runShellCommand shared with BashTool]
   transcript[TerminalUi bash transcript entries]
-  loop[Next compose: inputMode still bash]
+  loop[Next compose: inputMode reset to prompt]
 
   sessionState --> compose --> session
   session --> detect
@@ -37,8 +37,8 @@ No `inputMode` / bash routing exists yet.
 
 ## Design decisions (locked)
 
-- **Sticky mode**: type `!` once to enter; subsequent lines submit raw commands without repeating `!`.
-- **Sticky state owner**: `inputMode` lives in **`runInteractiveSession`** loop state, **not** in `ChatPromptSession`. Each `compose()` creates a fresh session; the loop passes `inputMode` in via `PromptRequest` and updates it from `PromptResultSubmitted.inputMode` on submit. (`createPromptComposer` does not own sticky mode unless we explicitly move ownership there later.)
+- **One-shot mode**: type `!` to enter bash mode for the current submission only. The whole submitted string runs via `/bin/sh -c`, so `pwd; ls` or `cd /tmp && pwd` works as one shell command, but the following prompt returns to normal Propio mode.
+- **Input-mode owner**: `inputMode` lives in **`runInteractiveSession`** loop state, **not** in `ChatPromptSession`. Each `compose()` creates a fresh session; the loop passes `inputMode` in via `PromptRequest`. After a bash submission completes or is cancelled, the loop resets `inputMode = "prompt"`. (`createPromptComposer` does not own cross-compose mode unless we explicitly move ownership there later.)
 - **Reuse shell runner**: extract shared `runShellCommand` from `BashTool`; REPL and agent tool share timeout/maxBuffer/env/cwd semantics.
 - **No agent / no context**: bash submissions must not call `runInteractiveTurn`, `agent.streamChat`, or `contextManager.beginUserTurn`.
 - **Independent of `/tools`**: REPL bash is a direct user shell action; do not gate on `agent.isToolEnabled("bash")`.
@@ -59,14 +59,14 @@ export function getValueFromInput(input: string): string; // strips one leading 
 
 **`applyInputModeFromBuffer(currentMode, buffer)`** (name flexible): if `currentMode === "prompt"` and `getModeFromInput(buffer) === "bash"`, return `{ inputMode: "bash", buffer: getValueFromInput(buffer), cursorAdjusted }`. Otherwise return unchanged. Used everywhere the buffer is replaced, not only on printable first-char input.
 
-### 2. Sticky `inputMode` ownership
+### 2. One-shot `inputMode` ownership
 
 **Owner: [`runInteractiveSession`](src/index.ts)** — `let inputMode: InputMode = "prompt"` in the REPL loop.
 
 ```ts
 const nextInput = await composer.compose({
   mode: "chat",
-  inputMode, // loop passes prior mode into each compose()
+  inputMode, // usually "prompt"; may be "bash" before the current compose()
   promptText:
     inputMode === "bash" ? ui.bashPrompt() : ui.chatPrompt(),
   footer:
@@ -74,8 +74,15 @@ const nextInput = await composer.compose({
 });
 
 if (nextInput.status === "submitted") {
-  inputMode = nextInput.inputMode; // sticky across compose()
-  // ...
+  inputMode = nextInput.inputMode;
+  if (nextInput.inputMode === "bash") {
+    try {
+      await processBashCommand(...);
+    } finally {
+      inputMode = "prompt";
+    }
+    continue;
+  }
 }
 ```
 
@@ -91,11 +98,11 @@ if (nextInput.status === "submitted") {
 
 - Extend `PromptResultSubmitted`: `{ status: "submitted"; text: string; inputMode: InputMode }`.
 - `settlePending` passes through `inputMode` from the active chat session (session reads initial mode from request, may update during editing, returns final mode on submit).
-- Composer is **not** sticky by itself; it only forwards `inputMode` on the request/result boundary.
+- Composer does not own cross-compose mode behavior; it only forwards `inputMode` on the request/result boundary.
 
 ### 3. Buffer sync and mode detection — [`src/ui/chatPromptSession.ts`](src/ui/chatPromptSession.ts)
 
-`ChatPromptSession` holds **working** `inputMode` initialized from `request.inputMode`, but persistence across `compose()` calls is the **`runInteractiveSession` loop** above.
+`ChatPromptSession` holds **working** `inputMode` initialized from `request.inputMode`. Cross-compose behavior is owned by the **`runInteractiveSession` loop** above.
 
 **Central helper** `syncBufferInputMode()` — call after **any** buffer replacement or bulk insert:
 
@@ -106,7 +113,7 @@ if (nextInput.status === "submitted") {
 | `acceptHistorySearch` / reverse search selection | same as history |
 | `openPromptEditor` return | editor handoff |
 | `request.defaultValue` | initial buffer on compose |
-| Delete/backspace | if user removes leading content and buffer no longer implies bash, optionally stay in bash mode until Escape (prefer: **stay in bash mode** until explicit Escape; only auto-enter via `getModeFromInput`, do not auto-exit on buffer edit) |
+| Delete/backspace | while editing a bash command, delete text normally; when the bash buffer is empty, Backspace/Delete exits bash mode and returns to the normal prompt |
 
 **Enter bash mode rule**: after sync, if `inputMode === "prompt"` and `getModeFromInput(buffer) === "bash"`, set `inputMode = "bash"` and replace buffer with `getValueFromInput(buffer)` (strip one leading `!`), fix cursor.
 
@@ -215,7 +222,7 @@ export async function processBashCommand(
 
 Behavior:
 
-1. Trim; if empty, return silently (caller stays in bash mode).
+1. Trim; if empty, return silently (caller still resets the next prompt to normal mode).
 2. `ui.setMode("running")`; optional status line (e.g. `Running: ${command}`) for retained TTY.
 3. `ui.bashCommand(command)` — transcript line for the command.
 4. `runShellCommand({ command, cwd: options?.cwd ?? process.cwd(), timeoutMs, maxBuffer, abortSignal })`.
@@ -273,6 +280,7 @@ if (nextInput.status === "submitted" && nextInput.inputMode === "bash") {
     });
   } finally {
     bashCancelListener.detach();
+    inputMode = "prompt";
   }
   continue; // skip handleInteractiveSubmission — /help is shell text, not slash
 }
@@ -280,7 +288,7 @@ if (nextInput.status === "submitted" && nextInput.inputMode === "bash") {
 await handleInteractiveSubmission(trimmedInput, ...);
 ```
 
-Update [`getIdleFooterText`](src/ui/slashCommands.ts) / help: `!` enter bash; `Esc` exit bash (prompt) vs cancel turn (agent running).
+Update [`getIdleFooterText`](src/ui/slashCommands.ts) / help: `!` enter bash; `Esc` or empty-buffer Delete/Backspace exits bash (prompt) vs cancel turn (agent running).
 
 ### 10. [`src/ui/replRenderer.ts`](src/ui/replRenderer.ts)
 
@@ -292,9 +300,9 @@ Update [`getIdleFooterText`](src/ui/slashCommands.ts) / help: `!` enter bash; `E
 | Area | Cases |
 |------|--------|
 | `inputModes.test.ts` | `getModeFromInput`, `getValueFromInput`, `applyInputModeFromBuffer` |
-| `chatPromptSession.test.ts` | type `!` enters bash; **paste** `!pwd`; editor return with `!cmd`; Escape exits |
-| `promptComposer.test.ts` | submit includes `inputMode`; **second `compose({ inputMode: "bash" })` opens with bash prefix** (caller passes prior returned mode — composer is not sticky alone) |
-| `index` / session loop | **sticky across two iterations**: first submit returns `inputMode: "bash"`; loop variable updated; second iteration passes bash into `compose` without retyping `!` |
+| `chatPromptSession.test.ts` | type `!` enters bash; **paste** `!pwd`; editor return with `!cmd`; Escape exits; Backspace/Delete exits only from an empty bash buffer |
+| `promptComposer.test.ts` | submit includes `inputMode`; **explicit** `compose({ inputMode: "bash" })` opens with bash prefix (composer is not cross-compose mode owner) |
+| `index` / session loop | **one-shot bash**: first submit returns `inputMode: "bash"`; command runs through `processBashCommand`; second compose receives `inputMode: "prompt"` |
 | History | Up-arrow `!cmd` → bash mode + buffer `cmd`; reverse search same |
 | `processBashCommand.test.ts` | mock `runShellCommand`; cwd option; `setMode("running")` / clear; nonzero exit; timeout (`"Command timed out and was killed"`); abort (`"Command cancelled"`, `exitCode: -1`) |
 | `runShellCommand` / `BashTool` | parity: env merge, killed/timeout message, maxBuffer truncation |
@@ -311,14 +319,14 @@ Use [`ttyTestStream.ts`](src/ui/__tests__/ttyTestStream.ts) / [`promptComposerTe
 - Inline `` !`cmd` `` in chat prompts.
 - PowerShell / `$SHELL` login shell (stay `/bin/sh -c`).
 - Submit-while-agent-busy queue.
-- Non-TTY sticky `!` mode.
+- Non-TTY `!` mode.
 - Combined stdout/stderr interleaving.
 
 ## Risk notes
 
 - **stdin ownership**: bash cancel listener lives in `runInteractiveSession` (same attach/detach/`input.resume()` rules as [`turnCancelListener`](src/ui/turnCancelListener.ts)); `detach` in `finally` pauses stdin — verify next `compose()` works (session-loop test); never overlap turn listener or an active `compose()` session.
 - **Escape precedence**: search/typeahead → exit bash mode (prompt) → cancel turn (agent) → cancel bash command (while `processBashCommand` running).
-- **Compose lifecycle**: regressions happen if `inputMode` is only stored on `ChatPromptSession` — test sticky via the **session loop** (or explicit `inputMode` on second `compose` in composer tests), not composer-internal stickiness.
+- **Compose lifecycle**: regressions happen if cross-compose mode behavior is hidden inside `ChatPromptSession` — test one-shot reset via the **session loop** and test explicit `inputMode` on `compose` in composer tests.
 - **History without sync**: replaying `!cmd` without `syncBufferInputMode` is a common bug — cover in tests.
 
 ## Files to touch (focused)
@@ -329,9 +337,9 @@ Use [`ttyTestStream.ts`](src/ui/__tests__/ttyTestStream.ts) / [`promptComposerTe
 | [`src/ui/processBashCommand.ts`](src/ui/processBashCommand.ts) | **New** |
 | [`src/tools/bash.ts`](src/tools/bash.ts) | `runShellCommand` + spawn abort path |
 | [`src/ui/promptState.ts`](src/ui/promptState.ts) | `inputMode` on `PromptRequest` / `PromptState` |
-| [`src/ui/promptComposer.ts`](src/ui/promptComposer.ts) | Pass-through `inputMode` on result (not sticky owner) |
+| [`src/ui/promptComposer.ts`](src/ui/promptComposer.ts) | Pass-through `inputMode` on result (not cross-compose mode owner) |
 | [`src/ui/chatPromptSession.ts`](src/ui/chatPromptSession.ts) | `syncBufferInputMode`, history/editor/paste |
-| [`src/index.ts`](src/index.ts) | Single `loadRuntimeConfig` + plumb; sticky loop; bash branch |
+| [`src/index.ts`](src/index.ts) | Single `loadRuntimeConfig` + plumb; one-shot bash loop branch |
 | [`src/config/runtimeConfig.ts`](src/config/runtimeConfig.ts) | (types only if shell-options helper added) |
 | [`src/ui/terminal.ts`](src/ui/terminal.ts) | `bashPrompt`, `bashCommand`, `bashOutput`; JSON policy |
 | [`src/ui/transcriptRenderer.ts`](src/ui/transcriptRenderer.ts) | Renderers |

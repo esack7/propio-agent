@@ -5,6 +5,7 @@ import {
   type ChatPromptSession,
 } from "../chatPromptSession.js";
 import type { TypeaheadProvider } from "../typeahead.js";
+import { createTtyTestStream } from "./ttyTestStream.js";
 
 function createTestSession(
   options: {
@@ -18,6 +19,7 @@ function createTestSession(
     historySnapshot?: string[];
     inputMode?: "prompt" | "bash";
     editorRunner?: unknown;
+    outputStream?: NodeJS.WriteStream & { chunks?: string[] };
     submit?: (text: string, inputMode: "prompt" | "bash") => void;
     interrupt?: () => void;
     close?: () => void;
@@ -28,13 +30,13 @@ function createTestSession(
   getState: () => ChatPromptSessionState | undefined;
 } {
   const inputStream = new PassThrough();
-  const outputStream = new PassThrough();
+  const outputStream = options.outputStream ?? new PassThrough();
   let latestState: ChatPromptSessionState | undefined;
 
   (
     inputStream as NodeJS.ReadStream & { setRawMode: (mode: boolean) => void }
   ).setRawMode = () => {};
-  (outputStream as NodeJS.WriteStream & { isTTY: boolean }).isTTY = false;
+  (outputStream as NodeJS.WriteStream & { isTTY: boolean }).isTTY ??= false;
   (outputStream as NodeJS.WriteStream & { columns: number }).columns = 80;
 
   const session = createChatPromptSession({
@@ -483,7 +485,12 @@ describe("chatPromptSession", () => {
     });
 
     try {
-      inputStream.emit("keypress", "", { name: "up", ctrl: false, meta: false, shift: false });
+      inputStream.emit("keypress", "", {
+        name: "up",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
       expect(getState()).toMatchObject({
         inputMode: "bash",
         buffer: "git status",
@@ -511,6 +518,94 @@ describe("chatPromptSession", () => {
     }
   });
 
+  it("exits bash mode on Backspace when the bash buffer is empty", () => {
+    const { inputStream, session, getState } = createTestSession({
+      inputMode: "bash",
+    });
+
+    try {
+      inputStream.emit("keypress", "", {
+        name: "backspace",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(getState()).toMatchObject({
+        inputMode: "prompt",
+        buffer: "",
+        footer: "idle footer",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("keeps bash mode while Backspace deletes command text", () => {
+    const { inputStream, session, getState } = createTestSession({
+      inputMode: "bash",
+    });
+
+    try {
+      inputStream.emit("keypress", "p", {
+        sequence: "p",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      inputStream.emit("keypress", "", {
+        name: "backspace",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: "",
+        footer: "bash footer",
+      });
+
+      inputStream.emit("keypress", "", {
+        name: "backspace",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(getState()).toMatchObject({
+        inputMode: "prompt",
+        buffer: "",
+        footer: "idle footer",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("exits bash mode on Delete when the bash buffer is empty", () => {
+    const { inputStream, session, getState } = createTestSession({
+      inputMode: "bash",
+    });
+
+    try {
+      inputStream.emit("keypress", "", {
+        name: "delete",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(getState()).toMatchObject({
+        inputMode: "prompt",
+        buffer: "",
+        footer: "idle footer",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
   it("submits with bash input mode", () => {
     const submit = jest.fn();
     const { inputStream, session } = createTestSession({
@@ -531,6 +626,38 @@ describe("chatPromptSession", () => {
         meta: false,
         shift: false,
       });
+      expect(submit).toHaveBeenCalledWith("pwd", "bash");
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("clears the live bash prompt instead of writing a duplicate submitted line", () => {
+    const submit = jest.fn();
+    const outputStream = createTtyTestStream(true, 80);
+    const { inputStream, session } = createTestSession({
+      inputMode: "bash",
+      outputStream,
+      submit,
+    });
+
+    try {
+      inputStream.emit("keypress", "pwd", {
+        sequence: "pwd",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      outputStream.chunks.length = 0;
+
+      inputStream.emit("keypress", "\r", {
+        name: "return",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+
+      expect(outputStream.chunks.join("")).not.toBe("\n");
       expect(submit).toHaveBeenCalledWith("pwd", "bash");
     } finally {
       session.cleanup();

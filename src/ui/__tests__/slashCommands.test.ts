@@ -1,5 +1,6 @@
 import {
   buildSlashCommandHelpLines,
+  getBashFooterText,
   getIdleFooterText,
   getSlashCommandCompletionCommands,
   isHelpCommand,
@@ -51,6 +52,15 @@ describe("slashCommands", () => {
       getIdleFooterText({ showToolCalls: false, showThinking: true }),
     ).toBe(
       "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+    );
+  });
+
+  it("keeps the bash footer concise", () => {
+    expect(getBashFooterText()).toBe(
+      "Enter to run | Esc/Delete exit bash | Ctrl+O tools: shown | Ctrl+T thinking: shown",
+    );
+    expect(getBashFooterText(false)).toBe(
+      "Enter to run | Esc/Delete exit bash | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
     );
   });
 

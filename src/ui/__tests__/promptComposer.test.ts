@@ -1516,7 +1516,7 @@ describe("createPromptComposer typeahead", () => {
     harness.composer.close();
   });
 
-  it("returns bash input mode and stays sticky across compose calls", async () => {
+  it("returns bash input mode and honors explicit bash mode on later compose calls", async () => {
     const harness = createTtyHarness({
       enableReverseHistorySearch: false,
       enableTypeahead: false,

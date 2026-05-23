@@ -192,7 +192,7 @@ export function getBashFooterText(
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
 
-  return `Enter to run | Esc exit bash | Ctrl+O tools: ${
+  return `Enter to run | Esc/Delete exit bash | Ctrl+O tools: ${
     showToolCalls ? "shown" : "hidden"
   } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
 }

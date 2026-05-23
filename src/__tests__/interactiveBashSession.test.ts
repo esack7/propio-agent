@@ -106,8 +106,8 @@ describe("runInteractiveSession bash routing", () => {
       }
 
       if (composeRequests.length === 2) {
-        expect(request.inputMode).toBe("bash");
-        return { status: "submitted", text: "ls", inputMode: "bash" };
+        expect(request.inputMode).toBe("prompt");
+        return { status: "closed" };
       }
 
       return { status: "closed" };
@@ -129,7 +129,7 @@ describe("runInteractiveSession bash routing", () => {
     jest.restoreAllMocks();
   });
 
-  it("keeps bash mode sticky across compose iterations", async () => {
+  it("returns to prompt mode after a bash submission", async () => {
     const agent = {
       streamChat: jest.fn(),
       listUserInvocableSkills: () => [],
@@ -161,8 +161,8 @@ describe("runInteractiveSession bash routing", () => {
       createRuntimeConfig(),
     );
 
-    expect(composeRequests[1]?.inputMode).toBe("bash");
-    expect(mockProcessBashCommand).toHaveBeenCalledTimes(2);
+    expect(composeRequests[1]?.inputMode).toBe("prompt");
+    expect(mockProcessBashCommand).toHaveBeenCalledTimes(1);
     expect(agent.streamChat).not.toHaveBeenCalled();
   });
 
@@ -224,11 +224,6 @@ describe("runInteractiveSession bash routing", () => {
         text: "sleep 10",
         inputMode: "bash",
       })
-      .mockResolvedValueOnce({
-        status: "submitted",
-        text: "echo next",
-        inputMode: "bash",
-      })
       .mockResolvedValueOnce({ status: "closed" });
 
     const agent = {
@@ -262,8 +257,9 @@ describe("runInteractiveSession bash routing", () => {
       createRuntimeConfig({ bashDefaultTimeoutMs: 99_000 }),
     );
 
-    expect(mockProcessBashCommand).toHaveBeenCalledTimes(2);
-    expect(mockCompose).toHaveBeenCalledTimes(3);
+    expect(mockProcessBashCommand).toHaveBeenCalledTimes(1);
+    expect(mockCompose).toHaveBeenCalledTimes(2);
+    expect(mockCompose.mock.calls[1]?.[0]?.inputMode).toBe("prompt");
     expect(mockProcessBashCommand.mock.calls[0]?.[2]).toMatchObject({
       timeoutMs: 99_000,
       maxBuffer: 2048,

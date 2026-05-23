@@ -9,10 +9,7 @@ import {
   type HistorySearchState,
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
-import {
-  applyInputModeFromBuffer,
-  type InputMode,
-} from "./inputModes.js";
+import { applyInputModeFromBuffer, type InputMode } from "./inputModes.js";
 import {
   acceptTypeaheadState,
   cancelTypeaheadState,
@@ -735,10 +732,7 @@ export function createChatPromptSession(
     if (result.inputMode !== inputMode || result.buffer !== buffer) {
       inputMode = result.inputMode;
       buffer = result.buffer;
-      cursor = clampPromptCursor(
-        cursor + result.cursorAdjusted,
-        buffer.length,
-      );
+      cursor = clampPromptCursor(cursor + result.cursorAdjusted, buffer.length);
     }
 
     if (previousMode !== inputMode) {
@@ -817,6 +811,11 @@ export function createChatPromptSession(
     lastLayout = layout;
   };
 
+  const clearSubmittedBashLayout = (): void => {
+    clearPreviousLayout();
+    lastLayout = null;
+  };
+
   const render = (): void => {
     const layout = renderPromptFrame(
       outputStream,
@@ -870,6 +869,21 @@ export function createChatPromptSession(
 
   const clearTransientStatus = (): void => {
     editorStatus = undefined;
+  };
+
+  const exitBashMode = (): void => {
+    inputMode = "prompt";
+    syncActiveFooter();
+    render();
+  };
+
+  const exitEmptyBashMode = (): boolean => {
+    if (inputMode !== "bash" || buffer.length > 0) {
+      return false;
+    }
+
+    exitBashMode();
+    return true;
   };
 
   const cancelTypeahead = (shouldRender: boolean): void => {
@@ -1252,6 +1266,10 @@ export function createChatPromptSession(
       clearHistoryNavigation();
     }
 
+    if (exitEmptyBashMode()) {
+      return;
+    }
+
     if (cursor === 0) {
       return;
     }
@@ -1275,6 +1293,10 @@ export function createChatPromptSession(
 
     if (historyIndex !== null) {
       clearHistoryNavigation();
+    }
+
+    if (exitEmptyBashMode()) {
+      return;
     }
 
     if (cursor >= buffer.length) {
@@ -1417,7 +1439,11 @@ export function createChatPromptSession(
       return;
     }
 
-    outputStream.write("\n");
+    if (inputMode === "bash") {
+      clearSubmittedBashLayout();
+    } else {
+      outputStream.write("\n");
+    }
     callbacks.submit(buffer, inputMode);
   };
 
@@ -1463,11 +1489,7 @@ export function createChatPromptSession(
     if ((key.name === "g" && key.ctrl) || key.name === "escape") {
       if (searchState) cancelSearch();
       else if (typeaheadState) cancelTypeahead(true);
-      else if (inputMode === "bash") {
-        inputMode = "prompt";
-        syncActiveFooter();
-        render();
-      }
+      else if (inputMode === "bash") exitBashMode();
       return true;
     }
 
