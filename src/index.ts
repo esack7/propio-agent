@@ -68,6 +68,12 @@ import {
   formatDiagnosticLogLine,
   renderStyledLines,
 } from "./indexHelpers.js";
+import {
+  createAbortStateController,
+  resolveInteractiveTurnAbortExitCode,
+  type AbortStateController,
+} from "./ui/abortState.js";
+import { createTurnCancelListener } from "./ui/turnCancelListener.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -292,12 +298,15 @@ interface InteractiveSubmissionContext {
   ui: TerminalUi;
   composer: PromptComposer;
   configPath: string;
+  inputStream: NodeJS.ReadStream;
+  interactiveInput: boolean;
   setCurrentAbortController: (controller: AbortController | null) => void;
+  cancelActiveTurn: AbortStateController["cancelActiveTurn"];
   shouldExit: () => boolean;
   getVisibility: () => VisibilityOptions;
 }
 
-async function runInteractiveTurn(
+export async function runInteractiveTurn(
   input: string,
   context: InteractiveSubmissionContext,
   options: {
@@ -312,6 +321,15 @@ async function runInteractiveTurn(
   setCurrentAbortController(abortController);
   ui.setMode("running");
 
+  const cancelListener = createTurnCancelListener({
+    input: context.inputStream,
+    interactiveInput: context.interactiveInput,
+    onCancel: () => {
+      context.cancelActiveTurn("escape");
+    },
+  });
+  cancelListener.attach();
+
   try {
     if (options.beforeTurn) {
       await options.beforeTurn();
@@ -320,12 +338,23 @@ async function runInteractiveTurn(
     await streamAssistantTurn(agent, input, ui, abortController.signal, () =>
       context.getVisibility(),
     );
+
+    if (abortController.signal.aborted) {
+      return resolveInteractiveTurnAbortExitCode(
+        abortController.signal,
+        context.shouldExit,
+      );
+    }
+
     ui.setMode("showingResults");
     ui.command("");
     ui.turnComplete(Date.now() - turnStartedAtMs);
   } catch (error) {
     if (abortController.signal.aborted || isAbortError(error)) {
-      return 130;
+      return resolveInteractiveTurnAbortExitCode(
+        abortController.signal,
+        context.shouldExit,
+      );
     }
 
     ui.setMode("error");
@@ -335,6 +364,7 @@ async function runInteractiveTurn(
     ui.command("");
     ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
+    cancelListener.detach();
     setCurrentAbortController(null);
   }
 
@@ -594,17 +624,19 @@ async function runInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,
   configPath: string,
-  setCurrentAbortController: (controller: AbortController | null) => void,
-  setActiveComposer: (composer: PromptComposer | null) => void,
-  shouldExit: () => boolean,
+  abortState: AbortStateController,
   visibility: VisibilityOptions,
 ): Promise<number> {
   const visibilityState = createSessionVisibilityState(visibility);
+  const inputStream = process.stdin;
+  const interactiveInput =
+    Boolean(inputStream.isTTY) && Boolean(process.stdout.isTTY);
   const typeaheadProviders = [
     ...createDefaultTypeaheadProviders(process.cwd()),
     createSkillCommandTypeaheadProvider(() => agent.listUserInvocableSkills()),
   ];
   const composer = createPromptComposer({
+    input: inputStream,
     output: ui.getPromptOutputStream(),
     historyStore: createWorkspacePromptHistoryStore(),
     workspaceRoot: process.cwd(),
@@ -624,15 +656,17 @@ async function runInteractiveSession(
       ui.setPromptState(state);
     },
   });
-  setActiveComposer(composer);
+  abortState.setActiveComposer(composer);
 
   try {
     ui.command("Type /help or ? to view available slash commands.");
-    ui.command("Exit with /exit or Ctrl+C.");
+    ui.command(
+      "Exit with /exit or Ctrl+C. Press Esc to cancel a running turn.",
+    );
     ui.command("");
 
     let shownReadyPromptMessage = false;
-    while (!shouldExit()) {
+    while (!abortState.shouldExit()) {
       ui.setMode("awaitingInput");
       if (!shownReadyPromptMessage) {
         ui.info("AI Agent started. Type your message and press Enter.");
@@ -664,8 +698,11 @@ async function runInteractiveSession(
         ui,
         composer,
         configPath,
-        setCurrentAbortController,
-        shouldExit,
+        inputStream,
+        interactiveInput,
+        setCurrentAbortController: abortState.setCurrentAbortController,
+        cancelActiveTurn: abortState.cancelActiveTurn,
+        shouldExit: abortState.shouldExit,
         getVisibility: () => visibilityState.getSnapshot(),
       });
       if (exitCode !== null) {
@@ -676,7 +713,7 @@ async function runInteractiveSession(
     return 130;
   } finally {
     composer.close();
-    setActiveComposer(null);
+    abortState.setActiveComposer(null);
   }
 }
 
@@ -740,13 +777,6 @@ interface CliRuntimeOptions {
   diagnosticsEnabled: boolean;
   colorEnabled: boolean;
   visibility: VisibilityOptions;
-}
-
-interface AbortStateController {
-  shouldExit: () => boolean;
-  setCurrentAbortController: (controller: AbortController | null) => void;
-  setActiveComposer: (composer: PromptComposer | null) => void;
-  handleSigint: () => void;
 }
 
 function shouldUseInteractiveMode(
@@ -816,33 +846,6 @@ function reportParseErrors(
   return true;
 }
 
-function createAbortStateController(ui: TerminalUi): AbortStateController {
-  let shouldExit = false;
-  let currentAbortController: AbortController | null = null;
-  let activeComposer: PromptComposer | null = null;
-
-  return {
-    shouldExit: () => shouldExit,
-    setCurrentAbortController: (controller) => {
-      currentAbortController = controller;
-    },
-    setActiveComposer: (composer) => {
-      activeComposer = composer;
-    },
-    handleSigint: () => {
-      shouldExit = true;
-      ui.setMode("error");
-      activeComposer?.close();
-      if (currentAbortController && !currentAbortController.signal.aborted) {
-        currentAbortController.abort();
-        ui.warn("Cancellation requested (SIGINT).");
-        return;
-      }
-      ui.warn("Interrupted.");
-    },
-  };
-}
-
 async function createInitializedAgent(
   parsedArgs: ParsedCliArgs,
   diagnosticsEnabled: boolean,
@@ -894,9 +897,7 @@ async function runInteractiveMode(options: {
     options.agent,
     options.ui,
     options.configPath,
-    options.abortState.setCurrentAbortController,
-    options.abortState.setActiveComposer,
-    options.abortState.shouldExit,
+    options.abortState,
     options.visibility,
   );
 }

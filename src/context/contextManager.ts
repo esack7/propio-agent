@@ -331,6 +331,24 @@ export class ContextManager {
     });
   }
 
+  /**
+   * Drop the in-progress turn when the user cancels before any assistant or
+   * tool entries were recorded (e.g. Escape during provider "thinking").
+   * Turns that already contain entries are left intact.
+   */
+  abandonIncompleteTurn(): void {
+    if (this.turns.length === 0) {
+      return;
+    }
+
+    const turn = this.turns[this.turns.length - 1];
+    if (turn.completedAt != null || turn.entries.length > 0) {
+      return;
+    }
+
+    this.turns.pop();
+  }
+
   commitAssistantResponse(
     content: string,
     toolCalls?: ChatToolCall[],

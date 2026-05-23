@@ -2,20 +2,7 @@ import type { Agent } from "../agent.js";
 import type { ConversationState } from "../context/types.js";
 import { runNonInteractiveSession } from "../index.js";
 import { TerminalUi } from "../ui/terminal.js";
-
-function createMockStream(): NodeJS.WriteStream & { chunks: string[] } {
-  const chunks: string[] = [];
-
-  return {
-    chunks,
-    columns: 80,
-    isTTY: false,
-    write: (chunk: string | Uint8Array) => {
-      chunks.push(typeof chunk === "string" ? chunk : chunk.toString());
-      return true;
-    },
-  } as unknown as NodeJS.WriteStream & { chunks: string[] };
-}
+import { createMockWriteStream } from "./testHelpers.js";
 
 function emptyConversationState(): ConversationState {
   return {
@@ -30,8 +17,8 @@ function emptyConversationState(): ConversationState {
 
 describe("index non-interactive session", () => {
   it("returns exit code 1 when an incomplete turn rejects", async () => {
-    const stdout = createMockStream();
-    const stderr = createMockStream();
+    const stdout = createMockWriteStream();
+    const stderr = createMockWriteStream();
     const ui = new TerminalUi({
       interactive: false,
       plain: true,

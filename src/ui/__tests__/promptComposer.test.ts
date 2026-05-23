@@ -193,7 +193,7 @@ describe("createPromptComposer", () => {
     await flush();
     expect(renderFooter).not.toHaveBeenCalled();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -205,16 +205,16 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T\nthinking: shown\nName? ",
     );
     expect(toggleOutput).not.toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown",
+      "tools: shown | Ctrl+T\nthinking: shown",
     );
     expect(renderState).toHaveBeenLastCalledWith(
       expect.objectContaining({
         buffer: "",
         footer:
-          "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+          "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
       }),
     );
 
@@ -236,7 +236,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u0014", {
@@ -248,7 +248,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: hidden\nName? ",
     );
 
     harness.composer.close();
@@ -272,7 +272,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Ctrl+O tools:\nshown | Ctrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | Esc cancel\nturn | Ctrl+O tools: shown | Ctrl+T\nthinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -284,7 +284,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Ctrl+O tools:\nhidden | Ctrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | Esc cancel\nturn | Ctrl+O tools: hidden | Ctrl+T\nthinking: shown\nName? ",
     );
     expect(toggleOutput).not.toContain(
       "shown | Ctrl+T thinking: shown\nName? ",
@@ -348,18 +348,18 @@ describe("createPromptComposer", () => {
     harness.outputStream.emit("resize");
 
     const narrowOutput = harness.takeOutput();
-    expect(narrowOutput).toContain("\u001b[4A");
+    expect(narrowOutput).toContain("\u001b[5A");
     expect(stripAnsiControls(narrowOutput)).toContain(
-      "Enter to send | ?\nhelp | Ctrl+O\ntools: shown |\nCtrl+T thinking:\nhidden\nName? ",
+      "Enter to send | ?\nhelp | Esc cancel\nturn | Ctrl+O\ntools: shown |\nCtrl+T thinking:\nhidden\nName? ",
     );
 
     (harness.outputStream as NodeJS.WriteStream).columns = 80;
     harness.outputStream.emit("resize");
 
     const wideOutput = harness.takeOutput();
-    expect(wideOutput).toContain("\u001b[5A");
+    expect(wideOutput).toContain("\u001b[6A");
     expect(stripAnsiControls(wideOutput)).toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: hidden\nName? ",
     );
 
     harness.composer.close();

@@ -42,15 +42,15 @@ describe("slashCommands", () => {
 
   it("keeps the idle footer concise", () => {
     expect(getIdleFooterText()).toBe(
-      "Enter to send | ? help | Ctrl+O tools: shown | Ctrl+T thinking: shown",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T thinking: shown",
     );
     expect(getIdleFooterText(false)).toBe(
-      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
     );
     expect(
       getIdleFooterText({ showToolCalls: false, showThinking: true }),
     ).toBe(
-      "Enter to send | ? help | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
     );
   });
 

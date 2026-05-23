@@ -161,6 +161,41 @@ describe("ContextManager", () => {
     });
   });
 
+  describe("abandonIncompleteTurn", () => {
+    it("removes a user-only incomplete turn", () => {
+      manager.beginUserTurn("Hello");
+      manager.abandonIncompleteTurn();
+
+      expect(manager.getConversationState().turns).toHaveLength(0);
+      expect(manager.getSnapshot()).toEqual([]);
+    });
+
+    it("keeps an incomplete turn that already has assistant entries", () => {
+      manager.beginUserTurn("Hello");
+      manager.commitAssistantResponse("Thinking", [
+        { id: "tc-1", function: { name: "tool", arguments: {} } },
+      ]);
+
+      manager.abandonIncompleteTurn();
+
+      expect(manager.getConversationState().turns).toHaveLength(1);
+      expect(manager.getConversationState().turns[0].entries).toHaveLength(1);
+    });
+
+    it("keeps an incomplete turn that already has tool entries", () => {
+      manager.beginUserTurn("Run tool");
+      manager.commitAssistantResponse("Calling", [
+        { id: "tc-1", function: { name: "tool", arguments: {} } },
+      ]);
+      manager.recordToolResults([toolResult("tc-1", "tool", "ok")]);
+
+      manager.abandonIncompleteTurn();
+
+      expect(manager.getConversationState().turns).toHaveLength(1);
+      expect(manager.getConversationState().turns[0].entries).toHaveLength(2);
+    });
+  });
+
   describe("getSnapshot and cloning", () => {
     it("should return a defensive copy that is not affected by later mutations", () => {
       manager.beginUserTurn("Hello");

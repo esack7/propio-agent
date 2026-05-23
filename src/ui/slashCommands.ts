@@ -142,6 +142,13 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
     text: formatLabelLine("Ctrl+X Ctrl+E", "open the editor"),
     style: "info",
   });
+  lines.push({
+    text: formatLabelLine(
+      "Esc",
+      "cancel the active turn (stops waiting; in-flight tools may continue)",
+    ),
+    style: "info",
+  });
 
   for (const group of SLASH_COMMAND_GROUPS) {
     lines.push({ text: group.name, style: "section" });
@@ -167,7 +174,7 @@ export function getIdleFooterText(
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
 
-  return `Enter to send | ? help | Ctrl+O tools: ${
+  return `Enter to send | ? help | Esc cancel turn | Ctrl+O tools: ${
     showToolCalls ? "shown" : "hidden"
   } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
 }

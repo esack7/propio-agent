@@ -383,6 +383,51 @@ export class Agent {
     return Array.from(schemas.values());
   }
 
+  private throwIfAbortCancelled(abortSignal?: AbortSignal): void {
+    if (abortSignal?.aborted) {
+      throw new Error("Request cancelled");
+    }
+  }
+
+  /**
+   * Reject when `abortSignal` fires even if `promise` is still pending. Does not
+   * terminate underlying tool subprocesses or MCP requests.
+   */
+  private async awaitWithAbortSignal<T>(
+    promise: Promise<T>,
+    abortSignal?: AbortSignal,
+  ): Promise<T> {
+    if (!abortSignal) {
+      return await promise;
+    }
+
+    this.throwIfAbortCancelled(abortSignal);
+
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        reject(new Error("Request cancelled"));
+      };
+
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (value) => {
+          abortSignal.removeEventListener("abort", onAbort);
+          try {
+            this.throwIfAbortCancelled(abortSignal);
+          } catch (error) {
+            reject(error);
+            return;
+          }
+          resolve(value);
+        },
+        (error) => {
+          abortSignal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
@@ -1212,6 +1257,7 @@ export class Agent {
       this.recordStreamChunk(normalizedEvent, iteration, streamState, onToken);
     }
 
+    this.throwIfAbortCancelled(abortSignal);
     this.contextManager.commitAssistantResponse(streamState.fullResponse);
     this.emitDiagnostic({
       type: "iteration_finished",
@@ -1354,6 +1400,8 @@ export class Agent {
       }
     }
 
+    this.throwIfAbortCancelled(options?.abortSignal);
+
     return {
       fullResponse: streamState.fullResponse,
       toolCalls,
@@ -1475,6 +1523,21 @@ export class Agent {
     this.contextManager.recordToolResults(artifactToolResults);
   }
 
+  private async runToolWithAbort(
+    toolName: string,
+    args: Record<string, unknown> | undefined,
+    allowedTools: ReadonlySet<string> | undefined,
+    abortSignal?: AbortSignal,
+  ): Promise<ToolExecutionResult> {
+    // Escape abort stops awaiting the tool; the subprocess/MCP call may still run.
+    const execResult = await this.awaitWithAbortSignal(
+      this.executeToolWithStatus(toolName, args ?? {}, allowedTools),
+      abortSignal,
+    );
+    this.throwIfAbortCancelled(abortSignal);
+    return execResult;
+  }
+
   private async processToolCall(
     toolCall: ChatToolCall,
     allowedTools: ReadonlySet<string> | undefined,
@@ -1483,9 +1546,7 @@ export class Agent {
     onToken: (token: string) => void,
     toolExecutionEvents: Array<{ name: string; failed: boolean }>,
   ): Promise<ArtifactToolResult> {
-    if (options?.abortSignal?.aborted) {
-      throw new Error("Request cancelled");
-    }
+    this.throwIfAbortCancelled(options?.abortSignal);
 
     const args = toolCall.function.arguments;
     const safeArgs = args ?? {};
@@ -1505,10 +1566,11 @@ export class Agent {
     );
     options?.onToolStart?.(toolName);
 
-    const execResult = await this.executeToolWithStatus(
+    const execResult = await this.runToolWithAbort(
       toolName,
       args,
       allowedTools,
+      options?.abortSignal,
     );
     const result = execResult.content;
     const failed = this.emitToolFinishedEvents(
@@ -1523,7 +1585,7 @@ export class Agent {
     );
 
     if (!failed) {
-      this.recordSkillTouchFromToolArgs(toolName, args);
+      this.recordSkillTouchFromToolArgs(toolName, safeArgs);
     }
     toolExecutionEvents.push({ name: toolName, failed });
 
@@ -1683,6 +1745,7 @@ export class Agent {
       toolCallsToExecute,
     );
 
+    this.throwIfAbortCancelled(options?.abortSignal);
     this.contextManager.commitAssistantResponse(
       fullResponse,
       normalizedToolCalls,
@@ -2220,6 +2283,10 @@ export class Agent {
 
       return finalResponse;
     } catch (error) {
+      if (options?.abortSignal?.reason === "escape") {
+        this.contextManager.abandonIncompleteTurn();
+      }
+
       this.emitDiagnostic({
         type: "provider_error",
         provider: this.provider.name,
