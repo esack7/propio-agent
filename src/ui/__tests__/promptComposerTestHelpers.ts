@@ -280,6 +280,7 @@ export async function submitPromptText(
   await expect(prompt).resolves.toEqual({
     status: "submitted",
     text,
+    inputMode: "prompt",
   });
 }
 

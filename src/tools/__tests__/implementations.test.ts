@@ -24,6 +24,7 @@ jest.unstable_mockModule("fast-glob", () => ({
 
 jest.unstable_mockModule("child_process", () => ({
   execFile: jest.fn(),
+  spawn: jest.fn(),
 }));
 
 jest.unstable_mockModule("util", () => ({

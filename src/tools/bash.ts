@@ -1,10 +1,7 @@
-import { execFile } from "child_process";
-import { promisify } from "util";
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
-
-const execFileAsync = promisify(execFile);
+import { runShellCommand } from "./runShellCommand.js";
 
 export interface BashToolConfig {
   readonly defaultTimeoutMs?: number;
@@ -117,56 +114,23 @@ export class BashTool implements ExecutableTool {
     if (timeout > this.maxTimeoutMs) {
       timeout = this.maxTimeoutMs;
     }
-    const env = { ...process.env, ...envOverrides };
 
-    try {
-      const { stdout, stderr } = await execFileAsync(
-        "/bin/sh",
-        ["-c", command],
-        {
-          cwd,
-          env,
-          timeout,
-          maxBuffer: this.outputInlineLimit * 2,
-        },
-      );
+    const result = await runShellCommand({
+      command,
+      cwd,
+      env: envOverrides,
+      timeoutMs: timeout,
+      maxBuffer: this.outputInlineLimit * 2,
+    });
 
-      return JSON.stringify(
-        {
-          stdout,
-          stderr,
-          exit_code: 0,
-        },
-        null,
-        2,
-      );
-    } catch (error: unknown) {
-      if (error && typeof error === "object") {
-        const execError = error as {
-          killed?: boolean;
-          code?: number;
-          stdout?: string;
-          stderr?: string;
-        };
-
-        const exitCode = execError.killed ? -1 : (execError.code ?? -1);
-        const stdout = execError.stdout ?? "";
-        const stderr = execError.killed
-          ? "Command timed out and was killed"
-          : (execError.stderr ?? "");
-
-        return JSON.stringify(
-          {
-            stdout,
-            stderr,
-            exit_code: exitCode,
-          },
-          null,
-          2,
-        );
-      }
-
-      throw new Error(`Unexpected error executing command: ${String(error)}`);
-    }
+    return JSON.stringify(
+      {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exit_code: result.exitCode,
+      },
+      null,
+      2,
+    );
   }
 }

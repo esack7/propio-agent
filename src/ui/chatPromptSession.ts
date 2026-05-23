@@ -10,6 +10,10 @@ import {
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
 import {
+  applyInputModeFromBuffer,
+  type InputMode,
+} from "./inputModes.js";
+import {
   acceptTypeaheadState,
   cancelTypeaheadState,
   createTypeaheadState,
@@ -26,6 +30,7 @@ import { formatSubtle } from "./formatting.js";
 export interface ChatPromptSessionState {
   buffer: string;
   cursor: number;
+  inputMode: InputMode;
   footer: string | null;
   historySearch?: ReturnType<typeof getHistorySearchSummary>;
   typeahead?: TypeaheadSummary;
@@ -35,7 +40,7 @@ export interface ChatPromptSessionState {
 
 export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
-  submit(text: string): void;
+  submit(text: string, inputMode: InputMode): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
@@ -686,8 +691,28 @@ export function createChatPromptSession(
   const { callbacks, inputStream, outputStream, request, historySnapshot } =
     options;
 
+  let inputMode: InputMode = request.inputMode ?? "prompt";
   let buffer = request.defaultValue ?? "";
   let cursor = buffer.length;
+
+  const getActivePromptText = (): string =>
+    inputMode === "bash"
+      ? (request.bashPromptText ?? request.promptText)
+      : request.promptText;
+
+  const syncBufferInputMode = (): void => {
+    const result = applyInputModeFromBuffer(inputMode, buffer);
+    if (result.inputMode !== inputMode || result.buffer !== buffer) {
+      inputMode = result.inputMode;
+      buffer = result.buffer;
+      cursor = clampPromptCursor(
+        cursor + result.cursorAdjusted,
+        buffer.length,
+      );
+    }
+  };
+
+  syncBufferInputMode();
   let historyIndex: number | null = null;
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
   let searchState: HistorySearchState | null = null;
@@ -706,6 +731,7 @@ export function createChatPromptSession(
   const buildRenderState = (): ChatPromptSessionState => ({
     buffer,
     cursor,
+    inputMode,
     footer: activeFooter ?? null,
     historySearch: searchState
       ? getHistorySearchSummary(searchState)
@@ -760,7 +786,7 @@ export function createChatPromptSession(
   const render = (): void => {
     const layout = renderPromptFrame(
       outputStream,
-      request.promptText,
+      getActivePromptText(),
       buffer,
       cursor,
       activeFooter,
@@ -997,6 +1023,7 @@ export function createChatPromptSession(
     draftSnapshot = null;
     buffer = nextSelection.buffer;
     cursor = nextSelection.cursor;
+    syncBufferInputMode();
     render();
   };
 
@@ -1058,6 +1085,7 @@ export function createChatPromptSession(
     const selected = historySnapshot[index];
     buffer = selected;
     cursor = selected.length;
+    syncBufferInputMode();
     render();
   };
 
@@ -1169,6 +1197,7 @@ export function createChatPromptSession(
 
     buffer = `${buffer.slice(0, cursor)}${text}${buffer.slice(cursor)}`;
     cursor += text.length;
+    syncBufferInputMode();
     refreshMentionTypeahead();
     scheduleMentionTypeaheadRetry();
     render();
@@ -1329,6 +1358,7 @@ export function createChatPromptSession(
         buffer = result.buffer;
         cursor = buffer.length;
         editorStatus = undefined;
+        syncBufferInputMode();
       } else {
         editorStatus = result.message;
       }
@@ -1354,7 +1384,7 @@ export function createChatPromptSession(
     }
 
     outputStream.write("\n");
-    callbacks.submit(buffer);
+    callbacks.submit(buffer, inputMode);
   };
 
   const handleLifecycleKeys = (key: readline.Key): boolean => {
@@ -1399,6 +1429,10 @@ export function createChatPromptSession(
     if ((key.name === "g" && key.ctrl) || key.name === "escape") {
       if (searchState) cancelSearch();
       else if (typeaheadState) cancelTypeahead(true);
+      else if (inputMode === "bash") {
+        inputMode = "prompt";
+        render();
+      }
       return true;
     }
 

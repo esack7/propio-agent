@@ -20,6 +20,10 @@ import {
   shouldRecordPromptHistoryEntry,
   type PromptHistoryStore,
 } from "./promptHistory.js";
+import {
+  formatBashHistoryEntry,
+  type InputMode,
+} from "./inputModes.js";
 import type { PromptEditorRunner } from "./promptEditor.js";
 
 export type { PromptState, PromptRequest } from "./promptState.js";
@@ -29,6 +33,7 @@ export type PromptCloseReason = "closed" | "interrupted";
 export interface PromptResultSubmitted {
   status: "submitted";
   text: string;
+  inputMode: InputMode;
 }
 
 export interface PromptResultClosed {
@@ -180,6 +185,7 @@ export function createPromptComposer(
       ...currentState,
       buffer: state.buffer,
       cursor: state.cursor,
+      inputMode: state.inputMode,
       footer: state.footer ?? undefined,
       historySearch: state.historySearch
         ? { ...state.historySearch }
@@ -197,7 +203,7 @@ export function createPromptComposer(
     options.renderState?.(clonePromptState(currentState));
   };
 
-  const persistSubmittedPrompt = (text: string): void => {
+  const persistSubmittedPrompt = (text: string, inputMode: InputMode): void => {
     if (!currentState || !activePrompt) {
       return;
     }
@@ -209,13 +215,15 @@ export function createPromptComposer(
     );
 
     if (shouldKeepHistory) {
+      const historyEntry =
+        inputMode === "bash" ? formatBashHistoryEntry(text) : text;
       try {
-        options.historyStore?.record(text);
+        options.historyStore?.record(historyEntry);
       } catch {
         // Prompt history is best-effort and must not block submission.
       }
 
-      const updatedHistory = updateLiveHistorySnapshot(liveHistory, text);
+      const updatedHistory = updateLiveHistorySnapshot(liveHistory, historyEntry);
       liveHistory.splice(0, liveHistory.length, ...updatedHistory);
       return;
     }
@@ -239,7 +247,7 @@ export function createPromptComposer(
     }
 
     if (result.status === "submitted") {
-      persistSubmittedPrompt(result.text);
+      persistSubmittedPrompt(result.text, result.inputMode);
     }
 
     activePrompt = null;
@@ -300,7 +308,8 @@ export function createPromptComposer(
           editorEnv: options.editorEnv,
           callbacks: {
             render: syncChatState,
-            submit: (text) => settlePending({ status: "submitted", text }),
+            submit: (text, inputMode) =>
+              settlePending({ status: "submitted", text, inputMode }),
             interrupt: () => {
               setCloseReason("interrupted");
               process.kill(process.pid, "SIGINT");
@@ -319,7 +328,11 @@ export function createPromptComposer(
 
       inputStream.resume();
       rl.question(request.promptText, (answer) => {
-        settlePending({ status: "submitted", text: answer });
+        settlePending({
+          status: "submitted",
+          text: answer,
+          inputMode: request.inputMode ?? "prompt",
+        });
       });
     });
   };

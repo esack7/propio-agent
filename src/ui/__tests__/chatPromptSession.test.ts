@@ -15,8 +15,9 @@ function createTestSession(
     enableTypeahead?: boolean;
     enableReverseHistorySearch?: boolean;
     historySnapshot?: string[];
+    inputMode?: "prompt" | "bash";
     editorRunner?: unknown;
-    submit?: () => void;
+    submit?: (text: string, inputMode: "prompt" | "bash") => void;
     interrupt?: () => void;
     close?: () => void;
   } = {},
@@ -38,7 +39,12 @@ function createTestSession(
   const session = createChatPromptSession({
     inputStream: inputStream as unknown as NodeJS.ReadStream,
     outputStream: outputStream as unknown as NodeJS.WriteStream,
-    request: { promptText: ">", mode: "chat" },
+    request: {
+      promptText: ">",
+      bashPromptText: "! ",
+      mode: "chat",
+      inputMode: options.inputMode,
+    },
     historySnapshot: options.historySnapshot ?? [],
     enableTypeahead: options.enableTypeahead ?? true,
     enableReverseHistorySearch: options.enableReverseHistorySearch ?? false,
@@ -352,6 +358,105 @@ describe("chatPromptSession", () => {
         cursor: "@docs/PLAN-file-search.md ".length,
       });
       expect(getState()?.typeahead).toBeUndefined();
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("enters bash mode when typing a leading exclamation", () => {
+    const submit = jest.fn();
+    const { inputStream, session, getState } = createTestSession({ submit });
+
+    try {
+      inputStream.emit("keypress", "!", {
+        name: "!",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: "",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("enters bash mode when pasting !pwd", () => {
+    const { inputStream, session, getState } = createTestSession();
+
+    try {
+      inputStream.emit("keypress", "!pwd", {
+        sequence: "!pwd",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: "pwd",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("replays bash history without a visible exclamation prefix", () => {
+    const { inputStream, session, getState } = createTestSession({
+      historySnapshot: ["!git status"],
+    });
+
+    try {
+      inputStream.emit("keypress", "", { name: "up", ctrl: false, meta: false, shift: false });
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: "git status",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("exits bash mode on Escape when search and typeahead are inactive", () => {
+    const { inputStream, session, getState } = createTestSession({
+      inputMode: "bash",
+    });
+
+    try {
+      inputStream.emit("keypress", "", {
+        name: "escape",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()).toMatchObject({ inputMode: "prompt" });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("submits with bash input mode", () => {
+    const submit = jest.fn();
+    const { inputStream, session } = createTestSession({
+      inputMode: "bash",
+      submit,
+    });
+
+    try {
+      inputStream.emit("keypress", "pwd", {
+        sequence: "pwd",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      inputStream.emit("keypress", "\r", {
+        name: "return",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(submit).toHaveBeenCalledWith("pwd", "bash");
     } finally {
       session.cleanup();
     }

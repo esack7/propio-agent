@@ -14,6 +14,9 @@ const TEXT_TRANSCRIPT_KINDS = new Set<TranscriptEntry["kind"]>([
   "indent",
   "assistant_token",
   "thinking_token",
+  "bash_command",
+  "bash_stdout",
+  "bash_stderr",
 ]);
 
 function formatDurationSeconds(durationMs: number): string {
@@ -117,6 +120,15 @@ export function renderTranscriptEntry(
     case "turn_failed":
       transcript.turnFailed(entry.durationMs);
       break;
+    case "bash_command":
+      transcript.bashCommand(entry.text);
+      break;
+    case "bash_stdout":
+      transcript.bashStdout(entry.text);
+      break;
+    case "bash_stderr":
+      transcript.bashStderr(entry.text);
+      break;
     case "json":
       transcript.writeJson(entry.value);
       break;
@@ -148,6 +160,9 @@ export function countTranscriptEntryStderrLines(
     case "warn":
     case "success":
     case "error":
+    case "bash_command":
+    case "bash_stdout":
+    case "bash_stderr":
       return countLine(entry.text, writer);
     case "indent":
       return countLine(`  ${entry.text}`, writer);

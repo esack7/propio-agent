@@ -5,7 +5,10 @@ import { fileURLToPath } from "url";
 import type { Agent as AgentType } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
-import { loadRuntimeConfig } from "./config/runtimeConfig.js";
+import {
+  loadRuntimeConfig,
+  type RuntimeConfig,
+} from "./config/runtimeConfig.js";
 import {
   getConfigPath,
   loadProvidersConfigAsync,
@@ -32,8 +35,12 @@ import {
 import {
   buildSlashCommandHelpLines,
   isHelpCommand,
+  getBashFooterText,
   getIdleFooterText,
 } from "./ui/slashCommands.js";
+import { processBashCommand } from "./ui/processBashCommand.js";
+import { createShellRunOptionsFromRuntimeConfig } from "./tools/runShellCommand.js";
+import type { InputMode } from "./ui/inputModes.js";
 import { createSessionVisibilityState } from "./ui/sessionVisibility.js";
 import {
   createDefaultTypeaheadProviders,
@@ -626,6 +633,7 @@ async function runInteractiveSession(
   configPath: string,
   abortState: AbortStateController,
   visibility: VisibilityOptions,
+  runtimeConfig: RuntimeConfig,
 ): Promise<number> {
   const visibilityState = createSessionVisibilityState(visibility);
   const inputStream = process.stdin;
@@ -663,9 +671,12 @@ async function runInteractiveSession(
     ui.command(
       "Exit with /exit or Ctrl+C. Press Esc to cancel a running turn.",
     );
+    ui.command("Type ! at the prompt to enter bash mode for local shell commands.");
     ui.command("");
 
     let shownReadyPromptMessage = false;
+    let inputMode: InputMode = "prompt";
+    const shellRunOptions = createShellRunOptionsFromRuntimeConfig(runtimeConfig);
     while (!abortState.shouldExit()) {
       ui.setMode("awaitingInput");
       if (!shownReadyPromptMessage) {
@@ -673,10 +684,16 @@ async function runInteractiveSession(
         shownReadyPromptMessage = true;
       }
 
+      const visibilitySnapshot = visibilityState.getSnapshot();
       const nextInput = await composer.compose({
         mode: "chat",
+        inputMode,
         promptText: ui.chatPrompt(),
-        footer: getIdleFooterText(visibilityState.getSnapshot()),
+        bashPromptText: ui.bashPrompt(),
+        footer:
+          inputMode === "bash"
+            ? getBashFooterText(visibilitySnapshot)
+            : getIdleFooterText(visibilitySnapshot),
       });
 
       if (nextInput.status === "closed") {
@@ -691,7 +708,28 @@ async function runInteractiveSession(
       }
 
       ui.closeOverlay();
+      inputMode = nextInput.inputMode;
       const trimmedInput = nextInput.text.trim();
+
+      if (nextInput.inputMode === "bash") {
+        const bashAbort = new AbortController();
+        const bashCancelListener = createTurnCancelListener({
+          input: inputStream,
+          interactiveInput,
+          onCancel: () => bashAbort.abort("escape"),
+        });
+        bashCancelListener.attach();
+        try {
+          await processBashCommand(trimmedInput, ui, {
+            cwd: process.cwd(),
+            abortSignal: bashAbort.signal,
+            ...shellRunOptions,
+          });
+        } finally {
+          bashCancelListener.detach();
+        }
+        continue;
+      }
 
       const exitCode = await handleInteractiveSubmission(trimmedInput, {
         agent,
@@ -848,6 +886,7 @@ function reportParseErrors(
 
 async function createInitializedAgent(
   parsedArgs: ParsedCliArgs,
+  runtimeConfig: RuntimeConfig,
   diagnosticsEnabled: boolean,
   diagnosticLogger: { onEvent: (event: AgentDiagnosticEvent) => void },
 ): Promise<{ agent: AgentType; configPath: string }> {
@@ -863,15 +902,6 @@ async function createInitializedAgent(
       ),
     ]);
 
-  const agentRuntimeConfig = loadRuntimeConfig({
-    cliOverrides: {
-      maxIterations: parsedArgs.flags.maxIterations,
-      maxRetries: parsedArgs.flags.maxRetries,
-      bashDefaultTimeoutMs: parsedArgs.flags.bashTimeoutMs,
-      streamIdleTimeoutMs: parsedArgs.flags.streamIdleTimeoutMs,
-    },
-  });
-
   const agent = new agentModule.Agent({
     providersConfig,
     mcpConfig,
@@ -879,7 +909,7 @@ async function createInitializedAgent(
     agentsMdContent,
     diagnosticsEnabled,
     onDiagnosticEvent: diagnosticLogger.onEvent,
-    runtimeConfig: agentRuntimeConfig,
+    runtimeConfig,
   });
   await agent.initialize();
 
@@ -892,6 +922,7 @@ async function runInteractiveMode(options: {
   configPath: string;
   abortState: AbortStateController;
   visibility: VisibilityOptions;
+  runtimeConfig: RuntimeConfig;
 }): Promise<number> {
   return await runInteractiveSession(
     options.agent,
@@ -899,6 +930,7 @@ async function runInteractiveMode(options: {
     options.configPath,
     options.abortState,
     options.visibility,
+    options.runtimeConfig,
   );
 }
 
@@ -931,11 +963,19 @@ async function runConfiguredSession(options: {
 
   const sessionsDir = getDefaultSessionsDir();
   handleStaleMarkers(sessionsDir, options.ui, options.diagnosticLogger);
-  const runtimeConfig = loadRuntimeConfig();
+  const runtimeConfig = loadRuntimeConfig({
+    cliOverrides: {
+      maxIterations: options.parsedArgs.flags.maxIterations,
+      maxRetries: options.parsedArgs.flags.maxRetries,
+      bashDefaultTimeoutMs: options.parsedArgs.flags.bashTimeoutMs,
+      streamIdleTimeoutMs: options.parsedArgs.flags.streamIdleTimeoutMs,
+    },
+  });
   pruneStaleArtifacts(sessionsDir, runtimeConfig.artifactRetentionDays);
 
   const { agent, configPath } = await createInitializedAgent(
     options.parsedArgs,
+    runtimeConfig,
     options.runtime.diagnosticsEnabled,
     options.diagnosticLogger,
   );
@@ -948,6 +988,7 @@ async function runConfiguredSession(options: {
           configPath,
           abortState: options.abortState,
           visibility: options.runtime.visibility,
+          runtimeConfig,
         })
       : await handlePipeMode({
           agent,

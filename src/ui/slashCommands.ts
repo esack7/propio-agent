@@ -174,7 +174,25 @@ export function getIdleFooterText(
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
 
-  return `Enter to send | ? help | Esc cancel turn | Ctrl+O tools: ${
+  return `Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: ${
+    showToolCalls ? "shown" : "hidden"
+  } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
+}
+
+export function getBashFooterText(
+  visibility:
+    | boolean
+    | {
+        showToolCalls: boolean;
+        showThinking: boolean;
+      } = true,
+): string {
+  const showToolCalls =
+    typeof visibility === "boolean" ? visibility : visibility.showToolCalls;
+  const showThinking =
+    typeof visibility === "boolean" ? true : visibility.showThinking;
+
+  return `Enter to run | Esc exit bash | Ctrl+O tools: ${
     showToolCalls ? "shown" : "hidden"
   } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
 }
