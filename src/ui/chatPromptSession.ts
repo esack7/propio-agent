@@ -33,6 +33,7 @@ import {
   enableBracketedPaste,
 } from "./input/bracketedPaste.js";
 import { createKeypressParser } from "./input/parseKeypress.js";
+import { createPasteHandler } from "./input/pasteHandler.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
@@ -1592,6 +1593,9 @@ export function createChatPromptSession(
       return true;
     }
     if (key.name === "return" || key.name === "enter") {
+      if (pasteHandler.isPasting()) {
+        return true;
+      }
       handleEnter();
       return true;
     }
@@ -1722,11 +1726,20 @@ export function createChatPromptSession(
     handleBackspaceKey(key) ||
     handleNavigationKeys(key);
 
-  const handlePasteText = (text: string): void => {
-    if (text.length > 0) {
-      insertText(text);
-    }
-  };
+  const pasteHandler = createPasteHandler({
+    getInputMode: () => inputMode,
+    onTextPaste: (text) => {
+      if (text.length > 0) {
+        insertText(text);
+      }
+    },
+    onImagePaths: (paths) => {
+      insertText(paths.join("\n"));
+    },
+  });
+
+  const shouldSkipBurst = (): boolean =>
+    Boolean(searchState || typeaheadState || historyIndex !== null);
 
   const handleKeypress = (str: string | undefined, key: readline.Key): void => {
     if (!active) return;
@@ -1734,15 +1747,37 @@ export function createChatPromptSession(
     const events = keypressParser.parse(str, key);
     for (const parsed of events) {
       if (parsed.kind === "paste") {
-        handlePasteText(parsed.text);
+        pasteHandler.submitPaste(parsed.text, { isPasted: parsed.isPasted });
         continue;
       }
 
       const { str: keyStr, key: keyObj } = parsed;
+      const printable = isPrintableKey(keyStr, keyObj);
+      const isEnter = keyObj.name === "return" || keyObj.name === "enter";
+
+      if (isEnter) {
+        if (pasteHandler.isPasting()) {
+          continue;
+        }
+        pasteHandler.flushBeforeNonChar();
+      } else if (!printable) {
+        pasteHandler.flushBeforeNonChar();
+      }
+
       if (handleControlAndSystemKeys(keyStr, keyObj)) continue;
       if (handleSearchModeInput(keyStr, keyObj)) continue;
       if (handleTypeaheadAndNavigationKeys(keyStr, keyObj)) continue;
-      if (isPrintableKey(keyStr, keyObj)) insertText(keyStr ?? "");
+
+      if (isPrintableKey(keyStr, keyObj)) {
+        const text = keyStr ?? "";
+        if (
+          !shouldSkipBurst() &&
+          pasteHandler.onPrintableText(text) === "buffered"
+        ) {
+          continue;
+        }
+        insertText(text);
+      }
     }
   };
 
@@ -1761,6 +1796,7 @@ export function createChatPromptSession(
     }
 
     active = false;
+    pasteHandler.dispose();
     disableBracketedPaste(terminalControlStream);
     unwatchResize();
     clearMentionTypeaheadRetry();

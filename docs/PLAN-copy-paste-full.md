@@ -38,8 +38,8 @@ flowchart LR
 |-------|----------------|------------------------|
 | Terminal control | Enable/disable bracketed paste on injectable TTY stream | `src/ui/input/bracketedPaste.ts` |
 | Stdin / keypress parser | Collect `CSI 200~` … `201~`; emit atomic paste events | `src/ui/input/parseKeypress.ts` |
-| Paste hook | Detect paste (bracketed, >800 chars, path-shaped, split chunks); 100ms batch | `src/ui/input/pasteHandler.ts` |
-| Path parsing | Quoted paths, `file://`, escaped spaces, macOS drag formats | `src/ui/input/parseDroppedPaths.ts` |
+| Paste hook | Detect paste (bracketed, >800 chars, split-chunk burst); debounce + clean; **not** path-shaped detection | `src/ui/input/pasteHandler.ts` |
+| Path parsing | After clean, classify lines for chat `onImagePaths` vs `onTextPaste` (Phase 2: strict all-image-path lines only) | `src/ui/input/parseDroppedPaths.ts` |
 | Prompt input | Insert text/images; block Enter while pasting; render pills | [`src/ui/chatPromptSession.ts`](src/ui/chatPromptSession.ts) |
 | Submit | Expand registered placeholder tokens → `PromptSubmission` | `src/ui/input/expandSubmit.ts`, [`src/ui/promptComposer.ts`](src/ui/promptComposer.ts) |
 | Agent | Attach images on user turn; keep @mention resolver | [`src/agent.ts`](src/agent.ts), [`src/context/contextManager.ts`](src/context/contextManager.ts) |
@@ -55,6 +55,8 @@ flowchart LR
 ## Rich submission object (define early)
 
 Introduce a single payload type used end-to-end **before** image/path features land, so later phases only fill fields.
+
+> **Implementation note:** Phase 1–2 shipped bracketed paste and the paste handler without `PromptSubmission` wiring (submission remains `{ text, inputMode }`). Land [`promptSubmission.ts`](src/ui/input/promptSubmission.ts) as a focused step **before Phase 3** (placeholder expansion + history policy), not inside Phase 3 UI work. See [PLAN-copy-paste-phase-2.md](PLAN-copy-paste-phase-2.md#promptsubmission-handoff).
 
 **Module placement:** define `PromptSubmission` and `PromptImage` in a small shared module, e.g. [`src/ui/input/promptSubmission.ts`](src/ui/input/promptSubmission.ts) (export `isSubmissionEmpty` there too). **Do not** put these types in [`promptComposer.ts`](src/ui/promptComposer.ts) — [`index.ts`](src/index.ts) and [`agent.ts`](src/agent.ts) both import them, and keeping types out of the composer avoids awkward UI ↔ agent cross-imports through unrelated files.
 
@@ -169,14 +171,15 @@ Placeholders are **registry tokens**, not free-form editable abbreviations.
 
 **New:** `src/ui/input/pasteHandler.ts`
 
-Detection: `isPasted`, `length > 800`, path-shaped payload (via `parseDroppedPaths`), or `pastePendingRef` (split chunks).
+**Paste detection** (what enters the debounced paste path): `isPasted` (bracketed or parser `> PASTE_THRESHOLD`), merged debounced chunks, or burst idle flush (`pastePendingRef` / split chunks). **Not** path-shaped payloads — path logic runs only **after** `cleanPasteText` on flush via `classifyDroppedText` (routing, not detection). See [PLAN-copy-paste-phase-2.md](PLAN-copy-paste-phase-2.md).
 
 Behavior:
 
+- `submitPaste` with `text.length === 0` → no-op (do not set `isPasting` or start debounce).
 - 100ms debounce → single `onPasteReady`.
-- Clean: strip ANSI, `\r` → `\n`, tabs → spaces.
-- `isPasting` → ignore `Return` in `handleEnter`.
-- Callbacks: `onTextPaste`, `onImagePaths` (chat mode only for image branch).
+- Clean: strip ANSI, normalize line endings (`/\r\n?/g` → `\n`), tabs → spaces.
+- `isPasting` → consume `Return` while active (do not flush-then-submit); see Phase 2 doc for key ordering.
+- Callbacks: `onTextPaste`; `onImagePaths` only when every non-empty line is an image path (chat mode).
 
 **No `onEmptyPaste` in initial scope** (deferred with clipboard).
 
@@ -292,8 +295,8 @@ Defer: `pasteCache.test.ts`, clipboard mocks until Phase 5.
 
 ## Implementation order (initial scope)
 
-1. `src/ui/input/promptSubmission.ts` (`PromptSubmission`, `PromptImage`, `isSubmissionEmpty`) + wire through `PromptResult`, `index.ts`, `streamChat` (images optional/no-op).
-2. Bracketed paste + parser + paste handler + Enter guard + injectable terminal stream.
+1. `src/ui/input/promptSubmission.ts` (`PromptSubmission`, `PromptImage`, `isSubmissionEmpty`) + wire through `PromptResult`, `index.ts`, `streamChat` (images optional/no-op). **May lag Phase 1–2; must complete before Phase 3.**
+2. Bracketed paste + parser + paste handler + Enter guard + injectable terminal stream. *(Phase 1–2 in progress; paste handler per [PLAN-copy-paste-phase-2.md](PLAN-copy-paste-phase-2.md).)*
 3. Text placeholders + `expandPastedRefs` + registry policy.
 4. `parseDroppedPaths` + image read + pills + bash/slash rules + `beginUserTurn` images.
 5. Transcript polish + README (document deferred clipboard/cache).

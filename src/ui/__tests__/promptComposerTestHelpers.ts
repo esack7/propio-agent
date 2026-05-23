@@ -1,4 +1,4 @@
-import { expect } from "@jest/globals";
+import { expect, jest } from "@jest/globals";
 import { PassThrough } from "stream";
 import * as fs from "fs";
 import * as os from "os";
@@ -14,6 +14,16 @@ import type { PromptResult } from "../promptComposer.js";
 
 export function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Slightly above pasteHandler burstCharIntervalMs (20) — spaces synthetic keypresses apart. */
+const SYNTHETIC_TYPING_GAP_MS = 21;
+
+function isJestFakeTimersActive(): boolean {
+  return (
+    typeof jest !== "undefined" &&
+    Object.prototype.hasOwnProperty.call(setTimeout, "clock")
+  );
 }
 
 export function createTempHistoryStore(prefix: string): {
@@ -226,6 +236,13 @@ export function createTtyHarness(options?: {
   const typeText = (text: string): void => {
     for (const character of text) {
       emitKeypress({ name: character }, character);
+      if (isJestFakeTimersActive()) {
+        jest.advanceTimersByTime(SYNTHETIC_TYPING_GAP_MS);
+      }
+    }
+    if (!isJestFakeTimersActive()) {
+      // Same-tick loops can look like split paste; flush before assertions.
+      emitKeypress({ name: "end" }, "");
     }
   };
 

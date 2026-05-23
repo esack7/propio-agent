@@ -719,6 +719,7 @@ describe("createPromptComposer reverse history search", () => {
     harness.inputStream.write("h");
     harness.inputStream.write("e");
     harness.inputStream.write("l");
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(harness.composer.getState()).toMatchObject({
       buffer: "hel",
