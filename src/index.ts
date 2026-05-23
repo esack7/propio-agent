@@ -643,6 +643,13 @@ export async function runInteractiveSession(
     ...createDefaultTypeaheadProviders(process.cwd()),
     createSkillCommandTypeaheadProvider(() => agent.listUserInvocableSkills()),
   ];
+  const getPromptFooters = (
+    snapshot = visibilityState.getSnapshot(),
+  ): { prompt: string; bash: string } => ({
+    prompt: getIdleFooterText(snapshot),
+    bash: getBashFooterText(snapshot),
+  });
+
   const composer = createPromptComposer({
     input: inputStream,
     output: ui.getPromptOutputStream(),
@@ -652,19 +659,18 @@ export async function runInteractiveSession(
     renderFooter: (footer) => {
       ui.idleFooter(footer);
     },
+    refreshPromptFooters: () => getPromptFooters(),
     onToggleToolCalls: () => {
-      const snapshot = visibilityState.toggleToolCalls();
-      const mode = composer.getState()?.inputMode ?? "prompt";
-      return mode === "bash"
-        ? getBashFooterText(snapshot)
-        : getIdleFooterText(snapshot);
+      visibilityState.toggleToolCalls();
+      return composer.getState()?.inputMode === "bash"
+        ? getPromptFooters().bash
+        : getPromptFooters().prompt;
     },
     onToggleThinking: () => {
-      const snapshot = visibilityState.toggleThinking();
-      const mode = composer.getState()?.inputMode ?? "prompt";
-      return mode === "bash"
-        ? getBashFooterText(snapshot)
-        : getIdleFooterText(snapshot);
+      visibilityState.toggleThinking();
+      return composer.getState()?.inputMode === "bash"
+        ? getPromptFooters().bash
+        : getPromptFooters().prompt;
     },
     renderState: (state) => {
       ui.setPromptState(state);

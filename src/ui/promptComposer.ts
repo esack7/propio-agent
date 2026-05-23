@@ -64,6 +64,7 @@ export interface PromptComposerOptions {
   renderState?: (state: PromptState | null) => void;
   onToggleToolCalls?: () => string | null | undefined;
   onToggleThinking?: () => string | null | undefined;
+  refreshPromptFooters?: () => import("./chatPromptSession.js").PromptFooters;
   historyStore?: PromptHistoryStore;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -320,6 +321,7 @@ export function createPromptComposer(
             toggleThinking: () => {
               return options.onToggleThinking?.();
             },
+            refreshPromptFooters: options.refreshPromptFooters,
             close,
           },
         });

@@ -38,12 +38,18 @@ export interface ChatPromptSessionState {
   editorStatus?: string;
 }
 
+export interface PromptFooters {
+  prompt: string;
+  bash: string;
+}
+
 export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
   submit(text: string, inputMode: InputMode): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
+  refreshPromptFooters?: () => PromptFooters;
   close(): void;
 }
 
@@ -700,13 +706,27 @@ export function createChatPromptSession(
       ? (request.bashPromptText ?? request.promptText)
       : request.promptText;
 
-  let activeFooter = request.footer;
+  let promptFooter = request.footer;
+  let bashFooter = request.bashFooter ?? request.footer;
+  let activeFooter = promptFooter;
+
+  const applyFooterSnapshot = (snapshot: PromptFooters | undefined): void => {
+    if (!snapshot) {
+      return;
+    }
+
+    promptFooter = snapshot.prompt;
+    bashFooter = snapshot.bash;
+    activeFooter = inputMode === "bash" ? bashFooter : promptFooter;
+  };
 
   const syncActiveFooter = (): void => {
-    activeFooter =
-      inputMode === "bash"
-        ? (request.bashFooter ?? request.footer)
-        : request.footer;
+    if (callbacks.refreshPromptFooters) {
+      applyFooterSnapshot(callbacks.refreshPromptFooters());
+      return;
+    }
+
+    activeFooter = inputMode === "bash" ? bashFooter : promptFooter;
   };
 
   const syncBufferInputMode = (): void => {
@@ -1459,8 +1479,19 @@ export function createChatPromptSession(
       toggle: (() => string | null | undefined) | undefined,
     ): boolean => {
       const nextFooter = toggle?.();
-      if (nextFooter !== undefined) {
-        activeFooter = nextFooter ?? undefined;
+      if (callbacks.refreshPromptFooters) {
+        applyFooterSnapshot(callbacks.refreshPromptFooters());
+        render();
+        return true;
+      }
+
+      if (nextFooter !== undefined && nextFooter !== null) {
+        activeFooter = nextFooter;
+        if (inputMode === "bash") {
+          bashFooter = nextFooter;
+        } else {
+          promptFooter = nextFooter;
+        }
         render();
       }
       return true;

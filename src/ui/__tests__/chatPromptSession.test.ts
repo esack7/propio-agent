@@ -12,6 +12,7 @@ function createTestSession(
     onRender?: (state: ChatPromptSessionState) => void;
     toggleToolCalls?: () => string | null | undefined;
     toggleThinking?: () => string | null | undefined;
+    refreshPromptFooters?: () => { prompt: string; bash: string };
     enableTypeahead?: boolean;
     enableReverseHistorySearch?: boolean;
     historySnapshot?: string[];
@@ -63,6 +64,7 @@ function createTestSession(
       close: options.close ?? (() => {}),
       toggleToolCalls: options.toggleToolCalls,
       toggleThinking: options.toggleThinking,
+      refreshPromptFooters: options.refreshPromptFooters,
     },
   });
 
@@ -380,6 +382,54 @@ describe("chatPromptSession", () => {
         inputMode: "bash",
         buffer: "",
         footer: "bash footer",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("keeps toggled visibility when entering and exiting bash mode", () => {
+    let showToolCalls = true;
+    const refreshPromptFooters = () => ({
+      prompt: showToolCalls ? "idle shown" : "idle hidden",
+      bash: showToolCalls ? "bash shown" : "bash hidden",
+    });
+    const toggleToolCalls = jest.fn(() => {
+      showToolCalls = !showToolCalls;
+      return showToolCalls ? "idle shown" : "idle hidden";
+    });
+
+    const { inputStream, session, getState } = createTestSession({
+      toggleToolCalls,
+      refreshPromptFooters,
+    });
+
+    try {
+      inputStream.emit("keypress", "o", {
+        name: "o",
+        ctrl: true,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()?.footer).toBe("idle hidden");
+
+      inputStream.emit("keypress", "!", {
+        name: "!",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()?.footer).toBe("bash hidden");
+
+      inputStream.emit("keypress", "", {
+        name: "escape",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()).toMatchObject({
+        inputMode: "prompt",
+        footer: "idle hidden",
       });
     } finally {
       session.cleanup();
