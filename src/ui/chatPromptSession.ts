@@ -700,7 +700,17 @@ export function createChatPromptSession(
       ? (request.bashPromptText ?? request.promptText)
       : request.promptText;
 
+  let activeFooter = request.footer;
+
+  const syncActiveFooter = (): void => {
+    activeFooter =
+      inputMode === "bash"
+        ? (request.bashFooter ?? request.footer)
+        : request.footer;
+  };
+
   const syncBufferInputMode = (): void => {
+    const previousMode = inputMode;
     const result = applyInputModeFromBuffer(inputMode, buffer);
     if (result.inputMode !== inputMode || result.buffer !== buffer) {
       inputMode = result.inputMode;
@@ -710,8 +720,13 @@ export function createChatPromptSession(
         buffer.length,
       );
     }
+
+    if (previousMode !== inputMode) {
+      syncActiveFooter();
+    }
   };
 
+  syncActiveFooter();
   syncBufferInputMode();
   let historyIndex: number | null = null;
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
@@ -726,7 +741,6 @@ export function createChatPromptSession(
   let rawModeEnabled = false;
   let active = true;
   let lastLayout: PromptLayout | null = null;
-  let activeFooter = request.footer;
 
   const buildRenderState = (): ChatPromptSessionState => ({
     buffer,
@@ -1431,6 +1445,7 @@ export function createChatPromptSession(
       else if (typeaheadState) cancelTypeahead(true);
       else if (inputMode === "bash") {
         inputMode = "prompt";
+        syncActiveFooter();
         render();
       }
       return true;

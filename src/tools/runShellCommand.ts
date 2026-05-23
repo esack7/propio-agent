@@ -5,6 +5,8 @@ const execFileAsync = promisify(execFile);
 
 const TIMEOUT_MESSAGE = "Command timed out and was killed";
 const CANCEL_MESSAGE = "Command cancelled";
+export const MAXBUFFER_TRUNCATION_MESSAGE =
+  "stdout or stderr maxBuffer length exceeded";
 
 export interface RunShellCommandOptions {
   command: string;
@@ -20,18 +22,59 @@ export interface RunShellCommandResult {
   stderr: string;
   exitCode: number;
   aborted?: boolean;
+  maxBufferExceeded?: boolean;
 }
 
 function mergeEnv(overrides?: Record<string, string>): NodeJS.ProcessEnv {
   return { ...process.env, ...overrides };
 }
 
-function truncateBuffer(text: string, maxBuffer: number): string {
-  if (text.length <= maxBuffer) {
-    return text;
+export function normalizeExecErrorCode(code: unknown): number {
+  if (typeof code === "number" && Number.isFinite(code)) {
+    return code;
   }
 
-  return text.slice(0, maxBuffer);
+  if (typeof code === "string" && /^\d+$/.test(code)) {
+    return Number.parseInt(code, 10);
+  }
+
+  return -1;
+}
+
+function formatExecErrorStderr(error: {
+  killed?: boolean;
+  code?: number | string;
+  stderr?: string | Buffer;
+  message?: string;
+}): string {
+  if (error.killed) {
+    return TIMEOUT_MESSAGE;
+  }
+
+  const stderr = String(error.stderr ?? "");
+  if (stderr.length > 0) {
+    return stderr;
+  }
+
+  if (typeof error.message === "string" && error.message.length > 0) {
+    return error.message;
+  }
+
+  if (typeof error.code === "string" && error.code.length > 0) {
+    return error.code;
+  }
+
+  return "";
+}
+
+function appendMaxBufferNotice(stderr: string): string {
+  if (stderr.includes(MAXBUFFER_TRUNCATION_MESSAGE)) {
+    return stderr;
+  }
+
+  return stderr.length > 0
+    ? `${stderr}\n${MAXBUFFER_TRUNCATION_MESSAGE}`
+    : MAXBUFFER_TRUNCATION_MESSAGE;
 }
 
 // execFile collects stdout/stderr separately; spawn path matches that (no interleaving).
@@ -63,15 +106,23 @@ async function runWithExecFile(
         code?: number | string;
         stdout?: string | Buffer;
         stderr?: string | Buffer;
+        message?: string;
       };
 
-      const exitCode = execError.killed ? -1 : Number(execError.code ?? -1);
+      const exitCode = execError.killed
+        ? -1
+        : normalizeExecErrorCode(execError.code);
       const stdout = String(execError.stdout ?? "");
-      const stderr = execError.killed
-        ? TIMEOUT_MESSAGE
-        : String(execError.stderr ?? "");
+      let stderr = formatExecErrorStderr(execError);
+      const maxBufferExceeded =
+        execError.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      if (maxBufferExceeded) {
+        stderr = appendMaxBufferNotice(stderr);
+      }
 
-      return { stdout, stderr, exitCode };
+      return maxBufferExceeded
+        ? { stdout, stderr, exitCode, maxBufferExceeded: true }
+        : { stdout, stderr, exitCode };
     }
 
     throw new Error(`Unexpected error executing command: ${String(error)}`);
@@ -99,6 +150,16 @@ async function runWithSpawn(
     let settled = false;
     let timedOut = false;
     let aborted = false;
+    let maxBufferExceeded = false;
+
+    const killForMaxBuffer = (): void => {
+      if (maxBufferExceeded) {
+        return;
+      }
+
+      maxBufferExceeded = true;
+      child.kill();
+    };
 
     const finish = (result: RunShellCommandResult): void => {
       if (settled) {
@@ -111,11 +172,33 @@ async function runWithSpawn(
     };
 
     const appendStdout = (chunk: Buffer): void => {
-      stdout = truncateBuffer(stdout + chunk.toString("utf8"), maxBuffer);
+      if (maxBufferExceeded) {
+        return;
+      }
+
+      const next = stdout + chunk.toString("utf8");
+      if (next.length > maxBuffer) {
+        stdout = next.slice(0, maxBuffer);
+        killForMaxBuffer();
+        return;
+      }
+
+      stdout = next;
     };
 
     const appendStderr = (chunk: Buffer): void => {
-      stderr = truncateBuffer(stderr + chunk.toString("utf8"), maxBuffer);
+      if (maxBufferExceeded) {
+        return;
+      }
+
+      const next = stderr + chunk.toString("utf8");
+      if (next.length > maxBuffer) {
+        stderr = next.slice(0, maxBuffer);
+        killForMaxBuffer();
+        return;
+      }
+
+      stderr = next;
     };
 
     child.stdout?.on("data", appendStdout);
@@ -148,6 +231,7 @@ async function runWithSpawn(
         stderr: stderr || String(error.message),
         exitCode: -1,
         aborted,
+        ...(maxBufferExceeded ? { maxBufferExceeded: true } : {}),
       });
     });
 
@@ -158,6 +242,7 @@ async function runWithSpawn(
           stderr: stderr || CANCEL_MESSAGE,
           exitCode: -1,
           aborted: true,
+          ...(maxBufferExceeded ? { maxBufferExceeded: true } : {}),
         });
         return;
       }
@@ -167,6 +252,17 @@ async function runWithSpawn(
           stdout,
           stderr: stderr || TIMEOUT_MESSAGE,
           exitCode: -1,
+          ...(maxBufferExceeded ? { maxBufferExceeded: true } : {}),
+        });
+        return;
+      }
+
+      if (maxBufferExceeded) {
+        finish({
+          stdout,
+          stderr: appendMaxBufferNotice(stderr),
+          exitCode: -1,
+          maxBufferExceeded: true,
         });
         return;
       }

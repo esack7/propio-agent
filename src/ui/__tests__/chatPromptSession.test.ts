@@ -42,6 +42,8 @@ function createTestSession(
     request: {
       promptText: ">",
       bashPromptText: "! ",
+      footer: "idle footer",
+      bashFooter: "bash footer",
       mode: "chat",
       inputMode: options.inputMode,
     },
@@ -377,6 +379,29 @@ describe("chatPromptSession", () => {
       expect(getState()).toMatchObject({
         inputMode: "bash",
         buffer: "",
+        footer: "bash footer",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("restores the idle footer after Escape exits bash mode", () => {
+    const { inputStream, session, getState } = createTestSession({
+      inputMode: "bash",
+    });
+
+    try {
+      expect(getState()?.footer).toBe("bash footer");
+      inputStream.emit("keypress", "", {
+        name: "escape",
+        ctrl: false,
+        meta: false,
+        shift: false,
+      });
+      expect(getState()).toMatchObject({
+        inputMode: "prompt",
+        footer: "idle footer",
       });
     } finally {
       session.cleanup();

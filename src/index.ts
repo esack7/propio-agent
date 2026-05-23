@@ -627,7 +627,7 @@ async function handleInteractiveSubmission(
   return null;
 }
 
-async function runInteractiveSession(
+export async function runInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,
   configPath: string,
@@ -654,11 +654,17 @@ async function runInteractiveSession(
     },
     onToggleToolCalls: () => {
       const snapshot = visibilityState.toggleToolCalls();
-      return getIdleFooterText(snapshot);
+      const mode = composer.getState()?.inputMode ?? "prompt";
+      return mode === "bash"
+        ? getBashFooterText(snapshot)
+        : getIdleFooterText(snapshot);
     },
     onToggleThinking: () => {
       const snapshot = visibilityState.toggleThinking();
-      return getIdleFooterText(snapshot);
+      const mode = composer.getState()?.inputMode ?? "prompt";
+      return mode === "bash"
+        ? getBashFooterText(snapshot)
+        : getIdleFooterText(snapshot);
     },
     renderState: (state) => {
       ui.setPromptState(state);
@@ -694,6 +700,7 @@ async function runInteractiveSession(
           inputMode === "bash"
             ? getBashFooterText(visibilitySnapshot)
             : getIdleFooterText(visibilitySnapshot),
+        bashFooter: getBashFooterText(visibilitySnapshot),
       });
 
       if (nextInput.status === "closed") {

@@ -26,6 +26,7 @@ export interface PromptRequest {
   inputMode?: InputMode;
   placeholder?: string;
   footer?: string;
+  bashFooter?: string;
   defaultValue?: string;
   history?: readonly string[];
 }
