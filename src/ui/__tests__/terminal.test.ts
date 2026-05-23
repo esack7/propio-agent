@@ -470,10 +470,10 @@ describe("TerminalUi", () => {
       createPromptState({
         mode: "chat",
         promptText: "❯ ",
-        footer: "Enter to send | ? help | Ctrl+O tools: shown",
+        footer: "Enter to send | ? help | tools: shown",
       }),
     );
-    ui.idleFooter("Enter to send | ? help | Ctrl+O tools: shown");
+    ui.idleFooter("Enter to send | ? help | tools: shown");
     stderr.chunks.length = 0;
 
     stderr.columns = 40;
@@ -481,7 +481,7 @@ describe("TerminalUi", () => {
     stderr.emit("resize");
 
     expect(stripAnsi(stderr.chunks.join(""))).not.toContain(
-      "Enter to send | ? help | Ctrl+O tools: shown",
+      "Enter to send | ? help | tools: shown",
     );
 
     ui.cleanup();

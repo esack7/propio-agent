@@ -24,6 +24,7 @@ jest.unstable_mockModule("fast-glob", () => ({
 
 jest.unstable_mockModule("child_process", () => ({
   execFile: jest.fn(),
+  spawn: jest.fn(),
 }));
 
 jest.unstable_mockModule("util", () => ({
@@ -41,6 +42,20 @@ let LsTool: any;
 let mockFsPromises: jest.Mocked<any>;
 let mockFg: jest.MockedFunction<any>;
 const mockExecFileAsync = jest.fn();
+
+function mockFileStat(isDirectory: boolean): void {
+  jest.mocked(mockFsPromises.stat).mockResolvedValue({
+    isDirectory: () => isDirectory,
+  } as any);
+}
+
+function mockFileContents(contents: string): void {
+  jest.mocked(mockFsPromises.readFile).mockResolvedValue(Buffer.from(contents));
+}
+
+function mockDirectoryEntries(entries: unknown[]): void {
+  jest.mocked(mockFsPromises.readdir).mockResolvedValue(entries as any);
+}
 
 beforeAll(async () => {
   mockFsPromises = (await import("fs/promises")) as jest.Mocked<any>;
@@ -205,12 +220,8 @@ describe("Tool Implementations", () => {
   describe("EditTool", () => {
     it("replaces a single exact match", async () => {
       const tool = new EditTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as any);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("hello world"));
+      mockFileStat(false);
+      mockFileContents("hello world");
       jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
       jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
 
@@ -225,12 +236,8 @@ describe("Tool Implementations", () => {
 
     it("fails when the match is missing", async () => {
       const tool = new EditTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as any);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("hello world"));
+      mockFileStat(false);
+      mockFileContents("hello world");
 
       await expect(
         tool.execute({
@@ -243,12 +250,8 @@ describe("Tool Implementations", () => {
 
     it("fails when multiple matches are ambiguous", async () => {
       const tool = new EditTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as any);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("foo foo"));
+      mockFileStat(false);
+      mockFileContents("foo foo");
 
       await expect(
         tool.execute({
@@ -261,12 +264,8 @@ describe("Tool Implementations", () => {
 
     it("replaces all matches when replace_all is true", async () => {
       const tool = new EditTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as any);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("foo foo"));
+      mockFileStat(false);
+      mockFileContents("foo foo");
       jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
       jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
 
@@ -370,12 +369,8 @@ describe("Tool Implementations", () => {
   describe("GrepTool", () => {
     it("finds literal matches in files", async () => {
       const tool = new GrepTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as any);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("line 1\nquery line\nline 3"));
+      mockFileStat(false);
+      mockFileContents("line 1\nquery line\nline 3");
 
       const result = await tool.execute({
         path: "/test/file.txt",
@@ -387,13 +382,9 @@ describe("Tool Implementations", () => {
 
     it("finds regex matches recursively", async () => {
       const tool = new GrepTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
+      mockFileStat(true);
       mockFg.mockResolvedValue(["/test/dir/a.txt", "/test/dir/b.txt"]);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("match 123"));
+      mockFileContents("match 123");
 
       const result = await tool.execute({
         path: "/test/dir",
@@ -407,12 +398,8 @@ describe("Tool Implementations", () => {
 
     it("returns a no matches message", async () => {
       const tool = new GrepTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => false,
-      } as any);
-      jest
-        .mocked(mockFsPromises.readFile)
-        .mockResolvedValue(Buffer.from("nothing useful"));
+      mockFileStat(false);
+      mockFileContents("nothing useful");
 
       const result = await tool.execute({
         path: "/test/file.txt",
@@ -458,10 +445,8 @@ describe("Tool Implementations", () => {
   describe("LsTool", () => {
     it("lists directory contents with type information", async () => {
       const tool = new LsTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
-      jest.mocked(mockFsPromises.readdir).mockResolvedValue([
+      mockFileStat(true);
+      mockDirectoryEntries([
         {
           name: "b.txt",
           isDirectory: () => false,
@@ -474,7 +459,7 @@ describe("Tool Implementations", () => {
           isFile: () => false,
           isSymbolicLink: () => false,
         },
-      ] as any);
+      ]);
 
       const result = await tool.execute({ path: "/test" });
 
@@ -487,10 +472,8 @@ describe("Tool Implementations", () => {
 
     it("returns a helpful message for empty directories", async () => {
       const tool = new LsTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
-      jest.mocked(mockFsPromises.readdir).mockResolvedValue([]);
+      mockFileStat(true);
+      mockDirectoryEntries([]);
 
       const result = await tool.execute({ path: "/test/empty" });
 

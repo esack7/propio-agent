@@ -22,6 +22,7 @@ import {
   triggerReverseHistorySearch,
   type TtyHarness,
 } from "./promptComposerTestHelpers.js";
+import { getBashFooterText } from "../slashCommands.js";
 
 jest.setTimeout(10000);
 
@@ -55,6 +56,7 @@ async function submitTwoLineMultilineDraft(
   harness.emitKeypress({ name: "return" }, "\r");
   await expect(prompt).resolves.toEqual({
     status: "submitted",
+    inputMode: "prompt",
     text: `${options.firstLine}\n${options.secondLine}`,
   });
 }
@@ -96,6 +98,7 @@ describe("createPromptComposer", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "alice",
     });
 
@@ -168,6 +171,7 @@ describe("createPromptComposer", () => {
     harness.inputStream.write("alice\n");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "alice",
     });
 
@@ -193,7 +197,7 @@ describe("createPromptComposer", () => {
     await flush();
     expect(renderFooter).not.toHaveBeenCalled();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: shown\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -205,16 +209,13 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T\nthinking: shown\nName? ",
+      "Enter to send | ? help | tools: hidden | thinking: shown\nName? ",
     );
-    expect(toggleOutput).not.toContain(
-      "tools: shown | Ctrl+T\nthinking: shown",
-    );
+    expect(toggleOutput).not.toContain("tools: shown | thinking: shown");
     expect(renderState).toHaveBeenLastCalledWith(
       expect.objectContaining({
         buffer: "",
-        footer:
-          "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+        footer: "Enter to send | ? help | tools: hidden | thinking: shown",
       }),
     );
 
@@ -236,7 +237,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: shown\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u0014", {
@@ -248,7 +249,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: hidden\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: hidden\nName? ",
     );
 
     harness.composer.close();
@@ -272,7 +273,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | Esc cancel\nturn | Ctrl+O tools: shown | Ctrl+T\nthinking: shown\nName? ",
+      "Enter to send | ? help | tools: shown |\n thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -284,11 +285,9 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | Esc cancel\nturn | Ctrl+O tools: hidden | Ctrl+T\nthinking: shown\nName? ",
+      "Enter to send | ? help | tools: hidden\n| thinking: shown\nName? ",
     );
-    expect(toggleOutput).not.toContain(
-      "shown | Ctrl+T thinking: shown\nName? ",
-    );
+    expect(toggleOutput).not.toContain("shown | thinking: shown\nName? ");
 
     harness.composer.close();
     await expect(prompt).resolves.toEqual({
@@ -348,18 +347,21 @@ describe("createPromptComposer", () => {
     harness.outputStream.emit("resize");
 
     const narrowOutput = harness.takeOutput();
-    expect(narrowOutput).toContain("\u001b[5A");
-    expect(stripAnsiControls(narrowOutput)).toContain(
-      "Enter to send | ?\nhelp | Esc cancel\nturn | Ctrl+O\ntools: shown |\nCtrl+T thinking:\nhidden\nName? ",
-    );
+    expect(narrowOutput).toContain("\u001b[3A");
+    const narrowText = stripAnsiControls(narrowOutput);
+    expect(narrowText).toContain("Enter to send | ?");
+    expect(narrowText).toContain("help | tools: shown");
+    expect(narrowText).toContain("thinking:");
+    expect(narrowText).toContain("hidden");
+    expect(narrowText).toContain("Name? ");
 
     (harness.outputStream as NodeJS.WriteStream).columns = 80;
     harness.outputStream.emit("resize");
 
     const wideOutput = harness.takeOutput();
-    expect(wideOutput).toContain("\u001b[6A");
+    expect(wideOutput).toContain("\u001b[3A");
     expect(stripAnsiControls(wideOutput)).toContain(
-      "Enter to send | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T\nthinking: hidden\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: hidden\nName? ",
     );
 
     harness.composer.close();
@@ -391,6 +393,7 @@ describe("createPromptComposer", () => {
     harness.inputStream.write("alice\n");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "alice",
     });
 
@@ -449,6 +452,7 @@ describe("createPromptComposer", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "hello",
     });
     await flush();
@@ -469,6 +473,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("   ");
     await expect(blank).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "   ",
     });
 
@@ -479,6 +484,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("/clear");
     await expect(clear).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/clear",
     });
 
@@ -491,6 +497,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("/exit");
     await expect(exit).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/exit",
     });
 
@@ -501,6 +508,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("/quit");
     await expect(quit).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/quit",
     });
 
@@ -522,6 +530,7 @@ describe("createPromptComposer", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/context",
     });
     await flush();
@@ -545,6 +554,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("1");
     await expect(menu).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "1",
     });
     expect(readlineHarness.getHistory()).toEqual([]);
@@ -556,6 +566,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("   ");
     await expect(blank).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "   ",
     });
     expect(readlineHarness.getHistory()).toEqual([]);
@@ -567,6 +578,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("/clear");
     await expect(clear).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/clear",
     });
     expect(readlineHarness.getHistory()).toEqual([]);
@@ -581,6 +593,7 @@ describe("createPromptComposer", () => {
     readlineHarness.submit("/exit");
     await expect(exit).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/exit",
     });
     expect(readlineHarness.getHistory()).toEqual([]);
@@ -654,6 +667,7 @@ describe("createPromptComposer reverse history search", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "older",
     });
     await flush();
@@ -709,6 +723,7 @@ describe("createPromptComposer reverse history search", () => {
     harness.inputStream.write("\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "hello world!",
     });
 
@@ -811,6 +826,7 @@ describe("createPromptComposer reverse history search", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "first line\nsecond line",
     });
 
@@ -871,6 +887,7 @@ describe("createPromptComposer reverse history search", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "hello world!",
     });
 
@@ -940,6 +957,7 @@ describe("createPromptComposer reverse history search", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "match",
     });
 
@@ -973,6 +991,7 @@ describe("createPromptComposer multiline chat editing", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "hello\nworld\ndone",
     });
 
@@ -1063,6 +1082,7 @@ describe("createPromptComposer multiline chat editing", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "first\nsecond",
     });
 
@@ -1153,6 +1173,7 @@ describe("createPromptComposer multiline chat editing", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "edited text",
     });
 
@@ -1191,6 +1212,7 @@ describe("createPromptComposer multiline chat editing", () => {
 
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "draft",
     });
 
@@ -1251,6 +1273,7 @@ describe("createPromptComposer word-wise editing", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "alpha ",
     });
 
@@ -1284,6 +1307,7 @@ describe("createPromptComposer typeahead", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/clear",
     });
 
@@ -1343,6 +1367,7 @@ describe("createPromptComposer typeahead", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/context prompt",
     });
 
@@ -1377,6 +1402,7 @@ describe("createPromptComposer typeahead", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(prompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "read docs/prompt-composer.md",
     });
 
@@ -1405,6 +1431,7 @@ describe("createPromptComposer typeahead", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(firstPrompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/con",
     });
 
@@ -1426,6 +1453,7 @@ describe("createPromptComposer typeahead", () => {
     harness.emitKeypress({ name: "return" }, "\r");
     await expect(secondPrompt).resolves.toEqual({
       status: "submitted",
+      inputMode: "prompt",
       text: "/con",
     });
 
@@ -1478,6 +1506,52 @@ describe("createPromptComposer typeahead", () => {
     });
 
     await submitPromptText(harness, prompt, "/con!");
+
+    harness.composer.close();
+  });
+
+  it("returns bash input mode and honors explicit bash mode on later compose calls", async () => {
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+    });
+
+    const first = harness.composer.compose({
+      mode: "chat",
+      promptText: "> ",
+      bashPromptText: "! ",
+      footer: getIdleFooterText(),
+    });
+    await flush();
+
+    harness.typeText("!");
+    harness.typeText("pwd");
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(first).resolves.toEqual({
+      status: "submitted",
+      text: "pwd",
+      inputMode: "bash",
+    });
+
+    const second = harness.composer.compose({
+      mode: "chat",
+      inputMode: "bash",
+      promptText: "> ",
+      bashPromptText: "! ",
+      footer: getBashFooterText(),
+    });
+    await flush();
+    expect(harness.composer.getState()).toMatchObject({
+      inputMode: "bash",
+    });
+
+    harness.typeText("ls");
+    harness.emitKeypress({ name: "return" }, "\r");
+    await expect(second).resolves.toEqual({
+      status: "submitted",
+      text: "ls",
+      inputMode: "bash",
+    });
 
     harness.composer.close();
   });

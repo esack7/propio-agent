@@ -1,15 +1,48 @@
-import { execFile } from "child_process";
-import { promisify } from "util";
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
-
-const execFileAsync = promisify(execFile);
+import { runShellCommand } from "./runShellCommand.js";
 
 export interface BashToolConfig {
   readonly defaultTimeoutMs?: number;
   readonly maxTimeoutMs?: number;
   readonly outputInlineLimit?: number;
+}
+
+interface BashToolResult {
+  exit_code?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+function countNonEmptyLines(output: string): number {
+  return output.split("\n").filter((line) => line.trim().length > 0).length;
+}
+
+function formatNonZeroExit(parsed: BashToolResult): string {
+  const exit = parsed.exit_code ?? "?";
+  const stderr = (parsed.stderr ?? "").replace(/\s+/g, " ").trim();
+
+  if (stderr.length === 0) {
+    return `Exit ${exit}`;
+  }
+
+  const preview = stderr.length > 60 ? `${stderr.slice(0, 60)}...` : stderr;
+  return `Exit ${exit}: ${preview}`;
+}
+
+function formatZeroExit(parsed: BashToolResult): string {
+  const lines = countNonEmptyLines(parsed.stdout ?? "");
+
+  return lines > 0
+    ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})`
+    : "Exit 0";
+}
+
+function formatBashToolResult(parsed: BashToolResult): string {
+  return parsed.exit_code !== 0
+    ? formatNonZeroExit(parsed)
+    : formatZeroExit(parsed);
 }
 
 export class BashTool implements ExecutableTool {
@@ -33,27 +66,7 @@ export class BashTool implements ExecutableTool {
       },
       renderResult(result) {
         try {
-          const parsed = JSON.parse(result) as {
-            exit_code?: number;
-            stdout?: string;
-            stderr?: string;
-          };
-          const exit = parsed.exit_code ?? "?";
-          if (exit !== 0) {
-            const stderr = (parsed.stderr ?? "").replace(/\s+/g, " ").trim();
-            if (stderr.length > 0) {
-              const preview =
-                stderr.length > 60 ? `${stderr.slice(0, 60)}...` : stderr;
-              return `Exit ${exit}: ${preview}`;
-            }
-            return `Exit ${exit}`;
-          }
-          const lines = (parsed.stdout ?? "")
-            .split("\n")
-            .filter((l) => l.trim().length > 0).length;
-          return lines > 0
-            ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})`
-            : "Exit 0";
+          return formatBashToolResult(JSON.parse(result) as BashToolResult);
         } catch {
           return null;
         }
@@ -117,56 +130,23 @@ export class BashTool implements ExecutableTool {
     if (timeout > this.maxTimeoutMs) {
       timeout = this.maxTimeoutMs;
     }
-    const env = { ...process.env, ...envOverrides };
 
-    try {
-      const { stdout, stderr } = await execFileAsync(
-        "/bin/sh",
-        ["-c", command],
-        {
-          cwd,
-          env,
-          timeout,
-          maxBuffer: this.outputInlineLimit * 2,
-        },
-      );
+    const result = await runShellCommand({
+      command,
+      cwd,
+      env: envOverrides,
+      timeoutMs: timeout,
+      maxBuffer: this.outputInlineLimit * 2,
+    });
 
-      return JSON.stringify(
-        {
-          stdout,
-          stderr,
-          exit_code: 0,
-        },
-        null,
-        2,
-      );
-    } catch (error: unknown) {
-      if (error && typeof error === "object") {
-        const execError = error as {
-          killed?: boolean;
-          code?: number;
-          stdout?: string;
-          stderr?: string;
-        };
-
-        const exitCode = execError.killed ? -1 : (execError.code ?? -1);
-        const stdout = execError.stdout ?? "";
-        const stderr = execError.killed
-          ? "Command timed out and was killed"
-          : (execError.stderr ?? "");
-
-        return JSON.stringify(
-          {
-            stdout,
-            stderr,
-            exit_code: exitCode,
-          },
-          null,
-          2,
-        );
-      }
-
-      throw new Error(`Unexpected error executing command: ${String(error)}`);
-    }
+    return JSON.stringify(
+      {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exit_code: result.exitCode,
+      },
+      null,
+      2,
+    );
   }
 }

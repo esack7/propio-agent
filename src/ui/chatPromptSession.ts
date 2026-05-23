@@ -10,6 +10,12 @@ import {
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
 import {
+  applyInputModeFromBuffer,
+  getModeFromInput,
+  parseBashHistoryEntry,
+  type InputMode,
+} from "./inputModes.js";
+import {
   acceptTypeaheadState,
   cancelTypeaheadState,
   createTypeaheadState,
@@ -26,6 +32,7 @@ import { formatSubtle } from "./formatting.js";
 export interface ChatPromptSessionState {
   buffer: string;
   cursor: number;
+  inputMode: InputMode;
   footer: string | null;
   historySearch?: ReturnType<typeof getHistorySearchSummary>;
   typeahead?: TypeaheadSummary;
@@ -33,12 +40,18 @@ export interface ChatPromptSessionState {
   editorStatus?: string;
 }
 
+export interface PromptFooters {
+  prompt: string;
+  bash: string;
+}
+
 export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
-  submit(text: string): void;
+  submit(text: string, inputMode: InputMode): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
+  refreshPromptFooters?: () => PromptFooters;
   close(): void;
 }
 
@@ -686,8 +699,54 @@ export function createChatPromptSession(
   const { callbacks, inputStream, outputStream, request, historySnapshot } =
     options;
 
+  let inputMode: InputMode = request.inputMode ?? "prompt";
   let buffer = request.defaultValue ?? "";
   let cursor = buffer.length;
+
+  const getActivePromptText = (): string =>
+    inputMode === "bash"
+      ? (request.bashPromptText ?? request.promptText)
+      : request.promptText;
+
+  let promptFooter = request.footer;
+  let bashFooter = request.bashFooter ?? request.footer;
+  let activeFooter = promptFooter;
+
+  const applyFooterSnapshot = (snapshot: PromptFooters | undefined): void => {
+    if (!snapshot) {
+      return;
+    }
+
+    promptFooter = snapshot.prompt;
+    bashFooter = snapshot.bash;
+    activeFooter = inputMode === "bash" ? bashFooter : promptFooter;
+  };
+
+  const syncActiveFooter = (): void => {
+    if (callbacks.refreshPromptFooters) {
+      applyFooterSnapshot(callbacks.refreshPromptFooters());
+      return;
+    }
+
+    activeFooter = inputMode === "bash" ? bashFooter : promptFooter;
+  };
+
+  const syncBufferInputMode = (): void => {
+    const previousMode = inputMode;
+    const result = applyInputModeFromBuffer(inputMode, buffer);
+    if (result.inputMode !== inputMode || result.buffer !== buffer) {
+      inputMode = result.inputMode;
+      buffer = result.buffer;
+      cursor = clampPromptCursor(cursor + result.cursorAdjusted, buffer.length);
+    }
+
+    if (previousMode !== inputMode) {
+      syncActiveFooter();
+    }
+  };
+
+  syncActiveFooter();
+  syncBufferInputMode();
   let historyIndex: number | null = null;
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
   let searchState: HistorySearchState | null = null;
@@ -701,11 +760,11 @@ export function createChatPromptSession(
   let rawModeEnabled = false;
   let active = true;
   let lastLayout: PromptLayout | null = null;
-  let activeFooter = request.footer;
 
   const buildRenderState = (): ChatPromptSessionState => ({
     buffer,
     cursor,
+    inputMode,
     footer: activeFooter ?? null,
     historySearch: searchState
       ? getHistorySearchSummary(searchState)
@@ -757,10 +816,15 @@ export function createChatPromptSession(
     lastLayout = layout;
   };
 
+  const clearSubmittedBashLayout = (): void => {
+    clearPreviousLayout();
+    lastLayout = null;
+  };
+
   const render = (): void => {
     const layout = renderPromptFrame(
       outputStream,
-      request.promptText,
+      getActivePromptText(),
       buffer,
       cursor,
       activeFooter,
@@ -810,6 +874,21 @@ export function createChatPromptSession(
 
   const clearTransientStatus = (): void => {
     editorStatus = undefined;
+  };
+
+  const exitBashMode = (): void => {
+    inputMode = "prompt";
+    syncActiveFooter();
+    render();
+  };
+
+  const exitEmptyBashMode = (): boolean => {
+    if (inputMode !== "bash" || buffer.length > 0) {
+      return false;
+    }
+
+    exitBashMode();
+    return true;
   };
 
   const cancelTypeahead = (shouldRender: boolean): void => {
@@ -997,6 +1076,7 @@ export function createChatPromptSession(
     draftSnapshot = null;
     buffer = nextSelection.buffer;
     cursor = nextSelection.cursor;
+    syncBufferInputMode();
     render();
   };
 
@@ -1056,8 +1136,19 @@ export function createChatPromptSession(
 
   const selectHistoryEntry = (index: number): void => {
     const selected = historySnapshot[index];
-    buffer = selected;
-    cursor = selected.length;
+    if (getModeFromInput(selected) === "bash") {
+      const previousMode = inputMode;
+      inputMode = "bash";
+      buffer = parseBashHistoryEntry(selected);
+      cursor = buffer.length;
+      if (previousMode !== inputMode) {
+        syncActiveFooter();
+      }
+    } else {
+      buffer = selected;
+      cursor = selected.length;
+    }
+    syncBufferInputMode();
     render();
   };
 
@@ -1169,6 +1260,7 @@ export function createChatPromptSession(
 
     buffer = `${buffer.slice(0, cursor)}${text}${buffer.slice(cursor)}`;
     cursor += text.length;
+    syncBufferInputMode();
     refreshMentionTypeahead();
     scheduleMentionTypeaheadRetry();
     render();
@@ -1187,6 +1279,10 @@ export function createChatPromptSession(
 
     if (historyIndex !== null) {
       clearHistoryNavigation();
+    }
+
+    if (exitEmptyBashMode()) {
+      return;
     }
 
     if (cursor === 0) {
@@ -1212,6 +1308,10 @@ export function createChatPromptSession(
 
     if (historyIndex !== null) {
       clearHistoryNavigation();
+    }
+
+    if (exitEmptyBashMode()) {
+      return;
     }
 
     if (cursor >= buffer.length) {
@@ -1329,6 +1429,7 @@ export function createChatPromptSession(
         buffer = result.buffer;
         cursor = buffer.length;
         editorStatus = undefined;
+        syncBufferInputMode();
       } else {
         editorStatus = result.message;
       }
@@ -1353,8 +1454,12 @@ export function createChatPromptSession(
       return;
     }
 
-    outputStream.write("\n");
-    callbacks.submit(buffer);
+    if (inputMode === "bash") {
+      clearSubmittedBashLayout();
+    } else {
+      outputStream.write("\n");
+    }
+    callbacks.submit(buffer, inputMode);
   };
 
   const handleLifecycleKeys = (key: readline.Key): boolean => {
@@ -1387,22 +1492,48 @@ export function createChatPromptSession(
     return false;
   };
 
+  const isCancelKey = (key: readline.Key): boolean =>
+    (key.name === "g" && key.ctrl) || key.name === "escape";
+
+  const handleReverseSearchKey = (key: readline.Key): boolean => {
+    if (key.name !== "r" || !key.ctrl) {
+      return false;
+    }
+
+    if (options.enableReverseHistorySearch) {
+      cancelTypeahead(false);
+      enterSearch();
+    }
+    return true;
+  };
+
+  const cancelActiveInputMode = (): void => {
+    if (searchState) {
+      cancelSearch();
+      return;
+    }
+
+    if (typeaheadState) {
+      cancelTypeahead(true);
+      return;
+    }
+
+    if (inputMode === "bash") {
+      exitBashMode();
+    }
+  };
+
   const handleSearchCancelKeys = (key: readline.Key): boolean => {
-    if (key.name === "r" && key.ctrl) {
-      if (options.enableReverseHistorySearch) {
-        cancelTypeahead(false);
-        enterSearch();
-      }
+    if (handleReverseSearchKey(key)) {
       return true;
     }
 
-    if ((key.name === "g" && key.ctrl) || key.name === "escape") {
-      if (searchState) cancelSearch();
-      else if (typeaheadState) cancelTypeahead(true);
-      return true;
+    if (!isCancelKey(key)) {
+      return false;
     }
 
-    return false;
+    cancelActiveInputMode();
+    return true;
   };
 
   const handleToolToggleKeys = (key: readline.Key): boolean => {
@@ -1410,8 +1541,19 @@ export function createChatPromptSession(
       toggle: (() => string | null | undefined) | undefined,
     ): boolean => {
       const nextFooter = toggle?.();
-      if (nextFooter !== undefined) {
-        activeFooter = nextFooter ?? undefined;
+      if (callbacks.refreshPromptFooters) {
+        applyFooterSnapshot(callbacks.refreshPromptFooters());
+        render();
+        return true;
+      }
+
+      if (nextFooter !== undefined && nextFooter !== null) {
+        activeFooter = nextFooter;
+        if (inputMode === "bash") {
+          bashFooter = nextFooter;
+        } else {
+          promptFooter = nextFooter;
+        }
         render();
       }
       return true;

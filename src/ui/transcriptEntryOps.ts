@@ -14,7 +14,33 @@ const TEXT_TRANSCRIPT_KINDS = new Set<TranscriptEntry["kind"]>([
   "indent",
   "assistant_token",
   "thinking_token",
+  "bash_command",
+  "bash_stdout",
+  "bash_stderr",
 ]);
+
+type TextTranscriptEntry = Extract<TranscriptEntry, { text: string }>;
+type TextTranscriptKind = TextTranscriptEntry["kind"];
+
+const TEXT_TRANSCRIPT_RENDERERS: Record<
+  TextTranscriptKind,
+  (transcript: TranscriptRenderer, text: string) => void
+> = {
+  user_message: (transcript, text) => transcript.userMessage(text),
+  assistant_token: (transcript, text) => transcript.writeAssistant(text),
+  thinking_token: (transcript, text) => transcript.writeThinking(text),
+  info: (transcript, text) => transcript.info(text),
+  command: (transcript, text) => transcript.command(text),
+  subtle: (transcript, text) => transcript.subtle(text),
+  warn: (transcript, text) => transcript.warn(text),
+  success: (transcript, text) => transcript.success(text),
+  error: (transcript, text) => transcript.error(text),
+  section: (transcript, text) => transcript.section(text),
+  indent: (transcript, text) => transcript.indent(text),
+  bash_command: (transcript, text) => transcript.bashCommand(text),
+  bash_stdout: (transcript, text) => transcript.bashStdout(text),
+  bash_stderr: (transcript, text) => transcript.bashStderr(text),
+};
 
 function formatDurationSeconds(durationMs: number): string {
   return `${(Math.max(0, durationMs) / 1000).toFixed(1)}s`;
@@ -64,49 +90,27 @@ export function transcriptEntriesEqual(
   );
 }
 
+function isTextTranscriptEntry(
+  entry: TranscriptEntry,
+): entry is TextTranscriptEntry {
+  return entry.kind in TEXT_TRANSCRIPT_RENDERERS;
+}
+
 export function renderTranscriptEntry(
   transcript: TranscriptRenderer,
   entry: TranscriptEntry,
 ): void {
+  if (isTextTranscriptEntry(entry)) {
+    TEXT_TRANSCRIPT_RENDERERS[entry.kind](transcript, entry.text);
+    return;
+  }
+
   switch (entry.kind) {
-    case "user_message":
-      transcript.userMessage(entry.text);
-      break;
     case "assistant_start":
       transcript.beginAssistantResponse();
       break;
-    case "assistant_token":
-      transcript.writeAssistant(entry.text);
-      break;
     case "thinking_start":
       transcript.beginThinkingResponse();
-      break;
-    case "thinking_token":
-      transcript.writeThinking(entry.text);
-      break;
-    case "info":
-      transcript.info(entry.text);
-      break;
-    case "command":
-      transcript.command(entry.text);
-      break;
-    case "subtle":
-      transcript.subtle(entry.text);
-      break;
-    case "warn":
-      transcript.warn(entry.text);
-      break;
-    case "success":
-      transcript.success(entry.text);
-      break;
-    case "error":
-      transcript.error(entry.text);
-      break;
-    case "section":
-      transcript.section(entry.text);
-      break;
-    case "indent":
-      transcript.indent(entry.text);
       break;
     case "reasoning_summary":
       transcript.reasoningSummary(entry.summary, entry.source);
@@ -148,6 +152,9 @@ export function countTranscriptEntryStderrLines(
     case "warn":
     case "success":
     case "error":
+    case "bash_command":
+    case "bash_stdout":
+    case "bash_stderr":
       return countLine(entry.text, writer);
     case "indent":
       return countLine(`  ${entry.text}`, writer);

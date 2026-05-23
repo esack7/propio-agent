@@ -1,10 +1,12 @@
 import type { TypeaheadSummary } from "./typeahead.js";
 import type { HistorySearchSummary } from "./historySearch.js";
+import type { InputMode } from "./inputModes.js";
 
 export type PromptMode = "chat" | "confirm" | "menu";
 
 export interface PromptState {
   promptText?: string;
+  inputMode: InputMode;
   buffer: string;
   cursor: number;
   mode: PromptMode;
@@ -19,9 +21,12 @@ export interface PromptState {
 
 export interface PromptRequest {
   promptText: string;
+  bashPromptText?: string;
   mode: PromptMode;
+  inputMode?: InputMode;
   placeholder?: string;
   footer?: string;
+  bashFooter?: string;
   defaultValue?: string;
   history?: readonly string[];
 }
@@ -37,6 +42,7 @@ export function createPromptState(request: PromptRequest): PromptState {
   const buffer = request.defaultValue ?? "";
   return {
     promptText: request.promptText,
+    inputMode: request.inputMode ?? "prompt",
     buffer,
     cursor: clampPromptCursor(buffer.length, buffer.length),
     mode: request.mode,

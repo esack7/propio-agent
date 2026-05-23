@@ -180,6 +180,45 @@ export class TerminalUi {
     return this.applyStyle(`${symbols.prompt} `, formatInputPrompt);
   }
 
+  bashPrompt(): string {
+    return this.applyStyle("! ", formatInputPrompt);
+  }
+
+  bashCommand(text: string): void {
+    if (this.json) {
+      this.writeJson({ type: "bash_command", command: text });
+      return;
+    }
+
+    this.appendTranscriptEntry({ kind: "bash_command", text });
+  }
+
+  bashOutput(stdout: string, stderr: string, exitCode: number): void {
+    if (this.json) {
+      if (stdout.length > 0) {
+        this.writeJson({ type: "bash_stdout", text: stdout });
+      }
+      if (stderr.length > 0) {
+        this.writeJson({ type: "bash_stderr", text: stderr });
+      }
+      this.writeJson({ type: "bash_exit", exitCode });
+      return;
+    }
+
+    if (stdout.length > 0) {
+      this.appendTranscriptEntry({ kind: "bash_stdout", text: stdout });
+    }
+    if (stderr.length > 0) {
+      this.appendTranscriptEntry({ kind: "bash_stderr", text: stderr });
+    }
+    if (exitCode !== 0) {
+      this.appendTranscriptEntry({
+        kind: "subtle",
+        text: `Exit code: ${exitCode}`,
+      });
+    }
+  }
+
   beginAssistantResponse(): void {
     if (this.json) {
       return;

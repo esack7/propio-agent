@@ -29,6 +29,9 @@ export type TranscriptEntry =
     }
   | { kind: "turn_complete"; durationMs: number }
   | { kind: "turn_failed"; durationMs: number }
+  | { kind: "bash_command"; text: string }
+  | { kind: "bash_stdout"; text: string }
+  | { kind: "bash_stderr"; text: string }
   | { kind: "json"; value: unknown };
 
 export type EphemeralStatus =

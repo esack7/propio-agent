@@ -142,6 +142,39 @@ export class TranscriptRenderer {
     this.options.writer.writeStderr(this.options.style(text, formatSubtle));
   }
 
+  bashCommand(text: string): void {
+    this.options.clearStatus();
+    const prefix = "! ";
+    const lines = text.split("\n");
+    lines.forEach((line, index) => {
+      const linePrefix = index === 0 ? prefix : "  ";
+      const styledPrefix = this.options.style(linePrefix, formatInputPrompt);
+      const styledLine = this.options.style(line, formatUserMessage);
+      this.options.writer.writeStderrLine(`${styledPrefix}${styledLine}`);
+    });
+  }
+
+  bashStdout(text: string): void {
+    this.options.clearStatus();
+    if (text.length === 0) {
+      return;
+    }
+    this.options.writer.writeStderr(text.endsWith("\n") ? text : `${text}\n`);
+  }
+
+  bashStderr(text: string): void {
+    this.options.clearStatus();
+    if (text.length === 0) {
+      return;
+    }
+    const lines = text.split("\n");
+    for (const line of lines) {
+      this.options.writer.writeStderrLine(
+        this.options.style(line, formatWarning),
+      );
+    }
+  }
+
   writeJson(value: unknown): void {
     this.options.clearStatus();
     this.options.writer.writeStdoutLine(JSON.stringify(value, null, 2));
