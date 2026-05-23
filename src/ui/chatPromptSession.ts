@@ -1477,23 +1477,48 @@ export function createChatPromptSession(
     return false;
   };
 
+  const isCancelKey = (key: readline.Key): boolean =>
+    (key.name === "g" && key.ctrl) || key.name === "escape";
+
+  const handleReverseSearchKey = (key: readline.Key): boolean => {
+    if (key.name !== "r" || !key.ctrl) {
+      return false;
+    }
+
+    if (options.enableReverseHistorySearch) {
+      cancelTypeahead(false);
+      enterSearch();
+    }
+    return true;
+  };
+
+  const cancelActiveInputMode = (): void => {
+    if (searchState) {
+      cancelSearch();
+      return;
+    }
+
+    if (typeaheadState) {
+      cancelTypeahead(true);
+      return;
+    }
+
+    if (inputMode === "bash") {
+      exitBashMode();
+    }
+  };
+
   const handleSearchCancelKeys = (key: readline.Key): boolean => {
-    if (key.name === "r" && key.ctrl) {
-      if (options.enableReverseHistorySearch) {
-        cancelTypeahead(false);
-        enterSearch();
-      }
+    if (handleReverseSearchKey(key)) {
       return true;
     }
 
-    if ((key.name === "g" && key.ctrl) || key.name === "escape") {
-      if (searchState) cancelSearch();
-      else if (typeaheadState) cancelTypeahead(true);
-      else if (inputMode === "bash") exitBashMode();
-      return true;
+    if (!isCancelKey(key)) {
+      return false;
     }
 
-    return false;
+    cancelActiveInputMode();
+    return true;
   };
 
   const handleToolToggleKeys = (key: readline.Key): boolean => {

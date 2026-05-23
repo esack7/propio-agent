@@ -7,67 +7,100 @@ import {
 import type { TypeaheadProvider } from "../typeahead.js";
 import { createTtyTestStream } from "./ttyTestStream.js";
 
-function createTestSession(
-  options: {
-    typeaheadProviders?: TypeaheadProvider[];
-    onRender?: (state: ChatPromptSessionState) => void;
-    toggleToolCalls?: () => string | null | undefined;
-    toggleThinking?: () => string | null | undefined;
-    refreshPromptFooters?: () => { prompt: string; bash: string };
-    enableTypeahead?: boolean;
-    enableReverseHistorySearch?: boolean;
-    historySnapshot?: string[];
-    inputMode?: "prompt" | "bash";
-    editorRunner?: unknown;
-    outputStream?: NodeJS.WriteStream & { chunks?: string[] };
-    submit?: (text: string, inputMode: "prompt" | "bash") => void;
-    interrupt?: () => void;
-    close?: () => void;
-  } = {},
-): {
+interface TestSessionOptions {
+  typeaheadProviders?: TypeaheadProvider[];
+  onRender?: (state: ChatPromptSessionState) => void;
+  toggleToolCalls?: () => string | null | undefined;
+  toggleThinking?: () => string | null | undefined;
+  refreshPromptFooters?: () => { prompt: string; bash: string };
+  enableTypeahead?: boolean;
+  enableReverseHistorySearch?: boolean;
+  historySnapshot?: string[];
+  inputMode?: "prompt" | "bash";
+  editorRunner?: unknown;
+  outputStream?: NodeJS.WriteStream & { chunks?: string[] };
+  submit?: (text: string, inputMode: "prompt" | "bash") => void;
+  interrupt?: () => void;
+  close?: () => void;
+}
+
+function createRawModeInputStream(): PassThrough {
+  const inputStream = new PassThrough();
+  (
+    inputStream as NodeJS.ReadStream & { setRawMode: (mode: boolean) => void }
+  ).setRawMode = () => {};
+  return inputStream;
+}
+
+function createPromptOutputStream(
+  outputStream: TestSessionOptions["outputStream"],
+): NodeJS.WriteStream {
+  const stream = outputStream ?? new PassThrough();
+  (stream as NodeJS.WriteStream & { isTTY: boolean }).isTTY ??= false;
+  (stream as NodeJS.WriteStream & { columns: number }).columns = 80;
+  return stream as NodeJS.WriteStream;
+}
+
+function createPromptRequest(options: TestSessionOptions) {
+  return {
+    promptText: ">",
+    bashPromptText: "! ",
+    footer: "idle footer",
+    bashFooter: "bash footer",
+    mode: "chat" as const,
+    inputMode: options.inputMode,
+  };
+}
+
+function createPromptCallbacks(
+  options: TestSessionOptions,
+  setLatestState: (state: ChatPromptSessionState) => void,
+) {
+  return {
+    render: (state: ChatPromptSessionState) => {
+      setLatestState(state);
+      options.onRender?.(state);
+    },
+    submit: options.submit ?? (() => {}),
+    interrupt: options.interrupt ?? (() => {}),
+    close: options.close ?? (() => {}),
+    toggleToolCalls: options.toggleToolCalls,
+    toggleThinking: options.toggleThinking,
+    refreshPromptFooters: options.refreshPromptFooters,
+  };
+}
+
+function emitPlainKey(inputStream: PassThrough, name: string): void {
+  inputStream.emit("keypress", "", {
+    name,
+    ctrl: false,
+    meta: false,
+    shift: false,
+  });
+}
+
+function createTestSession(options: TestSessionOptions = {}): {
   inputStream: PassThrough;
   session: ChatPromptSession;
   getState: () => ChatPromptSessionState | undefined;
 } {
-  const inputStream = new PassThrough();
-  const outputStream = options.outputStream ?? new PassThrough();
+  const inputStream = createRawModeInputStream();
+  const outputStream = createPromptOutputStream(options.outputStream);
   let latestState: ChatPromptSessionState | undefined;
-
-  (
-    inputStream as NodeJS.ReadStream & { setRawMode: (mode: boolean) => void }
-  ).setRawMode = () => {};
-  (outputStream as NodeJS.WriteStream & { isTTY: boolean }).isTTY ??= false;
-  (outputStream as NodeJS.WriteStream & { columns: number }).columns = 80;
 
   const session = createChatPromptSession({
     inputStream: inputStream as unknown as NodeJS.ReadStream,
     outputStream: outputStream as unknown as NodeJS.WriteStream,
-    request: {
-      promptText: ">",
-      bashPromptText: "! ",
-      footer: "idle footer",
-      bashFooter: "bash footer",
-      mode: "chat",
-      inputMode: options.inputMode,
-    },
+    request: createPromptRequest(options),
     historySnapshot: options.historySnapshot ?? [],
     enableTypeahead: options.enableTypeahead ?? true,
     enableReverseHistorySearch: options.enableReverseHistorySearch ?? false,
     workspaceRoot: "/tmp/workspace",
     typeaheadProviders: options.typeaheadProviders ?? [],
     editorRunner: options.editorRunner as never,
-    callbacks: {
-      render: (state) => {
-        latestState = state;
-        options.onRender?.(state);
-      },
-      submit: options.submit ?? (() => {}),
-      interrupt: options.interrupt ?? (() => {}),
-      close: options.close ?? (() => {}),
-      toggleToolCalls: options.toggleToolCalls,
-      toggleThinking: options.toggleThinking,
-      refreshPromptFooters: options.refreshPromptFooters,
-    },
+    callbacks: createPromptCallbacks(options, (state) => {
+      latestState = state;
+    }),
   });
 
   return { inputStream, session, getState: () => latestState };
@@ -506,12 +539,7 @@ describe("chatPromptSession", () => {
     });
 
     try {
-      inputStream.emit("keypress", "", {
-        name: "escape",
-        ctrl: false,
-        meta: false,
-        shift: false,
-      });
+      emitPlainKey(inputStream, "escape");
       expect(getState()).toMatchObject({ inputMode: "prompt" });
     } finally {
       session.cleanup();
@@ -524,12 +552,7 @@ describe("chatPromptSession", () => {
     });
 
     try {
-      inputStream.emit("keypress", "", {
-        name: "backspace",
-        ctrl: false,
-        meta: false,
-        shift: false,
-      });
+      emitPlainKey(inputStream, "backspace");
 
       expect(getState()).toMatchObject({
         inputMode: "prompt",
@@ -553,12 +576,7 @@ describe("chatPromptSession", () => {
         meta: false,
         shift: false,
       });
-      inputStream.emit("keypress", "", {
-        name: "backspace",
-        ctrl: false,
-        meta: false,
-        shift: false,
-      });
+      emitPlainKey(inputStream, "backspace");
 
       expect(getState()).toMatchObject({
         inputMode: "bash",
@@ -566,12 +584,7 @@ describe("chatPromptSession", () => {
         footer: "bash footer",
       });
 
-      inputStream.emit("keypress", "", {
-        name: "backspace",
-        ctrl: false,
-        meta: false,
-        shift: false,
-      });
+      emitPlainKey(inputStream, "backspace");
 
       expect(getState()).toMatchObject({
         inputMode: "prompt",
@@ -589,12 +602,7 @@ describe("chatPromptSession", () => {
     });
 
     try {
-      inputStream.emit("keypress", "", {
-        name: "delete",
-        ctrl: false,
-        meta: false,
-        shift: false,
-      });
+      emitPlainKey(inputStream, "delete");
 
       expect(getState()).toMatchObject({
         inputMode: "prompt",

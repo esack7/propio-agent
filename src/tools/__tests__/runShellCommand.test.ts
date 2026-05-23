@@ -28,6 +28,22 @@ const {
   MAXBUFFER_TRUNCATION_MESSAGE,
 } = await import("../runShellCommand.js");
 
+function createMockChildProcess(): EventEmitter & {
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+  kill: jest.Mock;
+} {
+  return Object.assign(new EventEmitter(), {
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    kill: jest.fn(),
+  }) as EventEmitter & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    kill: jest.Mock;
+  };
+}
+
 describe("runShellCommand", () => {
   beforeEach(() => {
     jest.mocked(execFile).mockClear();
@@ -87,16 +103,7 @@ describe("runShellCommand", () => {
   });
 
   it("kills spawned commands that exceed maxBuffer and reports truncation", async () => {
-    const child = Object.assign(new EventEmitter(), {
-      stdout: new EventEmitter(),
-      stderr: new EventEmitter(),
-      kill: jest.fn(),
-    }) as EventEmitter & {
-      stdout: EventEmitter;
-      stderr: EventEmitter;
-      kill: jest.Mock;
-    };
-
+    const child = createMockChildProcess();
     jest.mocked(spawn).mockReturnValue(child as never);
 
     const resultPromise = runShellCommand({
@@ -118,16 +125,7 @@ describe("runShellCommand", () => {
   });
 
   it("kills spawned commands when aborted", async () => {
-    const child = Object.assign(new EventEmitter(), {
-      stdout: new EventEmitter(),
-      stderr: new EventEmitter(),
-      kill: jest.fn(),
-    }) as EventEmitter & {
-      stdout: EventEmitter;
-      stderr: EventEmitter;
-      kill: jest.Mock;
-    };
-
+    const child = createMockChildProcess();
     jest.mocked(spawn).mockReturnValue(child as never);
 
     const controller = new AbortController();

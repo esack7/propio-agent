@@ -9,6 +9,42 @@ export interface BashToolConfig {
   readonly outputInlineLimit?: number;
 }
 
+interface BashToolResult {
+  exit_code?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+function countNonEmptyLines(output: string): number {
+  return output.split("\n").filter((line) => line.trim().length > 0).length;
+}
+
+function formatNonZeroExit(parsed: BashToolResult): string {
+  const exit = parsed.exit_code ?? "?";
+  const stderr = (parsed.stderr ?? "").replace(/\s+/g, " ").trim();
+
+  if (stderr.length === 0) {
+    return `Exit ${exit}`;
+  }
+
+  const preview = stderr.length > 60 ? `${stderr.slice(0, 60)}...` : stderr;
+  return `Exit ${exit}: ${preview}`;
+}
+
+function formatZeroExit(parsed: BashToolResult): string {
+  const lines = countNonEmptyLines(parsed.stdout ?? "");
+
+  return lines > 0
+    ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})`
+    : "Exit 0";
+}
+
+function formatBashToolResult(parsed: BashToolResult): string {
+  return parsed.exit_code !== 0
+    ? formatNonZeroExit(parsed)
+    : formatZeroExit(parsed);
+}
+
 export class BashTool implements ExecutableTool {
   readonly name = "bash";
   readonly description = "Run a shell command.";
@@ -30,27 +66,7 @@ export class BashTool implements ExecutableTool {
       },
       renderResult(result) {
         try {
-          const parsed = JSON.parse(result) as {
-            exit_code?: number;
-            stdout?: string;
-            stderr?: string;
-          };
-          const exit = parsed.exit_code ?? "?";
-          if (exit !== 0) {
-            const stderr = (parsed.stderr ?? "").replace(/\s+/g, " ").trim();
-            if (stderr.length > 0) {
-              const preview =
-                stderr.length > 60 ? `${stderr.slice(0, 60)}...` : stderr;
-              return `Exit ${exit}: ${preview}`;
-            }
-            return `Exit ${exit}`;
-          }
-          const lines = (parsed.stdout ?? "")
-            .split("\n")
-            .filter((l) => l.trim().length > 0).length;
-          return lines > 0
-            ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})`
-            : "Exit 0";
+          return formatBashToolResult(JSON.parse(result) as BashToolResult);
         } catch {
           return null;
         }

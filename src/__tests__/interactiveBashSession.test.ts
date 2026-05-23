@@ -87,6 +87,21 @@ function createMockUi() {
   };
 }
 
+function createMockAgent() {
+  return {
+    streamChat: jest.fn(),
+    listUserInvocableSkills: () => [],
+    getConversationState: () => ({
+      preamble: [],
+      turns: [],
+      artifacts: [],
+      pinnedMemory: [],
+      invokedSkills: [],
+      rollingSummary: null,
+    }),
+  };
+}
+
 describe("runInteractiveSession bash routing", () => {
   const composeRequests: PromptRequest[] = [];
   let cancelOnAttach = false;
@@ -129,19 +144,8 @@ describe("runInteractiveSession bash routing", () => {
     jest.restoreAllMocks();
   });
 
-  it("returns to prompt mode after a bash submission", async () => {
-    const agent = {
-      streamChat: jest.fn(),
-      listUserInvocableSkills: () => [],
-      getConversationState: () => ({
-        preamble: [],
-        turns: [],
-        artifacts: [],
-        pinnedMemory: [],
-        invokedSkills: [],
-        rollingSummary: null,
-      }),
-    };
+  async function runBashRoutingSession(runtimeConfig = createRuntimeConfig()) {
+    const agent = createMockAgent();
     const ui = createMockUi();
     const abortState = createAbortStateController(ui as never);
 
@@ -158,8 +162,14 @@ describe("runInteractiveSession bash routing", () => {
         showContextStats: false,
         showPromptPlan: false,
       },
-      createRuntimeConfig(),
+      runtimeConfig,
     );
+
+    return { agent, ui };
+  }
+
+  it("returns to prompt mode after a bash submission", async () => {
+    const { agent } = await runBashRoutingSession();
 
     expect(composeRequests[1]?.inputMode).toBe("prompt");
     expect(mockProcessBashCommand).toHaveBeenCalledTimes(1);
@@ -176,36 +186,7 @@ describe("runInteractiveSession bash routing", () => {
       })
       .mockResolvedValueOnce({ status: "closed" });
 
-    const agent = {
-      streamChat: jest.fn(),
-      listUserInvocableSkills: () => [],
-      getConversationState: () => ({
-        preamble: [],
-        turns: [],
-        artifacts: [],
-        pinnedMemory: [],
-        invokedSkills: [],
-        rollingSummary: null,
-      }),
-    };
-    const ui = createMockUi();
-    const abortState = createAbortStateController(ui as never);
-
-    await runInteractiveSession(
-      agent as never,
-      ui as never,
-      "/tmp/providers.json",
-      abortState,
-      {
-        showToolCalls: true,
-        showThinking: true,
-        showStatus: false,
-        showReasoningSummary: false,
-        showContextStats: false,
-        showPromptPlan: false,
-      },
-      createRuntimeConfig(),
-    );
+    const { agent, ui } = await runBashRoutingSession();
 
     expect(mockProcessBashCommand).toHaveBeenCalledWith(
       "/help",
@@ -226,34 +207,7 @@ describe("runInteractiveSession bash routing", () => {
       })
       .mockResolvedValueOnce({ status: "closed" });
 
-    const agent = {
-      streamChat: jest.fn(),
-      listUserInvocableSkills: () => [],
-      getConversationState: () => ({
-        preamble: [],
-        turns: [],
-        artifacts: [],
-        pinnedMemory: [],
-        invokedSkills: [],
-        rollingSummary: null,
-      }),
-    };
-    const ui = createMockUi();
-    const abortState = createAbortStateController(ui as never);
-
-    await runInteractiveSession(
-      agent as never,
-      ui as never,
-      "/tmp/providers.json",
-      abortState,
-      {
-        showToolCalls: true,
-        showThinking: true,
-        showStatus: false,
-        showReasoningSummary: false,
-        showContextStats: false,
-        showPromptPlan: false,
-      },
+    await runBashRoutingSession(
       createRuntimeConfig({ bashDefaultTimeoutMs: 99_000 }),
     );
 

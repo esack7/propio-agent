@@ -20,10 +20,7 @@ import {
   shouldRecordPromptHistoryEntry,
   type PromptHistoryStore,
 } from "./promptHistory.js";
-import {
-  formatBashHistoryEntry,
-  type InputMode,
-} from "./inputModes.js";
+import { formatBashHistoryEntry, type InputMode } from "./inputModes.js";
 import type { PromptEditorRunner } from "./promptEditor.js";
 
 export type { PromptState, PromptRequest } from "./promptState.js";
@@ -224,7 +221,10 @@ export function createPromptComposer(
         // Prompt history is best-effort and must not block submission.
       }
 
-      const updatedHistory = updateLiveHistorySnapshot(liveHistory, historyEntry);
+      const updatedHistory = updateLiveHistorySnapshot(
+        liveHistory,
+        historyEntry,
+      );
       liveHistory.splice(0, liveHistory.length, ...updatedHistory);
       return;
     }

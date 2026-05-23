@@ -25,6 +25,24 @@ export interface RunShellCommandResult {
   maxBufferExceeded?: boolean;
 }
 
+interface ExecShellError {
+  killed?: boolean;
+  code?: number | string;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+  message?: string;
+}
+
+interface SpawnCloseState {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  aborted: boolean;
+  signalAborted: boolean;
+  timedOut: boolean;
+  maxBufferExceeded: boolean;
+}
+
 function mergeEnv(overrides?: Record<string, string>): NodeJS.ProcessEnv {
   return { ...process.env, ...overrides };
 }
@@ -67,6 +85,10 @@ function formatExecErrorStderr(error: {
   return "";
 }
 
+function isExecShellError(error: unknown): error is ExecShellError {
+  return error !== null && typeof error === "object";
+}
+
 function appendMaxBufferNotice(stderr: string): string {
   if (stderr.includes(MAXBUFFER_TRUNCATION_MESSAGE)) {
     return stderr;
@@ -75,6 +97,76 @@ function appendMaxBufferNotice(stderr: string): string {
   return stderr.length > 0
     ? `${stderr}\n${MAXBUFFER_TRUNCATION_MESSAGE}`
     : MAXBUFFER_TRUNCATION_MESSAGE;
+}
+
+function resultWithMaxBufferFlag(
+  result: Omit<RunShellCommandResult, "maxBufferExceeded">,
+  maxBufferExceeded: boolean,
+): RunShellCommandResult {
+  return maxBufferExceeded ? { ...result, maxBufferExceeded: true } : result;
+}
+
+function execErrorToResult(execError: ExecShellError): RunShellCommandResult {
+  const exitCode = execError.killed
+    ? -1
+    : normalizeExecErrorCode(execError.code);
+  const stdout = String(execError.stdout ?? "");
+  let stderr = formatExecErrorStderr(execError);
+  const maxBufferExceeded =
+    execError.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+
+  if (maxBufferExceeded) {
+    stderr = appendMaxBufferNotice(stderr);
+  }
+
+  return resultWithMaxBufferFlag(
+    { stdout, stderr, exitCode },
+    maxBufferExceeded,
+  );
+}
+
+function spawnCloseStateToResult(
+  state: SpawnCloseState,
+): RunShellCommandResult {
+  const { stdout, stderr, maxBufferExceeded } = state;
+
+  if (state.aborted || state.signalAborted) {
+    return resultWithMaxBufferFlag(
+      {
+        stdout,
+        stderr: stderr || CANCEL_MESSAGE,
+        exitCode: -1,
+        aborted: true,
+      },
+      maxBufferExceeded,
+    );
+  }
+
+  if (state.timedOut) {
+    return resultWithMaxBufferFlag(
+      {
+        stdout,
+        stderr: stderr || TIMEOUT_MESSAGE,
+        exitCode: -1,
+      },
+      maxBufferExceeded,
+    );
+  }
+
+  if (maxBufferExceeded) {
+    return {
+      stdout,
+      stderr: appendMaxBufferNotice(stderr),
+      exitCode: -1,
+      maxBufferExceeded: true,
+    };
+  }
+
+  return {
+    stdout,
+    stderr,
+    exitCode: state.code ?? -1,
+  };
 }
 
 // execFile collects stdout/stderr separately; spawn path matches that (no interleaving).
@@ -87,12 +179,16 @@ async function runWithExecFile(
   const timeout = options.timeoutMs;
 
   try {
-    const { stdout, stderr } = await execFileAsync("/bin/sh", ["-c", options.command], {
-      cwd,
-      env,
-      timeout,
-      maxBuffer,
-    });
+    const { stdout, stderr } = await execFileAsync(
+      "/bin/sh",
+      ["-c", options.command],
+      {
+        cwd,
+        env,
+        timeout,
+        maxBuffer,
+      },
+    );
 
     return {
       stdout: String(stdout ?? ""),
@@ -100,29 +196,8 @@ async function runWithExecFile(
       exitCode: 0,
     };
   } catch (error: unknown) {
-    if (error && typeof error === "object") {
-      const execError = error as {
-        killed?: boolean;
-        code?: number | string;
-        stdout?: string | Buffer;
-        stderr?: string | Buffer;
-        message?: string;
-      };
-
-      const exitCode = execError.killed
-        ? -1
-        : normalizeExecErrorCode(execError.code);
-      const stdout = String(execError.stdout ?? "");
-      let stderr = formatExecErrorStderr(execError);
-      const maxBufferExceeded =
-        execError.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-      if (maxBufferExceeded) {
-        stderr = appendMaxBufferNotice(stderr);
-      }
-
-      return maxBufferExceeded
-        ? { stdout, stderr, exitCode, maxBufferExceeded: true }
-        : { stdout, stderr, exitCode };
+    if (isExecShellError(error)) {
+      return execErrorToResult(error);
     }
 
     throw new Error(`Unexpected error executing command: ${String(error)}`);
@@ -226,52 +301,31 @@ async function runWithSpawn(
     }
 
     child.on("error", (error) => {
-      finish({
-        stdout,
-        stderr: stderr || String(error.message),
-        exitCode: -1,
-        aborted,
-        ...(maxBufferExceeded ? { maxBufferExceeded: true } : {}),
-      });
+      finish(
+        resultWithMaxBufferFlag(
+          {
+            stdout,
+            stderr: stderr || String(error.message),
+            exitCode: -1,
+            aborted,
+          },
+          maxBufferExceeded,
+        ),
+      );
     });
 
     child.on("close", (code) => {
-      if (aborted || signal?.aborted) {
-        finish({
+      finish(
+        spawnCloseStateToResult({
           stdout,
-          stderr: stderr || CANCEL_MESSAGE,
-          exitCode: -1,
-          aborted: true,
-          ...(maxBufferExceeded ? { maxBufferExceeded: true } : {}),
-        });
-        return;
-      }
-
-      if (timedOut) {
-        finish({
-          stdout,
-          stderr: stderr || TIMEOUT_MESSAGE,
-          exitCode: -1,
-          ...(maxBufferExceeded ? { maxBufferExceeded: true } : {}),
-        });
-        return;
-      }
-
-      if (maxBufferExceeded) {
-        finish({
-          stdout,
-          stderr: appendMaxBufferNotice(stderr),
-          exitCode: -1,
-          maxBufferExceeded: true,
-        });
-        return;
-      }
-
-      finish({
-        stdout,
-        stderr,
-        exitCode: code ?? -1,
-      });
+          stderr,
+          code,
+          aborted,
+          signalAborted: signal?.aborted ?? false,
+          timedOut,
+          maxBufferExceeded,
+        }),
+      );
     });
   });
 }
