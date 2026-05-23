@@ -18,6 +18,7 @@ import {
   testProvidersConfig as sharedTestProvidersConfig,
   createTestAgent,
   createMockTool,
+  ToolCallMockProvider,
 } from "./testHelpers.js";
 
 const require = createRequire(import.meta.url);
@@ -953,6 +954,22 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
+  function startEscapeAbortedChat(
+    agent: Agent,
+    message: string,
+    delayBeforeAbortMs: number,
+  ): Promise<unknown> {
+    const controller = new AbortController();
+    const chatPromise = agent.streamChat(message, () => {}, {
+      abortSignal: controller.signal,
+    });
+    void (async () => {
+      await new Promise((resolve) => setTimeout(resolve, delayBeforeAbortMs));
+      controller.abort("escape");
+    })();
+    return chatPromise;
+  }
+
   describe("streamChat with tool execution via onEvent", () => {
     /**
      * Mock Provider that yields tool calls and then a final response
@@ -1015,6 +1032,86 @@ describe("Agent with Multi-Provider Configuration", () => {
           abortSignal: controller.signal,
         }),
       ).rejects.toThrow("Request cancelled");
+    });
+
+    it("should not commit provider output when abort fires but the stream finishes normally", async () => {
+      class IgnoreAbortProvider implements LLMProvider {
+        name = "ignore-abort";
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(): AsyncIterable<ChatChunk> {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          yield { delta: "late output" };
+        }
+      }
+
+      const agent = createTestAgent(new IgnoreAbortProvider());
+
+      await expect(
+        startEscapeAbortedChat(agent, "hello", 20),
+      ).rejects.toThrow();
+      expect(agent.getConversationState().turns).toHaveLength(0);
+      expect(agent.getContext()).toEqual([]);
+    });
+
+    it("should stop awaiting a long-running tool when escape aborts", async () => {
+      const slowTool = createMockTool({
+        name: "slow_tool",
+        description: "Slow tool for abort testing.",
+        execute: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          return "slow-done";
+        },
+      });
+
+      const provider = new ToolCallMockProvider("slow_tool");
+      const agent = createTestAgent(provider);
+      agent.addTool(slowTool);
+
+      const controller = new AbortController();
+      const startedAt = Date.now();
+      const chatPromise = agent.streamChat("run slow tool", () => {}, {
+        abortSignal: controller.signal,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      controller.abort("escape");
+
+      await expect(chatPromise).rejects.toThrow();
+      expect(Date.now() - startedAt).toBeLessThan(300);
+    });
+
+    it("should abandon a user-only turn when escape aborts before assistant output", async () => {
+      class WaitingMockProvider extends CountingMockProvider {
+        name = "mock-wait";
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          await new Promise<void>((_resolve, reject) => {
+            const rejectCancelled = () => {
+              reject(new Error("Request cancelled"));
+            };
+            if (request.signal?.aborted) {
+              rejectCancelled();
+              return;
+            }
+            request.signal?.addEventListener("abort", rejectCancelled, {
+              once: true,
+            });
+          });
+        }
+      }
+
+      const mockProvider = new WaitingMockProvider();
+      const agent = createTestAgent(mockProvider);
+
+      await expect(
+        startEscapeAbortedChat(agent, "Cancel me", 20),
+      ).rejects.toThrow();
+      expect(agent.getConversationState().turns).toHaveLength(0);
     });
 
     it("should still invoke deprecated onToolStart callback", async () => {

@@ -42,6 +42,22 @@ export const testProvidersConfig: ProvidersConfig = {
   ],
 };
 
+export function createMockWriteStream(): NodeJS.WriteStream & {
+  chunks: string[];
+} {
+  const chunks: string[] = [];
+
+  return {
+    chunks,
+    columns: 80,
+    isTTY: false,
+    write: (chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+      return true;
+    },
+  } as unknown as NodeJS.WriteStream & { chunks: string[] };
+}
+
 export function createTestAgent(
   provider: LLMProvider,
   config?: Partial<ConstructorParameters<typeof Agent>[0]>,

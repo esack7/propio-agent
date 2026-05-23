@@ -1,4 +1,27 @@
+import * as readline from "readline";
 import { EventEmitter } from "events";
+import { PassThrough } from "stream";
+
+export type TtyInputStream = PassThrough & {
+  isTTY: boolean;
+  setRawMode: jest.Mock;
+  pause: jest.Mock;
+  resume: jest.Mock;
+};
+
+export function createTtyInputStream(): TtyInputStream {
+  const inputStream = new PassThrough() as TtyInputStream;
+  inputStream.isTTY = true;
+  inputStream.setRawMode = jest.fn();
+  inputStream.pause = jest.fn();
+  inputStream.resume = jest.fn();
+  return inputStream;
+}
+
+export function withKeypressEvents(inputStream: PassThrough): TtyInputStream {
+  readline.emitKeypressEvents(inputStream);
+  return inputStream as TtyInputStream;
+}
 
 export function createTtyTestStream(
   isTTY = true,
