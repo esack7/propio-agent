@@ -79,6 +79,23 @@ function emitPlainKey(inputStream: PassThrough, name: string): void {
   });
 }
 
+function expectBashHistoryReplay(options: TestSessionOptions = {}): void {
+  const { inputStream, session, getState } = createTestSession({
+    ...options,
+    historySnapshot: ["!git status"],
+  });
+
+  try {
+    emitPlainKey(inputStream, "up");
+    expect(getState()).toMatchObject({
+      inputMode: "bash",
+      buffer: "git status",
+    });
+  } finally {
+    session.cleanup();
+  }
+}
+
 function createTestSession(options: TestSessionOptions = {}): {
   inputStream: PassThrough;
   session: ChatPromptSession;
@@ -513,24 +530,11 @@ describe("chatPromptSession", () => {
   });
 
   it("replays bash history without a visible exclamation prefix", () => {
-    const { inputStream, session, getState } = createTestSession({
-      historySnapshot: ["!git status"],
-    });
+    expectBashHistoryReplay();
+  });
 
-    try {
-      inputStream.emit("keypress", "", {
-        name: "up",
-        ctrl: false,
-        meta: false,
-        shift: false,
-      });
-      expect(getState()).toMatchObject({
-        inputMode: "bash",
-        buffer: "git status",
-      });
-    } finally {
-      session.cleanup();
-    }
+  it("replays bash history without a visible exclamation prefix from bash mode", () => {
+    expectBashHistoryReplay({ inputMode: "bash" });
   });
 
   it("exits bash mode on Escape when search and typeahead are inactive", () => {

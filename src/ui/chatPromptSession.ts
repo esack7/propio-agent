@@ -9,7 +9,12 @@ import {
   type HistorySearchState,
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
-import { applyInputModeFromBuffer, type InputMode } from "./inputModes.js";
+import {
+  applyInputModeFromBuffer,
+  getModeFromInput,
+  parseBashHistoryEntry,
+  type InputMode,
+} from "./inputModes.js";
 import {
   acceptTypeaheadState,
   cancelTypeaheadState,
@@ -1131,8 +1136,18 @@ export function createChatPromptSession(
 
   const selectHistoryEntry = (index: number): void => {
     const selected = historySnapshot[index];
-    buffer = selected;
-    cursor = selected.length;
+    if (getModeFromInput(selected) === "bash") {
+      const previousMode = inputMode;
+      inputMode = "bash";
+      buffer = parseBashHistoryEntry(selected);
+      cursor = buffer.length;
+      if (previousMode !== inputMode) {
+        syncActiveFooter();
+      }
+    } else {
+      buffer = selected;
+      cursor = selected.length;
+    }
     syncBufferInputMode();
     render();
   };
