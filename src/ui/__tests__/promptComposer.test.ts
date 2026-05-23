@@ -197,7 +197,7 @@ describe("createPromptComposer", () => {
     await flush();
     expect(renderFooter).not.toHaveBeenCalled();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: shown |\nCtrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -209,16 +209,13 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: hidden |\nCtrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | tools: hidden | thinking: shown\nName? ",
     );
-    expect(toggleOutput).not.toContain(
-      "tools: shown |\nCtrl+T thinking: shown",
-    );
+    expect(toggleOutput).not.toContain("tools: shown | thinking: shown");
     expect(renderState).toHaveBeenLastCalledWith(
       expect.objectContaining({
         buffer: "",
-        footer:
-          "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+        footer: "Enter to send | ? help | tools: hidden | thinking: shown",
       }),
     );
 
@@ -240,7 +237,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: shown |\nCtrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u0014", {
@@ -252,7 +249,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: shown |\nCtrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: hidden\nName? ",
     );
 
     harness.composer.close();
@@ -276,7 +273,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ! bash | ? help | Esc\ncancel turn | Ctrl+O tools: shown |\nCtrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | tools: shown |\n thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -288,11 +285,9 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ! bash | ? help | Esc\ncancel turn | Ctrl+O tools: hidden |\nCtrl+T thinking: shown\nName? ",
+      "Enter to send | ? help | tools: hidden\n| thinking: shown\nName? ",
     );
-    expect(toggleOutput).not.toContain(
-      "shown | Ctrl+T thinking: shown\nName? ",
-    );
+    expect(toggleOutput).not.toContain("shown | thinking: shown\nName? ");
 
     harness.composer.close();
     await expect(prompt).resolves.toEqual({
@@ -352,11 +347,10 @@ describe("createPromptComposer", () => {
     harness.outputStream.emit("resize");
 
     const narrowOutput = harness.takeOutput();
-    expect(narrowOutput).toContain("\u001b[6A");
+    expect(narrowOutput).toContain("\u001b[3A");
     const narrowText = stripAnsiControls(narrowOutput);
-    expect(narrowText).toContain("| !");
-    expect(narrowText).toContain("bash");
-    expect(narrowText).toContain("Ctrl+O tools: shown");
+    expect(narrowText).toContain("Enter to send | ?");
+    expect(narrowText).toContain("help | tools: shown");
     expect(narrowText).toContain("thinking:");
     expect(narrowText).toContain("hidden");
     expect(narrowText).toContain("Name? ");
@@ -365,9 +359,9 @@ describe("createPromptComposer", () => {
     harness.outputStream.emit("resize");
 
     const wideOutput = harness.takeOutput();
-    expect(wideOutput).toContain("\u001b[6A");
+    expect(wideOutput).toContain("\u001b[3A");
     expect(stripAnsiControls(wideOutput)).toContain(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: shown |\nCtrl+T thinking: hidden\nName? ",
+      "Enter to send | ? help | tools: shown | thinking: hidden\nName? ",
     );
 
     harness.composer.close();

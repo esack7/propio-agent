@@ -75,35 +75,12 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
   },
 ];
 
-const FEATURED_COMMANDS: ReadonlyArray<string> = [
-  "/help",
-  "/skills",
-  "/skill <name>",
-  "/model",
-  "/tools",
-  "/mcp",
-  "/context",
-  "/session list",
-  "/exit",
-];
-
 export function getSlashCommandCompletionCommands(): SlashCommand[] {
   return SLASH_COMMAND_GROUPS.flatMap((group) =>
     group.commands.filter(
       (command) => command.command !== "?" && !command.command.includes("<"),
     ),
   );
-}
-
-function findCommand(command: string): SlashCommand | undefined {
-  for (const group of SLASH_COMMAND_GROUPS) {
-    const match = group.commands.find((entry) => entry.command === command);
-    if (match) {
-      return match;
-    }
-  }
-
-  return undefined;
 }
 
 function formatCommandLine(command: SlashCommand): string {
@@ -117,15 +94,24 @@ function formatLabelLine(label: string, description: string): string {
 export function buildSlashCommandHelpLines(): SlashCommandLine[] {
   const lines: SlashCommandLine[] = [];
 
-  lines.push({ text: "Most useful commands", style: "section" });
-  for (const command of FEATURED_COMMANDS) {
-    const entry = findCommand(command);
-    if (entry) {
-      lines.push({ text: formatCommandLine(entry), style: "info" });
+  lines.push({ text: "Available commands", style: "section" });
+  for (const group of SLASH_COMMAND_GROUPS) {
+    lines.push({ text: group.name, style: "section" });
+
+    for (const command of group.commands) {
+      lines.push({ text: formatCommandLine(command), style: "info" });
     }
   }
 
-  lines.push({ text: "Chat shortcuts", style: "section" });
+  lines.push({ text: "Keyboard shortcuts", style: "section" });
+  lines.push({
+    text: formatLabelLine("Enter", "send the current message"),
+    style: "info",
+  });
+  lines.push({
+    text: formatLabelLine("! <command>", "run one local shell command"),
+    style: "info",
+  });
   lines.push({
     text: formatLabelLine("Ctrl+J", "insert a newline"),
     style: "info",
@@ -145,18 +131,10 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
   lines.push({
     text: formatLabelLine(
       "Esc",
-      "cancel the active turn (stops waiting; in-flight tools may continue)",
+      "cancel the active turn, or exit shell-command input",
     ),
     style: "info",
   });
-
-  for (const group of SLASH_COMMAND_GROUPS) {
-    lines.push({ text: group.name, style: "section" });
-
-    for (const command of group.commands) {
-      lines.push({ text: formatCommandLine(command), style: "info" });
-    }
-  }
 
   return lines;
 }
@@ -174,9 +152,9 @@ export function getIdleFooterText(
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
 
-  return `Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: ${
+  return `Enter to send | ? help | tools: ${
     showToolCalls ? "shown" : "hidden"
-  } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
+  } | thinking: ${showThinking ? "shown" : "hidden"}`;
 }
 
 export function getBashFooterText(
@@ -192,9 +170,9 @@ export function getBashFooterText(
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
 
-  return `Enter to run | Esc/Delete exit bash | Ctrl+O tools: ${
+  return `Enter to run | tools: ${
     showToolCalls ? "shown" : "hidden"
-  } | Ctrl+T thinking: ${showThinking ? "shown" : "hidden"}`;
+  } | thinking: ${showThinking ? "shown" : "hidden"}`;
 }
 
 export function isHelpCommand(input: string): boolean {

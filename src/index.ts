@@ -679,20 +679,18 @@ export async function runInteractiveSession(
   abortState.setActiveComposer(composer);
 
   try {
-    ui.command("Type /help or ? to view available slash commands.");
-    ui.command(
-      "Exit with /exit or Ctrl+C. Press Esc to cancel a running turn.",
-    );
-    ui.command("Type ! before a message to run one local shell command.");
+    ui.command("Type /help or ? to view available commands.");
+    ui.command("Exit with /exit or Ctrl+C.");
     ui.command("");
 
     let shownReadyPromptMessage = false;
     let inputMode: InputMode = "prompt";
-    const shellRunOptions = createShellRunOptionsFromRuntimeConfig(runtimeConfig);
+    const shellRunOptions =
+      createShellRunOptionsFromRuntimeConfig(runtimeConfig);
     while (!abortState.shouldExit()) {
       ui.setMode("awaitingInput");
       if (!shownReadyPromptMessage) {
-        ui.info("AI Agent started. Type your message and press Enter.");
+        ui.info("AI Agent started. Type your message.");
         shownReadyPromptMessage = true;
       }
 

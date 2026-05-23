@@ -18,12 +18,14 @@ describe("slashCommands", () => {
     ]);
   });
 
-  it("includes a most useful commands section and a help alias", () => {
+  it("includes all available commands and shortcuts", () => {
     const lines = buildSlashCommandHelpLines();
     const text = lines.map((line) => line.text).join("\n");
 
-    expect(text).toContain("Most useful commands");
-    expect(text).toContain("Chat shortcuts");
+    expect(text).toContain("Available commands");
+    expect(text).toContain("Keyboard shortcuts");
+    expect(text).toContain("Enter");
+    expect(text).toContain("! <command>");
     expect(text).toContain("Ctrl+J");
     expect(text).not.toContain("Alt+Enter");
     expect(text).toContain("Ctrl+O");
@@ -39,28 +41,27 @@ describe("slashCommands", () => {
     expect(text).toContain("/mcp");
     expect(text).toContain("/context");
     expect(text).toContain("/session list");
+    expect(text).toContain("/session load <id>");
   });
 
   it("keeps the idle footer concise", () => {
     expect(getIdleFooterText()).toBe(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: shown | Ctrl+T thinking: shown",
+      "Enter to send | ? help | tools: shown | thinking: shown",
     );
     expect(getIdleFooterText(false)).toBe(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+      "Enter to send | ? help | tools: hidden | thinking: shown",
     );
     expect(
       getIdleFooterText({ showToolCalls: false, showThinking: true }),
-    ).toBe(
-      "Enter to send | ! bash | ? help | Esc cancel turn | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
-    );
+    ).toBe("Enter to send | ? help | tools: hidden | thinking: shown");
   });
 
   it("keeps the bash footer concise", () => {
     expect(getBashFooterText()).toBe(
-      "Enter to run | Esc/Delete exit bash | Ctrl+O tools: shown | Ctrl+T thinking: shown",
+      "Enter to run | tools: shown | thinking: shown",
     );
     expect(getBashFooterText(false)).toBe(
-      "Enter to run | Esc/Delete exit bash | Ctrl+O tools: hidden | Ctrl+T thinking: shown",
+      "Enter to run | tools: hidden | thinking: shown",
     );
   });
 
