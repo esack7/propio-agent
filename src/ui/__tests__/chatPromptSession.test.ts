@@ -5,7 +5,12 @@ import {
   type ChatPromptSession,
 } from "../chatPromptSession.js";
 import type { TypeaheadProvider } from "../typeahead.js";
-import { createTtyTestStream } from "./ttyTestStream.js";
+import {
+  BRACKETED_PASTE_DISABLE,
+  BRACKETED_PASTE_ENABLE,
+} from "../input/bracketedPaste.js";
+import { PASTE_END, PASTE_START } from "../input/parseKeypress.js";
+import { createTtyTestStream, withKeypressEvents } from "./ttyTestStream.js";
 
 interface TestSessionOptions {
   typeaheadProviders?: TypeaheadProvider[];
@@ -19,6 +24,7 @@ interface TestSessionOptions {
   inputMode?: "prompt" | "bash";
   editorRunner?: unknown;
   outputStream?: NodeJS.WriteStream & { chunks?: string[] };
+  terminalControlStream?: NodeJS.WriteStream & { chunks?: string[] };
   submit?: (text: string, inputMode: "prompt" | "bash") => void;
   interrupt?: () => void;
   close?: () => void;
@@ -96,18 +102,28 @@ function expectBashHistoryReplay(options: TestSessionOptions = {}): void {
   }
 }
 
+function createNonTtyControlStream(): NodeJS.WriteStream {
+  const stream = new PassThrough();
+  (stream as NodeJS.WriteStream & { isTTY: boolean }).isTTY = false;
+  return stream as NodeJS.WriteStream;
+}
+
 function createTestSession(options: TestSessionOptions = {}): {
   inputStream: PassThrough;
   session: ChatPromptSession;
   getState: () => ChatPromptSessionState | undefined;
+  terminalControlStream: NodeJS.WriteStream & { chunks?: string[] };
 } {
   const inputStream = createRawModeInputStream();
   const outputStream = createPromptOutputStream(options.outputStream);
+  const terminalControlStream =
+    options.terminalControlStream ?? createNonTtyControlStream();
   let latestState: ChatPromptSessionState | undefined;
 
   const session = createChatPromptSession({
     inputStream: inputStream as unknown as NodeJS.ReadStream,
     outputStream: outputStream as unknown as NodeJS.WriteStream,
+    terminalControlStream,
     request: createPromptRequest(options),
     historySnapshot: options.historySnapshot ?? [],
     enableTypeahead: options.enableTypeahead ?? true,
@@ -120,7 +136,14 @@ function createTestSession(options: TestSessionOptions = {}): {
     }),
   });
 
-  return { inputStream, session, getState: () => latestState };
+  return {
+    inputStream,
+    session,
+    getState: () => latestState,
+    terminalControlStream: terminalControlStream as NodeJS.WriteStream & {
+      chunks?: string[];
+    },
+  };
 }
 
 describe("chatPromptSession", () => {
@@ -527,6 +550,51 @@ describe("chatPromptSession", () => {
     } finally {
       session.cleanup();
     }
+  });
+
+  it("inserts bracketed paste emitted by readline in one shot", () => {
+    const inputStream = withKeypressEvents(createRawModeInputStream());
+    const outputStream = createPromptOutputStream();
+    const terminalControlStream = createNonTtyControlStream();
+    let latestState: ChatPromptSessionState | undefined;
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream,
+      terminalControlStream,
+      request: createPromptRequest({}),
+      historySnapshot: [],
+      enableTypeahead: false,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [],
+      callbacks: createPromptCallbacks({}, (state) => {
+        latestState = state;
+      }),
+    });
+
+    try {
+      inputStream.write(`${PASTE_START}line one\nline two${PASTE_END}`);
+      expect(latestState).toMatchObject({
+        buffer: "line one\nline two",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("enables bracketed paste on attach and disables on cleanup for TTY control streams", () => {
+    const terminalControlStream = createTtyTestStream(true);
+    const { session } = createTestSession({ terminalControlStream });
+
+    expect(terminalControlStream.chunks).toEqual([BRACKETED_PASTE_ENABLE]);
+
+    session.cleanup();
+
+    expect(terminalControlStream.chunks).toEqual([
+      BRACKETED_PASTE_ENABLE,
+      BRACKETED_PASTE_DISABLE,
+    ]);
   });
 
   it("replays bash history without a visible exclamation prefix", () => {

@@ -56,6 +56,7 @@ export interface PromptComposer {
 export interface PromptComposerOptions {
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
+  terminalControlStream?: NodeJS.WriteStream;
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
   renderState?: (state: PromptState | null) => void;
@@ -298,6 +299,8 @@ export function createPromptComposer(
         activeChatSession = createChatPromptSession({
           inputStream,
           outputStream,
+          terminalControlStream:
+            options.terminalControlStream ?? process.stdout,
           request,
           historySnapshot: [...liveHistory],
           enableTypeahead:

@@ -28,6 +28,11 @@ import {
 import { openPromptEditor, type PromptEditorRunner } from "./promptEditor.js";
 import { watchTerminalResize } from "./terminalWriter.js";
 import { formatSubtle } from "./formatting.js";
+import {
+  disableBracketedPaste,
+  enableBracketedPaste,
+} from "./input/bracketedPaste.js";
+import { createKeypressParser } from "./input/parseKeypress.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
@@ -58,6 +63,7 @@ export interface ChatPromptSessionCallbacks {
 export interface ChatPromptSessionOptions {
   inputStream: NodeJS.ReadStream;
   outputStream: NodeJS.WriteStream;
+  terminalControlStream?: NodeJS.WriteStream;
   request: PromptRequest;
   historySnapshot: readonly string[];
   enableTypeahead: boolean;
@@ -696,8 +702,15 @@ function isPrintableKey(str: string | undefined, key: readline.Key): boolean {
 export function createChatPromptSession(
   options: ChatPromptSessionOptions,
 ): ChatPromptSession {
-  const { callbacks, inputStream, outputStream, request, historySnapshot } =
-    options;
+  const {
+    callbacks,
+    inputStream,
+    outputStream,
+    request,
+    historySnapshot,
+    terminalControlStream = process.stdout,
+  } = options;
+  const keypressParser = createKeypressParser();
 
   let inputMode: InputMode = request.inputMode ?? "prompt";
   let buffer = request.defaultValue ?? "";
@@ -1709,12 +1722,28 @@ export function createChatPromptSession(
     handleBackspaceKey(key) ||
     handleNavigationKeys(key);
 
+  const handlePasteText = (text: string): void => {
+    if (text.length > 0) {
+      insertText(text);
+    }
+  };
+
   const handleKeypress = (str: string | undefined, key: readline.Key): void => {
     if (!active) return;
-    if (handleControlAndSystemKeys(str, key)) return;
-    if (handleSearchModeInput(str, key)) return;
-    if (handleTypeaheadAndNavigationKeys(str, key)) return;
-    if (isPrintableKey(str, key)) insertText(str ?? "");
+
+    const events = keypressParser.parse(str, key);
+    for (const parsed of events) {
+      if (parsed.kind === "paste") {
+        handlePasteText(parsed.text);
+        continue;
+      }
+
+      const { str: keyStr, key: keyObj } = parsed;
+      if (handleControlAndSystemKeys(keyStr, keyObj)) continue;
+      if (handleSearchModeInput(keyStr, keyObj)) continue;
+      if (handleTypeaheadAndNavigationKeys(keyStr, keyObj)) continue;
+      if (isPrintableKey(keyStr, keyObj)) insertText(keyStr ?? "");
+    }
   };
 
   const restoreRawMode = (): void => {
@@ -1732,12 +1761,14 @@ export function createChatPromptSession(
     }
 
     active = false;
+    disableBracketedPaste(terminalControlStream);
     unwatchResize();
     clearMentionTypeaheadRetry();
     inputStream.removeListener("keypress", handleKeypress as never);
     restoreRawMode();
   };
 
+  enableBracketedPaste(terminalControlStream);
   inputStream.on("keypress", handleKeypress as never);
   if (
     typeof (

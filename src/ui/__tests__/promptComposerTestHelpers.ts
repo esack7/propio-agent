@@ -182,6 +182,7 @@ export function createTtyHarness(options?: {
   editorRunner?: PromptEditorRunner;
   editorEnv?: NodeJS.ProcessEnv;
   setRawModeMock?: jest.Mock;
+  terminalControlStream?: NodeJS.WriteStream & { chunks?: string[] };
 }) {
   const columns = options?.columns ?? 80;
   const streams = createTtyStreams(columns);
@@ -195,6 +196,7 @@ export function createTtyHarness(options?: {
   const composer = createPromptComposer({
     input: streams.inputStream as unknown as NodeJS.ReadStream,
     output: streams.outputStream as unknown as NodeJS.WriteStream,
+    terminalControlStream: options?.terminalControlStream,
     createInterface: readlineHarness.createInterface,
     historyStore: options?.historyStore,
     workspaceRoot: options?.workspaceRoot,

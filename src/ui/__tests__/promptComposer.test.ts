@@ -22,6 +22,11 @@ import {
   triggerReverseHistorySearch,
   type TtyHarness,
 } from "./promptComposerTestHelpers.js";
+import {
+  BRACKETED_PASTE_DISABLE,
+  BRACKETED_PASTE_ENABLE,
+} from "../input/bracketedPaste.js";
+import { createTtyTestStream } from "./ttyTestStream.js";
 import { getBashFooterText } from "../slashCommands.js";
 
 jest.setTimeout(10000);
@@ -70,6 +75,33 @@ async function startMultilineChatPrompt() {
 describe("createPromptComposer", () => {
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  it("forwards an injectable terminal control stream to the custom chat session", async () => {
+    const terminalControlStream = createTtyTestStream(true);
+    const harness = createTtyHarness({
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      terminalControlStream,
+    });
+
+    const prompt = harness.composer.compose({
+      mode: "chat",
+      promptText: "> ",
+      footer: getIdleFooterText(),
+    });
+    await flush();
+
+    expect(terminalControlStream.chunks).toEqual([BRACKETED_PASTE_ENABLE]);
+
+    harness.composer.close();
+    await flush();
+    await expect(prompt).resolves.toEqual({ status: "closed" });
+
+    expect(terminalControlStream.chunks).toEqual([
+      BRACKETED_PASTE_ENABLE,
+      BRACKETED_PASTE_DISABLE,
+    ]);
   });
 
   it("exposes the current prompt state while composing", async () => {
