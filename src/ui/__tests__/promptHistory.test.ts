@@ -51,6 +51,20 @@ describe("createPromptHistoryStore", () => {
     expect(store.load()).toEqual([]);
   });
 
+  it("saves history as version 2", async () => {
+    const filePath = path.join(tempRoot, "prompt-history.json");
+    const store = createPromptHistoryStore({ filePath });
+    const hash = "d".repeat(64);
+
+    store.record(`paste:${hash}`);
+    await waitFor(() => fs.existsSync(filePath));
+
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
+      version: 2,
+      entries: [`paste:${hash}`],
+    });
+  });
+
   it("loads valid history newest-first", () => {
     const filePath = path.join(tempRoot, "prompt-history.json");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -77,7 +91,7 @@ describe("createPromptHistoryStore", () => {
 
     expect(store.load()).toEqual(["  /context  "]);
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual({
-      version: 1,
+      version: 2,
       entries: ["  /context  "],
     });
   });

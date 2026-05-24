@@ -15,6 +15,7 @@ import {
 import { PASTE_END, PASTE_START } from "../input/parseKeypress.js";
 import { PASTE_THRESHOLD } from "../input/constants.js";
 import { isImageOnlySubmission } from "../input/promptSubmission.js";
+import { createPasteCache, type PasteCache } from "../pasteCache.js";
 import { createTtyTestStream, withKeypressEvents } from "./ttyTestStream.js";
 
 const PNG_BYTES = Buffer.from([
@@ -54,6 +55,7 @@ interface TestSessionOptions {
   ) => void;
   interrupt?: () => void;
   close?: () => void;
+  pasteCache?: PasteCache;
 }
 
 function createRawModeInputStream(): PassThrough {
@@ -176,6 +178,7 @@ function createTestSession(options: TestSessionOptions = {}): {
     workspaceRoot: "/tmp/workspace",
     typeaheadProviders: options.typeaheadProviders ?? [],
     editorRunner: options.editorRunner as never,
+    pasteCache: options.pasteCache,
     callbacks: createPromptCallbacks(options, (state) => {
       latestState = state;
     }),
@@ -1150,6 +1153,118 @@ describe("chatPromptSession", () => {
     } finally {
       session.cleanup();
       await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores cached chat paste refs from history navigation", () => {
+    const pasteCache = createPasteCache({
+      cacheDir: path.join(os.tmpdir(), `propio-chat-paste-${Date.now()}`),
+    });
+    const body = "x".repeat(1200);
+    const hash = pasteCache.store(body);
+
+    const { inputStream, session, getState } = createTestSession({
+      historySnapshot: [`paste:${hash}`],
+      pasteCache,
+      enableTypeahead: false,
+    });
+
+    try {
+      emitPlainKey(inputStream, "up");
+      expect(getState()).toMatchObject({
+        inputMode: "prompt",
+        buffer: body,
+        cursor: body.length,
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("restores cached bash paste refs from history navigation", () => {
+    const pasteCache = createPasteCache({
+      cacheDir: path.join(os.tmpdir(), `propio-chat-bash-paste-${Date.now()}`),
+    });
+    const body = "git status --long ".repeat(80);
+    const hash = pasteCache.store(body);
+
+    const { inputStream, session, getState } = createTestSession({
+      historySnapshot: [`!paste:${hash}`],
+      pasteCache,
+      enableTypeahead: false,
+    });
+
+    try {
+      emitPlainKey(inputStream, "up");
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: body,
+        cursor: body.length,
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("keeps bash draft mode when canceling reverse history search", () => {
+    const { inputStream, session, getState } = createTestSession({
+      inputMode: "bash",
+      enableReverseHistorySearch: true,
+      enableTypeahead: false,
+      historySnapshot: ["!git log"],
+    });
+
+    try {
+      emitChar(inputStream, "g");
+      emitChar(inputStream, "i");
+      emitChar(inputStream, "t");
+      emitChar(inputStream, " ");
+      emitChar(inputStream, "s");
+      emitChar(inputStream, "t");
+      emitChar(inputStream, "a");
+      emitChar(inputStream, "t");
+      emitChar(inputStream, "u");
+      emitChar(inputStream, "s");
+      emitCtrlKey(inputStream, "r");
+      emitPlainKey(inputStream, "escape");
+
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: "git status",
+      });
+    } finally {
+      session.cleanup();
+    }
+  });
+
+  it("restores bash body when accepting a !paste ref from reverse history search", () => {
+    const pasteCache = createPasteCache({
+      cacheDir: path.join(
+        os.tmpdir(),
+        `propio-chat-search-paste-${Date.now()}`,
+      ),
+    });
+    const body = "npm test -- --watch";
+    const hash = pasteCache.store(body);
+
+    const { inputStream, session, getState } = createTestSession({
+      enableReverseHistorySearch: true,
+      enableTypeahead: false,
+      historySnapshot: [`!paste:${hash}`],
+      pasteCache,
+    });
+
+    try {
+      emitCtrlKey(inputStream, "r");
+      emitPlainKey(inputStream, "return");
+
+      expect(getState()).toMatchObject({
+        inputMode: "bash",
+        buffer: body,
+        cursor: body.length,
+      });
+    } finally {
+      session.cleanup();
     }
   });
 });

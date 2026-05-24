@@ -41,10 +41,6 @@ export function shouldPersistPromptHistory(
     return false;
   }
 
-  if (submission.text.length > HISTORY_INLINE_MAX) {
-    return false;
-  }
-
   return (
     promptMode === "chat" && shouldRecordPromptHistoryEntry(submission.text)
   );

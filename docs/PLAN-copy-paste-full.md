@@ -4,7 +4,7 @@
 
 **Initial ship (this effort):** bracketed paste, paste handler, large-text collapse, image path drag/paste, rich submission through the interactive loop, agent multimodal wiring.
 
-**Deferred (follow-up):** macOS clipboard-image on empty paste, paste-cache history for entries >1024 chars, optional `sharp` for resize/BMP conversion. See [Phase 5 (deferred)](#phase-5-deferred--clipboard-image--paste-cache-history).
+**Deferred (follow-up):** optional `sharp` for resize/BMP conversion. Phase 5 (clipboard image + paste-cache history) is implemented — see [PLAN-copy-paste-phase-5.md](PLAN-copy-paste-phase-5.md).
 
 ## Current state
 
@@ -241,16 +241,20 @@ Chat mode: `[Image #N]` pill + map entry; on submit → `[Attached image: <basen
 
 ## Phase 5 (deferred) — Clipboard image + paste-cache history
 
+**Detailed plan:** [PLAN-copy-paste-phase-5.md](PLAN-copy-paste-phase-5.md)
+
 **Clipboard (`src/ui/input/clipboardImage.ts`)**
 
-- macOS: `osascript` / `pngpaste` fallback; wire `onEmptyPaste` from paste handler.
+- macOS: `osascript` (PNG/JPEG) / `pngpaste` fallback; subprocess timeout; wire `onEmptyPaste` from paste handler.
+- TIFF-only clipboards unsupported without conversion deps.
 - Optional `/image-paste` or shortcut.
 
 **Paste-cache (`src/ui/pasteCache.ts`)**
 
-- `~/.propio/paste-cache/<hash>.txt` for history entries >1024 chars.
+- `~/.propio/paste-cache/<sha256-hex>.txt` for history entries >1024 chars (`0o700` dir / `0o600` files).
+- Refs: `paste:<hash>` (chat), `!paste:<hash>` (bash); validate `[a-f0-9]{64}` before read.
 - Schema v2 for `prompt-history.json` with backward-compatible load.
-- History up/down restores hash → content.
+- History up/down **and** history-search accept restore hash → content.
 
 ## Phase 6 — Agent / context multimodal wiring
 
@@ -318,4 +322,4 @@ Defer: `pasteCache.test.ts`, clipboard mocks until Phase 5.
 
 ## README (initial)
 
-Document: bracketed paste in TTY chat; drag image files → `[Image #N]` in chat mode; paths literal in bash; large paste → `[Pasted text #N]`; size limits and supported formats. Note: clipboard image paste and history paste-cache planned separately.
+Document: bracketed paste in TTY chat; drag image files → `[Image #N]` in chat mode; paths literal in bash; large paste → `[Pasted text #N]`; size limits and supported formats. macOS clipboard image paste (empty bracketed paste) and paste-cache history for entries >1024 chars are documented in README.

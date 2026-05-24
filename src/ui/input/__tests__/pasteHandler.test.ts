@@ -28,7 +28,7 @@ describe("createPasteHandler", () => {
     jest.useRealTimers();
   });
 
-  it("ignores empty submitPaste without setting isPasting", () => {
+  it("ignores empty submitPaste without onEmptyPaste", () => {
     const onTextPaste = jest.fn();
     const handler = createPasteHandler({
       getInputMode: () => "prompt",
@@ -41,6 +41,64 @@ describe("createPasteHandler", () => {
 
     jest.advanceTimersByTime(200);
     expect(onTextPaste).not.toHaveBeenCalled();
+    handler.dispose();
+  });
+
+  it("invokes onEmptyPaste for empty bracketed paste", async () => {
+    const onEmptyPaste = jest.fn(async () => {});
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste: jest.fn(),
+      onEmptyPaste,
+    });
+
+    handler.submitPaste("", { isPasted: true });
+    expect(handler.isPasting()).toBe(true);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onEmptyPaste).toHaveBeenCalledTimes(1);
+    expect(handler.isPasting()).toBe(false);
+    handler.dispose();
+  });
+
+  it("ignores empty paste when isPasted is false", () => {
+    const onEmptyPaste = jest.fn();
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste: jest.fn(),
+      onEmptyPaste,
+    });
+
+    handler.submitPaste("", { isPasted: false });
+    expect(handler.isPasting()).toBe(false);
+    expect(onEmptyPaste).not.toHaveBeenCalled();
+    handler.dispose();
+  });
+
+  it("does not invoke onEmptyPaste after dispose", async () => {
+    let resolveEmptyPaste: (() => void) | undefined;
+    const onEmptyPaste = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveEmptyPaste = resolve;
+        }),
+    );
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste: jest.fn(),
+      onEmptyPaste,
+    });
+
+    handler.submitPaste("", { isPasted: true });
+    await Promise.resolve();
+    handler.dispose();
+    resolveEmptyPaste?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onEmptyPaste).toHaveBeenCalledTimes(1);
     handler.dispose();
   });
 

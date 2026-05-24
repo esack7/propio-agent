@@ -1,7 +1,5 @@
 import * as readline from "readline";
 import {
-  acceptHistorySearch,
-  cancelHistorySearch,
   cycleHistorySearchMatch,
   getHistorySearchSummary,
   startHistorySearch,
@@ -9,12 +7,7 @@ import {
   type HistorySearchState,
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
-import {
-  applyInputModeFromBuffer,
-  getModeFromInput,
-  parseBashHistoryEntry,
-  type InputMode,
-} from "./inputModes.js";
+import { applyInputModeFromBuffer, type InputMode } from "./inputModes.js";
 import {
   acceptTypeaheadState,
   cancelTypeaheadState,
@@ -45,6 +38,12 @@ import {
   imagePasteFailureMessage,
   tryReadImageFromPath,
 } from "./input/imagePaste.js";
+import { tryReadImageFromClipboard } from "./input/clipboardImage.js";
+import {
+  applyHistoryEntryToPrompt,
+  createPasteCache,
+  type PasteCache,
+} from "./pasteCache.js";
 import type { PastedContent } from "./input/pastedContent.js";
 import type { PromptSubmission } from "./input/promptSubmission.js";
 
@@ -86,6 +85,7 @@ export interface ChatPromptSessionOptions {
   typeaheadProviders: readonly TypeaheadProvider[];
   editorRunner?: PromptEditorRunner;
   editorEnv?: NodeJS.ProcessEnv;
+  pasteCache?: PasteCache;
   callbacks: ChatPromptSessionCallbacks;
 }
 
@@ -724,6 +724,7 @@ export function createChatPromptSession(
     historySnapshot,
     terminalControlStream = process.stdout,
   } = options;
+  const pasteCache = options.pasteCache ?? createPasteCache();
   const keypressParser = createKeypressParser();
 
   let inputMode: InputMode = request.inputMode ?? "prompt";
@@ -783,6 +784,7 @@ export function createChatPromptSession(
   syncBufferInputMode();
   let historyIndex: number | null = null;
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
+  let searchDraftInputMode: InputMode = inputMode;
   let searchState: HistorySearchState | null = null;
   let typeaheadState: TypeaheadState | null = null;
   let typeaheadPreviewApplied = false;
@@ -900,9 +902,28 @@ export function createChatPromptSession(
       return;
     }
 
-    const selection = acceptHistorySearch(searchState);
-    buffer = selection.buffer;
-    cursor = selection.cursor;
+    const selectedEntry =
+      searchState.matches.length > 0 && searchState.selectedMatchIndex >= 0
+        ? searchState.matches[searchState.selectedMatchIndex]
+        : undefined;
+
+    if (selectedEntry === undefined) {
+      buffer = searchState.originalBuffer;
+      cursor = searchState.originalCursor;
+      inputMode = searchDraftInputMode;
+      syncBufferInputMode();
+      return;
+    }
+
+    const applied = applyHistoryEntryToPrompt(selectedEntry, pasteCache);
+    const previousMode = inputMode;
+    buffer = applied.buffer;
+    cursor = applied.buffer.length;
+    inputMode = applied.inputMode;
+    if (previousMode !== inputMode) {
+      syncActiveFooter();
+    }
+    syncBufferInputMode();
   };
 
   const clearTypeahead = (): void => {
@@ -1114,14 +1135,42 @@ export function createChatPromptSession(
     render();
   };
 
-  const exitSearch = (
-    nextSelection: ReturnType<typeof cancelHistorySearch>,
-  ): void => {
+  const exitSearch = (accept: boolean): void => {
+    if (!searchState) {
+      return;
+    }
+
+    const state = searchState;
     searchState = null;
     historyIndex = null;
     draftSnapshot = null;
-    buffer = nextSelection.buffer;
-    cursor = nextSelection.cursor;
+
+    if (accept) {
+      const selectedEntry =
+        state.matches.length > 0 && state.selectedMatchIndex >= 0
+          ? state.matches[state.selectedMatchIndex]
+          : undefined;
+
+      if (selectedEntry === undefined) {
+        buffer = state.originalBuffer;
+        cursor = state.originalCursor;
+        inputMode = searchDraftInputMode;
+      } else {
+        const applied = applyHistoryEntryToPrompt(selectedEntry, pasteCache);
+        const previousMode = inputMode;
+        buffer = applied.buffer;
+        cursor = applied.buffer.length;
+        inputMode = applied.inputMode;
+        if (previousMode !== inputMode) {
+          syncActiveFooter();
+        }
+      }
+    } else {
+      buffer = state.originalBuffer;
+      cursor = state.originalCursor;
+      inputMode = searchDraftInputMode;
+    }
+
     syncBufferInputMode();
     render();
   };
@@ -1136,6 +1185,7 @@ export function createChatPromptSession(
     }
 
     draftSnapshot = { buffer, cursor };
+    searchDraftInputMode = inputMode;
     searchState = startHistorySearch(historySnapshot, buffer, cursor);
     syncFromSearchState();
     render();
@@ -1158,7 +1208,7 @@ export function createChatPromptSession(
       return;
     }
 
-    exitSearch(cancelHistorySearch(searchState));
+    exitSearch(false);
   };
 
   const acceptSearch = (): void => {
@@ -1167,7 +1217,7 @@ export function createChatPromptSession(
       return;
     }
 
-    exitSearch(acceptHistorySearch(searchState));
+    exitSearch(true);
   };
 
   const getBufferLinePosition = () => {
@@ -1181,18 +1231,14 @@ export function createChatPromptSession(
   };
 
   const selectHistoryEntry = (index: number): void => {
-    const selected = historySnapshot[index];
-    if (getModeFromInput(selected) === "bash") {
-      const previousMode = inputMode;
-      inputMode = "bash";
-      buffer = parseBashHistoryEntry(selected);
-      cursor = buffer.length;
-      if (previousMode !== inputMode) {
-        syncActiveFooter();
-      }
-    } else {
-      buffer = selected;
-      cursor = selected.length;
+    const stored = historySnapshot[index];
+    const applied = applyHistoryEntryToPrompt(stored, pasteCache);
+    const previousMode = inputMode;
+    inputMode = applied.inputMode;
+    buffer = applied.buffer;
+    cursor = applied.buffer.length;
+    if (previousMode !== inputMode) {
+      syncActiveFooter();
     }
     syncBufferInputMode();
     render();
@@ -1825,6 +1871,31 @@ export function createChatPromptSession(
       if (fragments.length > 0) {
         insertText(fragments.join("\n"));
       }
+    },
+    onEmptyPaste: async () => {
+      if (inputMode !== "prompt") {
+        return;
+      }
+
+      const deliveryToken = captureSessionDeliveryToken();
+      const result = await tryReadImageFromClipboard();
+      if (!isSessionDeliveryValid(deliveryToken)) {
+        return;
+      }
+      if (!result.ok) {
+        return;
+      }
+
+      const id = nextPasteId++;
+      pastedContents.set(id, {
+        id,
+        type: "image",
+        data: result.data,
+        mediaType: result.mediaType,
+        filename: result.filename,
+        path: result.filename,
+      });
+      insertText(buildImagePastePill(id));
     },
   });
 

@@ -102,13 +102,13 @@ describe("shouldPersistPromptHistory", () => {
     ).toBe(true);
   });
 
-  it("skips chat submissions longer than HISTORY_INLINE_MAX", () => {
+  it("persists chat submissions longer than HISTORY_INLINE_MAX", () => {
     const text = "x".repeat(HISTORY_INLINE_MAX + 1);
     expect(
       shouldPersistPromptHistory(
         { text, displayText: text, inputMode: "prompt" },
         "chat",
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

@@ -29,6 +29,8 @@ import {
 } from "../input/bracketedPaste.js";
 import { createTtyTestStream } from "./ttyTestStream.js";
 import { getBashFooterText } from "../slashCommands.js";
+import { createPasteCache } from "../pasteCache.js";
+import { HISTORY_INLINE_MAX } from "../input/promptSubmission.js";
 
 jest.setTimeout(10000);
 
@@ -555,6 +557,43 @@ describe("createPromptComposer", () => {
 
     composer.close();
     cleanup();
+  });
+
+  it("stores large chat submissions as paste refs", async () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "propio-large-chat-"),
+    );
+    const pasteCache = createPasteCache({
+      cacheDir: path.join(tempDir, "paste-cache"),
+    });
+    const { historyStore, cleanup, readlineHarness } =
+      createReadlinePromptComposer("propio-large-chat-history-");
+    const largeComposer = createPromptComposer({
+      createInterface: readlineHarness.createInterface,
+      historyStore,
+      pasteCache,
+    });
+
+    const largeText = "z".repeat(HISTORY_INLINE_MAX + 1);
+    const prompt = largeComposer.compose({
+      mode: "chat",
+      promptText: "Name? ",
+    });
+    readlineHarness.submit(largeText);
+
+    await expect(prompt).resolves.toEqual(
+      submittedPromptResult(largeText, "prompt"),
+    );
+    await flush();
+
+    const history = historyStore.load();
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatch(/^paste:[a-f0-9]{64}$/);
+    expect(pasteCache.resolve(history[0]!)).toBe(largeText);
+
+    largeComposer.close();
+    cleanup();
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("removes skipped submissions from live readline history", async () => {

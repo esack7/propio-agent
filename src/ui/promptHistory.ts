@@ -12,7 +12,7 @@ export interface PromptHistoryStoreOptions {
 }
 
 interface PromptHistoryFile {
-  version: 1;
+  version: 1 | 2;
   entries: string[];
 }
 
@@ -33,7 +33,7 @@ function isPromptHistoryFile(value: unknown): value is PromptHistoryFile {
   }
 
   const obj = value as Record<string, unknown>;
-  return obj.version === 1 && Array.isArray(obj.entries);
+  return (obj.version === 1 || obj.version === 2) && Array.isArray(obj.entries);
 }
 
 function normalizeEntries(
@@ -86,7 +86,7 @@ async function saveHistoryFile(
 
   const nextEntries = normalizeEntries(entries, maxEntries);
   const payload: PromptHistoryFile = {
-    version: 1,
+    version: 2,
     entries: nextEntries,
   };
 

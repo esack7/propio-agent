@@ -6,6 +6,7 @@ import type { InputMode } from "../inputModes.js";
 export type PasteHandlerCallbacks = {
   onTextPaste: (text: string) => void;
   onImagePaths?: (paths: readonly string[]) => void | Promise<void>;
+  onEmptyPaste?: () => void | Promise<void>;
 };
 
 export type PasteHandlerOptions = PasteHandlerCallbacks & {
@@ -157,9 +158,43 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     burstActive = true;
   };
 
+  const runEmptyPasteDelivery = async (generation: number): Promise<void> => {
+    if (
+      disposed ||
+      generation !== deliveryGeneration ||
+      !options.onEmptyPaste
+    ) {
+      return;
+    }
+
+    deliveryActive = true;
+    try {
+      await options.onEmptyPaste();
+    } finally {
+      if (generation === deliveryGeneration) {
+        deliveryActive = false;
+      }
+    }
+  };
+
+  const scheduleEmptyPasteDelivery = (): void => {
+    const generation = deliveryGeneration;
+    void runEmptyPasteDelivery(generation).catch(() => {
+      // Empty paste delivery is best-effort.
+    });
+  };
+
   return {
-    submitPaste(text: string, _meta: { isPasted: boolean }): void {
-      if (disposed || text.length === 0) {
+    submitPaste(text: string, meta: { isPasted: boolean }): void {
+      if (disposed) {
+        return;
+      }
+
+      if (text.length === 0) {
+        if (meta.isPasted && options.onEmptyPaste) {
+          flushBurst();
+          scheduleEmptyPasteDelivery();
+        }
         return;
       }
 

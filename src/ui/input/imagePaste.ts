@@ -118,6 +118,30 @@ function sniffMediaType(bytes: Buffer): string | null {
   return null;
 }
 
+export function encodeImageDataUrl(bytes: Buffer, mediaType: string): string {
+  return `data:${mediaType};base64,${bytes.toString("base64")}`;
+}
+
+export function validateImageBytes(
+  bytes: Buffer,
+):
+  | { ok: true; mediaType: string }
+  | { ok: false; reason: ImageReadFailureReason } {
+  if (bytes.length > MAX_IMAGE_BYTES) {
+    return { ok: false, reason: "too_large" };
+  }
+
+  const sniffed = sniffMediaType(bytes);
+  if (!sniffed) {
+    if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
+      return { ok: false, reason: "unsupported_type" };
+    }
+    return { ok: false, reason: "invalid_bytes" };
+  }
+
+  return { ok: true, mediaType: sniffed };
+}
+
 export async function tryReadImageFromPath(
   filePath: string,
 ): Promise<ImageReadResult> {
@@ -164,7 +188,7 @@ export async function tryReadImageFromPath(
     return { ok: false, reason: "invalid_bytes" };
   }
 
-  const data = `data:${expected};base64,${bytes.toString("base64")}`;
+  const data = encodeImageDataUrl(bytes, expected);
   return {
     ok: true,
     data,

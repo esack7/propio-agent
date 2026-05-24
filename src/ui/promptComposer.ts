@@ -17,7 +17,12 @@ import {
   type TypeaheadProvider,
 } from "./typeahead.js";
 import type { PromptHistoryStore } from "./promptHistory.js";
-import { formatBashHistoryEntry, type InputMode } from "./inputModes.js";
+import {
+  buildPromptHistoryEntry,
+  createPasteCache,
+  type PasteCache,
+} from "./pasteCache.js";
+import type { InputMode } from "./inputModes.js";
 import {
   createPlainSubmission,
   shouldPersistPromptHistory,
@@ -65,6 +70,7 @@ export interface PromptComposerOptions {
   onToggleThinking?: () => string | null | undefined;
   refreshPromptFooters?: () => import("./chatPromptSession.js").PromptFooters;
   historyStore?: PromptHistoryStore;
+  pasteCache?: PasteCache;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
   workspaceRoot?: string;
@@ -125,6 +131,7 @@ export function createPromptComposer(
     createDefaultTypeaheadProviders(workspaceRoot);
   const reverseHistorySearchEnabled =
     options.enableReverseHistorySearch ?? isTerminalPrompt(options);
+  const pasteCache = options.pasteCache ?? createPasteCache();
   const useCustomChatPrompt = isTerminalPrompt(options);
   const liveHistory = [...(options.historyStore?.load() ?? [])];
   const rl = createInterface({
@@ -206,22 +213,18 @@ export function createPromptComposer(
     );
 
     if (shouldKeepHistory) {
-      const trimmedText = submission.text.trim();
-      const historyEntry =
-        submission.inputMode === "bash"
-          ? formatBashHistoryEntry(trimmedText)
-          : submission.text;
       try {
+        const historyEntry = buildPromptHistoryEntry(submission, pasteCache);
         options.historyStore?.record(historyEntry);
+
+        const updatedHistory = updateLiveHistorySnapshot(
+          liveHistory,
+          historyEntry,
+        );
+        liveHistory.splice(0, liveHistory.length, ...updatedHistory);
       } catch {
         // Prompt history is best-effort and must not block submission.
       }
-
-      const updatedHistory = updateLiveHistorySnapshot(
-        liveHistory,
-        historyEntry,
-      );
-      liveHistory.splice(0, liveHistory.length, ...updatedHistory);
       return;
     }
 
@@ -305,6 +308,7 @@ export function createPromptComposer(
           typeaheadProviders,
           editorRunner: options.editorRunner,
           editorEnv: options.editorEnv,
+          pasteCache,
           callbacks: {
             render: syncChatState,
             submit: (submission) =>

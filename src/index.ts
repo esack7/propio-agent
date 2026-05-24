@@ -26,6 +26,7 @@ import {
   type PromptComposer,
 } from "./ui/promptComposer.js";
 import { createPromptHistoryStore } from "./ui/promptHistory.js";
+import { createPasteCache } from "./ui/pasteCache.js";
 import { printStartupBanner } from "./ui/banner.js";
 import {
   streamAssistantTurn,
@@ -674,6 +675,7 @@ export async function runInteractiveSession(
     input: inputStream,
     output: ui.getPromptOutputStream(),
     historyStore: createWorkspacePromptHistoryStore(),
+    pasteCache: createPasteCache(),
     workspaceRoot: process.cwd(),
     typeaheadProviders,
     renderFooter: (footer) => {

@@ -436,6 +436,10 @@ In interactive chat mode, you can drag or paste **local image file paths** into 
 - **BMP** is not supported — convert to PNG or JPEG first.
 - **Slash commands** cannot include images; remove image pills before running `/help`, `/clear`, etc.
 
+**Clipboard (macOS):** In chat mode, Cmd+V with an image on the clipboard (no text) inserts an `[Image #N]` pill when your terminal supports bracketed paste. TIFF-only clipboards are not supported in MVP. If AppleScript is insufficient in your environment, install optional [pngpaste](https://github.com/jcsalterego/pngpaste) via Homebrew (`brew install pngpaste`).
+
+**Large paste history:** Submissions longer than 1024 characters are stored as `paste:<hash>` (or `!paste:<hash>` in bash mode) and restored from `~/.propio/paste-cache/` when you use Up/Down history or accept a reverse-history-search match. The cache is content-addressed and may retain sensitive pasted content indefinitely until you remove it manually (`rm -rf ~/.propio/paste-cache/`).
+
 ---
 
 ## Tools
