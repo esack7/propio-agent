@@ -2148,7 +2148,7 @@ export class Agent {
     }
 
     const userMessage = submission.text;
-    this.contextManager.beginUserTurn(userMessage);
+    this.contextManager.beginUserTurn(userMessage, submission.images);
     await this.attachFileMentions(userMessage);
     this.lastTurnReasoningSummary = null;
     this.emitStatus(options, "Preparing request", "request");

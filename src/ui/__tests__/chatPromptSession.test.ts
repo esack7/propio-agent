@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { PassThrough } from "stream";
 import {
   createChatPromptSession,
@@ -11,7 +14,12 @@ import {
 } from "../input/bracketedPaste.js";
 import { PASTE_END, PASTE_START } from "../input/parseKeypress.js";
 import { PASTE_THRESHOLD } from "../input/constants.js";
+import { isImageOnlySubmission } from "../input/promptSubmission.js";
 import { createTtyTestStream, withKeypressEvents } from "./ttyTestStream.js";
+
+const PNG_BYTES = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+]);
 
 function expectSubmitPrompt(
   submit: jest.Mock,
@@ -1096,6 +1104,52 @@ describe("chatPromptSession", () => {
     } finally {
       session.cleanup();
       jest.useRealTimers();
+    }
+  });
+
+  it("pastes an image file path into a pill and expands on submit", async () => {
+    const tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "propio-chat-image-"),
+    );
+    const pngPath = path.join(tempDir, "photo.png");
+    await fs.writeFile(pngPath, PNG_BYTES);
+
+    const submit = jest.fn();
+    const inputStream = withKeypressEvents(createRawModeInputStream());
+    const outputStream = createPromptOutputStream();
+    let latestState: ChatPromptSessionState | undefined;
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream,
+      terminalControlStream: createNonTtyControlStream(),
+      request: createPromptRequest({}),
+      historySnapshot: [],
+      enableTypeahead: false,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [],
+      callbacks: createPromptCallbacks({ submit }, (state) => {
+        latestState = state;
+      }),
+    });
+
+    try {
+      inputStream.write(`${PASTE_START}${pngPath}${PASTE_END}`);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(latestState?.buffer).toBe("[Image #1]");
+
+      emitPlainKey(inputStream, "return");
+      expect(submit).toHaveBeenCalledTimes(1);
+      const submission = submit.mock.calls[0][0];
+      expect(submission.displayText).toBe("[Image #1]");
+      expect(submission.text).toBe("[Attached image: photo.png]");
+      expect(submission.images?.[0]).toMatch(/^data:image\/png;base64,/);
+      expect(isImageOnlySubmission(submission)).toBe(true);
+    } finally {
+      session.cleanup();
+      await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
 });

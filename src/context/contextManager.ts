@@ -321,12 +321,22 @@ export class ContextManager {
   // Turn lifecycle
   // -------------------------------------------------------------------
 
-  beginUserTurn(userMessage: string): void {
+  beginUserTurn(
+    userMessage: string,
+    images?: ReadonlyArray<Uint8Array | string>,
+  ): void {
+    const message: ChatMessage = { role: "user", content: userMessage };
+    if (images && images.length > 0) {
+      message.images = images.map((image) =>
+        image instanceof Uint8Array ? new Uint8Array(image) : image,
+      );
+    }
+
     this.turns.push({
       id: randomUUID(),
       startedAt: new Date().toISOString(),
       importance: "normal",
-      userMessage: { role: "user", content: userMessage },
+      userMessage: message,
       entries: [],
     });
   }

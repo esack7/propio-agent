@@ -153,6 +153,18 @@ describe("ContextManager", () => {
       expect(snapshot[0]).toEqual({ role: "user", content: "Hello" });
     });
 
+    it("should attach images to the user message", () => {
+      const dataUrl = "data:image/png;base64,abc";
+      manager.beginUserTurn("See this", [dataUrl]);
+      const snapshot = manager.getSnapshot();
+      expect(snapshot).toHaveLength(1);
+      expect(snapshot[0]).toEqual({
+        role: "user",
+        content: "See this",
+        images: [dataUrl],
+      });
+    });
+
     it("should append successive user messages", () => {
       manager.beginUserTurn("First");
       manager.commitAssistantResponse("Reply");

@@ -199,6 +199,115 @@ describe("createPasteHandler", () => {
     handler.dispose();
   });
 
+  it("keeps isPasting true until async onImagePaths resolves", async () => {
+    const onTextPaste = jest.fn();
+    let resolveImagePaths: (() => void) | undefined;
+    const onImagePaths = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveImagePaths = resolve;
+        }),
+    );
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste,
+      onImagePaths,
+      debounceMs: 0,
+    });
+
+    handler.submitPaste("/tmp/a.png", { isPasted: true });
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+
+    expect(handler.isPasting()).toBe(true);
+    expect(onImagePaths).toHaveBeenCalled();
+
+    resolveImagePaths?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(handler.isPasting()).toBe(false);
+    handler.dispose();
+  });
+
+  it("falls back to onTextPaste when onImagePaths rejects", async () => {
+    const onTextPaste = jest.fn();
+    const onImagePaths = jest.fn(() =>
+      Promise.reject(new Error("read failed")),
+    );
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste,
+      onImagePaths,
+      debounceMs: 0,
+    });
+
+    handler.submitPaste("/tmp/a.png", { isPasted: true });
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onTextPaste).toHaveBeenCalledWith("/tmp/a.png");
+    expect(handler.isPasting()).toBe(false);
+    handler.dispose();
+  });
+
+  it("does not fall back to onTextPaste after dispose when onImagePaths rejects", async () => {
+    const onTextPaste = jest.fn();
+    let rejectImagePaths: ((error: Error) => void) | undefined;
+    const onImagePaths = jest.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectImagePaths = reject;
+        }),
+    );
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste,
+      onImagePaths,
+      debounceMs: 0,
+    });
+
+    handler.submitPaste("/tmp/a.png", { isPasted: true });
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+    handler.dispose();
+    rejectImagePaths!(new Error("read failed"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onTextPaste).not.toHaveBeenCalled();
+    handler.dispose();
+  });
+
+  it("does not invoke callbacks after dispose invalidates delivery", async () => {
+    const onTextPaste = jest.fn();
+    let resolveImagePaths: (() => void) | undefined;
+    const onImagePaths = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveImagePaths = resolve;
+        }),
+    );
+    const handler = createPasteHandler({
+      getInputMode: () => "prompt",
+      onTextPaste,
+      onImagePaths,
+      debounceMs: 0,
+    });
+
+    handler.submitPaste("/tmp/a.png", { isPasted: true });
+    jest.advanceTimersByTime(1);
+    await Promise.resolve();
+    handler.dispose();
+    resolveImagePaths?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onTextPaste).not.toHaveBeenCalled();
+    expect(onImagePaths).toHaveBeenCalled();
+  });
+
   it("flushBeforeNonChar delivers buffered burst before navigation", () => {
     const onTextPaste = jest.fn();
     const handler = createPasteHandler({

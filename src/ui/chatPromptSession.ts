@@ -40,6 +40,11 @@ import {
   shouldCollapsePaste,
 } from "./input/collapsePaste.js";
 import { expandPastedRefs } from "./input/expandSubmit.js";
+import {
+  buildImagePastePill,
+  imagePasteFailureMessage,
+  tryReadImageFromPath,
+} from "./input/imagePaste.js";
 import type { PastedContent } from "./input/pastedContent.js";
 import type { PromptSubmission } from "./input/promptSubmission.js";
 
@@ -788,7 +793,19 @@ export function createChatPromptSession(
   let pendingEditorHandoff = false;
   let rawModeEnabled = false;
   let active = true;
+  let imageDeliveryGeneration = 0;
   let lastLayout: PromptLayout | null = null;
+
+  const captureSessionDeliveryToken = (): number =>
+    active ? imageDeliveryGeneration : -1;
+
+  const isSessionDeliveryValid = (token: number): boolean =>
+    active && token === imageDeliveryGeneration;
+
+  const setImagePasteStatus = (message: string): void => {
+    editorStatus = message;
+    render();
+  };
 
   const buildRenderState = (): ChatPromptSessionState => ({
     buffer,
@@ -1763,8 +1780,51 @@ export function createChatPromptSession(
 
       insertText(text);
     },
-    onImagePaths: (paths) => {
-      insertText(paths.join("\n"));
+    onImagePaths: async (paths) => {
+      const deliveryToken = captureSessionDeliveryToken();
+      const fragments: string[] = [];
+
+      for (const filePath of paths) {
+        if (!isSessionDeliveryValid(deliveryToken)) {
+          return;
+        }
+
+        let result: Awaited<ReturnType<typeof tryReadImageFromPath>>;
+        try {
+          result = await tryReadImageFromPath(filePath);
+        } catch {
+          result = { ok: false, reason: "read_error" };
+        }
+
+        if (!isSessionDeliveryValid(deliveryToken)) {
+          return;
+        }
+
+        if (!result.ok) {
+          setImagePasteStatus(imagePasteFailureMessage(result.reason));
+          fragments.push(filePath);
+          continue;
+        }
+
+        const id = nextPasteId++;
+        pastedContents.set(id, {
+          id,
+          type: "image",
+          data: result.data,
+          mediaType: result.mediaType,
+          filename: result.filename,
+          path: result.path,
+        });
+        fragments.push(buildImagePastePill(id));
+      }
+
+      if (!isSessionDeliveryValid(deliveryToken)) {
+        return;
+      }
+
+      if (fragments.length > 0) {
+        insertText(fragments.join("\n"));
+      }
     },
   });
 
@@ -1825,6 +1885,7 @@ export function createChatPromptSession(
       return;
     }
 
+    imageDeliveryGeneration += 1;
     active = false;
     resetPastedContents();
     pasteHandler.dispose();

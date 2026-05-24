@@ -214,6 +214,8 @@ type PastedContent =
 
 ## Phase 4 — Image paths (drag-and-drop = paste paths)
 
+**Detailed plan:** [PLAN-copy-paste-phase-4.md](PLAN-copy-paste-phase-4.md) (path parsing, `imagePaste.ts`, chat pills vs bash literal, slash guard, `beginUserTurn` images).
+
 **New:** `src/ui/input/imagePaste.ts`, `src/ui/input/parseDroppedPaths.ts`
 
 **Path parsing (robust):**
@@ -228,7 +230,8 @@ type PastedContent =
 
 **Image handling (no required native deps):**
 
-- Extensions: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`; `.bmp` → reject with message to convert, unless optional `sharp` added later.
+- Extensions: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp` (routed then rejected at read with user message); see [Phase 4 plan](PLAN-copy-paste-phase-4.md#pre-implementation-decisions-resolve-before-coding).
+- Store pasted bytes as `data:image/<mime>;base64,...` in `PromptImage` / `ChatMessage.images` (Bedrock requires data URLs; Gemini mislabels raw base64 as PNG).
 - `tryReadImageFromPath`: read file, enforce max bytes (e.g. 8 MB), validate magic bytes / extension.
 - Encode as **base64 string** or `Uint8Array` in `PromptImage[]` — same as [`ChatMessage.images`](src/providers/types.ts).
 - **No `sharp` in initial scope.** Optional `optionalDependencies` + feature detect in a follow-up for resize/BMP.

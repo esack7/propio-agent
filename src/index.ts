@@ -618,6 +618,11 @@ export async function handleInteractiveSubmission(
 
   const trimmedText = submission.text.trim();
 
+  if (/^\/\w+/.test(trimmedText) && (submission.images?.length ?? 0) > 0) {
+    context.ui.error("Images cannot be sent with slash commands.");
+    return null;
+  }
+
   const handlers: InteractiveInputHandler[] = [
     handleExitSubmission,
     handleHelpSubmission,

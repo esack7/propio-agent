@@ -425,6 +425,17 @@ propio --debug-llm-file /tmp/propio-debug.log
 
 Session snapshots are stored under `~/.propio/sessions/` and are scoped by workspace, so different repositories keep separate histories automatically.
 
+### Pasting image file paths (chat)
+
+In interactive chat mode, you can drag or paste **local image file paths** into the prompt:
+
+- Supported formats: PNG, JPEG, GIF, WebP (max 8 MiB per file).
+- Paths may use `~/` (expanded to your home directory).
+- The prompt shows an `[Image #N]` pill; the model receives `[Attached image: filename]` plus the image bytes (as a data URL).
+- **Bash mode** (`!` prefix): paths are inserted as literal text (no image read).
+- **BMP** is not supported — convert to PNG or JPEG first.
+- **Slash commands** cannot include images; remove image pills before running `/help`, `/clear`, etc.
+
 ---
 
 ## Tools

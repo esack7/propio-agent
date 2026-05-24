@@ -5,8 +5,7 @@ import type { InputMode } from "../inputModes.js";
 
 export type PasteHandlerCallbacks = {
   onTextPaste: (text: string) => void;
-  /** Chat mode only; Phase 4 will read files / add pills. Phase 2 may insert paths as text. */
-  onImagePaths?: (paths: readonly string[]) => void;
+  onImagePaths?: (paths: readonly string[]) => void | Promise<void>;
 };
 
 export type PasteHandlerOptions = PasteHandlerCallbacks & {
@@ -40,6 +39,9 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
   let burstIdleTimer: ReturnType<typeof setTimeout> | null = null;
   let lastBurstKeyAt = 0;
 
+  let deliveryActive = false;
+  let deliveryGeneration = 0;
+
   const clearDebounceTimer = (): void => {
     if (debounceTimer !== null) {
       clearTimeout(debounceTimer);
@@ -54,8 +56,11 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     }
   };
 
-  const deliverPaste = (merged: string): void => {
-    if (disposed || merged.length === 0) {
+  const runDelivery = async (
+    merged: string,
+    generation: number,
+  ): Promise<void> => {
+    if (disposed || generation !== deliveryGeneration || merged.length === 0) {
       return;
     }
 
@@ -70,11 +75,31 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
       allNonEmptyLinesArePaths &&
       imagePaths.length === paths.length;
 
-    if (useImageBranch) {
-      options.onImagePaths!(imagePaths);
-    } else {
-      options.onTextPaste(cleaned);
+    deliveryActive = true;
+    try {
+      if (useImageBranch) {
+        try {
+          await options.onImagePaths!(imagePaths);
+        } catch {
+          if (!disposed && generation === deliveryGeneration) {
+            options.onTextPaste(cleaned);
+          }
+        }
+      } else {
+        options.onTextPaste(cleaned);
+      }
+    } finally {
+      if (generation === deliveryGeneration) {
+        deliveryActive = false;
+      }
     }
+  };
+
+  const scheduleDelivery = (merged: string): void => {
+    const generation = deliveryGeneration;
+    void runDelivery(merged, generation).catch(() => {
+      // runDelivery handles errors; outer catch is belt-and-suspenders only.
+    });
   };
 
   const flushDebounce = (): void => {
@@ -86,7 +111,7 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     debounceActive = false;
     const merged = pendingText;
     pendingText = "";
-    deliverPaste(merged);
+    scheduleDelivery(merged);
   };
 
   const flushBurst = (): void => {
@@ -105,7 +130,7 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     }
 
     if (merged.length > 1 || merged.length > PASTE_THRESHOLD) {
-      deliverPaste(merged);
+      scheduleDelivery(merged);
       return;
     }
 
@@ -194,11 +219,13 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     },
 
     isPasting(): boolean {
-      return debounceActive || burstActive;
+      return debounceActive || burstActive || deliveryActive;
     },
 
     dispose(): void {
       disposed = true;
+      deliveryGeneration += 1;
+      deliveryActive = false;
       clearDebounceTimer();
       clearBurstIdleTimer();
       debounceActive = false;
