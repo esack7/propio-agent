@@ -24,6 +24,11 @@ import {
   roundTrip,
   roundTripState,
 } from "./testHelpers.js";
+import { TEST_PNG_DATA_URL } from "../../__tests__/testHelpers.js";
+
+const PNG_MAGIC = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1210,6 +1215,58 @@ Assistant: Your project is called my-project version 1.0.0.`;
       // Can continue working after import
       target.commitAssistantResponse("All done.");
       expect(target.getConversationState().turns[2].completedAt).toBeDefined();
+    });
+  });
+
+  describe("user turn images", () => {
+    it("should round-trip utf8 data URL images on userMessage", () => {
+      const manager = new ContextManager();
+      const userContent = "See [Attached image: a.png]";
+      manager.beginUserTurn(userContent, [TEST_PNG_DATA_URL]);
+      manager.commitAssistantResponse("Noted.");
+
+      const state = manager.getConversationState();
+      const json = serializeSession(state, TEST_METADATA);
+      const raw = JSON.parse(json) as {
+        context: { turns: PersistedSessionV1["turns"] };
+      };
+      const persistedImages = raw.context.turns[0].userMessage.images;
+      const parsed = parseSession(json);
+      expect(persistedImages).toBeDefined();
+      expect(persistedImages![0].encoding).toBe("utf8");
+      expect(persistedImages![0].data).toBe(TEST_PNG_DATA_URL);
+
+      const restored = restoreConversationState(parsed);
+      expect(restored.turns[0].userMessage.images).toEqual([TEST_PNG_DATA_URL]);
+      expect(restored.turns[0].userMessage.content).toBe(userContent);
+    });
+
+    it("should round-trip binary images on userMessage with clone semantics", () => {
+      const originalBytes = PNG_MAGIC;
+      const manager = new ContextManager();
+      manager.beginUserTurn("pic", [originalBytes]);
+      manager.commitAssistantResponse("Got it.");
+
+      const state = manager.getConversationState();
+      const json = serializeSession(state, TEST_METADATA);
+      const raw = JSON.parse(json) as {
+        context: { turns: PersistedSessionV1["turns"] };
+      };
+      const persisted = raw.context.turns[0].userMessage.images![0];
+      const parsed = parseSession(json);
+      expect(persisted.encoding).toBe("base64");
+      expect(Buffer.from(persisted.data, "base64")).toEqual(
+        Buffer.from(originalBytes),
+      );
+
+      const restored = restoreConversationState(parsed);
+      const restoredImage = restored.turns[0].userMessage.images![0];
+      expect(restoredImage).toBeInstanceOf(Uint8Array);
+      expect(restoredImage).toEqual(originalBytes);
+
+      (restoredImage as Uint8Array)[0] = 0xff;
+      expect(originalBytes[0]).toBe(0x89);
+      expect((restoredImage as Uint8Array)[0]).toBe(0xff);
     });
   });
 });

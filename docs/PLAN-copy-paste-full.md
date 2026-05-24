@@ -258,6 +258,8 @@ Chat mode: `[Image #N]` pill + map entry; on submit → `[Attached image: <basen
 
 ## Phase 6 — Agent / context multimodal wiring
 
+**Detailed plan:** [PLAN-copy-paste-phase-6.md](PLAN-copy-paste-phase-6.md) (E2E provider tests, session round-trip, **`messageChars` budgeting**; optional transcript polish). Core `beginUserTurn` / `streamChat` wiring is largely landed from Phase 4; Phase 6 closes verification and budgeting gaps.
+
 1. **`beginUserTurn(content: string, images?: PromptImage[]): void`**
 
    ```ts
@@ -276,7 +278,7 @@ Chat mode: `[Image #N]` pill + map entry; on submit → `[Attached image: <basen
 
 4. **Providers** — unchanged; [`promptBuilder.ts`](src/context/promptBuilder.ts) pushes `turn.userMessage` as-is.
 
-5. **Transcript** — show pills / “(N images attached)” via `displayText` in the live UI; never dump expanded multi‑KB paste bodies or raw base64. Session persistence may use markers separately in Phase 6+.
+5. **Transcript** — live UI uses `displayText` (pills), not expanded multi‑KB bodies or raw base64 (already wired). **Optional (Phase 6):** caption-safe “(N images attached)” summary for multi-image `displayText` — see [phase 6 plan](PLAN-copy-paste-phase-6.md#part-4--transcript-and-display-polish-optional). Session persistence keeps expanded markers + `images[]` on disk.
 
 ## Testing strategy
 

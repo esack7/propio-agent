@@ -440,6 +440,13 @@ In interactive chat mode, you can drag or paste **local image file paths** into 
 
 **Large paste history:** Submissions longer than 1024 characters are stored as `paste:<hash>` (or `!paste:<hash>` in bash mode) and restored from `~/.propio/paste-cache/` when you use Up/Down history or accept a reverse-history-search match. The cache is content-addressed and may retain sensitive pasted content indefinitely until you remove it manually (`rm -rf ~/.propio/paste-cache/`).
 
+### How images reach the model
+
+1. **Prompt pills** — `[Image #N]` in the buffer is what you see; on submit it expands to `[Attached image: filename]` in the text sent to the agent, with image bytes attached separately as `images` on the user turn.
+2. **Providers** — **Bedrock**, **Gemini**, and **Ollama** send multimodal user messages (`content` plus `images` as data URLs or bytes). **OpenRouter** and **xAI** currently forward text only (`images` are accepted in the prompt and stored in sessions but not sent upstream). The live transcript shows pills (`displayText`), not expanded bodies or base64.
+3. **Session files** — Saved sessions under `~/.propio/sessions/` store expanded marker text in `userMessage.content` and attachments in `userMessage.images`. Image-heavy sessions can grow large; pasted images may contain sensitive data.
+4. **One-shot / piped stdin** — Non-interactive runs (`echo "hi" | propio`) do not accept pasted or dropped images; use the interactive TTY prompt for image input.
+
 ---
 
 ## Tools

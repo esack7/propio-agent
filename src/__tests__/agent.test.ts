@@ -20,6 +20,9 @@ import {
   createTestAgent,
   createMockTool,
   ToolCallMockProvider,
+  TEST_PNG_DATA_URL,
+  userSubmissionWithImages,
+  findUserMessageWithImages,
 } from "./testHelpers.js";
 
 const require = createRequire(import.meta.url);
@@ -2690,6 +2693,109 @@ describe("Agent with Multi-Provider Configuration", () => {
       const events = await collectEvents(agent, "run tool");
 
       expectSingleToolEvent(events, "tool_failed", "nonexistent_tool_xyz");
+    });
+  });
+
+  describe("PromptSubmission images → provider", () => {
+    function expectUserMessageWithTestImage(
+      messages: ChatMessage[],
+      expectedContentFragment: string,
+    ): void {
+      const userMsg = findUserMessageWithImages(messages);
+      expect(userMsg).toBeDefined();
+      expect(userMsg!.images).toHaveLength(1);
+      expect(userMsg!.images![0]).toBe(TEST_PNG_DATA_URL);
+      expect(userMsg!.content).toContain(expectedContentFragment);
+      expect(userMsg!.content).not.toMatch(/data:image\//);
+    }
+
+    it("should pass caption and image attachment on the first provider request", async () => {
+      const mockProvider = new MockProvider();
+      const agent = createTestAgent(mockProvider);
+
+      await agent.streamChat(
+        userSubmissionWithImages("describe this [Attached image: photo.png]", [
+          TEST_PNG_DATA_URL,
+        ]),
+        () => {},
+      );
+
+      expect(mockProvider.streamChatCalls).toHaveLength(1);
+      expectUserMessageWithTestImage(
+        mockProvider.streamChatCalls[0].messages,
+        "describe this",
+      );
+      expect(
+        mockProvider.streamChatCalls[0].messages.find((m) => m.role === "user")!
+          .content,
+      ).toContain("[Attached image: photo.png]");
+    });
+
+    it("should pass image-only marker text with images on the first provider request", async () => {
+      const mockProvider = new MockProvider();
+      const agent = createTestAgent(mockProvider);
+
+      await agent.streamChat(
+        userSubmissionWithImages("[Attached image: photo.png]", [
+          TEST_PNG_DATA_URL,
+        ]),
+        () => {},
+      );
+
+      expect(mockProvider.streamChatCalls).toHaveLength(1);
+      const userMsg = findUserMessageWithImages(
+        mockProvider.streamChatCalls[0].messages,
+      );
+      expect(userMsg).toBeDefined();
+      expect(userMsg!.content).toBe("[Attached image: photo.png]");
+      expect(userMsg!.images![0]).toBe(TEST_PNG_DATA_URL);
+    });
+
+    it("should retain user message images on the second provider request after a tool call", async () => {
+      class MockProviderWithToolCalls extends CountingMockProvider {
+        name = "mock-tools-images";
+
+        async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+          this.streamChatCalls.push(request);
+          this.callCount++;
+
+          if (this.callCount === 1) {
+            yield {
+              delta: "",
+              toolCalls: [
+                {
+                  id: "call-1",
+                  function: {
+                    name: "read",
+                    arguments: { path: "package.json" },
+                  },
+                },
+              ],
+            };
+          } else {
+            yield { delta: "Done" };
+          }
+        }
+      }
+
+      const mockProvider = new MockProviderWithToolCalls();
+      const agent = createTestAgent(mockProvider);
+
+      await agent.streamChat(
+        userSubmissionWithImages("see [Attached image: photo.png]", [
+          TEST_PNG_DATA_URL,
+        ]),
+        jest.fn(),
+      );
+
+      expect(mockProvider.streamChatCalls.length).toBeGreaterThanOrEqual(2);
+      const withImages = mockProvider.streamChatCalls[1].messages.filter(
+        (m) => m.role === "user" && (m.images?.length ?? 0) > 0,
+      );
+      expect(withImages.length).toBeGreaterThanOrEqual(1);
+      expect(withImages.some((m) => m.images![0] === TEST_PNG_DATA_URL)).toBe(
+        true,
+      );
     });
   });
 });
