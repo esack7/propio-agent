@@ -1,4 +1,8 @@
 import { Agent } from "../agent.js";
+import {
+  createPlainSubmission,
+  type PromptSubmission,
+} from "../ui/input/promptSubmission.js";
 import type { LLMProvider } from "../providers/interface.js";
 import type { ChatRequest, ChatChunk } from "../providers/types.js";
 import type { ProvidersConfig } from "../providers/config.js";
@@ -41,6 +45,10 @@ export const testProvidersConfig: ProvidersConfig = {
     },
   ],
 };
+
+export function userSubmission(text: string): PromptSubmission {
+  return createPlainSubmission(text, "prompt");
+}
 
 export function createMockWriteStream(): NodeJS.WriteStream & {
   chunks: string[];

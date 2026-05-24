@@ -10,7 +10,19 @@ import { getIdleFooterText } from "../slashCommands.js";
 
 export { createPromptComposer, getIdleFooterText };
 import type { PromptEditorRunner } from "../promptEditor.js";
-import type { PromptResult } from "../promptComposer.js";
+import type { PromptResult, PromptResultSubmitted } from "../promptComposer.js";
+import { createPlainSubmission } from "../input/promptSubmission.js";
+import type { InputMode } from "../inputModes.js";
+
+export function submittedPromptResult(
+  text: string,
+  inputMode: InputMode = "prompt",
+): PromptResultSubmitted {
+  return {
+    status: "submitted",
+    submission: createPlainSubmission(text, inputMode),
+  };
+}
 
 export function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -296,11 +308,7 @@ export async function submitPromptText(
   text: string,
 ): Promise<void> {
   harness.emitKeypress({ name: "return" }, "\r");
-  await expect(prompt).resolves.toEqual({
-    status: "submitted",
-    text,
-    inputMode: "prompt",
-  });
+  await expect(prompt).resolves.toEqual(submittedPromptResult(text));
 }
 
 export function createNonTtyPromptHarness(options?: {

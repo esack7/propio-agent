@@ -29,7 +29,7 @@ async function promptForNumber(
     return "closed";
   }
 
-  const trimmed = result.text.trim();
+  const trimmed = result.submission.displayText.trim();
   if (trimmed === "") {
     return null;
   }

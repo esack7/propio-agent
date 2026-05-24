@@ -38,6 +38,7 @@ import {
   joinSections,
 } from "./prompt/compileSystemPrompt.js";
 import { SystemPromptSectionRegistry } from "./prompt/systemPromptSectionRegistry.js";
+import type { PromptSubmission } from "./ui/input/promptSubmission.js";
 import { buildSystemPromptContext } from "./prompt/systemPromptContext.js";
 import { ContextManager } from "./context/contextManager.js";
 import {
@@ -2138,7 +2139,7 @@ export class Agent {
   // business logic is extracted to dedicated helpers.
   // fallow-ignore-next-line complexity
   async streamChat(
-    userMessage: string,
+    submission: PromptSubmission,
     onToken: (token: string) => void,
     options?: AgentStreamOptions,
   ): Promise<string> {
@@ -2146,6 +2147,7 @@ export class Agent {
       throw new Error("Request cancelled");
     }
 
+    const userMessage = submission.text;
     this.contextManager.beginUserTurn(userMessage);
     await this.attachFileMentions(userMessage);
     this.lastTurnReasoningSummary = null;

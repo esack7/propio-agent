@@ -16,11 +16,13 @@ import {
   createDefaultTypeaheadProviders,
   type TypeaheadProvider,
 } from "./typeahead.js";
-import {
-  shouldRecordPromptHistoryEntry,
-  type PromptHistoryStore,
-} from "./promptHistory.js";
+import type { PromptHistoryStore } from "./promptHistory.js";
 import { formatBashHistoryEntry, type InputMode } from "./inputModes.js";
+import {
+  createPlainSubmission,
+  shouldPersistPromptHistory,
+  type PromptSubmission,
+} from "./input/promptSubmission.js";
 import type { PromptEditorRunner } from "./promptEditor.js";
 
 export type { PromptState, PromptRequest } from "./promptState.js";
@@ -29,8 +31,7 @@ export type PromptCloseReason = "closed" | "interrupted";
 
 export interface PromptResultSubmitted {
   status: "submitted";
-  text: string;
-  inputMode: InputMode;
+  submission: PromptSubmission;
 }
 
 export interface PromptResultClosed {
@@ -78,15 +79,6 @@ interface ActivePromptContext {
   request: PromptRequest;
   historySnapshot: string[] | null;
   isCustomChat: boolean;
-}
-
-function shouldKeepLiveHistoryEntry(
-  request: PromptRequest,
-  submittedText: string,
-): boolean {
-  return (
-    request.mode === "chat" && shouldRecordPromptHistoryEntry(submittedText)
-  );
 }
 
 function snapshotLiveHistory(rl: readline.Interface): string[] | null {
@@ -202,20 +194,23 @@ export function createPromptComposer(
     options.renderState?.(clonePromptState(currentState));
   };
 
-  const persistSubmittedPrompt = (text: string, inputMode: InputMode): void => {
+  const persistSubmittedPrompt = (submission: PromptSubmission): void => {
     if (!currentState || !activePrompt) {
       return;
     }
 
-    currentState = applySubmittedText(currentState, text);
-    const shouldKeepHistory = shouldKeepLiveHistoryEntry(
-      activePrompt.request,
-      text,
+    currentState = applySubmittedText(currentState, submission.displayText);
+    const shouldKeepHistory = shouldPersistPromptHistory(
+      submission,
+      activePrompt.request.mode,
     );
 
     if (shouldKeepHistory) {
+      const trimmedText = submission.text.trim();
       const historyEntry =
-        inputMode === "bash" ? formatBashHistoryEntry(text) : text;
+        submission.inputMode === "bash"
+          ? formatBashHistoryEntry(trimmedText)
+          : submission.text;
       try {
         options.historyStore?.record(historyEntry);
       } catch {
@@ -249,7 +244,7 @@ export function createPromptComposer(
     }
 
     if (result.status === "submitted") {
-      persistSubmittedPrompt(result.text, result.inputMode);
+      persistSubmittedPrompt(result.submission);
     }
 
     activePrompt = null;
@@ -312,8 +307,8 @@ export function createPromptComposer(
           editorEnv: options.editorEnv,
           callbacks: {
             render: syncChatState,
-            submit: (text, inputMode) =>
-              settlePending({ status: "submitted", text, inputMode }),
+            submit: (submission) =>
+              settlePending({ status: "submitted", submission }),
             interrupt: () => {
               setCloseReason("interrupted");
               process.kill(process.pid, "SIGINT");
@@ -335,8 +330,10 @@ export function createPromptComposer(
       rl.question(request.promptText, (answer) => {
         settlePending({
           status: "submitted",
-          text: answer,
-          inputMode: request.inputMode ?? "prompt",
+          submission: createPlainSubmission(
+            answer,
+            request.inputMode ?? "prompt",
+          ),
         });
       });
     });
@@ -356,7 +353,7 @@ export function createPromptComposer(
         return defaultValue;
       }
 
-      const normalized = result.text.trim().toLowerCase();
+      const normalized = result.submission.displayText.trim().toLowerCase();
 
       if (normalized === "") {
         return defaultValue;

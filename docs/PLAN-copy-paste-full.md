@@ -77,11 +77,15 @@ export interface PromptSubmission {
 
 **Pipeline changes (explicit):**
 
-1. [`PromptResultSubmitted`](src/ui/promptComposer.ts) — replace bare `text` with `submission: PromptSubmission` (or top-level `text` + `displayText` + `images` mirroring the interface; prefer one nested object).
-2. [`settlePending`](src/ui/promptComposer.ts) — run `expandPastedRefs(displayText, pastedContents)` → build `PromptSubmission`; history `record()` per [History policy](#history-policy-mvp) below.
+1. [`PromptResultSubmitted`](src/ui/promptComposer.ts) — replace bare `text` with `submission: PromptSubmission` (prefer one nested object).
+2. **Expand before session cleanup** — [`settlePending`](src/ui/promptComposer.ts) calls `activeChatSession.cleanup()` before resolve today; expansion must **not** read `pastedContents` after cleanup. **Preferred:** `expandPastedRefs` in [`chatPromptSession`](src/ui/chatPromptSession.ts) `handleEnter`, then `callbacks.submit(submission)`. Composer `settlePending` accepts a pre-built submission, then cleans up. Details: [PLAN-copy-paste-phase-3.md](PLAN-copy-paste-phase-3.md).
 3. [`runInteractiveSession`](src/index.ts) — pass `PromptSubmission` into bash vs chat branches; use [empty-submission rule](#empty-submissions) (do not drop image-only turns).
-4. [`handleInteractiveSubmission`](src/index.ts) — accept `PromptSubmission`; slash handlers use `submission.text` (expanded); same empty rule.
-5. [`Agent.streamChat`](src/agent.ts) — `streamChat(submission: PromptSubmission, …)` or `(text, options?: { images })`; `beginUserTurn` receives runtime images.
+4. [`handleInteractiveSubmission`](src/index.ts) — accept `PromptSubmission`; derive `const trimmedText = submission.text.trim()` for the slash handler chain (handlers stay string-based); chat path uses full `submission`. Route `PromptSubmission` through [`runInteractiveTurn`](src/index.ts), [`streamAssistantTurn`](src/ui/assistantTurnRenderer.ts), and `composer.confirm()` — see [Phase 3 checklist](PLAN-copy-paste-phase-3.md).
+5. [`Agent.streamChat`](src/agent.ts) — `streamChat(submission: PromptSubmission, …)`; `beginUserTurn(submission.text, …)` until Phase 6 adds images.
+6. **UI transcript vs agent vs history** — three fields, three rules ([Phase 3 doc](PLAN-copy-paste-phase-3.md)):
+   - **Agent:** `submission.text` (expanded). **Slash handlers:** `submission.text.trim()` (expanded, then trimmed).
+   - **Live transcript** ([`handleChatSubmission`](src/index.ts) → `ui.persistSubmittedInput`): `submission.displayText` (pills), so multi‑KB pastes do not appear expanded in the conversation UI.
+   - **Prompt history:** expanded `submission.text` only when ≤ `HISTORY_INLINE_MAX`; never `displayText`.
 
 `PersistedImage` (`{ data, encoding }`) stays in [`src/context/persistence.ts`](src/context/persistence.ts) for save/load only. Conversion: `PromptImage[]` → `ChatMessage.images` at turn creation; persistence layer maps to `PersistedImage` when writing sessions (existing `persistImage` helpers).
 
@@ -92,12 +96,14 @@ export interface PromptSubmission {
 | **Chat (`inputMode: "prompt"`)** | Read image → `[Image #N]` pill + `images` on submit | Collapse to `[Pasted text #N]` when over threshold |
 | **Bash (`inputMode: "bash"`)** | **No image pills** — insert path string literally (shell may use the file) | Same collapse rules as chat, or literal insert if under threshold |
 
-**Slash commands:** Before handler chain in `handleInteractiveSubmission`, if `submission.text` matches a slash command pattern (`/^\/\w+/`) **and** `submission.images?.length > 0`:
+**Bash execution vs history:** REPL runs `processBashCommand(submission.text.trim(), …)` only. Bash prompt history (`formatBashHistoryEntry`) is recorded in [`persistSubmittedPrompt`](src/ui/promptComposer.ts) on submit — not in the REPL bash branch ([Phase 3](PLAN-copy-paste-phase-3.md#slash-commands-and-bash-adapter)).
+
+**Slash commands:** Before handler chain in `handleInteractiveSubmission`, if `submission.text.trim()` matches a slash command pattern (`/^\/\w+/`) **and** `submission.images?.length > 0`:
 
 - **Reject** with a clear error: e.g. `Images cannot be sent with slash commands.` (do not attach images to `/help`, `/model`, etc.)
 - Do not pass `images` into skill/session handlers.
 
-Chat turns (`handleChatSubmission` / default agent path) receive full `PromptSubmission` including `images`.
+Chat turns (`handleChatSubmission` / default agent path) receive full `PromptSubmission` including `images`. Transcript uses `displayText`; agent uses expanded `text`.
 
 ## Empty submissions
 
@@ -130,24 +136,25 @@ Until paste-cache (Phase 5), avoid bloating [`prompt-history.json`](src/ui/promp
 
 Do **not** record multi‑KB expanded paste bodies inline while paste-cache is deferred. Phase 5 will record `paste:<hash>` and restore on up/down.
 
-`displayText` (with pills) is never written to history.
+`displayText` (with pills) is never written to history. It **is** what the user sees in the live transcript ([`persistSubmittedInput`](src/ui/terminal.ts)); do not substitute expanded `text` there.
 
 ## Placeholder expansion policy
 
 Placeholders are **registry tokens**, not free-form editable abbreviations.
 
 - **Canonical pill forms** in the buffer: `[Pasted text #N]`, `[Pasted text #N +M lines]`, `[Image #N]` — stored in `pastedContents: Map<number, PastedContent>`.
-- **On submit — scan the full buffer:** Tokens may appear **inline** amid other text (e.g. `fix this [Pasted text #1] please`). Do **not** use a whole-string anchored regex. Use either:
-  - A **global token lexer** that finds non-overlapping matches of `\[(?:Pasted text|Image) #\d+(?: \+\d+ lines)?\]` at token boundaries, or
-  - `displayText.replaceAll` with a **boundary-aware** pattern (same character class, `g` flag), replacing each match independently left-to-right.
-- **Text pills:** replace token with full pasted string from registry.
+- **On submit — scan the full buffer:** Tokens may appear **inline** amid other text (e.g. `fix this [Pasted text #1] please`). Do **not** use a whole-string anchored regex. Scan left-to-right with **separate patterns** (text vs image):
+  - Text: `\[(?:Pasted text) #\d+(?: \+\d+ lines)?\]`
+  - Image: `\[Image #\d+\]` — **no** `+M lines` suffix on image pills; `[Image #1 +2 lines]` must not match.
+- **Text pills:** replace token with full pasted string from registry. Optional `+M lines` in the token is display-only; registry `content` is authoritative.
 - **Image pills:** replace token in `submission.text` with a **harmless textual marker**, e.g. `[Attached image: photo.png]` (basename from registry). **Do not** embed base64 in `text`. Binary payload goes only in `submission.images`.
 - **Image ordering (fixed rule):** `submission.images` follows **left-to-right token order in `displayText`** as tokens are scanned (not numeric id sort). Matches user intent when they type between multiple `[Image #N]` pills. Tests in `expandSubmit.test.ts` must assert order for e.g. `[Image #2] then [Image #1]` in the buffer.
   - Alternative acceptable for MVP: remove image tokens entirely and rely on `images` only; if so, image-only submits yield `text === ""` and depend on [empty-submission rule](#empty-submissions). **Preferred:** marker string so the model sees a filename hint.
+- **Duplicate tokens:** Each exact canonical match expands independently (same id → same body repeated). **No** consume-once. Two `[Pasted text #1]` in the buffer both expand.
 - Unrecognized ids / malformed tokens → leave literal in output; debug log only.
-- **User edits:** Split, duplicate, or partial tokens no longer match → literal text; no fuzzy repair.
-- **Manual typing:** `[Pasted text #1]` without registry entry → no expansion.
-- **Implementation:** expand-at-submit only (not live buffer mutation).
+- **User edits:** Partial or edited tokens no longer match the pattern → literal text; no fuzzy repair.
+- **Manual typing:** `[Pasted text #1]` **without** a registry entry → no expansion; with a registry entry → expands like a real pill.
+- **Implementation:** expand-at-submit only in `handleEnter` (not live buffer mutation); see [expand-before-cleanup](#rich-submission-object-define-early) above.
 
 ## Phase 1 — Bracketed paste + keypress parser
 
@@ -185,6 +192,8 @@ Behavior:
 
 ## Phase 3 — Large text placeholders + submit expansion
 
+**Detailed plan:** [PLAN-copy-paste-phase-3.md](PLAN-copy-paste-phase-3.md) (expand-before-cleanup, transcript vs agent, migration checklist, token grammar, `countPasteLines`).
+
 ```ts
 type PastedContent =
   | { id: number; type: 'text'; content: string }
@@ -198,9 +207,10 @@ type PastedContent =
   const maxLines = Math.max(1, Math.min(rows - 10, 2));
   ```
   Guards tiny terminals (e.g. `rows === 5` → `maxLines === 1`).
-- Over char threshold or `lineCount > maxLines` → registry token; else `insertText`.
-- `expandPastedRefs` → `PromptSubmission.text` + `images`; buffer snapshot → `displayText`.
-- History: [History policy (MVP)](#history-policy-mvp).
+- **`countPasteLines`:** split on `\n`; if non-empty and ends with `\n`, drop only the trailing empty segment; count all segments (blank lines in the middle count). Pill suffix `+M lines` uses `M = lineCount - 1` when `lineCount > 1`.
+- Over char threshold or `countPasteLines(cleaned) > maxLines` → registry token; else `insertText`.
+- `expandPastedRefs` in session `handleEnter` → `submission.text` + `images`; buffer snapshot → `submission.displayText`; then `submit(submission)`.
+- Transcript: `persistSubmittedInput(submission.displayText)`. History: [History policy (MVP)](#history-policy-mvp).
 
 ## Phase 4 — Image paths (drag-and-drop = paste paths)
 
@@ -259,7 +269,7 @@ Chat mode: `[Image #N]` pill + map entry; on submit → `[Attached image: <basen
 
 4. **Providers** — unchanged; [`promptBuilder.ts`](src/context/promptBuilder.ts) pushes `turn.userMessage` as-is.
 
-5. **Transcript** — “(N images attached)” or pills; never raw base64.
+5. **Transcript** — show pills / “(N images attached)” via `displayText` in the live UI; never dump expanded multi‑KB paste bodies or raw base64. Session persistence may use markers separately in Phase 6+.
 
 ## Testing strategy
 
@@ -269,7 +279,7 @@ Chat mode: `[Image #N]` pill + map entry; on submit → `[Attached image: <basen
 | `pasteHandler.test.ts` | 800+ heuristic, debounce, bash vs chat image branch |
 | `parseDroppedPaths.test.ts` | Quotes, `file://`, spaces, Windows paths, multi-path |
 | `imagePaste.test.ts` | Read limits, unsupported type, fallback to path text |
-| `expandSubmit.test.ts` | Inline tokens, image→marker + `images`, broken tokens literal, image-only expand |
+| `expandSubmit.test.ts` | Inline tokens, duplicate pill both expand, image→marker + `images`, `[Image #N +M lines]` no match, broken tokens literal, image-only expand |
 | `index.test.ts` or composer | `isSubmissionEmpty` — image-only not ignored |
 | `promptComposer.test.ts` | Injectable `terminalControlStream`, disable on cleanup, Enter while pasting |
 | `agent.test.ts` / context | `PromptSubmission.images` → `promptBuilder` messages |
@@ -286,7 +296,9 @@ Defer: `pasteCache.test.ts`, clipboard mocks until Phase 5.
 |------|------------|
 | readline mangles CSI | `key.sequence` + buffer; literal sequence tests |
 | Hardcoded stdout | Injectable `terminalControlStream` + tests |
-| Placeholder ambiguity | Registry + global token scan; no fuzzy expand |
+| Placeholder ambiguity | Registry + separate text/image token patterns; no fuzzy expand |
+| Cleanup clears registry before expand | Expand in `handleEnter` before `submit` / session cleanup ([Phase 3](PLAN-copy-paste-phase-3.md)) |
+| Huge paste in transcript UI | `persistSubmittedInput(displayText)` not expanded `text` |
 | Image-only submit dropped | `isSubmissionEmpty` requires empty text **and** no images |
 | History bloat before paste-cache | Skip record when expanded text > 1024 |
 | Images on slash commands | Explicit reject before handler chain |
@@ -297,7 +309,7 @@ Defer: `pasteCache.test.ts`, clipboard mocks until Phase 5.
 
 1. `src/ui/input/promptSubmission.ts` (`PromptSubmission`, `PromptImage`, `isSubmissionEmpty`) + wire through `PromptResult`, `index.ts`, `streamChat` (images optional/no-op). **May lag Phase 1–2; must complete before Phase 3.**
 2. Bracketed paste + parser + paste handler + Enter guard + injectable terminal stream. *(Phase 1–2 in progress; paste handler per [PLAN-copy-paste-phase-2.md](PLAN-copy-paste-phase-2.md).)*
-3. Text placeholders + `expandPastedRefs` + registry policy.
+3. Text placeholders + `expandPastedRefs` + registry policy ([PLAN-copy-paste-phase-3.md](PLAN-copy-paste-phase-3.md)).
 4. `parseDroppedPaths` + image read + pills + bash/slash rules + `beginUserTurn` images.
 5. Transcript polish + README (document deferred clipboard/cache).
 

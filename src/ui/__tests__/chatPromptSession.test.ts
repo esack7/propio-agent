@@ -10,7 +10,23 @@ import {
   BRACKETED_PASTE_ENABLE,
 } from "../input/bracketedPaste.js";
 import { PASTE_END, PASTE_START } from "../input/parseKeypress.js";
+import { PASTE_THRESHOLD } from "../input/constants.js";
 import { createTtyTestStream, withKeypressEvents } from "./ttyTestStream.js";
+
+function expectSubmitPrompt(
+  submit: jest.Mock,
+  expected: {
+    text: string;
+    displayText?: string;
+    inputMode?: "prompt" | "bash";
+  },
+): void {
+  expect(submit).toHaveBeenCalledWith({
+    text: expected.text,
+    displayText: expected.displayText ?? expected.text,
+    inputMode: expected.inputMode ?? "prompt",
+  });
+}
 
 interface TestSessionOptions {
   typeaheadProviders?: TypeaheadProvider[];
@@ -25,7 +41,9 @@ interface TestSessionOptions {
   editorRunner?: unknown;
   outputStream?: NodeJS.WriteStream & { chunks?: string[] };
   terminalControlStream?: NodeJS.WriteStream & { chunks?: string[] };
-  submit?: (text: string, inputMode: "prompt" | "bash") => void;
+  submit?: (
+    submission: import("../input/promptSubmission.js").PromptSubmission,
+  ) => void;
   interrupt?: () => void;
   close?: () => void;
 }
@@ -608,6 +626,75 @@ describe("chatPromptSession", () => {
     }
   });
 
+  it("collapses large bracketed paste into a placeholder pill", () => {
+    const inputStream = withKeypressEvents(createRawModeInputStream());
+    const outputStream = createPromptOutputStream();
+    const terminalControlStream = createNonTtyControlStream();
+    let latestState: ChatPromptSessionState | undefined;
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream,
+      terminalControlStream,
+      request: createPromptRequest({}),
+      historySnapshot: [],
+      enableTypeahead: false,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [],
+      callbacks: createPromptCallbacks({}, (state) => {
+        latestState = state;
+      }),
+    });
+
+    try {
+      jest.useFakeTimers();
+      const largePaste = "x".repeat(PASTE_THRESHOLD + 1);
+      inputStream.write(`${PASTE_START}${largePaste}${PASTE_END}`);
+      jest.advanceTimersByTime(101);
+      expect(latestState?.buffer).toBe("[Pasted text #1]");
+      expect(latestState?.buffer).not.toContain(largePaste);
+    } finally {
+      session.cleanup();
+      jest.useRealTimers();
+    }
+  });
+
+  it("expands pasted placeholders on submit", () => {
+    jest.useFakeTimers();
+    const submit = jest.fn();
+    const inputStream = withKeypressEvents(createRawModeInputStream());
+    const outputStream = createPromptOutputStream();
+    const terminalControlStream = createNonTtyControlStream();
+
+    const session = createChatPromptSession({
+      inputStream: inputStream as unknown as NodeJS.ReadStream,
+      outputStream,
+      terminalControlStream,
+      request: createPromptRequest({}),
+      historySnapshot: [],
+      enableTypeahead: false,
+      enableReverseHistorySearch: false,
+      workspaceRoot: "/tmp/workspace",
+      typeaheadProviders: [],
+      callbacks: createPromptCallbacks({ submit }, () => {}),
+    });
+
+    try {
+      const largePaste = "y".repeat(PASTE_THRESHOLD + 1);
+      inputStream.write(`${PASTE_START}${largePaste}${PASTE_END}`);
+      jest.advanceTimersByTime(101);
+      emitPlainKey(inputStream, "return");
+      expectSubmitPrompt(submit, {
+        displayText: "[Pasted text #1]",
+        text: largePaste,
+      });
+    } finally {
+      session.cleanup();
+      jest.useRealTimers();
+    }
+  });
+
   it("does not submit while a debounced paste is active", () => {
     jest.useFakeTimers();
     const submit = jest.fn();
@@ -650,7 +737,7 @@ describe("chatPromptSession", () => {
         meta: false,
         shift: false,
       });
-      expect(submit).toHaveBeenCalledWith("draft", "prompt");
+      expectSubmitPrompt(submit, { text: "draft" });
     } finally {
       session.cleanup();
       jest.useRealTimers();
@@ -730,7 +817,7 @@ describe("chatPromptSession", () => {
       expect(getState()?.buffer).toBe("ab");
 
       emitPlainKey(inputStream, "return");
-      expect(submit).toHaveBeenCalledWith("ab", "prompt");
+      expectSubmitPrompt(submit, { text: "ab" });
     } finally {
       session.cleanup();
       jest.useRealTimers();
@@ -970,7 +1057,7 @@ describe("chatPromptSession", () => {
         meta: false,
         shift: false,
       });
-      expect(submit).toHaveBeenCalledWith("pwd", "bash");
+      expectSubmitPrompt(submit, { text: "pwd", inputMode: "bash" });
     } finally {
       session.cleanup();
       jest.useRealTimers();
@@ -1005,7 +1092,7 @@ describe("chatPromptSession", () => {
       });
 
       expect(outputStream.chunks.join("")).not.toBe("\n");
-      expect(submit).toHaveBeenCalledWith("pwd", "bash");
+      expectSubmitPrompt(submit, { text: "pwd", inputMode: "bash" });
     } finally {
       session.cleanup();
       jest.useRealTimers();

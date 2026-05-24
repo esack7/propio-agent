@@ -1,3 +1,4 @@
+import { submittedPromptResult } from "../ui/__tests__/promptComposerTestHelpers.js";
 import {
   jest,
   describe,
@@ -117,7 +118,7 @@ describe("runInteractiveSession bash routing", () => {
       composeRequests.push({ ...request });
 
       if (composeRequests.length === 1) {
-        return { status: "submitted", text: "pwd", inputMode: "bash" };
+        return submittedPromptResult("pwd", "bash");
       }
 
       if (composeRequests.length === 2) {
@@ -179,11 +180,7 @@ describe("runInteractiveSession bash routing", () => {
   it("routes /help through bash execution instead of slash handlers", async () => {
     mockCompose.mockReset();
     mockCompose
-      .mockResolvedValueOnce({
-        status: "submitted",
-        text: "/help",
-        inputMode: "bash",
-      })
+      .mockResolvedValueOnce(submittedPromptResult("/help", "bash"))
       .mockResolvedValueOnce({ status: "closed" });
 
     const { agent, ui } = await runBashRoutingSession();
@@ -200,11 +197,7 @@ describe("runInteractiveSession bash routing", () => {
     cancelOnAttach = true;
     mockCompose.mockReset();
     mockCompose
-      .mockResolvedValueOnce({
-        status: "submitted",
-        text: "sleep 10",
-        inputMode: "bash",
-      })
+      .mockResolvedValueOnce(submittedPromptResult("sleep 10", "bash"))
       .mockResolvedValueOnce({ status: "closed" });
 
     await runBashRoutingSession(

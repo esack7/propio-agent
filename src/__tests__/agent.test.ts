@@ -1,4 +1,5 @@
 import * as path from "path";
+import { userSubmission } from "./testHelpers.js";
 import { createRequire } from "module";
 import { Agent } from "../agent.js";
 import { LLMProvider } from "../providers/interface.js";
@@ -282,9 +283,12 @@ describe("Agent with Multi-Provider Configuration", () => {
       (agent as any).provider = mockProvider;
 
       const tokens: string[] = [];
-      await agent.streamChat("@src/info.txt summarize", (token) => {
-        tokens.push(token);
-      });
+      await agent.streamChat(
+        userSubmission("@src/info.txt summarize"),
+        (token) => {
+          tokens.push(token);
+        },
+      );
 
       expect(tokens.join("")).toContain("Mock response");
       expect(mockProvider.streamChatCalls).toHaveLength(1);
@@ -345,7 +349,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const provider = new ReasoningToolProvider();
       const agent = createTestAgent(provider);
 
-      await agent.streamChat("Inspect package", () => {});
+      await agent.streamChat(userSubmission("Inspect package"), () => {});
 
       expect(provider.requests).toHaveLength(2);
       const replayedAssistant = provider.requests[1].messages.find(
@@ -458,7 +462,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("First message", () => {});
+      await agent.streamChat(userSubmission("First message"), () => {});
       const contextBefore = agent.getContext();
 
       agent.switchProvider("bedrock");
@@ -550,7 +554,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         await agent.invokeSkill("review", "src/foo.ts", {
           source: "user",
         });
-        await agent.streamChat("Inspect the file", () => {});
+        await agent.streamChat(userSubmission("Inspect the file"), () => {});
 
         const promptText = mockProvider.streamChatCalls[0].messages
           .map((message) => message.content)
@@ -580,7 +584,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         const agent = createTestAgent(mockProvider);
 
         await agent.invokeSkill("instant", undefined, { source: "user" });
-        await agent.streamChat("", () => {});
+        await agent.streamChat(userSubmission(""), () => {});
 
         expect(mockProvider.streamChatCalls).toHaveLength(1);
         const promptText = mockProvider.streamChatCalls[0].messages
@@ -663,7 +667,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         const mockProvider = new MockProviderWithDeniedRead();
         (agent as any).provider = mockProvider;
 
-        await agent.streamChat("Check the file", () => {});
+        await agent.streamChat(userSubmission("Check the file"), () => {});
 
         const requestToolNames =
           mockProvider.streamChatCalls[0].tools?.map(
@@ -816,7 +820,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("Test", () => {});
+      await agent.streamChat(userSubmission("Test"), () => {});
 
       expect(mockProvider.streamChatCalls[0].model).toBe("llama3.2:3b");
     });
@@ -829,7 +833,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
       (agent as any).provider = mockProvider;
 
-      await agent.streamChat("Test", () => {});
+      await agent.streamChat(userSubmission("Test"), () => {});
 
       expect(mockProvider.streamChatCalls[0].model).toBe("llama3.2:90b");
     });
@@ -838,7 +842,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      const response = await agent.streamChat("Test message", () => {});
+      const response = await agent.streamChat(
+        userSubmission("Test message"),
+        () => {},
+      );
 
       expect(typeof response).toBe("string");
       expect(response).toBe("Mock response");
@@ -850,7 +857,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = createTestAgent(mockProvider);
 
       const tokens: string[] = [];
-      const response = await agent.streamChat("Test", (token) =>
+      const response = await agent.streamChat(userSubmission("Test"), (token) =>
         tokens.push(token),
       );
 
@@ -864,7 +871,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      const response = await agent.streamChat("Test", () => {});
+      const response = await agent.streamChat(userSubmission("Test"), () => {});
       expect(typeof response).toBe("string");
     });
 
@@ -960,7 +967,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     delayBeforeAbortMs: number,
   ): Promise<unknown> {
     const controller = new AbortController();
-    const chatPromise = agent.streamChat(message, () => {}, {
+    const chatPromise = agent.streamChat(userSubmission(message), () => {}, {
       abortSignal: controller.signal,
     });
     void (async () => {
@@ -1012,7 +1019,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = createTestAgent(mockProvider);
 
       const controller = new AbortController();
-      await agent.streamChat("Test", jest.fn(), {
+      await agent.streamChat(userSubmission("Test"), jest.fn(), {
         abortSignal: controller.signal,
       });
 
@@ -1028,7 +1035,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       controller.abort();
 
       await expect(
-        agent.streamChat("Test", jest.fn(), {
+        agent.streamChat(userSubmission("Test"), jest.fn(), {
           abortSignal: controller.signal,
         }),
       ).rejects.toThrow("Request cancelled");
@@ -1073,9 +1080,13 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const controller = new AbortController();
       const startedAt = Date.now();
-      const chatPromise = agent.streamChat("run slow tool", () => {}, {
-        abortSignal: controller.signal,
-      });
+      const chatPromise = agent.streamChat(
+        userSubmission("run slow tool"),
+        () => {},
+        {
+          abortSignal: controller.signal,
+        },
+      );
 
       await new Promise((resolve) => setTimeout(resolve, 50));
       controller.abort("escape");
@@ -1120,7 +1131,9 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const onToolStart = jest.fn();
 
-      await agent.streamChat("Test", jest.fn(), { onToolStart });
+      await agent.streamChat(userSubmission("Test"), jest.fn(), {
+        onToolStart,
+      });
 
       expect(onToolStart).toHaveBeenCalledTimes(1);
       expect(onToolStart).toHaveBeenCalledWith("read");
@@ -1132,7 +1145,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const onToolEnd = jest.fn();
 
-      await agent.streamChat("Test", jest.fn(), { onToolEnd });
+      await agent.streamChat(userSubmission("Test"), jest.fn(), { onToolEnd });
 
       expect(onToolEnd).toHaveBeenCalledTimes(1);
       expect(onToolEnd).toHaveBeenCalledWith(
@@ -1197,7 +1210,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent.addTool(new LargeResultTool());
       (agent as any).provider = provider;
 
-      await agent.streamChat("run it", () => {});
+      await agent.streamChat(userSubmission("run it"), () => {});
 
       expect(provider.streamChatCalls.length).toBe(2);
       const secondRequest = provider.streamChatCalls[1];
@@ -1226,7 +1239,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new EmptyResponseProvider();
 
-      const response = await agent.streamChat("hello", () => {});
+      const response = await agent.streamChat(
+        userSubmission("hello"),
+        () => {},
+      );
       expect(response).toBe("");
       expect(events.some((event) => event.type === "request_started")).toBe(
         true,
@@ -1258,9 +1274,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       const { events, agent } = createEventsAndAgent();
       (agent as any).provider = new FailingProvider();
 
-      await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
-        /boom|failing-provider/i,
-      );
+      await expect(
+        agent.streamChat(userSubmission("hello"), () => {}),
+      ).rejects.toThrow(/boom|failing-provider/i);
       expect(
         events.some(
           (event) =>
@@ -1405,7 +1421,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent.addTool(loopTool);
       (agent as any).provider = provider;
 
-      const response = await agent.streamChat("hello", () => {});
+      const response = await agent.streamChat(
+        userSubmission("hello"),
+        () => {},
+      );
       expect(response).toBe("Final answer without tools.");
       expect(
         events.some(
@@ -1456,9 +1475,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent.addTool(loopTool2);
       (agent as any).provider = new EmptyLoopingProvider();
 
-      await expect(agent.streamChat("hello", () => {})).rejects.toThrow(
-        /Stopped after .* no final assistant response\./,
-      );
+      await expect(
+        agent.streamChat(userSubmission("hello"), () => {}),
+      ).rejects.toThrow(/Stopped after .* no final assistant response\./);
     });
 
     it("should reject when max iterations are reached with partial text and pending tool calls", async () => {
@@ -1475,7 +1494,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       (agent as any).provider = provider;
 
       await expect(
-        agent.streamChat("hello", () => {}, { maxIterations: 2 }),
+        agent.streamChat(userSubmission("hello"), () => {}, {
+          maxIterations: 2,
+        }),
       ).rejects.toThrow(
         "Stopped after reaching max iterations before a final assistant response. The last output may be incomplete.",
       );
@@ -1488,7 +1509,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       (agent as any).provider = new RepeatingToolCallProvider("missing_tool");
 
       await expect(
-        agent.streamChat("hello", () => {}, { maxIterations: 2 }),
+        agent.streamChat(userSubmission("hello"), () => {}, {
+          maxIterations: 2,
+        }),
       ).rejects.toThrow("Failed tools: missing_tool.");
 
       expectMaxIterationsDiagnostic(events, 2, ["missing_tool"]);
@@ -1509,7 +1532,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
       (agent as any).provider = provider;
 
-      const response = await agent.streamChat("hello", () => {});
+      const response = await agent.streamChat(
+        userSubmission("hello"),
+        () => {},
+      );
 
       expect(response).toBe("Recovered with a final answer.");
       expect(provider.streamChatCalls).toHaveLength(2);
@@ -1530,7 +1556,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       (agent as any).provider = mockProvider;
 
-      await agent.streamChat("hello", () => {});
+      await agent.streamChat(userSubmission("hello"), () => {});
 
       const snapshot = events.find((e) => e.type === "context_snapshot");
       expect(snapshot).toBeDefined();
@@ -1598,7 +1624,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent.addTool(new LoopTool());
       (agent as any).provider = new LoopingProvider();
 
-      await agent.streamChat("hello", () => {});
+      await agent.streamChat(userSubmission("hello"), () => {});
 
       const reqStartedEvents = events.filter(
         (e) => e.type === "request_started",
@@ -1654,7 +1680,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
       (agent as any).provider = new ToolCallProvider();
 
-      await agent.streamChat("test", () => {});
+      await agent.streamChat(userSubmission("test"), () => {});
 
       const toolFinished = events.find(
         (e) => e.type === "tool_execution_finished",
@@ -1741,7 +1767,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
       (agent as any).provider = mockProvider;
 
-      await agent.streamChat("Test message", () => {});
+      await agent.streamChat(userSubmission("Test message"), () => {});
 
       expect(mockProvider.streamChatCalls).toHaveLength(1);
       const messages = mockProvider.streamChatCalls[0].messages;
@@ -1761,7 +1787,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
       (agent as any).provider = mockProvider;
 
-      await agent.streamChat("Test", () => {});
+      await agent.streamChat(userSubmission("Test"), () => {});
 
       const messages = mockProvider.streamChatCalls[0].messages;
       const systemMessage = messages.find((m) => m.role === "system");
@@ -1822,7 +1848,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const eventTypes: string[] = [];
       const statuses: string[] = [];
-      await agent.streamChat("Test visibility", jest.fn(), {
+      await agent.streamChat(userSubmission("Test visibility"), jest.fn(), {
         onEvent: (event) => {
           eventTypes.push(event.type);
           if (event.type === "status") {
@@ -1863,11 +1889,15 @@ describe("Agent with Multi-Provider Configuration", () => {
       const events: AgentVisibilityEvent[] = [];
       const agent = createTestAgent(new ThinkingMockProvider());
 
-      const response = await agent.streamChat("Test thinking", jest.fn(), {
-        onEvent: (event) => {
-          events.push(event);
+      const response = await agent.streamChat(
+        userSubmission("Test thinking"),
+        jest.fn(),
+        {
+          onEvent: (event) => {
+            events.push(event);
+          },
         },
-      });
+      );
 
       expect(response).toBe("Final answer.");
       expect(events.some((event) => event.type === "thinking_delta")).toBe(
@@ -1940,7 +1970,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent.addTool(new CustomTool());
       (agent as any).provider = new CustomToolProvider();
 
-      await agent.streamChat("Use custom tool", () => {}, {
+      await agent.streamChat(userSubmission("Use custom tool"), () => {}, {
         onEvent: (event) => {
           events.push(event);
         },
@@ -1976,7 +2006,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new DirectAnswerProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("Answer directly", jest.fn());
+      await agent.streamChat(userSubmission("Answer directly"), jest.fn());
       const reasoning = agent.getLastTurnReasoningSummary();
 
       expect(reasoning).toBeDefined();
@@ -2016,7 +2046,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       (agent as any).provider = new ContextLengthRetryProvider();
 
       const tokens: string[] = [];
-      const response = await agent.streamChat("Hello", (t) => tokens.push(t));
+      const response = await agent.streamChat(userSubmission("Hello"), (t) =>
+        tokens.push(t),
+      );
 
       expect(response).toBe("Recovered answer");
       expect(callCount).toBe(2);
@@ -2046,7 +2078,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new PersistentContextLengthProvider();
 
-      const response = await agent.streamChat("Hello", jest.fn());
+      const response = await agent.streamChat(
+        userSubmission("Hello"),
+        jest.fn(),
+      );
       expect(response).toBe("Finally");
       expect(callCount).toBe(4);
     });
@@ -2069,7 +2104,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new AlwaysContextLengthProvider();
 
-      await expect(agent.streamChat("Hello", jest.fn())).rejects.toThrow();
+      await expect(
+        agent.streamChat(userSubmission("Hello"), jest.fn()),
+      ).rejects.toThrow();
     });
 
     it("should not retry on non-context-length provider errors", async () => {
@@ -2093,7 +2130,9 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new GenericErrorProvider();
 
-      await expect(agent.streamChat("Hello", jest.fn())).rejects.toThrow();
+      await expect(
+        agent.streamChat(userSubmission("Hello"), jest.fn()),
+      ).rejects.toThrow();
       expect(callCount).toBe(1);
     });
 
@@ -2139,7 +2178,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new NoToolsRetryProvider();
 
-      const response = await agent.streamChat("Trigger fallback", jest.fn());
+      const response = await agent.streamChat(
+        userSubmission("Trigger fallback"),
+        jest.fn(),
+      );
       expect(response).toBe("No-tools recovered");
       expect(noToolCallCount).toBe(2);
     });
@@ -2149,7 +2191,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should emit prompt_plan event with plan metadata on each request", async () => {
       const { diagnosticEvents, agent } = createDiagnosticsAgent();
 
-      await agent.streamChat("Hello", jest.fn());
+      await agent.streamChat(userSubmission("Hello"), jest.fn());
 
       const planEvents = diagnosticEvents.filter(
         (e) => e.type === "prompt_plan",
@@ -2182,8 +2224,8 @@ describe("Agent with Multi-Provider Configuration", () => {
         contextPressureThreshold: 2,
       };
 
-      await agent.streamChat("First", () => {});
-      await agent.streamChat("Second", () => {});
+      await agent.streamChat(userSubmission("First"), () => {});
+      await agent.streamChat(userSubmission("Second"), () => {});
       await (agent as any).runSummaryRefresh("turn_cadence");
 
       const startEvent = diagnosticEvents.find(
@@ -2317,7 +2359,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       (agent2 as any).provider = mockProvider;
 
-      await agent2.streamChat("Test", () => {});
+      await agent2.streamChat(userSubmission("Test"), () => {});
 
       const systemMsg = mockProvider.streamChatCalls[0].messages.find(
         (m) => m.role === "system",
@@ -2359,7 +2401,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("Hello", () => {});
+      await agent.streamChat(userSubmission("Hello"), () => {});
 
       const state = agent.getConversationState();
       expect(state.turns).toHaveLength(1);
@@ -2379,7 +2421,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("Test", () => {});
+      await agent.streamChat(userSubmission("Test"), () => {});
 
       const snapshot = agent.getLastPromptPlan();
       expect(snapshot).not.toBeNull();
@@ -2417,7 +2459,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new RetryMockProvider();
 
-      await agent.streamChat("Trigger retry", () => {});
+      await agent.streamChat(userSubmission("Trigger retry"), () => {});
 
       const snapshot = agent.getLastPromptPlan();
       expect(snapshot).not.toBeNull();
@@ -2458,7 +2500,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agent = new Agent({ providersConfig: testProvidersConfig });
       (agent as any).provider = new ToolLoopProvider();
 
-      await agent.streamChat("Loop test", () => {});
+      await agent.streamChat(userSubmission("Loop test"), () => {});
 
       const snapshot = agent.getLastPromptPlan();
       expect(snapshot).not.toBeNull();
@@ -2469,7 +2511,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("Test", () => {});
+      await agent.streamChat(userSubmission("Test"), () => {});
 
       const snap1 = agent.getLastPromptPlan();
       const snap2 = agent.getLastPromptPlan();
@@ -2484,7 +2526,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("Build a plan", () => {});
+      await agent.streamChat(userSubmission("Build a plan"), () => {});
       expect(agent.getLastPromptPlan()).not.toBeNull();
 
       agent.clearContext();
@@ -2495,7 +2537,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = createTestAgent(mockProvider);
 
-      await agent.streamChat("First session", () => {});
+      await agent.streamChat(userSubmission("First session"), () => {});
       expect(agent.getLastPromptPlan()).not.toBeNull();
 
       const exported = agent.exportSession();
@@ -2538,7 +2580,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       (agent as any).provider = new ToolThenAnswerProvider();
 
       const planEvents: Array<{ iteration: number; retryLevel: number }> = [];
-      await agent.streamChat("Multi iter", () => {}, {
+      await agent.streamChat(userSubmission("Multi iter"), () => {}, {
         onEvent: (event) => {
           if (event.type === "prompt_plan_built") {
             planEvents.push({
@@ -2598,7 +2640,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     ): Promise<AgentVisibilityEvent[]> {
       const events: AgentVisibilityEvent[] = [];
       return agent
-        .streamChat(userMessage, () => {}, {
+        .streamChat(userSubmission(userMessage), () => {}, {
           onEvent: (event) => events.push(event),
         })
         .then(() => events);

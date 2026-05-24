@@ -33,7 +33,14 @@ export class MockPromptComposer implements PromptComposer {
       return { status: "closed" };
     }
 
-    return { status: "submitted", text: next, inputMode: "prompt" };
+    return {
+      status: "submitted",
+      submission: {
+        text: next,
+        displayText: next,
+        inputMode: "prompt",
+      },
+    };
   }
 
   async confirm(_request: PromptConfirmRequest): Promise<boolean> {

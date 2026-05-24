@@ -34,6 +34,14 @@ import {
 } from "./input/bracketedPaste.js";
 import { createKeypressParser } from "./input/parseKeypress.js";
 import { createPasteHandler } from "./input/pasteHandler.js";
+import {
+  buildTextPastePill,
+  countPasteLines,
+  shouldCollapsePaste,
+} from "./input/collapsePaste.js";
+import { expandPastedRefs } from "./input/expandSubmit.js";
+import type { PastedContent } from "./input/pastedContent.js";
+import type { PromptSubmission } from "./input/promptSubmission.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
@@ -53,7 +61,7 @@ export interface PromptFooters {
 
 export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
-  submit(text: string, inputMode: InputMode): void;
+  submit(submission: PromptSubmission): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
@@ -716,6 +724,13 @@ export function createChatPromptSession(
   let inputMode: InputMode = request.inputMode ?? "prompt";
   let buffer = request.defaultValue ?? "";
   let cursor = buffer.length;
+  const pastedContents = new Map<number, PastedContent>();
+  let nextPasteId = 1;
+
+  const resetPastedContents = (): void => {
+    pastedContents.clear();
+    nextPasteId = 1;
+  };
 
   const getActivePromptText = (): string =>
     inputMode === "bash"
@@ -1280,6 +1295,13 @@ export function createChatPromptSession(
     render();
   };
 
+  const insertCollapsedTextPaste = (cleaned: string): void => {
+    const id = nextPasteId++;
+    const lineCount = countPasteLines(cleaned);
+    pastedContents.set(id, { id, type: "text", content: cleaned });
+    insertText(buildTextPastePill(id, lineCount));
+  };
+
   const deleteBeforeCursor = (): void => {
     clearTransientStatus();
     if (typeaheadState) {
@@ -1473,7 +1495,8 @@ export function createChatPromptSession(
     } else {
       outputStream.write("\n");
     }
-    callbacks.submit(buffer, inputMode);
+    const submission = expandPastedRefs(buffer, pastedContents, inputMode);
+    callbacks.submit(submission);
   };
 
   const handleLifecycleKeys = (key: readline.Key): boolean => {
@@ -1729,9 +1752,16 @@ export function createChatPromptSession(
   const pasteHandler = createPasteHandler({
     getInputMode: () => inputMode,
     onTextPaste: (text) => {
-      if (text.length > 0) {
-        insertText(text);
+      if (text.length === 0) {
+        return;
       }
+
+      if (shouldCollapsePaste(text, outputStream.rows)) {
+        insertCollapsedTextPaste(text);
+        return;
+      }
+
+      insertText(text);
     },
     onImagePaths: (paths) => {
       insertText(paths.join("\n"));
@@ -1796,6 +1826,7 @@ export function createChatPromptSession(
     }
 
     active = false;
+    resetPastedContents();
     pasteHandler.dispose();
     disableBracketedPaste(terminalControlStream);
     unwatchResize();
