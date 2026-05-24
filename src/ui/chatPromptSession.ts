@@ -25,7 +25,10 @@ import {
   disableBracketedPaste,
   enableBracketedPaste,
 } from "./input/bracketedPaste.js";
-import { createKeypressParser } from "./input/parseKeypress.js";
+import {
+  createKeypressParser,
+  type ParsedKeypress,
+} from "./input/parseKeypress.js";
 import { createPasteHandler } from "./input/pasteHandler.js";
 import {
   buildTextPastePill,
@@ -1902,43 +1905,64 @@ export function createChatPromptSession(
   const shouldSkipBurst = (): boolean =>
     Boolean(searchState || typeaheadState || historyIndex !== null);
 
+  const prepareForNonPasteKey = (
+    printable: boolean,
+    key: readline.Key,
+  ): boolean => {
+    const isEnter = key.name === "return" || key.name === "enter";
+    if (isEnter && pasteHandler.isPasting()) {
+      return false;
+    }
+
+    if (isEnter || !printable) {
+      pasteHandler.flushBeforeNonChar();
+    }
+    return true;
+  };
+
+  const handlePrintableInput = (
+    keyStr: string | undefined,
+    keyObj: readline.Key,
+  ): void => {
+    if (!isPrintableKey(keyStr, keyObj)) {
+      return;
+    }
+
+    const text = keyStr ?? "";
+    if (
+      !shouldSkipBurst() &&
+      pasteHandler.onPrintableText(text) === "buffered"
+    ) {
+      return;
+    }
+
+    insertText(text);
+  };
+
+  const handleParsedKeypress = (parsed: ParsedKeypress): void => {
+    if (parsed.kind === "paste") {
+      pasteHandler.submitPaste(parsed.text, { isPasted: parsed.isPasted });
+      return;
+    }
+
+    const { str: keyStr, key: keyObj } = parsed;
+    const printable = isPrintableKey(keyStr, keyObj);
+    if (!prepareForNonPasteKey(printable, keyObj)) {
+      return;
+    }
+
+    if (handleControlAndSystemKeys(keyStr, keyObj)) return;
+    if (handleSearchModeInput(keyStr, keyObj)) return;
+    if (handleTypeaheadAndNavigationKeys(keyStr, keyObj)) return;
+    handlePrintableInput(keyStr, keyObj);
+  };
+
   const handleKeypress = (str: string | undefined, key: readline.Key): void => {
     if (!active) return;
 
     const events = keypressParser.parse(str, key);
     for (const parsed of events) {
-      if (parsed.kind === "paste") {
-        pasteHandler.submitPaste(parsed.text, { isPasted: parsed.isPasted });
-        continue;
-      }
-
-      const { str: keyStr, key: keyObj } = parsed;
-      const printable = isPrintableKey(keyStr, keyObj);
-      const isEnter = keyObj.name === "return" || keyObj.name === "enter";
-
-      if (isEnter) {
-        if (pasteHandler.isPasting()) {
-          continue;
-        }
-        pasteHandler.flushBeforeNonChar();
-      } else if (!printable) {
-        pasteHandler.flushBeforeNonChar();
-      }
-
-      if (handleControlAndSystemKeys(keyStr, keyObj)) continue;
-      if (handleSearchModeInput(keyStr, keyObj)) continue;
-      if (handleTypeaheadAndNavigationKeys(keyStr, keyObj)) continue;
-
-      if (isPrintableKey(keyStr, keyObj)) {
-        const text = keyStr ?? "";
-        if (
-          !shouldSkipBurst() &&
-          pasteHandler.onPrintableText(text) === "buffered"
-        ) {
-          continue;
-        }
-        insertText(text);
-      }
+      handleParsedKeypress(parsed);
     }
   };
 

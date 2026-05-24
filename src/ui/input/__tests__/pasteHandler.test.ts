@@ -1,4 +1,74 @@
-import { cleanPasteText, createPasteHandler } from "../pasteHandler.js";
+import {
+  cleanPasteText,
+  createPasteHandler,
+  type PasteHandlerOptions,
+} from "../pasteHandler.js";
+
+function createPromptPasteHandler(
+  overrides: Partial<PasteHandlerOptions> = {},
+) {
+  const onTextPaste = overrides.onTextPaste ?? jest.fn();
+  const handler = createPasteHandler({
+    getInputMode: () => "prompt",
+    onTextPaste,
+    ...overrides,
+  });
+
+  return { handler, onTextPaste };
+}
+
+function createPendingImagePathsMock() {
+  let resolveImagePaths: (() => void) | undefined;
+  const onImagePaths = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveImagePaths = resolve;
+      }),
+  );
+
+  return {
+    onImagePaths,
+    resolve: () => {
+      resolveImagePaths?.();
+    },
+  };
+}
+
+function createRejectingImagePathsMock() {
+  let rejectImagePaths: ((error: Error) => void) | undefined;
+  const onImagePaths = jest.fn(
+    () =>
+      new Promise<void>((_resolve, reject) => {
+        rejectImagePaths = reject;
+      }),
+  );
+
+  return {
+    onImagePaths,
+    reject: (error: Error) => {
+      rejectImagePaths?.(error);
+    },
+  };
+}
+
+async function startDisposedImageDelivery(
+  imagePaths: Pick<
+    ReturnType<typeof createPendingImagePathsMock>,
+    "onImagePaths"
+  >,
+) {
+  const { handler, onTextPaste } = createPromptPasteHandler({
+    onImagePaths: imagePaths.onImagePaths,
+    debounceMs: 0,
+  });
+
+  handler.submitPaste("/tmp/a.png", { isPasted: true });
+  jest.advanceTimersByTime(1);
+  await Promise.resolve();
+  handler.dispose();
+
+  return { handler, onTextPaste };
+}
 
 describe("cleanPasteText", () => {
   it("strips ANSI sequences", () => {
@@ -189,10 +259,7 @@ describe("createPasteHandler", () => {
   });
 
   it("buffers multi-char printable segments atomically", () => {
-    const onTextPaste = jest.fn();
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
+    const { handler, onTextPaste } = createPromptPasteHandler({
       burstCharIntervalMs: 20,
     });
 
@@ -205,10 +272,7 @@ describe("createPasteHandler", () => {
   });
 
   it("flushes multi-char burst segments as paste on idle", () => {
-    const onTextPaste = jest.fn();
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
+    const { handler, onTextPaste } = createPromptPasteHandler({
       burstCharIntervalMs: 20,
     });
 
@@ -221,10 +285,7 @@ describe("createPasteHandler", () => {
   });
 
   it("buffers rapid single-character input when inter-key gap is within the burst window", () => {
-    const onTextPaste = jest.fn();
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
+    const { handler, onTextPaste } = createPromptPasteHandler({
       burstCharIntervalMs: 20,
     });
 
@@ -241,10 +302,7 @@ describe("createPasteHandler", () => {
   });
 
   it("buffers same-tick single-character input after the first key", () => {
-    const onTextPaste = jest.fn();
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
+    const { handler, onTextPaste } = createPromptPasteHandler({
       burstCharIntervalMs: 20,
     });
 
@@ -258,18 +316,9 @@ describe("createPasteHandler", () => {
   });
 
   it("keeps isPasting true until async onImagePaths resolves", async () => {
-    const onTextPaste = jest.fn();
-    let resolveImagePaths: (() => void) | undefined;
-    const onImagePaths = jest.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveImagePaths = resolve;
-        }),
-    );
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
-      onImagePaths,
+    const imagePaths = createPendingImagePathsMock();
+    const { handler } = createPromptPasteHandler({
+      onImagePaths: imagePaths.onImagePaths,
       debounceMs: 0,
     });
 
@@ -278,9 +327,9 @@ describe("createPasteHandler", () => {
     await Promise.resolve();
 
     expect(handler.isPasting()).toBe(true);
-    expect(onImagePaths).toHaveBeenCalled();
+    expect(imagePaths.onImagePaths).toHaveBeenCalled();
 
-    resolveImagePaths?.();
+    imagePaths.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
@@ -289,13 +338,10 @@ describe("createPasteHandler", () => {
   });
 
   it("falls back to onTextPaste when onImagePaths rejects", async () => {
-    const onTextPaste = jest.fn();
     const onImagePaths = jest.fn(() =>
       Promise.reject(new Error("read failed")),
     );
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
+    const { handler, onTextPaste } = createPromptPasteHandler({
       onImagePaths,
       debounceMs: 0,
     });
@@ -311,26 +357,10 @@ describe("createPasteHandler", () => {
   });
 
   it("does not fall back to onTextPaste after dispose when onImagePaths rejects", async () => {
-    const onTextPaste = jest.fn();
-    let rejectImagePaths: ((error: Error) => void) | undefined;
-    const onImagePaths = jest.fn(
-      () =>
-        new Promise<void>((_resolve, reject) => {
-          rejectImagePaths = reject;
-        }),
-    );
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
-      onImagePaths,
-      debounceMs: 0,
-    });
-
-    handler.submitPaste("/tmp/a.png", { isPasted: true });
-    jest.advanceTimersByTime(1);
-    await Promise.resolve();
-    handler.dispose();
-    rejectImagePaths!(new Error("read failed"));
+    const imagePaths = createRejectingImagePathsMock();
+    const { handler, onTextPaste } =
+      await startDisposedImageDelivery(imagePaths);
+    imagePaths.reject(new Error("read failed"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -339,38 +369,18 @@ describe("createPasteHandler", () => {
   });
 
   it("does not invoke callbacks after dispose invalidates delivery", async () => {
-    const onTextPaste = jest.fn();
-    let resolveImagePaths: (() => void) | undefined;
-    const onImagePaths = jest.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveImagePaths = resolve;
-        }),
-    );
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
-      onImagePaths,
-      debounceMs: 0,
-    });
-
-    handler.submitPaste("/tmp/a.png", { isPasted: true });
-    jest.advanceTimersByTime(1);
-    await Promise.resolve();
-    handler.dispose();
-    resolveImagePaths?.();
+    const imagePaths = createPendingImagePathsMock();
+    const { onTextPaste } = await startDisposedImageDelivery(imagePaths);
+    imagePaths.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(onTextPaste).not.toHaveBeenCalled();
-    expect(onImagePaths).toHaveBeenCalled();
+    expect(imagePaths.onImagePaths).toHaveBeenCalled();
   });
 
   it("flushBeforeNonChar delivers buffered burst before navigation", () => {
-    const onTextPaste = jest.fn();
-    const handler = createPasteHandler({
-      getInputMode: () => "prompt",
-      onTextPaste,
+    const { handler, onTextPaste } = createPromptPasteHandler({
       burstCharIntervalMs: 20,
     });
 

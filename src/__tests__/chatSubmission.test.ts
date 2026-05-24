@@ -29,6 +29,63 @@ function emptyConversationState(): ConversationState {
   };
 }
 
+function createCapturingAgent(): {
+  agent: Agent;
+  getSubmission: () => PromptSubmission | undefined;
+} {
+  let agentSubmission: PromptSubmission | undefined;
+  const agent = {
+    async streamChat(
+      nextSubmission: PromptSubmission,
+      _onToken: (token: string) => void,
+    ): Promise<string> {
+      agentSubmission = nextSubmission;
+      return "ok";
+    },
+    getLastTurnReasoningSummary: () => null,
+    getConversationState: emptyConversationState,
+  } as unknown as Agent;
+
+  return { agent, getSubmission: () => agentSubmission };
+}
+
+function createInteractiveUi(): TerminalUi {
+  return new TerminalUi({
+    interactive: true,
+    plain: true,
+    json: false,
+    stdout: createMockWriteStream(),
+    stderr: createMockWriteStream(),
+  });
+}
+
+async function runInteractiveSubmission(
+  submission: PromptSubmission,
+  agent: Agent,
+  ui: TerminalUi,
+): Promise<number | null> {
+  const abortState = createAbortStateController(ui);
+  return handleInteractiveSubmission(submission, {
+    agent,
+    ui,
+    composer: {} as PromptComposer,
+    configPath: "/tmp/providers.json",
+    inputStream: withKeypressEvents(createTtyInputStream()),
+    interactiveInput: true,
+    setCurrentAbortController: abortState.setCurrentAbortController,
+    cancelActiveTurn: abortState.cancelActiveTurn,
+    shouldExit: abortState.shouldExit,
+    getVisibility: () => ({
+      showToolCalls: false,
+      showThinking: false,
+      showStatus: false,
+      showReasoningSummary: false,
+      showContextStats: false,
+      showPromptPlan: false,
+    }),
+  });
+}
+
 describe("handleInteractiveSubmission chat path", () => {
   it("persists displayText to the transcript and passes expanded text to the agent", async () => {
     const largeBody = "z".repeat(PASTE_THRESHOLD + 1);
@@ -37,61 +94,21 @@ describe("handleInteractiveSubmission chat path", () => {
     ]);
     const submission = expandPastedRefs("[Pasted text #1]", registry, "prompt");
 
-    let agentSubmission: PromptSubmission | undefined;
-    const agent = {
-      async streamChat(
-        nextSubmission: PromptSubmission,
-        _onToken: (token: string) => void,
-      ): Promise<string> {
-        agentSubmission = nextSubmission;
-        return "ok";
-      },
-      getLastTurnReasoningSummary: () => null,
-      getConversationState: emptyConversationState,
-    } as unknown as Agent;
+    const { agent, getSubmission } = createCapturingAgent();
 
-    const stdout = createMockWriteStream();
-    const stderr = createMockWriteStream();
-    const ui = new TerminalUi({
-      interactive: true,
-      plain: true,
-      json: false,
-      stdout,
-      stderr,
-    });
+    const ui = createInteractiveUi();
     const persistSubmittedInput = jest.spyOn(ui, "persistSubmittedInput");
-    const abortState = createAbortStateController(ui);
-    const inputStream = withKeypressEvents(createTtyInputStream());
-
-    const exitCode = await handleInteractiveSubmission(submission, {
-      agent,
-      ui,
-      composer: {} as PromptComposer,
-      configPath: "/tmp/providers.json",
-      inputStream,
-      interactiveInput: true,
-      setCurrentAbortController: abortState.setCurrentAbortController,
-      cancelActiveTurn: abortState.cancelActiveTurn,
-      shouldExit: abortState.shouldExit,
-      getVisibility: () => ({
-        showToolCalls: false,
-        showThinking: false,
-        showStatus: false,
-        showReasoningSummary: false,
-        showContextStats: false,
-        showPromptPlan: false,
-      }),
-    });
+    const exitCode = await runInteractiveSubmission(submission, agent, ui);
 
     expect(exitCode).toBeNull();
     expect(persistSubmittedInput).toHaveBeenCalledWith("[Pasted text #1]");
-    expect(agentSubmission).toEqual(
+    expect(getSubmission()).toEqual(
       expect.objectContaining({
         text: largeBody,
         displayText: "[Pasted text #1]",
       }),
     );
-    expect(agentSubmission?.text).not.toContain("[Pasted text #1]");
+    expect(getSubmission()?.text).not.toContain("[Pasted text #1]");
   });
 
   it("rejects slash commands when images are attached", async () => {
@@ -110,35 +127,10 @@ describe("handleInteractiveSubmission chat path", () => {
       getConversationState: emptyConversationState,
     } as unknown as Agent;
 
-    const ui = new TerminalUi({
-      interactive: true,
-      plain: true,
-      json: false,
-      stdout: createMockWriteStream(),
-      stderr: createMockWriteStream(),
-    });
+    const ui = createInteractiveUi();
     const error = jest.spyOn(ui, "error");
-    const abortState = createAbortStateController(ui);
 
-    const exitCode = await handleInteractiveSubmission(submission, {
-      agent,
-      ui,
-      composer: {} as PromptComposer,
-      configPath: "/tmp/providers.json",
-      inputStream: withKeypressEvents(createTtyInputStream()),
-      interactiveInput: true,
-      setCurrentAbortController: abortState.setCurrentAbortController,
-      cancelActiveTurn: abortState.cancelActiveTurn,
-      shouldExit: abortState.shouldExit,
-      getVisibility: () => ({
-        showToolCalls: false,
-        showThinking: false,
-        showStatus: false,
-        showReasoningSummary: false,
-        showContextStats: false,
-        showPromptPlan: false,
-      }),
-    });
+    const exitCode = await runInteractiveSubmission(submission, agent, ui);
 
     expect(exitCode).toBeNull();
     expect(error).toHaveBeenCalledWith(
@@ -165,49 +157,10 @@ describe("handleInteractiveSubmission chat path", () => {
     expect(isSubmissionEmpty(submission)).toBe(false);
     expect(isImageOnlySubmission(submission)).toBe(true);
 
-    let agentSubmission: PromptSubmission | undefined;
-    const agent = {
-      async streamChat(
-        nextSubmission: PromptSubmission,
-        _onToken: (token: string) => void,
-      ): Promise<string> {
-        agentSubmission = nextSubmission;
-        return "ok";
-      },
-      getLastTurnReasoningSummary: () => null,
-      getConversationState: emptyConversationState,
-    } as unknown as Agent;
+    const { agent, getSubmission } = createCapturingAgent();
+    await runInteractiveSubmission(submission, agent, createInteractiveUi());
 
-    const ui = new TerminalUi({
-      interactive: true,
-      plain: true,
-      json: false,
-      stdout: createMockWriteStream(),
-      stderr: createMockWriteStream(),
-    });
-    const abortState = createAbortStateController(ui);
-
-    await handleInteractiveSubmission(submission, {
-      agent,
-      ui,
-      composer: {} as PromptComposer,
-      configPath: "/tmp/providers.json",
-      inputStream: withKeypressEvents(createTtyInputStream()),
-      interactiveInput: true,
-      setCurrentAbortController: abortState.setCurrentAbortController,
-      cancelActiveTurn: abortState.cancelActiveTurn,
-      shouldExit: abortState.shouldExit,
-      getVisibility: () => ({
-        showToolCalls: false,
-        showThinking: false,
-        showStatus: false,
-        showReasoningSummary: false,
-        showContextStats: false,
-        showPromptPlan: false,
-      }),
-    });
-
-    expect(agentSubmission).toEqual(
+    expect(getSubmission()).toEqual(
       expect.objectContaining({
         text: "[Attached image: photo.png]",
         images: [dataUrl],

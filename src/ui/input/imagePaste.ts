@@ -77,45 +77,64 @@ function mediaTypeFromExtension(ext: string): string | undefined {
   return EXTENSION_MEDIA_TYPES[ext];
 }
 
+type MediaSignature = {
+  mediaType: string;
+  minLength: number;
+  byteRuns: ReadonlyArray<{ offset: number; bytes: readonly number[] }>;
+};
+
+const MEDIA_SIGNATURES: readonly MediaSignature[] = [
+  {
+    mediaType: "image/png",
+    minLength: 8,
+    byteRuns: [{ offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47] }],
+  },
+  {
+    mediaType: "image/jpeg",
+    minLength: 3,
+    byteRuns: [{ offset: 0, bytes: [0xff, 0xd8, 0xff] }],
+  },
+  {
+    mediaType: "image/gif",
+    minLength: 6,
+    byteRuns: [{ offset: 0, bytes: [0x47, 0x49, 0x46, 0x38] }],
+  },
+  {
+    mediaType: "image/webp",
+    minLength: 12,
+    byteRuns: [
+      { offset: 0, bytes: [0x52, 0x49, 0x46, 0x46] },
+      { offset: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
+    ],
+  },
+];
+
+function byteRunMatches(
+  bytes: Buffer,
+  offset: number,
+  expected: readonly number[],
+): boolean {
+  return expected.every((byte, index) => bytes[offset + index] === byte);
+}
+
+function matchesMediaSignature(
+  bytes: Buffer,
+  signature: MediaSignature,
+): boolean {
+  return (
+    bytes.length >= signature.minLength &&
+    signature.byteRuns.every((run) =>
+      byteRunMatches(bytes, run.offset, run.bytes),
+    )
+  );
+}
+
 function sniffMediaType(bytes: Buffer): string | null {
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  ) {
-    return "image/png";
-  }
-
-  if (
-    bytes.length >= 3 &&
-    bytes[0] === 0xff &&
-    bytes[1] === 0xd8 &&
-    bytes[2] === 0xff
-  ) {
-    return "image/jpeg";
-  }
-
-  if (
-    bytes.length >= 6 &&
-    bytes[0] === 0x47 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x38
-  ) {
-    return "image/gif";
-  }
-
-  if (
-    bytes.length >= 12 &&
-    bytes.toString("ascii", 0, 4) === "RIFF" &&
-    bytes.toString("ascii", 8, 12) === "WEBP"
-  ) {
-    return "image/webp";
-  }
-
-  return null;
+  return (
+    MEDIA_SIGNATURES.find((signature) =>
+      matchesMediaSignature(bytes, signature),
+    )?.mediaType ?? null
+  );
 }
 
 export function encodeImageDataUrl(bytes: Buffer, mediaType: string): string {

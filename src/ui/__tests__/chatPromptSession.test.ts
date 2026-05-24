@@ -50,6 +50,7 @@ interface TestSessionOptions {
   editorRunner?: unknown;
   outputStream?: NodeJS.WriteStream & { chunks?: string[] };
   terminalControlStream?: NodeJS.WriteStream & { chunks?: string[] };
+  inputStream?: PassThrough;
   submit?: (
     submission: import("../input/promptSubmission.js").PromptSubmission,
   ) => void;
@@ -132,6 +133,16 @@ function emitCtrlKey(inputStream: PassThrough, name: string): void {
   });
 }
 
+function createRootMentionProvider(): TypeaheadProvider {
+  return {
+    kind: "mention",
+    getSuggestions: (target) =>
+      target.query === ""
+        ? [{ kind: "mention", value: "@src/", isDirectory: true }]
+        : [],
+  };
+}
+
 function expectBashHistoryReplay(options: TestSessionOptions = {}): void {
   const { inputStream, session, getState } = createTestSession({
     ...options,
@@ -161,7 +172,7 @@ function createTestSession(options: TestSessionOptions = {}): {
   getState: () => ChatPromptSessionState | undefined;
   terminalControlStream: NodeJS.WriteStream & { chunks?: string[] };
 } {
-  const inputStream = createRawModeInputStream();
+  const inputStream = options.inputStream ?? createRawModeInputStream();
   const outputStream = createPromptOutputStream(options.outputStream);
   const terminalControlStream =
     options.terminalControlStream ?? createNonTtyControlStream();
@@ -194,17 +205,46 @@ function createTestSession(options: TestSessionOptions = {}): {
   };
 }
 
+function createPasteInputSession(options: TestSessionOptions = {}) {
+  return createTestSession({
+    enableTypeahead: false,
+    ...options,
+    inputStream: withKeypressEvents(createRawModeInputStream()),
+  });
+}
+
+function expectCachedPasteHistoryReplay(
+  historyEntry: string,
+  body: string,
+  expectedInputMode: "prompt" | "bash",
+): void {
+  const pasteCache = createPasteCache({
+    cacheDir: path.join(os.tmpdir(), `propio-chat-paste-${Date.now()}`),
+  });
+  const hash = pasteCache.store(body);
+
+  const { inputStream, session, getState } = createTestSession({
+    historySnapshot: [historyEntry.replace("{hash}", hash)],
+    pasteCache,
+    enableTypeahead: false,
+  });
+
+  try {
+    emitPlainKey(inputStream, "up");
+    expect(getState()).toMatchObject({
+      inputMode: expectedInputMode,
+      buffer: body,
+      cursor: body.length,
+    });
+  } finally {
+    session.cleanup();
+  }
+}
+
 describe("chatPromptSession", () => {
   it("shows mention typeahead while typing @ without replacing the buffer", () => {
-    const mentionProvider: TypeaheadProvider = {
-      kind: "mention",
-      getSuggestions: (target) =>
-        target.query === ""
-          ? [{ kind: "mention", value: "@src/", isDirectory: true }]
-          : [],
-    };
     const { inputStream, session, getState } = createTestSession({
-      typeaheadProviders: [mentionProvider],
+      typeaheadProviders: [createRootMentionProvider()],
     });
 
     try {
@@ -604,31 +644,13 @@ describe("chatPromptSession", () => {
   });
 
   it("inserts bracketed paste emitted by readline in one shot", () => {
-    const inputStream = withKeypressEvents(createRawModeInputStream());
-    const outputStream = createPromptOutputStream();
-    const terminalControlStream = createNonTtyControlStream();
-    let latestState: ChatPromptSessionState | undefined;
-
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream,
-      terminalControlStream,
-      request: createPromptRequest({}),
-      historySnapshot: [],
-      enableTypeahead: false,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
-      typeaheadProviders: [],
-      callbacks: createPromptCallbacks({}, (state) => {
-        latestState = state;
-      }),
-    });
+    const { inputStream, session, getState } = createPasteInputSession();
 
     try {
       jest.useFakeTimers();
       inputStream.write(`${PASTE_START}line one\nline two${PASTE_END}`);
       jest.advanceTimersByTime(101);
-      expect(latestState).toMatchObject({
+      expect(getState()).toMatchObject({
         buffer: "line one\nline two",
       });
     } finally {
@@ -638,33 +660,15 @@ describe("chatPromptSession", () => {
   });
 
   it("collapses large bracketed paste into a placeholder pill", () => {
-    const inputStream = withKeypressEvents(createRawModeInputStream());
-    const outputStream = createPromptOutputStream();
-    const terminalControlStream = createNonTtyControlStream();
-    let latestState: ChatPromptSessionState | undefined;
-
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream,
-      terminalControlStream,
-      request: createPromptRequest({}),
-      historySnapshot: [],
-      enableTypeahead: false,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
-      typeaheadProviders: [],
-      callbacks: createPromptCallbacks({}, (state) => {
-        latestState = state;
-      }),
-    });
+    const { inputStream, session, getState } = createPasteInputSession();
 
     try {
       jest.useFakeTimers();
       const largePaste = "x".repeat(PASTE_THRESHOLD + 1);
       inputStream.write(`${PASTE_START}${largePaste}${PASTE_END}`);
       jest.advanceTimersByTime(101);
-      expect(latestState?.buffer).toBe("[Pasted text #1]");
-      expect(latestState?.buffer).not.toContain(largePaste);
+      expect(getState()?.buffer).toBe("[Pasted text #1]");
+      expect(getState()?.buffer).not.toContain(largePaste);
     } finally {
       session.cleanup();
       jest.useRealTimers();
@@ -709,23 +713,8 @@ describe("chatPromptSession", () => {
   it("does not submit while a debounced paste is active", () => {
     jest.useFakeTimers();
     const submit = jest.fn();
-    const inputStream = withKeypressEvents(createRawModeInputStream());
-    const outputStream = createPromptOutputStream();
-    let latestState: ChatPromptSessionState | undefined;
-
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream,
-      terminalControlStream: createNonTtyControlStream(),
-      request: createPromptRequest({}),
-      historySnapshot: [],
-      enableTypeahead: false,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
-      typeaheadProviders: [],
-      callbacks: createPromptCallbacks({ submit }, (state) => {
-        latestState = state;
-      }),
+    const { inputStream, session, getState } = createPasteInputSession({
+      submit,
     });
 
     try {
@@ -737,10 +726,10 @@ describe("chatPromptSession", () => {
         shift: false,
       });
       expect(submit).not.toHaveBeenCalled();
-      expect(latestState?.buffer).toBe("");
+      expect(getState()?.buffer).toBe("");
 
       jest.advanceTimersByTime(101);
-      expect(latestState?.buffer).toBe("draft");
+      expect(getState()?.buffer).toBe("draft");
 
       inputStream.emit("keypress", "", {
         name: "return",
@@ -865,15 +854,8 @@ describe("chatPromptSession", () => {
 
   it("skips burst while mention typeahead is active", () => {
     jest.useFakeTimers();
-    const mentionProvider: TypeaheadProvider = {
-      kind: "mention",
-      getSuggestions: (target) =>
-        target.query === ""
-          ? [{ kind: "mention", value: "@src/", isDirectory: true }]
-          : [],
-    };
     const { inputStream, session, getState } = createTestSession({
-      typeaheadProviders: [mentionProvider],
+      typeaheadProviders: [createRootMentionProvider()],
     });
 
     try {
@@ -913,31 +895,14 @@ describe("chatPromptSession", () => {
 
   it("does not deliver paste after cleanup", () => {
     jest.useFakeTimers();
-    const inputStream = withKeypressEvents(createRawModeInputStream());
-    const outputStream = createPromptOutputStream();
-    let latestState: ChatPromptSessionState | undefined;
-
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream,
-      terminalControlStream: createNonTtyControlStream(),
-      request: createPromptRequest({}),
-      historySnapshot: [],
-      enableTypeahead: false,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
-      typeaheadProviders: [],
-      callbacks: createPromptCallbacks({}, (state) => {
-        latestState = state;
-      }),
-    });
+    const { inputStream, session, getState } = createPasteInputSession();
 
     try {
       inputStream.write(`${PASTE_START}delayed${PASTE_END}`);
-      expect(latestState?.buffer).toBe("");
+      expect(getState()?.buffer).toBe("");
       session.cleanup();
       jest.advanceTimersByTime(200);
-      expect(latestState?.buffer).toBe("");
+      expect(getState()?.buffer).toBe("");
     } finally {
       jest.useRealTimers();
     }
@@ -1118,30 +1083,15 @@ describe("chatPromptSession", () => {
     await fs.writeFile(pngPath, PNG_BYTES);
 
     const submit = jest.fn();
-    const inputStream = withKeypressEvents(createRawModeInputStream());
-    const outputStream = createPromptOutputStream();
-    let latestState: ChatPromptSessionState | undefined;
-
-    const session = createChatPromptSession({
-      inputStream: inputStream as unknown as NodeJS.ReadStream,
-      outputStream,
-      terminalControlStream: createNonTtyControlStream(),
-      request: createPromptRequest({}),
-      historySnapshot: [],
-      enableTypeahead: false,
-      enableReverseHistorySearch: false,
-      workspaceRoot: "/tmp/workspace",
-      typeaheadProviders: [],
-      callbacks: createPromptCallbacks({ submit }, (state) => {
-        latestState = state;
-      }),
+    const { inputStream, session, getState } = createPasteInputSession({
+      submit,
     });
 
     try {
       inputStream.write(`${PASTE_START}${pngPath}${PASTE_END}`);
       await new Promise((resolve) => setTimeout(resolve, 150));
 
-      expect(latestState?.buffer).toBe("[Image #1]");
+      expect(getState()?.buffer).toBe("[Image #1]");
 
       emitPlainKey(inputStream, "return");
       expect(submit).toHaveBeenCalledTimes(1);
@@ -1157,53 +1107,13 @@ describe("chatPromptSession", () => {
   });
 
   it("restores cached chat paste refs from history navigation", () => {
-    const pasteCache = createPasteCache({
-      cacheDir: path.join(os.tmpdir(), `propio-chat-paste-${Date.now()}`),
-    });
     const body = "x".repeat(1200);
-    const hash = pasteCache.store(body);
-
-    const { inputStream, session, getState } = createTestSession({
-      historySnapshot: [`paste:${hash}`],
-      pasteCache,
-      enableTypeahead: false,
-    });
-
-    try {
-      emitPlainKey(inputStream, "up");
-      expect(getState()).toMatchObject({
-        inputMode: "prompt",
-        buffer: body,
-        cursor: body.length,
-      });
-    } finally {
-      session.cleanup();
-    }
+    expectCachedPasteHistoryReplay("paste:{hash}", body, "prompt");
   });
 
   it("restores cached bash paste refs from history navigation", () => {
-    const pasteCache = createPasteCache({
-      cacheDir: path.join(os.tmpdir(), `propio-chat-bash-paste-${Date.now()}`),
-    });
     const body = "git status --long ".repeat(80);
-    const hash = pasteCache.store(body);
-
-    const { inputStream, session, getState } = createTestSession({
-      historySnapshot: [`!paste:${hash}`],
-      pasteCache,
-      enableTypeahead: false,
-    });
-
-    try {
-      emitPlainKey(inputStream, "up");
-      expect(getState()).toMatchObject({
-        inputMode: "bash",
-        buffer: body,
-        cursor: body.length,
-      });
-    } finally {
-      session.cleanup();
-    }
+    expectCachedPasteHistoryReplay("!paste:{hash}", body, "bash");
   });
 
   it("keeps bash draft mode when canceling reverse history search", () => {

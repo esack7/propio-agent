@@ -12,6 +12,16 @@ export type KeypressParser = {
   parse(str: string | undefined, key: readline.Key): ParsedKeypress[];
 };
 
+type ParserState = {
+  prefixHold: string;
+  insidePaste: boolean;
+  pasteBody: string;
+};
+
+type ParseStepResult =
+  | { done: true; events: ParsedKeypress[] }
+  | { done: false; index: number };
+
 function getInputChunk(str: string | undefined, key: readline.Key): string {
   if (str !== undefined && str !== "") {
     return str;
@@ -167,15 +177,155 @@ function appendNonPasteTail(
   }
 }
 
-export function createKeypressParser(): KeypressParser {
-  let prefixHold = "";
-  let insidePaste = false;
-  let pasteBody = "";
+function flushPaste(events: ParsedKeypress[], state: ParserState): void {
+  events.push({ kind: "paste", text: state.pasteBody, isPasted: true });
+  state.pasteBody = "";
+  state.insidePaste = false;
+}
 
-  const flushPaste = (events: ParsedKeypress[]): void => {
-    events.push({ kind: "paste", text: pasteBody, isPasted: true });
-    pasteBody = "";
-    insidePaste = false;
+function isLargeUnbracketedPaste(input: string): boolean {
+  return input.length > PASTE_THRESHOLD && !input.includes(PASTE_START);
+}
+
+function isSimpleKeyInput(input: string): boolean {
+  return (
+    !input.includes(PASTE_START) &&
+    !input.includes("\x1b") &&
+    input.length <= PASTE_THRESHOLD
+  );
+}
+
+function isNamedKeyInput(
+  input: string,
+  key: readline.Key,
+  holdableStart: string,
+): boolean {
+  return (
+    key.sequence === input &&
+    Boolean(key.name) &&
+    key.name !== "" &&
+    !input.includes(PASTE_START) &&
+    holdableStart === ""
+  );
+}
+
+function getImmediateNonPasteEvents(
+  input: string,
+  str: string | undefined,
+  key: readline.Key,
+  state: ParserState,
+): ParsedKeypress[] | null {
+  if (input.length === 0) {
+    return [{ kind: "key", str, key }];
+  }
+
+  if (isLargeUnbracketedPaste(input)) {
+    return [{ kind: "paste", text: input, isPasted: true }];
+  }
+
+  if (key.name === "escape" && input === "\x1b") {
+    return [{ kind: "key", str, key }];
+  }
+
+  const holdableStart = getHoldablePastePrefix(input, PASTE_START);
+  if (holdableStart === input) {
+    state.prefixHold = input;
+    return [];
+  }
+
+  if (isSimpleKeyInput(input)) {
+    return [{ kind: "key", str, key }];
+  }
+
+  if (isNamedKeyInput(input, key, holdableStart)) {
+    return [{ kind: "key", str, key }];
+  }
+
+  return null;
+}
+
+function processInsidePaste(
+  events: ParsedKeypress[],
+  input: string,
+  index: number,
+  state: ParserState,
+): ParseStepResult {
+  const endAt = input.indexOf(PASTE_END, index);
+  if (endAt !== -1) {
+    state.pasteBody += input.slice(index, endAt);
+    flushPaste(events, state);
+    return { done: false, index: endAt + PASTE_END.length };
+  }
+
+  const remaining = input.slice(index);
+  const holdLen = longestPasteEndSuffixPrefix(remaining);
+  if (holdLen > 0) {
+    state.pasteBody += remaining.slice(0, -holdLen);
+    state.prefixHold = remaining.slice(-holdLen);
+    return { done: true, events };
+  }
+
+  state.pasteBody += remaining;
+  return { done: true, events };
+}
+
+function processTailWithoutPasteStart(
+  events: ParsedKeypress[],
+  tail: string,
+  key: readline.Key,
+  state: ParserState,
+): ParsedKeypress[] {
+  const holdable = getHoldablePastePrefix(tail, PASTE_START);
+  if (holdable === tail) {
+    state.prefixHold = holdable;
+    return events;
+  }
+
+  const holdLen = longestPasteStartSuffixPrefix(tail);
+  if (holdLen > 0) {
+    appendNonPasteTail(events, tail.slice(0, -holdLen), key);
+    state.prefixHold = tail.slice(-holdLen);
+    return events;
+  }
+
+  appendNonPasteTail(events, tail, key);
+  return events;
+}
+
+function processOutsidePaste(
+  events: ParsedKeypress[],
+  input: string,
+  index: number,
+  key: readline.Key,
+  state: ParserState,
+): ParseStepResult {
+  const startAt = input.indexOf(PASTE_START, index);
+  if (startAt === -1) {
+    return {
+      done: true,
+      events: processTailWithoutPasteStart(
+        events,
+        input.slice(index),
+        key,
+        state,
+      ),
+    };
+  }
+
+  if (startAt > index) {
+    appendNonPasteTail(events, input.slice(index, startAt), key);
+    return { done: false, index: startAt };
+  }
+
+  state.insidePaste = true;
+  return { done: false, index: index + PASTE_START.length };
+}
+
+export function createKeypressParser(): KeypressParser {
+  const state: ParserState = {
+    prefixHold: "",
+    insidePaste: false,
+    pasteBody: "",
   };
 
   const parse = (
@@ -184,107 +334,33 @@ export function createKeypressParser(): KeypressParser {
   ): ParsedKeypress[] => {
     const events: ParsedKeypress[] = [];
     const chunk = getInputChunk(str, key);
-    let input = prefixHold + chunk;
-    prefixHold = "";
+    const input = state.prefixHold + chunk;
+    state.prefixHold = "";
 
-    if (!insidePaste && input.length === 0) {
-      return [{ kind: "key", str, key }];
-    }
-
-    if (!insidePaste && input.length > 0) {
-      if (input.length > PASTE_THRESHOLD && !input.includes(PASTE_START)) {
-        return [{ kind: "paste", text: input, isPasted: true }];
-      }
-
-      if (key.name === "escape" && input === "\x1b") {
-        return [{ kind: "key", str, key }];
-      }
-
-      const holdableStart = getHoldablePastePrefix(input, PASTE_START);
-      if (holdableStart === input) {
-        prefixHold = input;
-        return [];
-      }
-
-      if (
-        !input.includes(PASTE_START) &&
-        !input.includes("\x1b") &&
-        input.length <= PASTE_THRESHOLD
-      ) {
-        return [{ kind: "key", str, key }];
-      }
-
-      if (
-        key.sequence === input &&
-        key.name &&
-        key.name !== "" &&
-        !input.includes(PASTE_START) &&
-        getHoldablePastePrefix(input, PASTE_START) === ""
-      ) {
-        return [{ kind: "key", str, key }];
+    if (!state.insidePaste) {
+      const immediateEvents = getImmediateNonPasteEvents(
+        input,
+        str,
+        key,
+        state,
+      );
+      if (immediateEvents) {
+        return immediateEvents;
       }
     }
 
     let index = 0;
     while (index < input.length) {
-      if (insidePaste) {
-        const endAt = input.indexOf(PASTE_END, index);
-        if (endAt !== -1) {
-          pasteBody += input.slice(index, endAt);
-          flushPaste(events);
-          index = endAt + PASTE_END.length;
-          continue;
-        }
-
-        const remaining = input.slice(index);
-        const holdLen = longestPasteEndSuffixPrefix(remaining);
-        if (holdLen > 0 && holdLen === remaining.length) {
-          prefixHold = remaining;
-          return events;
-        }
-        if (holdLen > 0) {
-          pasteBody += remaining.slice(0, -holdLen);
-          prefixHold = remaining.slice(-holdLen);
-          return events;
-        }
-
-        pasteBody += remaining;
-        return events;
+      const result = state.insidePaste
+        ? processInsidePaste(events, input, index, state)
+        : processOutsidePaste(events, input, index, key, state);
+      if (result.done) {
+        return result.events;
       }
-
-      const startAt = input.indexOf(PASTE_START, index);
-      if (startAt === -1) {
-        const tail = input.slice(index);
-        const holdable = getHoldablePastePrefix(tail, PASTE_START);
-        if (holdable === tail) {
-          prefixHold = holdable;
-          return events;
-        }
-
-        const holdLen = longestPasteStartSuffixPrefix(tail);
-        if (holdLen > 0) {
-          appendNonPasteTail(events, tail.slice(0, -holdLen), key);
-          prefixHold = tail.slice(-holdLen);
-          return events;
-        }
-
-        appendNonPasteTail(events, tail, key);
-        return events;
-      }
-
-      if (startAt > index) {
-        const before = input.slice(index, startAt);
-        appendNonPasteTail(events, before, key);
-        index = startAt;
-        continue;
-      }
-
-      index += PASTE_START.length;
-      insidePaste = true;
-      continue;
+      index = result.index;
     }
 
-    if (insidePaste) {
+    if (state.insidePaste) {
       return events;
     }
 

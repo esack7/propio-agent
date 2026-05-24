@@ -27,6 +27,26 @@ function pngLikeBuffer(byteLength: number): Buffer {
   return bytes;
 }
 
+function createOsascriptBase64ExecFile(bytes: Buffer) {
+  return jest.fn(async (command: string) => {
+    if (command === "osascript") {
+      return { stdout: Buffer.from(bytes.toString("base64"), "utf8") };
+    }
+    return { stdout: Buffer.alloc(0) };
+  });
+}
+
+function readDarwinClipboard(
+  execFile: Parameters<typeof tryReadImageFromClipboard>[0]["execFile"],
+  commandExists: (command: string) => boolean = () => false,
+) {
+  return tryReadImageFromClipboard({
+    platform: "darwin",
+    execFile,
+    commandExists,
+  });
+}
+
 describe("buildOsascriptClipboardScript", () => {
   it("encodes clipboard data via the NSData instance method", () => {
     const script = buildOsascriptClipboardScript();
@@ -130,24 +150,15 @@ describe("tryReadImageFromClipboard", () => {
   });
 
   it("decodes PNG base64 from a single osascript subprocess", async () => {
-    const execFile = jest.fn(async (command: string) => {
-      if (command === "osascript") {
-        return { stdout: Buffer.from(PNG_BYTES.toString("base64"), "utf8") };
-      }
-      return { stdout: Buffer.alloc(0) };
-    });
+    const execFile = createOsascriptBase64ExecFile(PNG_BYTES);
 
-    await expect(
-      tryReadImageFromClipboard({
-        platform: "darwin",
-        execFile: execFile as never,
-        commandExists: () => false,
-      }),
-    ).resolves.toMatchObject({
-      ok: true,
-      mediaType: "image/png",
-      filename: "clipboard.png",
-    });
+    await expect(readDarwinClipboard(execFile as never)).resolves.toMatchObject(
+      {
+        ok: true,
+        mediaType: "image/png",
+        filename: "clipboard.png",
+      },
+    );
     expect(execFile).toHaveBeenCalledTimes(1);
   });
 
@@ -159,38 +170,24 @@ describe("tryReadImageFromClipboard", () => {
       MAX_CLIPBOARD_SUBPROCESS_BYTES,
     );
 
-    const execFile = jest.fn(async (command: string) => {
-      if (command === "osascript") {
-        return { stdout: Buffer.from(base64Output, "utf8") };
-      }
-      return { stdout: Buffer.alloc(0) };
-    });
+    const execFile = createOsascriptBase64ExecFile(rawBytes);
 
-    await expect(
-      tryReadImageFromClipboard({
-        platform: "darwin",
-        execFile: execFile as never,
-        commandExists: () => false,
-      }),
-    ).resolves.toMatchObject({ ok: true, mediaType: "image/png" });
+    await expect(readDarwinClipboard(execFile as never)).resolves.toMatchObject(
+      {
+        ok: true,
+        mediaType: "image/png",
+      },
+    );
   });
 
   it("returns too_large when decoded clipboard bytes exceed MAX_IMAGE_BYTES", async () => {
     const rawBytes = pngLikeBuffer(MAX_IMAGE_BYTES + 1);
-    const execFile = jest.fn(async (command: string) => {
-      if (command === "osascript") {
-        return { stdout: Buffer.from(rawBytes.toString("base64"), "utf8") };
-      }
-      return { stdout: Buffer.alloc(0) };
-    });
+    const execFile = createOsascriptBase64ExecFile(rawBytes);
 
-    await expect(
-      tryReadImageFromClipboard({
-        platform: "darwin",
-        execFile: execFile as never,
-        commandExists: () => false,
-      }),
-    ).resolves.toEqual({ ok: false, reason: "too_large" });
+    await expect(readDarwinClipboard(execFile as never)).resolves.toEqual({
+      ok: false,
+      reason: "too_large",
+    });
   });
 
   it("returns too_large when osascript stdout exceeds the base64 subprocess cap", async () => {
@@ -218,11 +215,10 @@ describe("tryReadImageFromClipboard", () => {
     });
 
     await expect(
-      tryReadImageFromClipboard({
-        platform: "darwin",
-        execFile: execFile as never,
-        commandExists: (command) => command === "pngpaste",
-      }),
+      readDarwinClipboard(
+        execFile as never,
+        (command) => command === "pngpaste",
+      ),
     ).resolves.toMatchObject({ ok: true, mediaType: "image/png" });
   });
 
@@ -272,23 +268,14 @@ describe("tryReadImageFromClipboard", () => {
   });
 
   it("supports JPEG clipboard bytes from osascript", async () => {
-    const execFile = jest.fn(async (command: string) => {
-      if (command === "osascript") {
-        return { stdout: Buffer.from(JPEG_BYTES.toString("base64"), "utf8") };
-      }
-      return { stdout: Buffer.alloc(0) };
-    });
+    const execFile = createOsascriptBase64ExecFile(JPEG_BYTES);
 
-    await expect(
-      tryReadImageFromClipboard({
-        platform: "darwin",
-        execFile: execFile as never,
-        commandExists: () => false,
-      }),
-    ).resolves.toMatchObject({
-      ok: true,
-      mediaType: "image/jpeg",
-      filename: "clipboard.jpg",
-    });
+    await expect(readDarwinClipboard(execFile as never)).resolves.toMatchObject(
+      {
+        ok: true,
+        mediaType: "image/jpeg",
+        filename: "clipboard.jpg",
+      },
+    );
   });
 });

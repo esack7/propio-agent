@@ -26,6 +26,42 @@ export type PasteHandler = {
 
 export { cleanPasteText } from "./cleanPasteText.js";
 
+function imagePathsForPaste(
+  cleaned: string,
+  options: PasteHandlerOptions,
+): string[] | null {
+  if (options.getInputMode() !== "prompt" || !options.onImagePaths) {
+    return null;
+  }
+
+  const { paths, allNonEmptyLinesArePaths } = classifyDroppedText(cleaned);
+  const imagePaths = paths.filter(isImagePath);
+  if (
+    imagePaths.length === 0 ||
+    !allNonEmptyLinesArePaths ||
+    imagePaths.length !== paths.length
+  ) {
+    return null;
+  }
+
+  return imagePaths;
+}
+
+async function deliverImagePathsOrFallback(
+  imagePaths: readonly string[],
+  cleaned: string,
+  options: PasteHandlerOptions,
+  isCurrentDelivery: () => boolean,
+): Promise<void> {
+  try {
+    await options.onImagePaths?.(imagePaths);
+  } catch {
+    if (isCurrentDelivery()) {
+      options.onTextPaste(cleaned);
+    }
+  }
+}
+
 export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
   const debounceMs = options.debounceMs ?? 100;
   const burstCharIntervalMs = options.burstCharIntervalMs ?? 20;
@@ -66,26 +102,19 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     }
 
     const cleaned = cleanPasteText(merged);
-    const { paths, allNonEmptyLinesArePaths } = classifyDroppedText(cleaned);
-    const imagePaths = paths.filter(isImagePath);
-
-    const useImageBranch =
-      options.getInputMode() === "prompt" &&
-      options.onImagePaths !== undefined &&
-      imagePaths.length > 0 &&
-      allNonEmptyLinesArePaths &&
-      imagePaths.length === paths.length;
+    const imagePaths = imagePathsForPaste(cleaned, options);
+    const isCurrentDelivery = (): boolean =>
+      !disposed && generation === deliveryGeneration;
 
     deliveryActive = true;
     try {
-      if (useImageBranch) {
-        try {
-          await options.onImagePaths!(imagePaths);
-        } catch {
-          if (!disposed && generation === deliveryGeneration) {
-            options.onTextPaste(cleaned);
-          }
-        }
+      if (imagePaths) {
+        await deliverImagePathsOrFallback(
+          imagePaths,
+          cleaned,
+          options,
+          isCurrentDelivery,
+        );
       } else {
         options.onTextPaste(cleaned);
       }
@@ -158,6 +187,43 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
     burstActive = true;
   };
 
+  const bufferBurstText = (text: string): "buffered" => {
+    activateBurst();
+    burstBuffer += text;
+    lastBurstKeyAt = Date.now();
+    scheduleBurstIdle();
+    return "buffered";
+  };
+
+  const shouldJoinBurst = (interKeyGap: number): boolean =>
+    burstActive || (lastBurstKeyAt > 0 && interKeyGap <= burstCharIntervalMs);
+
+  const onSinglePrintableText = (text: string): "buffered" | "typed" => {
+    const now = Date.now();
+    const interKeyGap =
+      lastBurstKeyAt > 0 ? now - lastBurstKeyAt : Number.POSITIVE_INFINITY;
+
+    if (
+      burstActive &&
+      lastBurstKeyAt > 0 &&
+      interKeyGap > burstCharIntervalMs
+    ) {
+      flushBurst();
+    }
+
+    const withinBurstWindow = shouldJoinBurst(interKeyGap);
+    lastBurstKeyAt = now;
+
+    if (!withinBurstWindow) {
+      return "typed";
+    }
+
+    activateBurst();
+    burstBuffer += text;
+    scheduleBurstIdle();
+    return "buffered";
+  };
+
   const runEmptyPasteDelivery = async (generation: number): Promise<void> => {
     if (
       disposed ||
@@ -210,39 +276,10 @@ export function createPasteHandler(options: PasteHandlerOptions): PasteHandler {
       }
 
       if (text.length > 1) {
-        activateBurst();
-        burstBuffer += text;
-        lastBurstKeyAt = Date.now();
-        scheduleBurstIdle();
-        return "buffered";
+        return bufferBurstText(text);
       }
 
-      const now = Date.now();
-      const interKeyGap =
-        lastBurstKeyAt > 0 ? now - lastBurstKeyAt : Number.POSITIVE_INFINITY;
-
-      if (
-        burstActive &&
-        lastBurstKeyAt > 0 &&
-        interKeyGap > burstCharIntervalMs
-      ) {
-        flushBurst();
-      }
-
-      const withinBurstWindow =
-        burstActive ||
-        (lastBurstKeyAt > 0 && interKeyGap <= burstCharIntervalMs);
-
-      lastBurstKeyAt = now;
-
-      if (withinBurstWindow) {
-        activateBurst();
-        burstBuffer += text;
-        scheduleBurstIdle();
-        return "buffered";
-      }
-
-      return "typed";
+      return onSinglePrintableText(text);
     },
 
     flushBeforeNonChar(): void {

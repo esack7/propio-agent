@@ -25,13 +25,29 @@ function parse(
   return parser.parse(str, key);
 }
 
+function parseSequence(sequence: string) {
+  return parse(createKeypressParser(), undefined, baseKey({ sequence }));
+}
+
+function expectPasteWithTrailingKey(
+  trailing: string,
+  expectedKey: readline.Key,
+): void {
+  expect(parseSequence(`${PASTE_START}hello${PASTE_END}${trailing}`)).toEqual([
+    { kind: "paste", text: "hello", isPasted: true },
+    {
+      kind: "key",
+      str: expectedKey.name === trailing ? trailing : undefined,
+      key: expectedKey,
+    },
+  ]);
+}
+
 describe("createKeypressParser", () => {
   it("parses a full bracketed paste as one paste event", () => {
-    const parser = createKeypressParser();
-    const sequence = `${PASTE_START}hello${PASTE_END}`;
-    const events = parse(parser, undefined, baseKey({ sequence }));
-
-    expect(events).toEqual([{ kind: "paste", text: "hello", isPasted: true }]);
+    expect(parseSequence(`${PASTE_START}hello${PASTE_END}`)).toEqual([
+      { kind: "paste", text: "hello", isPasted: true },
+    ]);
   });
 
   it("parses bracketed paste split across multiple parse calls", () => {
@@ -78,45 +94,23 @@ describe("createKeypressParser", () => {
   });
 
   it("emits paste and a synthesized trailing key in one sequence", () => {
-    const parser = createKeypressParser();
-    const sequence = `${PASTE_START}hello${PASTE_END}x`;
-    const events = parse(parser, undefined, baseKey({ sequence }));
-
-    expect(events).toEqual([
-      { kind: "paste", text: "hello", isPasted: true },
-      {
-        kind: "key",
-        str: "x",
-        key: {
-          sequence: "x",
-          name: "x",
-          ctrl: false,
-          meta: false,
-          shift: false,
-        },
-      },
-    ]);
+    expectPasteWithTrailingKey("x", {
+      sequence: "x",
+      name: "x",
+      ctrl: false,
+      meta: false,
+      shift: false,
+    });
   });
 
   it("emits paste and a synthesized trailing navigation key in one sequence", () => {
-    const parser = createKeypressParser();
-    const sequence = `${PASTE_START}hello${PASTE_END}\x1b[A`;
-    const events = parse(parser, undefined, baseKey({ sequence }));
-
-    expect(events).toEqual([
-      { kind: "paste", text: "hello", isPasted: true },
-      {
-        kind: "key",
-        str: undefined,
-        key: {
-          sequence: "\x1b[A",
-          name: "up",
-          ctrl: false,
-          meta: false,
-          shift: false,
-        },
-      },
-    ]);
+    expectPasteWithTrailingKey("\x1b[A", {
+      sequence: "\x1b[A",
+      name: "up",
+      ctrl: false,
+      meta: false,
+      shift: false,
+    });
   });
 
   it("holds a bracketed paste prefix suffix after preceding text", () => {
