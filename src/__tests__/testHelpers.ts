@@ -1,6 +1,15 @@
 import { Agent } from "../agent.js";
+import {
+  createPlainSubmission,
+  type PromptSubmission,
+} from "../ui/input/promptSubmission.js";
 import type { LLMProvider } from "../providers/interface.js";
-import type { ChatRequest, ChatChunk } from "../providers/types.js";
+import type {
+  ChatRequest,
+  ChatChunk,
+  ChatMessage,
+} from "../providers/types.js";
+import type { PromptImage } from "../ui/input/promptSubmission.js";
 import type { ProvidersConfig } from "../providers/config.js";
 import type { ExecutableTool } from "../tools/interface.js";
 import type { ChatTool } from "../providers/types.js";
@@ -41,6 +50,41 @@ export const testProvidersConfig: ProvidersConfig = {
     },
   ],
 };
+
+/** Valid 1×1 PNG — use everywhere Phase 6 needs a data URL. */
+export const TEST_PNG_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+export function userSubmission(text: string): PromptSubmission {
+  return createPlainSubmission(text, "prompt");
+}
+
+export function userSubmissionWithImages(
+  text: string,
+  images: PromptImage[],
+  displayText?: string,
+): PromptSubmission {
+  return {
+    text,
+    displayText: displayText ?? text,
+    inputMode: "prompt",
+    images,
+  };
+}
+
+export function imagePillSubmission(opts: {
+  text: string;
+  displayText: string;
+  images: PromptImage[];
+}): PromptSubmission {
+  return { ...opts, inputMode: "prompt" };
+}
+
+export function findUserMessageWithImages(
+  messages: ChatMessage[],
+): ChatMessage | undefined {
+  return messages.find((m) => m.role === "user" && (m.images?.length ?? 0) > 0);
+}
 
 export function createMockWriteStream(): NodeJS.WriteStream & {
   chunks: string[];

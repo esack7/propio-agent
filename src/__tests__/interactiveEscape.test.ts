@@ -1,5 +1,9 @@
 import { PassThrough } from "stream";
 import type { Agent } from "../agent.js";
+import {
+  createPlainSubmission,
+  type PromptSubmission,
+} from "../ui/input/promptSubmission.js";
 import { runInteractiveTurn } from "../index.js";
 import {
   createAbortStateController,
@@ -23,7 +27,7 @@ const emptyConversationState = {
 };
 
 const rejectingStreamChat: Agent["streamChat"] = async (
-  _userMessage,
+  _submission,
   _onToken,
   options,
 ) => {
@@ -44,12 +48,12 @@ function createGatedAgent(streamChat: Agent["streamChat"]): {
 
   const agent = {
     async streamChat(
-      userMessage: string,
+      submission: PromptSubmission,
       onToken: (token: string) => void,
       options?: { abortSignal?: AbortSignal },
     ): Promise<string> {
       await streamGate;
-      return streamChat(userMessage, onToken, options);
+      return streamChat(submission, onToken, options);
     },
     getLastTurnReasoningSummary: () => null,
     getConversationState: () => emptyConversationState,
@@ -93,7 +97,7 @@ async function runGatedInteractiveTurn(
   });
 
   const turnPromise = runInteractiveTurn(
-    "hello",
+    createPlainSubmission("hello", "prompt"),
     {
       agent,
       ui: terminalUi,

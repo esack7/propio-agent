@@ -26,6 +26,7 @@ import {
   type PromptComposer,
 } from "./ui/promptComposer.js";
 import { createPromptHistoryStore } from "./ui/promptHistory.js";
+import { createPasteCache } from "./ui/pasteCache.js";
 import { printStartupBanner } from "./ui/banner.js";
 import {
   streamAssistantTurn,
@@ -41,6 +42,11 @@ import {
 import { processBashCommand } from "./ui/processBashCommand.js";
 import { createShellRunOptionsFromRuntimeConfig } from "./tools/runShellCommand.js";
 import type { InputMode } from "./ui/inputModes.js";
+import {
+  createPlainSubmission,
+  isSubmissionEmpty,
+  type PromptSubmission,
+} from "./ui/input/promptSubmission.js";
 import { createSessionVisibilityState } from "./ui/sessionVisibility.js";
 import {
   createDefaultTypeaheadProviders,
@@ -255,7 +261,7 @@ export async function runNonInteractiveSession(
   try {
     const result = await streamAssistantTurn(
       agent,
-      stdinInput,
+      createPlainSubmission(stdinInput, "prompt"),
       ui,
       abortController.signal,
       () => visibility,
@@ -314,7 +320,7 @@ interface InteractiveSubmissionContext {
 }
 
 export async function runInteractiveTurn(
-  input: string,
+  submission: PromptSubmission,
   context: InteractiveSubmissionContext,
   options: {
     beforeTurn?: () => Promise<void>;
@@ -342,8 +348,12 @@ export async function runInteractiveTurn(
       await options.beforeTurn();
     }
 
-    await streamAssistantTurn(agent, input, ui, abortController.signal, () =>
-      context.getVisibility(),
+    await streamAssistantTurn(
+      agent,
+      submission,
+      ui,
+      abortController.signal,
+      () => context.getVisibility(),
     );
 
     if (abortController.signal.aborted) {
@@ -455,14 +465,18 @@ async function handleSkillSubmission(
   const rawSkillArgs =
     firstSpace === -1 ? "" : args.slice(firstSpace).trimStart();
 
-  return await runInteractiveTurn("", context, {
-    errorPrefix: "Failed to activate skill: ",
-    beforeTurn: async () => {
-      await agent.invokeSkill(skillName, rawSkillArgs, {
-        source: "user",
-      });
+  return await runInteractiveTurn(
+    createPlainSubmission("", "prompt"),
+    context,
+    {
+      errorPrefix: "Failed to activate skill: ",
+      beforeTurn: async () => {
+        await agent.invokeSkill(skillName, rawSkillArgs, {
+          source: "user",
+        });
+      },
     },
-  });
+  );
 }
 
 function renderContextOverviewSubcommand(
@@ -582,24 +596,31 @@ async function handleModelSubmission(
 }
 
 async function handleChatSubmission(
-  trimmedInput: string,
+  submission: PromptSubmission,
   context: InteractiveSubmissionContext,
 ): Promise<number | null | undefined> {
-  context.ui.persistSubmittedInput(trimmedInput);
-  return await runInteractiveTurn(trimmedInput, context, {
+  context.ui.persistSubmittedInput(submission.displayText);
+  return await runInteractiveTurn(submission, context, {
     errorPrefix: "Error: ",
   });
 }
 
-async function handleInteractiveSubmission(
-  trimmedInput: string,
+export async function handleInteractiveSubmission(
+  submission: PromptSubmission,
   context: InteractiveSubmissionContext,
 ): Promise<number | null> {
   if (context.shouldExit()) {
     return 130;
   }
 
-  if (!trimmedInput) {
+  if (isSubmissionEmpty(submission)) {
+    return null;
+  }
+
+  const trimmedText = submission.text.trim();
+
+  if (/^\/\w+/.test(trimmedText) && (submission.images?.length ?? 0) > 0) {
+    context.ui.error("Images cannot be sent with slash commands.");
     return null;
   }
 
@@ -614,17 +635,17 @@ async function handleInteractiveSubmission(
     handleToolsSubmission,
     handleMcpSubmission,
     handleModelSubmission,
-    handleChatSubmission,
   ];
 
   for (const handler of handlers) {
-    const result = await handler(trimmedInput, context);
+    const result = await handler(trimmedText, context);
     if (result !== undefined) {
       return result;
     }
   }
 
-  return null;
+  const chatResult = await handleChatSubmission(submission, context);
+  return chatResult ?? null;
 }
 
 export async function runInteractiveSession(
@@ -654,6 +675,7 @@ export async function runInteractiveSession(
     input: inputStream,
     output: ui.getPromptOutputStream(),
     historyStore: createWorkspacePromptHistoryStore(),
+    pasteCache: createPasteCache(),
     workspaceRoot: process.cwd(),
     typeaheadProviders,
     renderFooter: (footer) => {
@@ -719,10 +741,11 @@ export async function runInteractiveSession(
       }
 
       ui.closeOverlay();
-      inputMode = nextInput.inputMode;
-      const trimmedInput = nextInput.text.trim();
+      const { submission } = nextInput;
+      inputMode = submission.inputMode;
+      const trimmedText = submission.text.trim();
 
-      if (nextInput.inputMode === "bash") {
+      if (submission.inputMode === "bash") {
         const bashAbort = new AbortController();
         const bashCancelListener = createTurnCancelListener({
           input: inputStream,
@@ -731,7 +754,7 @@ export async function runInteractiveSession(
         });
         bashCancelListener.attach();
         try {
-          await processBashCommand(trimmedInput, ui, {
+          await processBashCommand(trimmedText, ui, {
             cwd: process.cwd(),
             abortSignal: bashAbort.signal,
             ...shellRunOptions,
@@ -743,7 +766,7 @@ export async function runInteractiveSession(
         continue;
       }
 
-      const exitCode = await handleInteractiveSubmission(trimmedInput, {
+      const exitCode = await handleInteractiveSubmission(submission, {
         agent,
         ui,
         composer,

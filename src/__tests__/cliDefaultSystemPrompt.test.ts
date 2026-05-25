@@ -1,4 +1,5 @@
 import { execSync } from "child_process";
+import { userSubmission } from "./testHelpers.js";
 import { Agent } from "../agent.js";
 import { defaultSystemPrompt } from "../defaultSystemPrompt.js";
 import { DEFAULT_CORE_IDENTITY } from "../prompt/compileSystemPrompt.js";
@@ -43,7 +44,7 @@ describe("CLI default system prompt", () => {
       "# Tool Utilization",
     );
 
-    await agent.streamChat("hello", () => {});
+    await agent.streamChat(userSubmission("hello"), () => {});
 
     const systemMsg = mockProvider.streamChatCalls[0].messages.find(
       (m) => m.role === "system",
@@ -67,7 +68,7 @@ describe("CLI default system prompt", () => {
     });
     (agent as unknown as { provider: LLMProvider }).provider = mockProvider;
 
-    await agent.streamChat("hello", () => {});
+    await agent.streamChat(userSubmission("hello"), () => {});
 
     const systemMsg = mockProvider.streamChatCalls[0].messages.find(
       (m) => m.role === "system",

@@ -17,6 +17,18 @@ export function messageChars(msg: Readonly<ChatMessage>): number {
   if (msg.toolResults) {
     chars += JSON.stringify(msg.toolResults).length;
   }
+  if (msg.images) {
+    for (const image of msg.images) {
+      if (image instanceof Uint8Array) {
+        chars += image.byteLength;
+      } else if (image.startsWith("data:")) {
+        const comma = image.indexOf(",");
+        chars += comma >= 0 ? image.length - comma - 1 : image.length;
+      } else {
+        chars += image.length;
+      }
+    }
+  }
   return chars;
 }
 

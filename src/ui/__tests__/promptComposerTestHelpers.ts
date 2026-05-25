@@ -1,4 +1,4 @@
-import { expect } from "@jest/globals";
+import { expect, jest } from "@jest/globals";
 import { PassThrough } from "stream";
 import * as fs from "fs";
 import * as os from "os";
@@ -10,10 +10,32 @@ import { getIdleFooterText } from "../slashCommands.js";
 
 export { createPromptComposer, getIdleFooterText };
 import type { PromptEditorRunner } from "../promptEditor.js";
-import type { PromptResult } from "../promptComposer.js";
+import type { PromptResult, PromptResultSubmitted } from "../promptComposer.js";
+import { createPlainSubmission } from "../input/promptSubmission.js";
+import type { InputMode } from "../inputModes.js";
+
+export function submittedPromptResult(
+  text: string,
+  inputMode: InputMode = "prompt",
+): PromptResultSubmitted {
+  return {
+    status: "submitted",
+    submission: createPlainSubmission(text, inputMode),
+  };
+}
 
 export function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Slightly above pasteHandler burstCharIntervalMs (20) — spaces synthetic keypresses apart. */
+const SYNTHETIC_TYPING_GAP_MS = 21;
+
+function isJestFakeTimersActive(): boolean {
+  return (
+    typeof jest !== "undefined" &&
+    Object.prototype.hasOwnProperty.call(setTimeout, "clock")
+  );
 }
 
 export function createTempHistoryStore(prefix: string): {
@@ -182,6 +204,7 @@ export function createTtyHarness(options?: {
   editorRunner?: PromptEditorRunner;
   editorEnv?: NodeJS.ProcessEnv;
   setRawModeMock?: jest.Mock;
+  terminalControlStream?: NodeJS.WriteStream & { chunks?: string[] };
 }) {
   const columns = options?.columns ?? 80;
   const streams = createTtyStreams(columns);
@@ -195,6 +218,7 @@ export function createTtyHarness(options?: {
   const composer = createPromptComposer({
     input: streams.inputStream as unknown as NodeJS.ReadStream,
     output: streams.outputStream as unknown as NodeJS.WriteStream,
+    terminalControlStream: options?.terminalControlStream,
     createInterface: readlineHarness.createInterface,
     historyStore: options?.historyStore,
     workspaceRoot: options?.workspaceRoot,
@@ -224,6 +248,13 @@ export function createTtyHarness(options?: {
   const typeText = (text: string): void => {
     for (const character of text) {
       emitKeypress({ name: character }, character);
+      if (isJestFakeTimersActive()) {
+        jest.advanceTimersByTime(SYNTHETIC_TYPING_GAP_MS);
+      }
+    }
+    if (!isJestFakeTimersActive()) {
+      // Same-tick loops can look like split paste; flush before assertions.
+      emitKeypress({ name: "end" }, "");
     }
   };
 
@@ -277,11 +308,7 @@ export async function submitPromptText(
   text: string,
 ): Promise<void> {
   harness.emitKeypress({ name: "return" }, "\r");
-  await expect(prompt).resolves.toEqual({
-    status: "submitted",
-    text,
-    inputMode: "prompt",
-  });
+  await expect(prompt).resolves.toEqual(submittedPromptResult(text));
 }
 
 export function createNonTtyPromptHarness(options?: {

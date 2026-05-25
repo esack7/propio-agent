@@ -38,7 +38,9 @@ export function createInteractiveInput(
         mode: "chat",
         promptText,
       });
-      return result.status === "submitted" ? result.text : null;
+      return result.status === "submitted"
+        ? result.submission.displayText
+        : null;
     },
     confirm: async (
       promptText: string,

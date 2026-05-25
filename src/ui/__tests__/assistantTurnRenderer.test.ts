@@ -11,6 +11,7 @@ import {
   type AssistantTurnVisibilitySource,
 } from "../assistantTurnRenderer.js";
 import { TerminalUi } from "../terminal.js";
+import { createPlainSubmission } from "../input/promptSubmission.js";
 import { createTtyTestStream, stripAnsi } from "./ttyTestStream.js";
 
 type ScriptStep =
@@ -154,7 +155,7 @@ async function runInlineAssistantTurn(options: {
 
   return streamAssistantTurn(
     agent,
-    options.userInput,
+    createPlainSubmission(options.userInput, "prompt"),
     options.ui,
     options.abortSignal ?? new AbortController().signal,
     options.visibility,
@@ -177,7 +178,7 @@ async function runPlainThinkingOutputTest(options: {
 
   await streamAssistantTurn(
     agent,
-    options.userInput,
+    createPlainSubmission(options.userInput, "prompt"),
     ui,
     new AbortController().signal,
     options.visibility,
@@ -354,7 +355,7 @@ async function runHiddenToolScenario(
 
   await streamAssistantTurn(
     agent,
-    userInput,
+    createPlainSubmission(userInput, "prompt"),
     ui,
     new AbortController().signal,
     {
@@ -381,7 +382,7 @@ describe("streamAssistantTurn", () => {
 
     const result = await streamAssistantTurn(
       agent,
-      "say hi",
+      createPlainSubmission("say hi", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -405,7 +406,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "status test",
+      createPlainSubmission("status test", "prompt"),
       ui,
       new AbortController().signal,
       { ...defaultVisibility, showStatus: true },
@@ -449,7 +450,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "activity test",
+      createPlainSubmission("activity test", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -506,7 +507,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "non-thinking stream",
+      createPlainSubmission("non-thinking stream", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -555,7 +556,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "thinking test",
+      createPlainSubmission("thinking test", "prompt"),
       ui,
       new AbortController().signal,
       {
@@ -660,7 +661,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "visible thinking and tools",
+      createPlainSubmission("visible thinking and tools", "prompt"),
       ui,
       new AbortController().signal,
       {
@@ -706,7 +707,7 @@ describe("streamAssistantTurn", () => {
     await expect(
       streamAssistantTurn(
         agent,
-        "failing thinking stream",
+        createPlainSubmission("failing thinking stream", "prompt"),
         ui,
         new AbortController().signal,
         { ...defaultVisibility, showThinking: false },
@@ -829,7 +830,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "tool test",
+      createPlainSubmission("tool test", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -873,7 +874,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "tool text resume test",
+      createPlainSubmission("tool text resume test", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -894,7 +895,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "activity hidden test",
+      createPlainSubmission("activity hidden test", "prompt"),
       ui,
       new AbortController().signal,
       { ...defaultVisibility, showToolCalls: false },
@@ -937,7 +938,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "failure test",
+      createPlainSubmission("failure test", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -965,7 +966,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "prompt plan test",
+      createPlainSubmission("prompt plan test", "prompt"),
       ui,
       new AbortController().signal,
       { ...defaultVisibility, showPromptPlan: true },
@@ -998,7 +999,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "reasoning test",
+      createPlainSubmission("reasoning test", "prompt"),
       ui,
       new AbortController().signal,
       {
@@ -1025,7 +1026,7 @@ describe("streamAssistantTurn", () => {
 
     await streamAssistantTurn(
       agent,
-      "empty response",
+      createPlainSubmission("empty response", "prompt"),
       ui,
       new AbortController().signal,
       defaultVisibility,
@@ -1053,7 +1054,7 @@ describe("streamAssistantTurn", () => {
 
     const result = await streamAssistantTurn(
       agent,
-      "json test",
+      createPlainSubmission("json test", "prompt"),
       ui,
       new AbortController().signal,
       {

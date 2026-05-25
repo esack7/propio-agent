@@ -1,4 +1,5 @@
 import { Agent } from "../agent.js";
+import { userSubmission } from "./testHelpers.js";
 import { LLMProvider } from "../providers/interface.js";
 import {
   ChatRequest,
@@ -74,7 +75,7 @@ async function streamWithTokenCapture(
   prompt: string,
 ): Promise<{ response: string; tokens: string[] }> {
   const tokens: string[] = [];
-  const response = await agent.streamChat(prompt, (token) => {
+  const response = await agent.streamChat(userSubmission(prompt), (token) => {
     if (token) {
       tokens.push(token);
     }
@@ -173,11 +174,11 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("test");
       const agent = createAgentWithProvider(mockProvider);
 
-      await agent.streamChat("First message", () => {});
+      await agent.streamChat(userSubmission("First message"), () => {});
       expect(agent.getContext().length).toBeGreaterThan(0);
 
       const contextAfterFirst = agent.getContext().length;
-      await agent.streamChat("Second message", () => {});
+      await agent.streamChat(userSubmission("Second message"), () => {});
 
       expect(agent.getContext().length).toBeGreaterThan(contextAfterFirst);
     });
@@ -186,7 +187,7 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("test");
       const agent = createAgentWithProvider(mockProvider);
 
-      await agent.streamChat("Test message", () => {});
+      await agent.streamChat(userSubmission("Test message"), () => {});
       expect(agent.getContext().length).toBeGreaterThan(0);
 
       agent.clearContext();
@@ -214,7 +215,7 @@ describe("Agent Integration Tests", () => {
       const newPrompt = "Updated prompt";
       agent.setSystemPrompt(newPrompt);
 
-      await agent.streamChat("Test", () => {});
+      await agent.streamChat(userSubmission("Test"), () => {});
       // Verify new prompt is used in provider call
       expect(receivedSystemPrompt).toContain(newPrompt);
       expect(receivedSystemPrompt).toContain("# Tool Utilization");
@@ -248,9 +249,9 @@ describe("Agent Integration Tests", () => {
       const agent = createAgentWithProvider(mockProvider);
 
       // Tool errors remain recoverable when the model provides a final answer.
-      await expect(agent.streamChat("Test", () => {})).resolves.toBe(
-        "Recovered after the tool error.",
-      );
+      await expect(
+        agent.streamChat(userSubmission("Test"), () => {}),
+      ).resolves.toBe("Recovered after the tool error.");
 
       const context = agent.getContext();
       const toolMessage = context.find((m) => m.role === "tool");
@@ -290,7 +291,10 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      const response = await agent.streamChat("Run tool", () => {});
+      const response = await agent.streamChat(
+        userSubmission("Run tool"),
+        () => {},
+      );
 
       expect(response).toBe("Done");
       expect(callCount).toBe(2);
@@ -313,7 +317,10 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      const response = await agent.streamChat("Execute tools", () => {});
+      const response = await agent.streamChat(
+        userSubmission("Execute tools"),
+        () => {},
+      );
       expect(response).toBe("Done");
       expect(callCount).toBe(3); // Initial + 2 tool executions + final response
     });
@@ -340,7 +347,7 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      const response = await agent.streamChat("Test", () => {});
+      const response = await agent.streamChat(userSubmission("Test"), () => {});
       expect(response).toBe("Hello world!");
     });
 
@@ -381,7 +388,10 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      const response = await agent.streamChat("Test typed stream", () => {});
+      const response = await agent.streamChat(
+        userSubmission("Test typed stream"),
+        () => {},
+      );
       const summary = agent.getLastTurnReasoningSummary();
 
       expect(response).toBe("Typed response");
@@ -418,7 +428,10 @@ describe("Agent Integration Tests", () => {
       const agent = new Agent({ providersConfig: config });
       (agent as any).provider = provider1;
 
-      await agent.streamChat("First message with provider 1", () => {});
+      await agent.streamChat(
+        userSubmission("First message with provider 1"),
+        () => {},
+      );
       const contextSize = agent.getContext().length;
 
       (agent as any).switchProvider("ollama-alt");
@@ -446,7 +459,10 @@ describe("Agent Integration Tests", () => {
       const mockProvider = new MockIntegrationProvider("switched");
       const agent = createAgentWithProvider(mockProvider, config);
 
-      const response = await agent.streamChat("After switch", () => {});
+      const response = await agent.streamChat(
+        userSubmission("After switch"),
+        () => {},
+      );
       expect(response).toContain("switched");
     });
   });
@@ -460,7 +476,9 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      await expect(agent.streamChat("Test", () => {})).rejects.toThrow();
+      await expect(
+        agent.streamChat(userSubmission("Test"), () => {}),
+      ).rejects.toThrow();
     });
 
     it("should provide useful error messages", async () => {
@@ -472,7 +490,7 @@ describe("Agent Integration Tests", () => {
       const agent = createAgentWithProvider(mockProvider);
 
       try {
-        await agent.streamChat("Test", () => {});
+        await agent.streamChat(userSubmission("Test"), () => {});
       } catch (error) {
         if (error instanceof Error) {
           expect(error.message).toContain("test-provider");
@@ -490,10 +508,10 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      await agent.streamChat("Message 1", () => {});
+      await agent.streamChat(userSubmission("Message 1"), () => {});
       const contextAfter1 = agent.getContext().length;
 
-      await agent.streamChat("Message 2", () => {});
+      await agent.streamChat(userSubmission("Message 2"), () => {});
       const contextAfter2 = agent.getContext().length;
 
       expect(contextAfter2).toBeGreaterThan(contextAfter1);
@@ -520,8 +538,8 @@ describe("Agent Integration Tests", () => {
       });
       (agent as unknown as { provider: LLMProvider }).provider = mockProvider;
 
-      await agent.streamChat("Test 1", () => {});
-      await agent.streamChat("Test 2", () => {});
+      await agent.streamChat(userSubmission("Test 1"), () => {});
+      await agent.streamChat(userSubmission("Test 2"), () => {});
 
       expect(systemPromptUsed).toHaveLength(2);
       expect(systemPromptUsed[0]).toContain(customPrompt);
@@ -553,7 +571,7 @@ describe("Agent Integration Tests", () => {
 
       const agent = createAgentWithProvider(mockProvider);
 
-      await agent.streamChat("Test with tools", () => {});
+      await agent.streamChat(userSubmission("Test with tools"), () => {});
 
       expect(toolsReceived.length).toBeGreaterThan(0);
       expect(toolsReceived.some((t) => t.function.name === "read")).toBe(true);

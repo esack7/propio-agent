@@ -4,6 +4,7 @@
  */
 import * as path from "path";
 import * as fs from "fs";
+import { userSubmission } from "../../__tests__/testHelpers.js";
 import { createProvider } from "../factory.js";
 import { OpenRouterProvider } from "../openrouter.js";
 import { OpenRouterProviderConfig } from "../config.js";
@@ -207,9 +208,12 @@ describe("OpenRouter integration (real API)", () => {
         };
         const agent = new Agent({ providersConfig: config });
         let response1 = "";
-        await agent.streamChat("Remember the number 42.", (token) => {
-          response1 += token;
-        });
+        await agent.streamChat(
+          userSubmission("Remember the number 42."),
+          (token) => {
+            response1 += token;
+          },
+        );
         const contextSize = agent.getContext().length;
         expect(contextSize).toBeGreaterThan(0);
 
@@ -219,7 +223,9 @@ describe("OpenRouter integration (real API)", () => {
 
         let response2 = "";
         await agent.streamChat(
-          "What number did I ask you to remember? Reply with just the number.",
+          userSubmission(
+            "What number did I ask you to remember? Reply with just the number.",
+          ),
           (token) => {
             response2 += token;
           },

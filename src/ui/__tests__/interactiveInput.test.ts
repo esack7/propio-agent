@@ -1,3 +1,4 @@
+import { submittedPromptResult } from "./promptComposerTestHelpers.js";
 import * as readline from "readline";
 import { createInteractiveInput } from "../interactiveInput.js";
 import { createPromptComposer } from "../promptComposer.js";
@@ -71,11 +72,9 @@ describe("createPromptComposer", () => {
     await flush();
     harness.inputStream.write("alice\n");
 
-    await expect(prompt).resolves.toEqual({
-      status: "submitted",
-      inputMode: "prompt",
-      text: "alice",
-    });
+    await expect(prompt).resolves.toEqual(
+      submittedPromptResult("alice", "prompt"),
+    );
 
     harness.composer.close();
   });
@@ -103,11 +102,9 @@ describe("createPromptComposer", () => {
     });
     await flush();
     harness.inputStream.write("one\n");
-    await expect(first).resolves.toEqual({
-      status: "submitted",
-      inputMode: "prompt",
-      text: "one",
-    });
+    await expect(first).resolves.toEqual(
+      submittedPromptResult("one", "prompt"),
+    );
 
     const second = harness.composer.compose({
       mode: "chat",
@@ -115,11 +112,9 @@ describe("createPromptComposer", () => {
     });
     await flush();
     harness.inputStream.write("two\n");
-    await expect(second).resolves.toEqual({
-      status: "submitted",
-      inputMode: "prompt",
-      text: "two",
-    });
+    await expect(second).resolves.toEqual(
+      submittedPromptResult("two", "prompt"),
+    );
 
     expect(harness.getCreateInterfaceCalls()).toBe(1);
     harness.composer.close();
@@ -142,11 +137,9 @@ describe("createPromptComposer", () => {
     ).rejects.toThrow("An interactive prompt is already active.");
 
     harness.inputStream.write("first\n");
-    await expect(first).resolves.toEqual({
-      status: "submitted",
-      inputMode: "prompt",
-      text: "first",
-    });
+    await expect(first).resolves.toEqual(
+      submittedPromptResult("first", "prompt"),
+    );
 
     harness.composer.close();
   });
@@ -247,11 +240,7 @@ describe("createInteractiveInput", () => {
   it("delegates readLine, confirm, and close to the prompt composer", async () => {
     const compose = jest
       .fn()
-      .mockResolvedValueOnce({
-        status: "submitted",
-        inputMode: "prompt",
-        text: "typed",
-      })
+      .mockResolvedValueOnce(submittedPromptResult("typed", "prompt"))
       .mockResolvedValueOnce({ status: "closed" });
     const confirm = jest.fn().mockResolvedValue(true);
     const getCloseReason = jest.fn().mockReturnValue("closed" as const);

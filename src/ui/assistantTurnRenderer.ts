@@ -9,6 +9,7 @@ import {
 } from "./contextInspector.js";
 import { TerminalUi } from "./terminal.js";
 import type { ToolCallView } from "./toolCallView.js";
+import type { PromptSubmission } from "./input/promptSubmission.js";
 
 export interface AssistantTurnVisibilityOptions {
   showToolCalls: boolean;
@@ -35,7 +36,7 @@ export interface AssistantTurnResult {
 
 export async function streamAssistantTurn(
   agent: AssistantTurnAgent,
-  userInput: string,
+  submission: PromptSubmission,
   ui: TerminalUi,
   abortSignal: AbortSignal,
   visibility: AssistantTurnVisibilitySource,
@@ -343,7 +344,7 @@ export async function streamAssistantTurn(
   let response = "";
   try {
     response = await agent.streamChat(
-      userInput,
+      submission,
       (token) => {
         if (!ui.isJsonMode()) {
           if (token.trim().length > 0) {

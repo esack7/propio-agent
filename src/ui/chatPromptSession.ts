@@ -1,7 +1,5 @@
 import * as readline from "readline";
 import {
-  acceptHistorySearch,
-  cancelHistorySearch,
   cycleHistorySearchMatch,
   getHistorySearchSummary,
   startHistorySearch,
@@ -9,12 +7,7 @@ import {
   type HistorySearchState,
 } from "./historySearch.js";
 import { clampPromptCursor, type PromptRequest } from "./promptState.js";
-import {
-  applyInputModeFromBuffer,
-  getModeFromInput,
-  parseBashHistoryEntry,
-  type InputMode,
-} from "./inputModes.js";
+import { applyInputModeFromBuffer, type InputMode } from "./inputModes.js";
 import {
   acceptTypeaheadState,
   cancelTypeaheadState,
@@ -28,6 +21,34 @@ import {
 import { openPromptEditor, type PromptEditorRunner } from "./promptEditor.js";
 import { watchTerminalResize } from "./terminalWriter.js";
 import { formatSubtle } from "./formatting.js";
+import {
+  disableBracketedPaste,
+  enableBracketedPaste,
+} from "./input/bracketedPaste.js";
+import {
+  createKeypressParser,
+  type ParsedKeypress,
+} from "./input/parseKeypress.js";
+import { createPasteHandler } from "./input/pasteHandler.js";
+import {
+  buildTextPastePill,
+  countPasteLines,
+  shouldCollapsePaste,
+} from "./input/collapsePaste.js";
+import { expandPastedRefs } from "./input/expandSubmit.js";
+import {
+  buildImagePastePill,
+  imagePasteFailureMessage,
+  tryReadImageFromPath,
+} from "./input/imagePaste.js";
+import { tryReadImageFromClipboard } from "./input/clipboardImage.js";
+import {
+  applyHistoryEntryToPrompt,
+  createPasteCache,
+  type PasteCache,
+} from "./pasteCache.js";
+import type { PastedContent } from "./input/pastedContent.js";
+import type { PromptSubmission } from "./input/promptSubmission.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
@@ -47,7 +68,7 @@ export interface PromptFooters {
 
 export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
-  submit(text: string, inputMode: InputMode): void;
+  submit(submission: PromptSubmission): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
@@ -58,6 +79,7 @@ export interface ChatPromptSessionCallbacks {
 export interface ChatPromptSessionOptions {
   inputStream: NodeJS.ReadStream;
   outputStream: NodeJS.WriteStream;
+  terminalControlStream?: NodeJS.WriteStream;
   request: PromptRequest;
   historySnapshot: readonly string[];
   enableTypeahead: boolean;
@@ -66,6 +88,7 @@ export interface ChatPromptSessionOptions {
   typeaheadProviders: readonly TypeaheadProvider[];
   editorRunner?: PromptEditorRunner;
   editorEnv?: NodeJS.ProcessEnv;
+  pasteCache?: PasteCache;
   callbacks: ChatPromptSessionCallbacks;
 }
 
@@ -696,12 +719,27 @@ function isPrintableKey(str: string | undefined, key: readline.Key): boolean {
 export function createChatPromptSession(
   options: ChatPromptSessionOptions,
 ): ChatPromptSession {
-  const { callbacks, inputStream, outputStream, request, historySnapshot } =
-    options;
+  const {
+    callbacks,
+    inputStream,
+    outputStream,
+    request,
+    historySnapshot,
+    terminalControlStream = process.stdout,
+  } = options;
+  const pasteCache = options.pasteCache ?? createPasteCache();
+  const keypressParser = createKeypressParser();
 
   let inputMode: InputMode = request.inputMode ?? "prompt";
   let buffer = request.defaultValue ?? "";
   let cursor = buffer.length;
+  const pastedContents = new Map<number, PastedContent>();
+  let nextPasteId = 1;
+
+  const resetPastedContents = (): void => {
+    pastedContents.clear();
+    nextPasteId = 1;
+  };
 
   const getActivePromptText = (): string =>
     inputMode === "bash"
@@ -749,6 +787,7 @@ export function createChatPromptSession(
   syncBufferInputMode();
   let historyIndex: number | null = null;
   let draftSnapshot: { buffer: string; cursor: number } | null = null;
+  let searchDraftInputMode: InputMode = inputMode;
   let searchState: HistorySearchState | null = null;
   let typeaheadState: TypeaheadState | null = null;
   let typeaheadPreviewApplied = false;
@@ -759,7 +798,19 @@ export function createChatPromptSession(
   let pendingEditorHandoff = false;
   let rawModeEnabled = false;
   let active = true;
+  let imageDeliveryGeneration = 0;
   let lastLayout: PromptLayout | null = null;
+
+  const captureSessionDeliveryToken = (): number =>
+    active ? imageDeliveryGeneration : -1;
+
+  const isSessionDeliveryValid = (token: number): boolean =>
+    active && token === imageDeliveryGeneration;
+
+  const setImagePasteStatus = (message: string): void => {
+    editorStatus = message;
+    render();
+  };
 
   const buildRenderState = (): ChatPromptSessionState => ({
     buffer,
@@ -854,9 +905,28 @@ export function createChatPromptSession(
       return;
     }
 
-    const selection = acceptHistorySearch(searchState);
-    buffer = selection.buffer;
-    cursor = selection.cursor;
+    const selectedEntry =
+      searchState.matches.length > 0 && searchState.selectedMatchIndex >= 0
+        ? searchState.matches[searchState.selectedMatchIndex]
+        : undefined;
+
+    if (selectedEntry === undefined) {
+      buffer = searchState.originalBuffer;
+      cursor = searchState.originalCursor;
+      inputMode = searchDraftInputMode;
+      syncBufferInputMode();
+      return;
+    }
+
+    const applied = applyHistoryEntryToPrompt(selectedEntry, pasteCache);
+    const previousMode = inputMode;
+    buffer = applied.buffer;
+    cursor = applied.buffer.length;
+    inputMode = applied.inputMode;
+    if (previousMode !== inputMode) {
+      syncActiveFooter();
+    }
+    syncBufferInputMode();
   };
 
   const clearTypeahead = (): void => {
@@ -1068,14 +1138,42 @@ export function createChatPromptSession(
     render();
   };
 
-  const exitSearch = (
-    nextSelection: ReturnType<typeof cancelHistorySearch>,
-  ): void => {
+  const exitSearch = (accept: boolean): void => {
+    if (!searchState) {
+      return;
+    }
+
+    const state = searchState;
     searchState = null;
     historyIndex = null;
     draftSnapshot = null;
-    buffer = nextSelection.buffer;
-    cursor = nextSelection.cursor;
+
+    if (accept) {
+      const selectedEntry =
+        state.matches.length > 0 && state.selectedMatchIndex >= 0
+          ? state.matches[state.selectedMatchIndex]
+          : undefined;
+
+      if (selectedEntry === undefined) {
+        buffer = state.originalBuffer;
+        cursor = state.originalCursor;
+        inputMode = searchDraftInputMode;
+      } else {
+        const applied = applyHistoryEntryToPrompt(selectedEntry, pasteCache);
+        const previousMode = inputMode;
+        buffer = applied.buffer;
+        cursor = applied.buffer.length;
+        inputMode = applied.inputMode;
+        if (previousMode !== inputMode) {
+          syncActiveFooter();
+        }
+      }
+    } else {
+      buffer = state.originalBuffer;
+      cursor = state.originalCursor;
+      inputMode = searchDraftInputMode;
+    }
+
     syncBufferInputMode();
     render();
   };
@@ -1090,6 +1188,7 @@ export function createChatPromptSession(
     }
 
     draftSnapshot = { buffer, cursor };
+    searchDraftInputMode = inputMode;
     searchState = startHistorySearch(historySnapshot, buffer, cursor);
     syncFromSearchState();
     render();
@@ -1112,7 +1211,7 @@ export function createChatPromptSession(
       return;
     }
 
-    exitSearch(cancelHistorySearch(searchState));
+    exitSearch(false);
   };
 
   const acceptSearch = (): void => {
@@ -1121,7 +1220,7 @@ export function createChatPromptSession(
       return;
     }
 
-    exitSearch(acceptHistorySearch(searchState));
+    exitSearch(true);
   };
 
   const getBufferLinePosition = () => {
@@ -1135,18 +1234,14 @@ export function createChatPromptSession(
   };
 
   const selectHistoryEntry = (index: number): void => {
-    const selected = historySnapshot[index];
-    if (getModeFromInput(selected) === "bash") {
-      const previousMode = inputMode;
-      inputMode = "bash";
-      buffer = parseBashHistoryEntry(selected);
-      cursor = buffer.length;
-      if (previousMode !== inputMode) {
-        syncActiveFooter();
-      }
-    } else {
-      buffer = selected;
-      cursor = selected.length;
+    const stored = historySnapshot[index];
+    const applied = applyHistoryEntryToPrompt(stored, pasteCache);
+    const previousMode = inputMode;
+    inputMode = applied.inputMode;
+    buffer = applied.buffer;
+    cursor = applied.buffer.length;
+    if (previousMode !== inputMode) {
+      syncActiveFooter();
     }
     syncBufferInputMode();
     render();
@@ -1264,6 +1359,13 @@ export function createChatPromptSession(
     refreshMentionTypeahead();
     scheduleMentionTypeaheadRetry();
     render();
+  };
+
+  const insertCollapsedTextPaste = (cleaned: string): void => {
+    const id = nextPasteId++;
+    const lineCount = countPasteLines(cleaned);
+    pastedContents.set(id, { id, type: "text", content: cleaned });
+    insertText(buildTextPastePill(id, lineCount));
   };
 
   const deleteBeforeCursor = (): void => {
@@ -1459,7 +1561,8 @@ export function createChatPromptSession(
     } else {
       outputStream.write("\n");
     }
-    callbacks.submit(buffer, inputMode);
+    const submission = expandPastedRefs(buffer, pastedContents, inputMode);
+    callbacks.submit(submission);
   };
 
   const handleLifecycleKeys = (key: readline.Key): boolean => {
@@ -1579,6 +1682,9 @@ export function createChatPromptSession(
       return true;
     }
     if (key.name === "return" || key.name === "enter") {
+      if (pasteHandler.isPasting()) {
+        return true;
+      }
       handleEnter();
       return true;
     }
@@ -1709,12 +1815,155 @@ export function createChatPromptSession(
     handleBackspaceKey(key) ||
     handleNavigationKeys(key);
 
+  const pasteHandler = createPasteHandler({
+    getInputMode: () => inputMode,
+    onTextPaste: (text) => {
+      if (text.length === 0) {
+        return;
+      }
+
+      if (shouldCollapsePaste(text, outputStream.rows)) {
+        insertCollapsedTextPaste(text);
+        return;
+      }
+
+      insertText(text);
+    },
+    onImagePaths: async (paths) => {
+      const deliveryToken = captureSessionDeliveryToken();
+      const fragments: string[] = [];
+
+      for (const filePath of paths) {
+        if (!isSessionDeliveryValid(deliveryToken)) {
+          return;
+        }
+
+        let result: Awaited<ReturnType<typeof tryReadImageFromPath>>;
+        try {
+          result = await tryReadImageFromPath(filePath);
+        } catch {
+          result = { ok: false, reason: "read_error" };
+        }
+
+        if (!isSessionDeliveryValid(deliveryToken)) {
+          return;
+        }
+
+        if (!result.ok) {
+          setImagePasteStatus(imagePasteFailureMessage(result.reason));
+          fragments.push(filePath);
+          continue;
+        }
+
+        const id = nextPasteId++;
+        pastedContents.set(id, {
+          id,
+          type: "image",
+          data: result.data,
+          mediaType: result.mediaType,
+          filename: result.filename,
+          path: result.path,
+        });
+        fragments.push(buildImagePastePill(id));
+      }
+
+      if (!isSessionDeliveryValid(deliveryToken)) {
+        return;
+      }
+
+      if (fragments.length > 0) {
+        insertText(fragments.join("\n"));
+      }
+    },
+    onEmptyPaste: async () => {
+      if (inputMode !== "prompt") {
+        return;
+      }
+
+      const deliveryToken = captureSessionDeliveryToken();
+      const result = await tryReadImageFromClipboard();
+      if (!isSessionDeliveryValid(deliveryToken)) {
+        return;
+      }
+      if (!result.ok) {
+        return;
+      }
+
+      const id = nextPasteId++;
+      pastedContents.set(id, {
+        id,
+        type: "image",
+        data: result.data,
+        mediaType: result.mediaType,
+        filename: result.filename,
+        path: result.filename,
+      });
+      insertText(buildImagePastePill(id));
+    },
+  });
+
+  const shouldSkipBurst = (): boolean =>
+    Boolean(searchState || typeaheadState || historyIndex !== null);
+
+  const prepareForNonPasteKey = (
+    printable: boolean,
+    key: readline.Key,
+  ): boolean => {
+    const isEnter = key.name === "return" || key.name === "enter";
+    if (isEnter && pasteHandler.isPasting()) {
+      return false;
+    }
+
+    if (isEnter || !printable) {
+      pasteHandler.flushBeforeNonChar();
+    }
+    return true;
+  };
+
+  const handlePrintableInput = (
+    keyStr: string | undefined,
+    keyObj: readline.Key,
+  ): void => {
+    if (!isPrintableKey(keyStr, keyObj)) {
+      return;
+    }
+
+    const text = keyStr ?? "";
+    if (
+      !shouldSkipBurst() &&
+      pasteHandler.onPrintableText(text) === "buffered"
+    ) {
+      return;
+    }
+
+    insertText(text);
+  };
+
+  const handleParsedKeypress = (parsed: ParsedKeypress): void => {
+    if (parsed.kind === "paste") {
+      pasteHandler.submitPaste(parsed.text, { isPasted: parsed.isPasted });
+      return;
+    }
+
+    const { str: keyStr, key: keyObj } = parsed;
+    const printable = isPrintableKey(keyStr, keyObj);
+    if (!prepareForNonPasteKey(printable, keyObj)) {
+      return;
+    }
+
+    if (handleControlAndSystemKeys(keyStr, keyObj)) return;
+    if (handleSearchModeInput(keyStr, keyObj)) return;
+    if (handleTypeaheadAndNavigationKeys(keyStr, keyObj)) return;
+    handlePrintableInput(keyStr, keyObj);
+  };
+
   const handleKeypress = (str: string | undefined, key: readline.Key): void => {
     if (!active) return;
-    if (handleControlAndSystemKeys(str, key)) return;
-    if (handleSearchModeInput(str, key)) return;
-    if (handleTypeaheadAndNavigationKeys(str, key)) return;
-    if (isPrintableKey(str, key)) insertText(str ?? "");
+
+    const events = keypressParser.parse(str, key);
+    for (const parsed of events) {
+      handleParsedKeypress(parsed);
+    }
   };
 
   const restoreRawMode = (): void => {
@@ -1731,13 +1980,18 @@ export function createChatPromptSession(
       return;
     }
 
+    imageDeliveryGeneration += 1;
     active = false;
+    resetPastedContents();
+    pasteHandler.dispose();
+    disableBracketedPaste(terminalControlStream);
     unwatchResize();
     clearMentionTypeaheadRetry();
     inputStream.removeListener("keypress", handleKeypress as never);
     restoreRawMode();
   };
 
+  enableBracketedPaste(terminalControlStream);
   inputStream.on("keypress", handleKeypress as never);
   if (
     typeof (

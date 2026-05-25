@@ -16,11 +16,18 @@ import {
   createDefaultTypeaheadProviders,
   type TypeaheadProvider,
 } from "./typeahead.js";
+import type { PromptHistoryStore } from "./promptHistory.js";
 import {
-  shouldRecordPromptHistoryEntry,
-  type PromptHistoryStore,
-} from "./promptHistory.js";
-import { formatBashHistoryEntry, type InputMode } from "./inputModes.js";
+  buildPromptHistoryEntry,
+  createPasteCache,
+  type PasteCache,
+} from "./pasteCache.js";
+import type { InputMode } from "./inputModes.js";
+import {
+  createPlainSubmission,
+  shouldPersistPromptHistory,
+  type PromptSubmission,
+} from "./input/promptSubmission.js";
 import type { PromptEditorRunner } from "./promptEditor.js";
 
 export type { PromptState, PromptRequest } from "./promptState.js";
@@ -29,8 +36,7 @@ export type PromptCloseReason = "closed" | "interrupted";
 
 export interface PromptResultSubmitted {
   status: "submitted";
-  text: string;
-  inputMode: InputMode;
+  submission: PromptSubmission;
 }
 
 export interface PromptResultClosed {
@@ -56,6 +62,7 @@ export interface PromptComposer {
 export interface PromptComposerOptions {
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
+  terminalControlStream?: NodeJS.WriteStream;
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
   renderState?: (state: PromptState | null) => void;
@@ -63,6 +70,7 @@ export interface PromptComposerOptions {
   onToggleThinking?: () => string | null | undefined;
   refreshPromptFooters?: () => import("./chatPromptSession.js").PromptFooters;
   historyStore?: PromptHistoryStore;
+  pasteCache?: PasteCache;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
   workspaceRoot?: string;
@@ -77,15 +85,6 @@ interface ActivePromptContext {
   request: PromptRequest;
   historySnapshot: string[] | null;
   isCustomChat: boolean;
-}
-
-function shouldKeepLiveHistoryEntry(
-  request: PromptRequest,
-  submittedText: string,
-): boolean {
-  return (
-    request.mode === "chat" && shouldRecordPromptHistoryEntry(submittedText)
-  );
 }
 
 function snapshotLiveHistory(rl: readline.Interface): string[] | null {
@@ -132,6 +131,7 @@ export function createPromptComposer(
     createDefaultTypeaheadProviders(workspaceRoot);
   const reverseHistorySearchEnabled =
     options.enableReverseHistorySearch ?? isTerminalPrompt(options);
+  const pasteCache = options.pasteCache ?? createPasteCache();
   const useCustomChatPrompt = isTerminalPrompt(options);
   const liveHistory = [...(options.historyStore?.load() ?? [])];
   const rl = createInterface({
@@ -201,31 +201,30 @@ export function createPromptComposer(
     options.renderState?.(clonePromptState(currentState));
   };
 
-  const persistSubmittedPrompt = (text: string, inputMode: InputMode): void => {
+  const persistSubmittedPrompt = (submission: PromptSubmission): void => {
     if (!currentState || !activePrompt) {
       return;
     }
 
-    currentState = applySubmittedText(currentState, text);
-    const shouldKeepHistory = shouldKeepLiveHistoryEntry(
-      activePrompt.request,
-      text,
+    currentState = applySubmittedText(currentState, submission.displayText);
+    const shouldKeepHistory = shouldPersistPromptHistory(
+      submission,
+      activePrompt.request.mode,
     );
 
     if (shouldKeepHistory) {
-      const historyEntry =
-        inputMode === "bash" ? formatBashHistoryEntry(text) : text;
       try {
+        const historyEntry = buildPromptHistoryEntry(submission, pasteCache);
         options.historyStore?.record(historyEntry);
+
+        const updatedHistory = updateLiveHistorySnapshot(
+          liveHistory,
+          historyEntry,
+        );
+        liveHistory.splice(0, liveHistory.length, ...updatedHistory);
       } catch {
         // Prompt history is best-effort and must not block submission.
       }
-
-      const updatedHistory = updateLiveHistorySnapshot(
-        liveHistory,
-        historyEntry,
-      );
-      liveHistory.splice(0, liveHistory.length, ...updatedHistory);
       return;
     }
 
@@ -248,7 +247,7 @@ export function createPromptComposer(
     }
 
     if (result.status === "submitted") {
-      persistSubmittedPrompt(result.text, result.inputMode);
+      persistSubmittedPrompt(result.submission);
     }
 
     activePrompt = null;
@@ -298,6 +297,8 @@ export function createPromptComposer(
         activeChatSession = createChatPromptSession({
           inputStream,
           outputStream,
+          terminalControlStream:
+            options.terminalControlStream ?? process.stdout,
           request,
           historySnapshot: [...liveHistory],
           enableTypeahead:
@@ -307,10 +308,11 @@ export function createPromptComposer(
           typeaheadProviders,
           editorRunner: options.editorRunner,
           editorEnv: options.editorEnv,
+          pasteCache,
           callbacks: {
             render: syncChatState,
-            submit: (text, inputMode) =>
-              settlePending({ status: "submitted", text, inputMode }),
+            submit: (submission) =>
+              settlePending({ status: "submitted", submission }),
             interrupt: () => {
               setCloseReason("interrupted");
               process.kill(process.pid, "SIGINT");
@@ -332,8 +334,10 @@ export function createPromptComposer(
       rl.question(request.promptText, (answer) => {
         settlePending({
           status: "submitted",
-          text: answer,
-          inputMode: request.inputMode ?? "prompt",
+          submission: createPlainSubmission(
+            answer,
+            request.inputMode ?? "prompt",
+          ),
         });
       });
     });
@@ -353,7 +357,7 @@ export function createPromptComposer(
         return defaultValue;
       }
 
-      const normalized = result.text.trim().toLowerCase();
+      const normalized = result.submission.displayText.trim().toLowerCase();
 
       if (normalized === "") {
         return defaultValue;

@@ -16,6 +16,17 @@ function formatSelection(providerName: string, modelKey: string): string {
   return `${providerName}/${modelKey}`;
 }
 
+type ModelMenuUi = Pick<
+  TerminalUi,
+  "command" | "error" | "info" | "prompt" | "section" | "success"
+>;
+
+type ModelSelection = {
+  provider: ProviderConfig;
+  model: Model;
+  applyMode: "session" | "persistent";
+};
+
 async function promptForNumber(
   composer: PromptComposer,
   promptText: string,
@@ -29,7 +40,7 @@ async function promptForNumber(
     return "closed";
   }
 
-  const trimmed = result.text.trim();
+  const trimmed = result.submission.displayText.trim();
   if (trimmed === "") {
     return null;
   }
@@ -64,6 +75,35 @@ function displayModels(
   for (const [index, model] of provider.models.entries()) {
     ui.command(`  ${index + 1}. ${model.name} - ${model.key}`);
   }
+}
+
+function loadConfigForMenu(
+  ui: ModelMenuUi,
+  configPath: string,
+): ProvidersConfig | null {
+  try {
+    return loadProvidersConfig(configPath);
+  } catch (error) {
+    ui.error(
+      `Failed to load providers config: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    ui.command("");
+    return null;
+  }
+}
+
+function displayCurrentSelections(
+  ui: ModelMenuUi,
+  currentSelection: { providerName: string; modelKey: string },
+  persistedSelection: { providerName: string; modelKey: string },
+): void {
+  ui.section("Models");
+  ui.info(
+    `Current session: ${formatSelection(currentSelection.providerName, currentSelection.modelKey)}`,
+  );
+  ui.info(
+    `Default for future sessions: ${formatSelection(persistedSelection.providerName, persistedSelection.modelKey)}`,
+  );
 }
 
 async function selectProvider(
@@ -158,47 +198,19 @@ async function selectApplyMode(
   }
 }
 
-export async function showModelMenu(
+async function selectModelMenuChoice(
   composer: PromptComposer,
-  agent: Pick<Agent, "getActiveModelSelection" | "switchProvider">,
-  ui: Pick<
-    TerminalUi,
-    "command" | "error" | "info" | "prompt" | "section" | "success"
-  >,
-  configPath: string,
-): Promise<void> {
-  let config: ProvidersConfig;
-  try {
-    config = loadProvidersConfig(configPath);
-  } catch (error) {
-    ui.error(
-      `Failed to load providers config: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    ui.command("");
-    return;
-  }
-
-  const currentSelection = agent.getActiveModelSelection();
-  const persistedSelection = getDefaultProviderModelSelection(config);
-
-  ui.section("Models");
-  ui.info(
-    `Current session: ${formatSelection(currentSelection.providerName, currentSelection.modelKey)}`,
-  );
-  ui.info(
-    `Default for future sessions: ${formatSelection(persistedSelection.providerName, persistedSelection.modelKey)}`,
-  );
-
-  const provider = await selectProvider(composer, ui, config.providers);
+  ui: ModelMenuUi,
+  providers: ReadonlyArray<ProviderConfig>,
+): Promise<ModelSelection | null> {
+  const provider = await selectProvider(composer, ui, providers);
   if (!provider) {
-    ui.command("");
-    return;
+    return null;
   }
 
   const model = await selectModel(composer, ui, provider);
   if (!model) {
-    ui.command("");
-    return;
+    return null;
   }
 
   const applyMode = await selectApplyMode(
@@ -208,35 +220,82 @@ export async function showModelMenu(
     model.key,
   );
   if (!applyMode) {
-    ui.command("");
-    return;
+    return null;
   }
 
+  return { provider, model, applyMode };
+}
+
+function switchSessionModel(
+  agent: Pick<Agent, "switchProvider">,
+  ui: ModelMenuUi,
+  providerName: string,
+  modelKey: string,
+): boolean {
   try {
-    agent.switchProvider(provider.name, model.key);
+    agent.switchProvider(providerName, modelKey);
+    return true;
   } catch (error) {
     ui.error(
       `Failed to switch the current session model: ${error instanceof Error ? error.message : String(error)}`,
     );
     ui.command("");
+    return false;
+  }
+}
+
+function persistModelSelection(
+  ui: ModelMenuUi,
+  configPath: string,
+  providerName: string,
+  modelKey: string,
+): void {
+  try {
+    updateDefaultProviderModelSelectionInFile(
+      configPath,
+      providerName,
+      modelKey,
+    );
+    ui.success(
+      `Updated the default to ${formatSelection(providerName, modelKey)} and switched the current session.`,
+    );
+  } catch (error) {
+    ui.error(
+      `Switched the current session to ${formatSelection(providerName, modelKey)}, but failed to update defaults: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export async function showModelMenu(
+  composer: PromptComposer,
+  agent: Pick<Agent, "getActiveModelSelection" | "switchProvider">,
+  ui: ModelMenuUi,
+  configPath: string,
+): Promise<void> {
+  const config = loadConfigForMenu(ui, configPath);
+  if (!config) {
+    return;
+  }
+
+  displayCurrentSelections(
+    ui,
+    agent.getActiveModelSelection(),
+    getDefaultProviderModelSelection(config),
+  );
+
+  const selection = await selectModelMenuChoice(composer, ui, config.providers);
+  if (!selection) {
+    ui.command("");
+    return;
+  }
+
+  const { provider, model, applyMode } = selection;
+  if (!switchSessionModel(agent, ui, provider.name, model.key)) {
     return;
   }
 
   if (applyMode === "persistent") {
-    try {
-      updateDefaultProviderModelSelectionInFile(
-        configPath,
-        provider.name,
-        model.key,
-      );
-      ui.success(
-        `Updated the default to ${formatSelection(provider.name, model.key)} and switched the current session.`,
-      );
-    } catch (error) {
-      ui.error(
-        `Switched the current session to ${formatSelection(provider.name, model.key)}, but failed to update defaults: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    persistModelSelection(ui, configPath, provider.name, model.key);
   } else {
     ui.success(
       `Switched the current session to ${formatSelection(provider.name, model.key)}.`,

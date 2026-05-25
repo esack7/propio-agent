@@ -13,6 +13,7 @@ import {
   makeRequest,
   expectThreeMessagePlanRoles,
 } from "./testHelpers.js";
+import { TEST_PNG_DATA_URL } from "../../__tests__/testHelpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -241,6 +242,33 @@ describe("PromptBuilder", () => {
       expect(plan.messages).toHaveLength(2);
       expect(plan.messages[1].role).toBe("assistant");
       expect(plan.messages[1].content).toBe("Orphan");
+    });
+
+    it("should preserve user turn images in plan messages without duplicating into content", () => {
+      const userContent = "[Attached image: x.png]";
+      const turn = {
+        ...makeTurn({
+          id: "t1",
+          userMessage: userContent,
+          completedAt: "2026-01-01T00:01:00Z",
+        }),
+        userMessage: {
+          role: "user" as const,
+          content: userContent,
+          images: [TEST_PNG_DATA_URL],
+        },
+      };
+      const plan = builder.buildPlan(
+        makeRequest({ state: makeState({ turns: [turn] }) }),
+      );
+
+      const userMsg = plan.messages.find(
+        (m) => m.role === "user" && m.images?.length,
+      );
+      expect(userMsg).toBeDefined();
+      expect(userMsg!.content).toBe(userContent);
+      expect(userMsg!.images).toEqual([TEST_PNG_DATA_URL]);
+      expect(userMsg!.content).not.toContain("base64");
     });
   });
 
