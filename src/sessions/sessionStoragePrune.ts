@@ -1,6 +1,12 @@
 import * as fs from "fs";
 import * as path from "path";
-import { readIndex, rebuildIndex } from "./sessionHistory.js";
+import {
+  isPidRunning,
+  parseInProgressMarkerSessionId,
+  readInProgressMarkerFile,
+  readIndex,
+  rebuildIndex,
+} from "./sessionHistory.js";
 
 export function listActiveInProgressSessionIds(
   sessionsDir: string,
@@ -11,22 +17,17 @@ export function listActiveInProgressSessionIds(
   }
 
   for (const file of fs.readdirSync(sessionsDir)) {
-    if (!file.startsWith("inprogress-") || !file.endsWith(".json")) {
+    const sessionId = parseInProgressMarkerSessionId(file);
+    if (!sessionId) {
       continue;
     }
 
-    const sessionId = file.slice("inprogress-".length, -".json".length);
-    try {
-      const content = fs.readFileSync(path.join(sessionsDir, file), "utf8");
-      const marker = JSON.parse(content) as { pid?: number };
-      if (typeof marker.pid !== "number") {
-        continue;
-      }
-      process.kill(marker.pid, 0);
-      active.add(sessionId);
-    } catch {
-      // Malformed marker or process not running
+    const marker = readInProgressMarkerFile(sessionsDir, file);
+    if (!marker || !isPidRunning(marker.pid)) {
+      continue;
     }
+
+    active.add(sessionId);
   }
 
   return active;

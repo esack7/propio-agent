@@ -2,6 +2,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
+  clearSandboxEnvForTest,
+  restoreSandboxEnv,
+} from "../../__tests__/envTestHelpers.js";
+import {
   ensureDirectory0700,
   getSandboxScratchpadDir,
   getScratchpadDir,
@@ -14,16 +18,11 @@ describe("scratchpad", () => {
 
   beforeEach(() => {
     sessionsDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-scratchpad-"));
-    previousSandboxEnv = process.env.IS_SANDBOX;
-    delete process.env.IS_SANDBOX;
+    previousSandboxEnv = clearSandboxEnvForTest();
   });
 
   afterEach(() => {
-    if (previousSandboxEnv === undefined) {
-      delete process.env.IS_SANDBOX;
-    } else {
-      process.env.IS_SANDBOX = previousSandboxEnv;
-    }
+    restoreSandboxEnv(previousSandboxEnv);
     fs.rmSync(sessionsDir, { recursive: true, force: true });
   });
 

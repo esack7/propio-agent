@@ -4,58 +4,13 @@ import * as path from "path";
 import { Agent } from "../agent.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { LLMProvider } from "../providers/interface.js";
-import type { ChatRequest, ChatChunk } from "../providers/types.js";
-import { createPlainSubmission } from "../ui/input/promptSubmission.js";
-import type { ProvidersConfig } from "../providers/config.js";
-
-const testProvidersConfig: ProvidersConfig = {
-  default: "local-ollama",
-  providers: [
-    {
-      name: "local-ollama",
-      type: "ollama",
-      models: [
-        {
-          name: "Llama 3.2 3B",
-          key: "llama3.2:3b",
-          contextWindowTokens: 128_000,
-        },
-      ],
-      defaultModel: "llama3.2:3b",
-      host: "http://localhost:11434",
-    },
-  ],
-};
-
-function userSubmission(text: string) {
-  return createPlainSubmission(text, "prompt");
-}
-
-class IteratingMockProvider implements LLMProvider {
-  name = "mock-iterate";
-  streamChatCalls: ChatRequest[] = [];
-
-  getCapabilities() {
-    return { contextWindowTokens: 128000 };
-  }
-
-  async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
-    this.streamChatCalls.push(request);
-    if (this.streamChatCalls.length === 1) {
-      yield {
-        delta: "",
-        toolCalls: [
-          {
-            id: "call-1",
-            function: { name: "read", arguments: { path: "x" } },
-          },
-        ],
-      };
-    } else {
-      yield { delta: "done" };
-    }
-  }
-}
+import type { ChatRequest } from "../providers/types.js";
+import { clearSandboxEnvForTest, restoreSandboxEnv } from "./envTestHelpers.js";
+import {
+  testProvidersConfig,
+  ToolCallMockProvider,
+  userSubmission,
+} from "./testHelpers.js";
 
 class SingleShotMockProvider implements LLMProvider {
   name = "mock-single";
@@ -65,7 +20,7 @@ class SingleShotMockProvider implements LLMProvider {
     return { contextWindowTokens: 128000 };
   }
 
-  async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+  async *streamChat(request: ChatRequest): AsyncIterable<{ delta: string }> {
     this.streamChatCalls.push(request);
     yield { delta: "ok" };
   }
@@ -94,16 +49,11 @@ describe("Agent scratchpad integration", () => {
     sessionsDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "propio-agent-sessions-"),
     );
-    previousSandboxEnv = process.env.IS_SANDBOX;
-    delete process.env.IS_SANDBOX;
+    previousSandboxEnv = clearSandboxEnvForTest();
   });
 
   afterEach(() => {
-    if (previousSandboxEnv === undefined) {
-      delete process.env.IS_SANDBOX;
-    } else {
-      process.env.IS_SANDBOX = previousSandboxEnv;
-    }
+    restoreSandboxEnv(previousSandboxEnv);
     fs.rmSync(cwdDir, { recursive: true, force: true });
     fs.rmSync(sessionsDir, { recursive: true, force: true });
   });
@@ -166,8 +116,8 @@ describe("Agent scratchpad integration", () => {
   });
 
   it("uses the same scratchpad path across iterations in one turn", async () => {
+    const mockProvider = new ToolCallMockProvider("read");
     const agent = new Agent(agentOptions(cwdDir, sessionsDir));
-    const mockProvider = new IteratingMockProvider();
     (agent as { provider: LLMProvider }).provider = mockProvider;
 
     await agent.streamChat(userSubmission("multi"), () => {});

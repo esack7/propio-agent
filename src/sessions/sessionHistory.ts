@@ -209,6 +209,46 @@ export interface InProgressMarker {
   readonly turnIndex: number;
 }
 
+const IN_PROGRESS_FILE_PREFIX = "inprogress-";
+const IN_PROGRESS_FILE_SUFFIX = ".json";
+
+export function parseInProgressMarkerSessionId(
+  fileName: string,
+): string | null {
+  if (
+    !fileName.startsWith(IN_PROGRESS_FILE_PREFIX) ||
+    !fileName.endsWith(IN_PROGRESS_FILE_SUFFIX)
+  ) {
+    return null;
+  }
+  return fileName.slice(
+    IN_PROGRESS_FILE_PREFIX.length,
+    -IN_PROGRESS_FILE_SUFFIX.length,
+  );
+}
+
+export function readInProgressMarkerFile(
+  sessionsDir: string,
+  fileName: string,
+): InProgressMarker | null {
+  try {
+    const content = fs.readFileSync(path.join(sessionsDir, fileName), "utf8");
+    return JSON.parse(content) as InProgressMarker;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns whether a process is running (signal 0 probe; platform-dependent on Windows). */
+export function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function inProgressMarkerPath(sessionsDir: string, sessionId: string): string {
   return path.join(sessionsDir, `inprogress-${sessionId}.json`);
 }
@@ -265,33 +305,22 @@ export function findStaleMarkers(sessionsDir: string): StaleMarker[] {
 
   const files = fs.readdirSync(sessionsDir);
   for (const file of files) {
-    if (!file.startsWith("inprogress-") || !file.endsWith(".json")) {
+    const sessionId = parseInProgressMarkerSessionId(file);
+    if (!sessionId) {
       continue;
     }
 
-    const sessionId = file.slice("inprogress-".length, -".json".length);
-    try {
-      const content = fs.readFileSync(path.join(sessionsDir, file), "utf8");
-      const marker = JSON.parse(content) as InProgressMarker;
+    const marker = readInProgressMarkerFile(sessionsDir, file);
+    if (!marker) {
+      continue;
+    }
 
-      const startedAtMs = new Date(marker.startedAt).getTime();
-      const ageMs = now - startedAtMs;
+    const startedAtMs = new Date(marker.startedAt).getTime();
+    const ageMs = now - startedAtMs;
+    const processRunning = isPidRunning(marker.pid);
 
-      // Check if process is still running
-      let processRunning = false;
-      try {
-        // On Unix, kill with signal 0 checks if process exists
-        execSync(`kill -0 ${marker.pid}`, { stdio: "ignore" });
-        processRunning = true;
-      } catch {
-        processRunning = false;
-      }
-
-      if (!processRunning || ageMs > MAX_MARKER_AGE_MS) {
-        staleMarkers.push({ sessionId, marker, ageMs });
-      }
-    } catch {
-      // Skip malformed markers
+    if (!processRunning || ageMs > MAX_MARKER_AGE_MS) {
+      staleMarkers.push({ sessionId, marker, ageMs });
     }
   }
 
