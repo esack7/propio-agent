@@ -73,6 +73,19 @@ Outputs exceeding `toolOutputPersistThreshold` are persisted to a per-session ar
 | `REFRESH_THROTTLE_MS` | `5000` | `fileSearch/fileSearchIndex.ts:27` | Minimum gap between file-index refreshes. |
 | `MAX_SKILL_DISCOVERY_CHARS` | `3000` | `skills/discovery.ts:3` | Cap on skill-metadata text added to the system prompt. |
 
+## Session scratchpad (`src/scratchpad/`)
+
+Steering-only directory for agent-created temporary files (scripts, intermediate JSON, etc.), outside the git workspace.
+
+| Mode | Path |
+| --- | --- |
+| Native | `~/.propio/sessions/<workspace-hash>/scratchpads/<sessionId>/` |
+| Sandbox (`IS_SANDBOX=true`) | `/tmp/propio-scratchpads/<sessionId>/` (container-local; not synced to host) |
+
+Resolved once per user turn in `streamChat` (after any `importSession` session-id adoption). The `# Scratchpad Directory` system prompt section is included only when setup succeeds; on failure the turn continues without that section and emits a `scratchpad_unavailable` diagnostic.
+
+Startup pruning (`pruneStaleSessionStorage` in `src/sessions/sessionStoragePrune.ts`) removes stale `scratchpads/<sessionId>/` and `artifacts/<sessionId>/` dirs using the same `artifactRetentionDays` as tool-output artifacts. Indexed sessions are anchored by `runtimeSessionId` and `sessionId`; scratchpads with a live `inprogress-*.json` marker are skipped.
+
 ## Tuning notes
 
 If a real run is misbehaving, the dial that matters most is **`maxIterations`** — raise it with `PROPIO_MAX_ITERATIONS=100` or `--max-iterations 100`. The tool output inline limit and persist threshold are the next most common tuning points (`PROPIO_TOOL_OUTPUT_INLINE_LIMIT`, `PROPIO_TOOL_OUTPUT_PERSIST_THRESHOLD`). All knobs listed above accept env-var overrides without a code edit.

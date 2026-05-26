@@ -28,7 +28,7 @@ export class WriteTool implements ExecutableTool {
       function: {
         name: "write",
         description:
-          "Writes full content to a file, creating parent directories recursively and overwriting atomically.",
+          "Writes full content to a file, creating parent directories recursively and overwriting atomically. Prefer the scratchpad directory from # Scratchpad Directory for temporary or non-deliverable files (intermediate data, one-off scripts, temp outputs). Only create new files in the workspace when the user asked for a durable change or deliverable.",
         parameters: {
           type: "object",
           properties: {

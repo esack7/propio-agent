@@ -34,6 +34,17 @@ When formatting responses, avoid Markdown tables. Use bullet lists, numbered lis
 Keep summaries concise after completing work.`;
 }
 
+export function getScratchpadDirectorySection(scratchpadDir: string): string {
+  return `# Scratchpad Directory
+
+For temporary files you explicitly create (intermediate data, one-off scripts, temp configs, outputs you choose to save to a file), use this directory instead of the project tree:
+\`${scratchpadDir}\`
+
+Deliverables the user should keep (source changes, docs, configs in the repo) still go in the workspace.
+The scratchpad is session-specific and outside version control.
+Commands and libraries may still use OS temp locations internally; you do not need to redirect those.`;
+}
+
 export type RuntimeToolListMode = "full" | "summary" | "omit";
 
 function formatGitState(ctx: SystemPromptContext): string {

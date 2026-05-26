@@ -702,12 +702,16 @@ function validateInvokedSkillRecord(record: unknown, label: string): void {
 
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
-  assertString(metadata.providerName, "metadata.providerName");
-  assertString(metadata.modelKey, "metadata.modelKey");
-  assertString(metadata.systemPrompt, "metadata.systemPrompt");
-  assertNumber(metadata.contextWindowTokens, "metadata.contextWindowTokens");
-  assertObject(metadata.promptBudgetPolicy, "metadata.promptBudgetPolicy");
-  assertObject(metadata.summaryPolicy, "metadata.summaryPolicy");
+  const meta = metadata as Record<string, unknown>;
+  assertString(meta.providerName, "metadata.providerName");
+  assertString(meta.modelKey, "metadata.modelKey");
+  assertString(meta.systemPrompt, "metadata.systemPrompt");
+  assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
+  assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
+  assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
+  if (meta.sessionId !== undefined) {
+    assertString(meta.sessionId, "metadata.sessionId");
+  }
 }
 
 // ---------------------------------------------------------------------------

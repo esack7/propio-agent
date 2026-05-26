@@ -15,11 +15,13 @@ export interface SystemPromptContext {
   gitBranch?: string;
   isGitDirty?: boolean;
   enabledToolNames: readonly string[];
+  scratchpadDir?: string;
 }
 
 export interface BuildSystemPromptContextOptions {
   cwd?: string;
   enabledToolNames?: readonly string[];
+  scratchpadDir?: string;
 }
 
 interface GitCacheEntry {
@@ -137,6 +139,7 @@ export function buildSystemPromptContext(
     gitBranch: git.gitBranch,
     isGitDirty: git.isGitDirty,
     enabledToolNames: options.enabledToolNames ?? [],
+    scratchpadDir: options.scratchpadDir,
   };
 }
 
