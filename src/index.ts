@@ -65,9 +65,8 @@ import {
   getDefaultSessionsDir,
   findStaleMarkers,
   clearInProgressMarker,
-  readIndex,
-  rebuildIndex,
 } from "./sessions/sessionHistory.js";
+import { pruneStaleSessionStorage } from "./sessions/sessionStoragePrune.js";
 import {
   saveSessionOnExit,
   handleSessionCommand as handleSessionCmd,
@@ -816,29 +815,6 @@ function handleStaleMarkers(
   }
 }
 
-function pruneStaleArtifacts(sessionsDir: string, retentionDays: number): void {
-  const artifactsRoot = path.join(sessionsDir, "artifacts");
-  if (!fs.existsSync(artifactsRoot)) return;
-  const index = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir);
-  const anchoredIds = new Set(
-    index.entries.map((e) => e.runtimeSessionId).filter(Boolean) ?? [],
-  );
-  const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
-  for (const dirName of fs.readdirSync(artifactsRoot)) {
-    const dirPath = path.join(artifactsRoot, dirName);
-    try {
-      if (!fs.statSync(dirPath).isDirectory()) continue;
-      if (anchoredIds.has(dirName)) continue;
-      const mtime = fs.statSync(dirPath).mtimeMs;
-      if (Date.now() - mtime > retentionMs) {
-        fs.rmSync(dirPath, { recursive: true, force: true });
-      }
-    } catch {
-      continue;
-    }
-  }
-}
-
 type ParsedCliArgs = ReturnType<typeof parseCliArgs>;
 
 interface CliRuntimeOptions {
@@ -1006,7 +982,7 @@ async function runConfiguredSession(options: {
       streamIdleTimeoutMs: options.parsedArgs.flags.streamIdleTimeoutMs,
     },
   });
-  pruneStaleArtifacts(sessionsDir, runtimeConfig.artifactRetentionDays);
+  pruneStaleSessionStorage(sessionsDir, runtimeConfig.artifactRetentionDays);
 
   const { agent, configPath } = await createInitializedAgent(
     options.parsedArgs,

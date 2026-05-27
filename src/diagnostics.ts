@@ -271,6 +271,18 @@ export type AgentDiagnosticEvent =
       message: string;
     }
   | {
+      type: "scratchpad_unavailable";
+      path: string;
+      errorName: string;
+      message: string;
+    }
+  | {
+      type: "invalid_session_id";
+      sessionId: string;
+      provider: string;
+      model: string;
+    }
+  | {
       type: "legacy_session_no_id";
       provider: string;
       model: string;

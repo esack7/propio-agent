@@ -414,6 +414,34 @@ const VALID_SECTION_KEYS = new Set<string>([
   "accomplished",
   "remaining",
 ]);
+const VALID_SKILL_INVOCATION_SOURCES = new Set(["user", "model"]);
+
+function validateOptionalStringFields(
+  obj: Record<string, unknown>,
+  fields: readonly string[],
+  label: string,
+): void {
+  for (const field of fields) {
+    if (obj[field] !== undefined) {
+      assertString(obj[field], `${label}.${field}`);
+    }
+  }
+}
+
+function validateStringArrayField(
+  obj: Record<string, unknown>,
+  field: string,
+  label: string,
+): void {
+  if (obj[field] === undefined) {
+    return;
+  }
+  assertArray(obj[field], `${label}.${field}`);
+  const items = obj[field] as unknown[];
+  for (let i = 0; i < items.length; i++) {
+    assertString(items[i], `${label}.${field}[${i}]`);
+  }
+}
 
 function validateToolCall(tc: unknown, label: string): void {
   assertObject(tc, label);
@@ -432,57 +460,77 @@ function validateToolResult(tr: unknown, label: string): void {
   assertString(tr.content, `${label}.content`);
 }
 
+function validateMessageImage(img: unknown, label: string): void {
+  assertObject(img, label);
+  const imgObj = img as Record<string, unknown>;
+  assertString(imgObj.data, `${label}.data`);
+  assertString(imgObj.encoding, `${label}.encoding`);
+  if (!VALID_CONTENT_ENCODING.has(imgObj.encoding as string)) {
+    throw new SessionParseError(`${label}.encoding must be "utf8" or "base64"`);
+  }
+  if (imgObj.encoding === "base64") {
+    validateBase64(imgObj.data as string, label);
+  }
+}
+
+function validateMessageToolCalls(
+  msg: Record<string, unknown>,
+  label: string,
+): void {
+  if (msg.toolCalls === undefined) {
+    return;
+  }
+  assertArray(msg.toolCalls, `${label}.toolCalls`);
+  const toolCalls = msg.toolCalls as unknown[];
+  for (let i = 0; i < toolCalls.length; i++) {
+    validateToolCall(toolCalls[i], `${label}.toolCalls[${i}]`);
+  }
+}
+
+function validateMessageToolResults(
+  msg: Record<string, unknown>,
+  label: string,
+): void {
+  if (msg.toolResults === undefined) {
+    return;
+  }
+  assertArray(msg.toolResults, `${label}.toolResults`);
+  const toolResults = msg.toolResults as unknown[];
+  for (let i = 0; i < toolResults.length; i++) {
+    validateToolResult(toolResults[i], `${label}.toolResults[${i}]`);
+  }
+}
+
+function validateMessageImages(
+  msg: Record<string, unknown>,
+  label: string,
+): void {
+  if (msg.images === undefined) {
+    return;
+  }
+  assertArray(msg.images, `${label}.images`);
+  const images = msg.images as unknown[];
+  for (let i = 0; i < images.length; i++) {
+    validateMessageImage(images[i], `${label}.images[${i}]`);
+  }
+}
+
 function validateMessage(msg: unknown, label: string): void {
   assertObject(msg, label);
-  assertString(msg.role, `${label}.role`);
-  if (!VALID_ROLES.has(msg.role as string)) {
+  const record = msg as Record<string, unknown>;
+  assertString(record.role, `${label}.role`);
+  if (!VALID_ROLES.has(record.role as string)) {
     throw new SessionParseError(
       `${label}.role must be one of: user, assistant, system, tool`,
     );
   }
-  assertString(msg.content, `${label}.content`);
-  if (msg.reasoningContent !== undefined) {
-    assertString(msg.reasoningContent, `${label}.reasoningContent`);
+  assertString(record.content, `${label}.content`);
+  if (record.reasoningContent !== undefined) {
+    assertString(record.reasoningContent, `${label}.reasoningContent`);
   }
-
-  if (msg.toolCalls !== undefined) {
-    assertArray(msg.toolCalls, `${label}.toolCalls`);
-    for (let i = 0; i < (msg.toolCalls as unknown[]).length; i++) {
-      validateToolCall(
-        (msg.toolCalls as unknown[])[i],
-        `${label}.toolCalls[${i}]`,
-      );
-    }
-  }
-
-  if (msg.toolResults !== undefined) {
-    assertArray(msg.toolResults, `${label}.toolResults`);
-    for (let i = 0; i < (msg.toolResults as unknown[]).length; i++) {
-      validateToolResult(
-        (msg.toolResults as unknown[])[i],
-        `${label}.toolResults[${i}]`,
-      );
-    }
-  }
-
-  if (msg.images !== undefined) {
-    assertArray(msg.images, `${label}.images`);
-    for (let i = 0; i < (msg.images as unknown[]).length; i++) {
-      const img = (msg.images as unknown[])[i];
-      assertObject(img, `${label}.images[${i}]`);
-      const imgObj = img as Record<string, unknown>;
-      assertString(imgObj.data, `${label}.images[${i}].data`);
-      assertString(imgObj.encoding, `${label}.images[${i}].encoding`);
-      if (!VALID_CONTENT_ENCODING.has(imgObj.encoding as string)) {
-        throw new SessionParseError(
-          `${label}.images[${i}].encoding must be "utf8" or "base64"`,
-        );
-      }
-      if (imgObj.encoding === "base64") {
-        validateBase64(imgObj.data as string, `${label}.images[${i}]`);
-      }
-    }
-  }
+  validateMessageToolCalls(record, label);
+  validateMessageToolResults(record, label);
+  validateMessageImages(record, label);
 }
 
 function validateEntry(entry: unknown, label: string): void {
@@ -654,32 +702,19 @@ function validatePinnedMemoryRecord(record: unknown, label: string): void {
 
 function validateSkillScope(scope: unknown, label: string): void {
   assertObject(scope, label);
-  assertString(scope.invocationSource, `${label}.invocationSource`);
-  if (scope.invocationSource !== "user" && scope.invocationSource !== "model") {
+  const obj = scope as Record<string, unknown>;
+  assertString(obj.invocationSource, `${label}.invocationSource`);
+  if (!VALID_SKILL_INVOCATION_SOURCES.has(obj.invocationSource as string)) {
     throw new SessionParseError(
       `${label}.invocationSource must be one of: user, model`,
     );
   }
-  assertString(scope.skillName, `${label}.skillName`);
-  assertString(scope.skillRoot, `${label}.skillRoot`);
-  assertString(scope.skillFile, `${label}.skillFile`);
-  const obj = scope as Record<string, unknown>;
-  if (obj.allowedTools !== undefined) {
-    assertArray(obj.allowedTools, `${label}.allowedTools`);
-    for (let i = 0; i < obj.allowedTools.length; i++) {
-      assertString(obj.allowedTools[i], `${label}.allowedTools[${i}]`);
-    }
-  }
-  if (obj.model !== undefined) assertString(obj.model, `${label}.model`);
-  if (obj.effort !== undefined) assertString(obj.effort, `${label}.effort`);
-  if (obj.appliedModel !== undefined)
-    assertString(obj.appliedModel, `${label}.appliedModel`);
-  if (obj.warnings !== undefined) {
-    assertArray(obj.warnings, `${label}.warnings`);
-    for (let i = 0; i < obj.warnings.length; i++) {
-      assertString(obj.warnings[i], `${label}.warnings[${i}]`);
-    }
-  }
+  assertString(obj.skillName, `${label}.skillName`);
+  assertString(obj.skillRoot, `${label}.skillRoot`);
+  assertString(obj.skillFile, `${label}.skillFile`);
+  validateStringArrayField(obj, "allowedTools", label);
+  validateOptionalStringFields(obj, ["model", "effort", "appliedModel"], label);
+  validateStringArrayField(obj, "warnings", label);
 }
 
 function validateInvokedSkillRecord(record: unknown, label: string): void {
@@ -702,12 +737,16 @@ function validateInvokedSkillRecord(record: unknown, label: string): void {
 
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
-  assertString(metadata.providerName, "metadata.providerName");
-  assertString(metadata.modelKey, "metadata.modelKey");
-  assertString(metadata.systemPrompt, "metadata.systemPrompt");
-  assertNumber(metadata.contextWindowTokens, "metadata.contextWindowTokens");
-  assertObject(metadata.promptBudgetPolicy, "metadata.promptBudgetPolicy");
-  assertObject(metadata.summaryPolicy, "metadata.summaryPolicy");
+  const meta = metadata as Record<string, unknown>;
+  assertString(meta.providerName, "metadata.providerName");
+  assertString(meta.modelKey, "metadata.modelKey");
+  assertString(meta.systemPrompt, "metadata.systemPrompt");
+  assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
+  assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
+  assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
+  if (meta.sessionId !== undefined) {
+    assertString(meta.sessionId, "metadata.sessionId");
+  }
 }
 
 // ---------------------------------------------------------------------------

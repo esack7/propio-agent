@@ -45,7 +45,7 @@ export class EditTool implements ExecutableTool {
       function: {
         name: "edit",
         description:
-          "Edits an existing text file by replacing exact string matches. Fails when the match is missing or ambiguous unless replace_all is true.",
+          "Edits an existing text file by replacing exact string matches. Fails when the match is missing or ambiguous unless replace_all is true. Do not use edit for throwaway scratch scripts; use the scratchpad with write or inline shell instead.",
         parameters: {
           type: "object",
           properties: {

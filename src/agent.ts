@@ -67,6 +67,11 @@ import {
   clearInProgressMarker,
   InProgressMarker,
 } from "./sessions/sessionHistory.js";
+import {
+  removeEmptyScratchpadDir,
+  resolveScratchpadDir,
+} from "./scratchpad/scratchpad.js";
+import { isSafeSessionId } from "./sessions/sessionId.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -212,6 +217,8 @@ export class Agent {
   private readonly sessionId: string;
   private readonly runtimeConfig: RuntimeConfig;
   private sessionsDir: string | null = null;
+  private readonly configuredSessionsDir?: string;
+  private turnScratchpadDir: string | undefined;
   private pendingToolResultBytes = 0;
 
   constructor(
@@ -225,6 +232,8 @@ export class Agent {
       agentsMdContent?: string;
       cwd?: string;
       homeDir?: string;
+      /** Override ~/.propio/sessions/<hash> (tests). */
+      sessionsDir?: string;
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
       runtimeConfig?: RuntimeConfig;
@@ -249,6 +258,7 @@ export class Agent {
       cwd: options.cwd ?? process.cwd(),
       homeDir: options.homeDir ?? os.homedir(),
     };
+    this.configuredSessionsDir = options.sessionsDir;
 
     this.sessionId = randomUUID();
     this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
@@ -867,6 +877,7 @@ export class Agent {
     const ctx = buildSystemPromptContext({
       cwd: this.skillContext.cwd,
       enabledToolNames: this.collectEnabledToolNames(allowedTools),
+      scratchpadDir: this.turnScratchpadDir,
     });
     const { compiled, runtimeContextOverflowBlock } = compileSystemPrompt(
       ctx,
@@ -2164,8 +2175,24 @@ export class Agent {
     let reasoningContent: string | undefined;
 
     // Get sessions dir for in-progress marker management (available to both try and catch)
-    const sessionsDir = getDefaultSessionsDir();
+    const sessionsDir = this.configuredSessionsDir ?? getDefaultSessionsDir();
     this.sessionsDir = sessionsDir;
+
+    const scratchpadResolved = resolveScratchpadDir(
+      sessionsDir,
+      this.sessionId,
+    );
+    if (scratchpadResolved.ok) {
+      this.turnScratchpadDir = scratchpadResolved.path;
+    } else {
+      this.turnScratchpadDir = undefined;
+      this.emitDiagnostic({
+        type: "scratchpad_unavailable",
+        path: scratchpadResolved.path,
+        errorName: scratchpadResolved.errorName,
+        message: scratchpadResolved.message,
+      });
+    }
 
     try {
       // Write in-progress marker at turn start (Phase 7 crash telemetry)
@@ -2282,6 +2309,7 @@ export class Agent {
 
       // Clear in-progress marker on clean turn completion
       clearInProgressMarker(sessionsDir, this.sessionId);
+      removeEmptyScratchpadDir(this.turnScratchpadDir);
 
       return finalResponse;
     } catch (error) {
@@ -2303,6 +2331,7 @@ export class Agent {
       } catch {
         // Ignore marker clearing errors
       }
+      removeEmptyScratchpadDir(this.turnScratchpadDir);
       throw this.handleProviderError(error);
     }
   }
@@ -2374,7 +2403,16 @@ export class Agent {
     this.lastPromptPlanSnapshot = null;
 
     if (persisted.metadata.sessionId) {
-      (this as any).sessionId = persisted.metadata.sessionId;
+      if (isSafeSessionId(persisted.metadata.sessionId)) {
+        (this as any).sessionId = persisted.metadata.sessionId;
+      } else {
+        this.emitDiagnostic({
+          type: "invalid_session_id",
+          sessionId: persisted.metadata.sessionId,
+          provider: this.provider.name,
+          model: this.model,
+        });
+      }
     } else {
       this.emitDiagnostic({
         type: "legacy_session_no_id",

@@ -26,6 +26,23 @@ describe("SystemPromptSectionRegistry", () => {
     expect(registry.getCoreIdentity("Rules B")).toContain("Rules B");
   });
 
+  it("does not memoize scratchpadDirectory (section omitted without scratchpadDir)", () => {
+    const registry = new SystemPromptSectionRegistry();
+    const withScratch = compileSystemPrompt(
+      { ...ctx, scratchpadDir: "/scratch/a" },
+      {},
+      registry,
+    );
+    const withoutScratch = compileSystemPrompt(ctx, {}, registry);
+
+    expect(withScratch.compiled.sections.map((s) => s.id)).toContain(
+      "scratchpadDirectory",
+    );
+    expect(withoutScratch.compiled.sections.map((s) => s.id)).not.toContain(
+      "scratchpadDirectory",
+    );
+  });
+
   it("refreshes runtime environment each compile", () => {
     const registry = new SystemPromptSectionRegistry();
     compileSystemPrompt(

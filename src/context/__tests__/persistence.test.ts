@@ -771,6 +771,15 @@ describe("persistence", () => {
       );
     });
 
+    it("should reject non-string metadata.sessionId", () => {
+      const data = JSON.parse(makeV1SessionJson({}));
+      data.metadata = { ...TEST_METADATA, sessionId: 123 };
+      expectParseError(
+        JSON.stringify(data),
+        "metadata.sessionId must be a string",
+      );
+    });
+
     it("should reject missing context field", () => {
       const json = JSON.stringify({
         version: 1,

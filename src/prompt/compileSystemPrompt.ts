@@ -2,6 +2,7 @@ import {
   DEFAULT_CORE_IDENTITY,
   formatRuntimeEnvironmentSection,
   formatRuntimeOverflowBlock,
+  getScratchpadDirectorySection,
 } from "./systemPromptSections.js";
 import {
   SYSTEM_PROMPT_ENV_MAX_CHARS,
@@ -14,6 +15,7 @@ export type SystemPromptSectionId =
   | "agentsMd"
   | "toolUtilization"
   | "responseFormatting"
+  | "scratchpadDirectory"
   | "runtimeEnvironment";
 
 export interface CompiledSystemPrompt {
@@ -40,6 +42,7 @@ const SECTION_ORDER: readonly SystemPromptSectionId[] = [
   "agentsMd",
   "toolUtilization",
   "responseFormatting",
+  "scratchpadDirectory",
   "runtimeEnvironment",
 ];
 
@@ -120,6 +123,12 @@ export function compileSystemPrompt(
   ]);
   if (agentsMd) {
     sectionMap.set("agentsMd", agentsMd);
+  }
+  if (ctx.scratchpadDir) {
+    sectionMap.set(
+      "scratchpadDirectory",
+      getScratchpadDirectorySection(ctx.scratchpadDir),
+    );
   }
 
   const sections = SECTION_ORDER.filter((id) => sectionMap.has(id)).map(

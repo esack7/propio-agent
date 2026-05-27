@@ -98,7 +98,7 @@ export class BashTool implements ExecutableTool {
             cwd: {
               type: "string",
               description:
-                "Working directory for command execution. Defaults to process.cwd()",
+                "Working directory for command execution. Defaults to process.cwd(). For throwaway scripts or temp files you create, use the path from # Scratchpad Directory when that section is present. Prefer python -c or node -e when a script file is unnecessary.",
             },
             env: {
               type: "object",

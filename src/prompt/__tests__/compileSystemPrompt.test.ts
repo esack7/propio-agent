@@ -26,6 +26,34 @@ describe("compileSystemPrompt", () => {
     ]);
   });
 
+  it("includes scratchpadDirectory when scratchpadDir is set", () => {
+    const scratchpadDir = "/tmp/propio-scratchpads/test-session";
+    const { compiled } = compileSystemPrompt({
+      ...ctx,
+      scratchpadDir,
+    });
+
+    expect(compiled.sections.map((s) => s.id)).toEqual([
+      "coreIdentity",
+      "toolUtilization",
+      "responseFormatting",
+      "scratchpadDirectory",
+      "runtimeEnvironment",
+    ]);
+    const scratch = compiled.sections.find(
+      (s) => s.id === "scratchpadDirectory",
+    );
+    expect(scratch?.content).toContain(scratchpadDir);
+    expect(scratch?.content).toContain("# Scratchpad Directory");
+  });
+
+  it("omits scratchpadDirectory when scratchpadDir is unset", () => {
+    const { compiled } = compileSystemPrompt(ctx);
+    expect(compiled.sections.map((s) => s.id)).not.toContain(
+      "scratchpadDirectory",
+    );
+  });
+
   it("omits agentsMd when content is blank", () => {
     const { compiled } = compileSystemPrompt(ctx, {
       agentsMdContent: "   ",
