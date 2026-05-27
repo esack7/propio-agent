@@ -67,7 +67,10 @@ import {
   clearInProgressMarker,
   InProgressMarker,
 } from "./sessions/sessionHistory.js";
-import { resolveScratchpadDir } from "./scratchpad/scratchpad.js";
+import {
+  removeEmptyScratchpadDir,
+  resolveScratchpadDir,
+} from "./scratchpad/scratchpad.js";
 import { isSafeSessionId } from "./sessions/sessionId.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
@@ -2306,6 +2309,7 @@ export class Agent {
 
       // Clear in-progress marker on clean turn completion
       clearInProgressMarker(sessionsDir, this.sessionId);
+      removeEmptyScratchpadDir(this.turnScratchpadDir);
 
       return finalResponse;
     } catch (error) {
@@ -2327,6 +2331,7 @@ export class Agent {
       } catch {
         // Ignore marker clearing errors
       }
+      removeEmptyScratchpadDir(this.turnScratchpadDir);
       throw this.handleProviderError(error);
     }
   }

@@ -99,6 +99,27 @@ describe("sessionStoragePrune", () => {
     expect(fs.existsSync(scratchDir)).toBe(true);
   });
 
+  it("prunes empty anchored scratchpads", () => {
+    const scratchDir = path.join(sessionsDir, "scratchpads", "empty-anchored");
+    fs.mkdirSync(scratchDir, { recursive: true });
+    writeIndexEntries([
+      {
+        sessionId: "empty-anchored",
+        runtimeSessionId: "empty-anchored",
+        snapshotFile: "empty-anchored.json",
+        savedAt: new Date().toISOString(),
+        providerName: "p",
+        modelKey: "m",
+        turnCount: 0,
+        hasRollingSummary: false,
+      },
+    ]);
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(scratchDir)).toBe(false);
+  });
+
   it("does not delete scratchpad with live inprogress marker", () => {
     const staleMtime = Date.now() - retentionMs - 1000;
     const scratchDir = makeStorageDir(

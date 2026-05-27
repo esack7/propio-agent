@@ -47,11 +47,42 @@ function buildAnchoredSessionIds(sessionsDir: string): Set<string> {
   return anchored;
 }
 
+interface PruneSessionStorageOptions {
+  skipSessionIds?: Set<string>;
+  removeEmptyDirs?: boolean;
+}
+
+function isEmptyDirectory(dirPath: string): boolean {
+  return fs.readdirSync(dirPath).length === 0;
+}
+
+function shouldPruneStorageDir(params: {
+  dirName: string;
+  dirPath: string;
+  anchoredIds: Set<string>;
+  retentionMs: number;
+  options?: PruneSessionStorageOptions;
+}): boolean {
+  const { dirName, dirPath, anchoredIds, retentionMs, options } = params;
+  if (options?.skipSessionIds?.has(dirName)) {
+    return false;
+  }
+  if (options?.removeEmptyDirs && isEmptyDirectory(dirPath)) {
+    return true;
+  }
+  if (anchoredIds.has(dirName)) {
+    return false;
+  }
+
+  const mtime = fs.statSync(dirPath).mtimeMs;
+  return Date.now() - mtime > retentionMs;
+}
+
 function pruneSessionStorageTree(
   rootDir: string,
   anchoredIds: Set<string>,
   retentionMs: number,
-  skipSessionIds?: Set<string>,
+  options?: PruneSessionStorageOptions,
 ): void {
   if (!fs.existsSync(rootDir)) {
     return;
@@ -63,14 +94,15 @@ function pruneSessionStorageTree(
       if (!fs.statSync(dirPath).isDirectory()) {
         continue;
       }
-      if (anchoredIds.has(dirName)) {
-        continue;
-      }
-      if (skipSessionIds?.has(dirName)) {
-        continue;
-      }
-      const mtime = fs.statSync(dirPath).mtimeMs;
-      if (Date.now() - mtime > retentionMs) {
+      if (
+        shouldPruneStorageDir({
+          dirName,
+          dirPath,
+          anchoredIds,
+          retentionMs,
+          options,
+        })
+      ) {
         fs.rmSync(dirPath, { recursive: true, force: true });
       }
     } catch {
@@ -97,6 +129,6 @@ export function pruneStaleSessionStorage(
     path.join(sessionsDir, "scratchpads"),
     anchoredIds,
     retentionMs,
-    activeInProgress,
+    { skipSessionIds: activeInProgress, removeEmptyDirs: true },
   );
 }

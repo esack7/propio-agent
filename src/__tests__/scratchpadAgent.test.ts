@@ -94,7 +94,7 @@ describe("Agent scratchpad integration", () => {
     expect(prompt).toContain("# Scratchpad Directory");
     expect(prompt).toContain(expectedScratch);
     expect(prompt).not.toContain(`scratchpads/${constructorId}`);
-    expect(fs.existsSync(expectedScratch)).toBe(true);
+    expect(fs.existsSync(expectedScratch)).toBe(false);
   });
 
   it("uses sandbox scratchpad path when IS_SANDBOX", async () => {
@@ -131,6 +131,7 @@ describe("Agent scratchpad integration", () => {
     );
     expect(firstPath).toBeDefined();
     expect(secondPath).toBe(firstPath);
+    expect(fs.existsSync(firstPath!)).toBe(false);
   });
 
   it("omits scratchpad section and emits diagnostic when resolve fails", async () => {

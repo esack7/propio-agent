@@ -30,6 +30,18 @@ export function ensureDirectory0700(dir: string): string {
   return path.resolve(dir);
 }
 
+export function removeEmptyScratchpadDir(dir: string | undefined): void {
+  if (!dir) {
+    return;
+  }
+
+  try {
+    fs.rmdirSync(dir);
+  } catch {
+    // Keep directories that contain real scratch work, or when removal fails.
+  }
+}
+
 export function resolveScratchpadDir(
   sessionsDir: string,
   sessionId: string,

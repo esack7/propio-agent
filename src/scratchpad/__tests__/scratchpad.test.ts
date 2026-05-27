@@ -9,6 +9,7 @@ import {
   ensureDirectory0700,
   getSandboxScratchpadDir,
   getScratchpadDir,
+  removeEmptyScratchpadDir,
   resolveScratchpadDir,
 } from "../scratchpad.js";
 
@@ -70,6 +71,25 @@ describe("scratchpad", () => {
     const resolved = ensureDirectory0700(dir);
     expect(resolved).toBe(path.resolve(dir));
     expect(fs.statSync(resolved).mode & 0o777).toBe(0o700);
+  });
+
+  it("removeEmptyScratchpadDir removes empty dirs", () => {
+    const dir = path.join(sessionsDir, "scratchpads", "empty-session");
+    fs.mkdirSync(dir, { recursive: true });
+
+    removeEmptyScratchpadDir(dir);
+
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("removeEmptyScratchpadDir keeps dirs with files", () => {
+    const dir = path.join(sessionsDir, "scratchpads", "used-session");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "notes.txt"), "scratch");
+
+    removeEmptyScratchpadDir(dir);
+
+    expect(fs.existsSync(dir)).toBe(true);
   });
 
   it("resolveScratchpadDir rejects unsafe session ids without creating dirs", () => {
