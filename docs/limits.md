@@ -82,9 +82,9 @@ Steering-only directory for agent-created temporary files (scripts, intermediate
 | Native | `~/.propio/sessions/<workspace-hash>/scratchpads/<sessionId>/` |
 | Sandbox (`IS_SANDBOX=true`) | `/tmp/propio-scratchpads/<sessionId>/` (container-local; not synced to host) |
 
-Resolved once per user turn in `streamChat` (after any `importSession` session-id adoption). The `# Scratchpad Directory` system prompt section is included only when setup succeeds; on failure the turn continues without that section and emits a `scratchpad_unavailable` diagnostic.
+Resolved once per user turn in `streamChat` (after any `importSession` session-id adoption). The `# Scratchpad Directory` system prompt section is included only when setup succeeds; on failure the turn continues without that section and emits a `scratchpad_unavailable` diagnostic. If the directory remains empty for the whole turn, it is removed at turn end.
 
-Startup pruning (`pruneStaleSessionStorage` in `src/sessions/sessionStoragePrune.ts`) removes stale `scratchpads/<sessionId>/` and `artifacts/<sessionId>/` dirs using the same `artifactRetentionDays` as tool-output artifacts. Indexed sessions are anchored by `runtimeSessionId` and `sessionId`; scratchpads with a live `inprogress-*.json` marker are skipped.
+Startup pruning (`pruneStaleSessionStorage` in `src/sessions/sessionStoragePrune.ts`) removes empty scratchpad dirs immediately, and removes stale `scratchpads/<sessionId>/` and `artifacts/<sessionId>/` dirs using the same `artifactRetentionDays` as tool-output artifacts. Indexed sessions are anchored by `runtimeSessionId` and `sessionId`; scratchpads with a live `inprogress-*.json` marker are skipped.
 
 ## Tuning notes
 
