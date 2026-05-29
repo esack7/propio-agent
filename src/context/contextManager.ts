@@ -42,6 +42,11 @@ import {
 } from "./summaryManager.js";
 import { renderInvokedSkillBlock } from "./invokedSkillRenderer.js";
 import { findLastAssistantEntryIndex } from "./turnUtils.js";
+import {
+  isSyntheticMentionAssistantMessage,
+  isSyntheticMentionToolMessage,
+  collectMentionToolCallIds,
+} from "../fileSearch/syntheticMention.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -354,6 +359,51 @@ export class ContextManager {
     const turn = this.turns[this.turns.length - 1];
     if (turn.completedAt != null || turn.entries.length > 0) {
       return;
+    }
+
+    this.turns.pop();
+  }
+
+  /**
+   * Drop a failed in-progress turn that only contains auto-injected @ mention
+   * read/list tool replay (assistant + tool entries). Also removes artifacts
+   * created for those synthetic mention invocations.
+   */
+  private isSyntheticMentionOnlyTurnEntries(
+    entries: MutableTurnEntry[],
+  ): entries is [MutableTurnEntry, MutableTurnEntry] {
+    if (entries.length !== 2) {
+      return false;
+    }
+
+    const [assistantEntry, toolEntry] = entries;
+    return (
+      assistantEntry.kind === "assistant" &&
+      toolEntry.kind === "tool" &&
+      isSyntheticMentionAssistantMessage(assistantEntry.message) &&
+      isSyntheticMentionToolMessage(
+        toolEntry.message,
+        collectMentionToolCallIds(assistantEntry.message),
+      )
+    );
+  }
+
+  abandonSyntheticMentionOnlyTurn(): void {
+    if (this.turns.length === 0) {
+      return;
+    }
+
+    const turn = this.turns[this.turns.length - 1];
+    if (
+      turn.completedAt != null ||
+      !this.isSyntheticMentionOnlyTurnEntries(turn.entries)
+    ) {
+      return;
+    }
+
+    const [, toolEntry] = turn.entries;
+    for (const invocation of toolEntry.toolInvocations ?? []) {
+      this.artifacts.delete(invocation.artifactId);
     }
 
     this.turns.pop();
