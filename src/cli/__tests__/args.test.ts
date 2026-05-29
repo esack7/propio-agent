@@ -136,6 +136,27 @@ describe("cli args parsing", () => {
     expect(parsed.forwardedArgs).toEqual(["--help", "--json"]);
   });
 
+  it("parses --version flag and forwards it", () => {
+    const parsed = parseCliArgs(["--version", "--foo"]);
+
+    expect(parsed.flags.version).toBe(true);
+    expect(parsed.forwardedArgs).toEqual(["--version", "--foo"]);
+  });
+
+  it("parses -v flag and forwards it", () => {
+    const parsed = parseCliArgs(["-v", "--json"]);
+
+    expect(parsed.flags.version).toBe(true);
+    expect(parsed.forwardedArgs).toEqual(["-v", "--json"]);
+  });
+
+  it("keeps version false by default", () => {
+    const parsed = parseCliArgs(["--help", "--json"]);
+
+    expect(parsed.flags.version).toBe(false);
+    expect(parsed.forwardedArgs).toEqual(["--help", "--json"]);
+  });
+
   it("parses both context inspection flags together", () => {
     const parsed = parseCliArgs([
       "--show-context-stats",
