@@ -16,6 +16,10 @@ export const STARTUP_BANNER = `
  * Writes the Propio startup banner.
  * Use once at CLI launch, after sandbox delegation when not delegating.
  */
-export function printStartupBanner(ui: Pick<TerminalUi, "info">): void {
+export function printStartupBanner(
+  ui: Pick<TerminalUi, "info" | "subtle">,
+  version: string,
+): void {
   ui.info(STARTUP_BANNER);
+  ui.subtle(`                    v${version}`);
 }

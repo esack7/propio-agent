@@ -384,6 +384,7 @@ Start the agent and type messages at the prompt. Session context is maintained a
 | Flag                       | Description                                          |
 | -------------------------- | ---------------------------------------------------- |
 | `--help`, `-h`             | Show CLI help                                        |
+| `--version`, `-v`          | Print package version and exit                       |
 | `--sandbox`                | Run in Docker sandbox mode                           |
 | `--json`                   | Read one prompt from stdin, print JSON to stdout     |
 | `--plain`                  | Disable ANSI colors and spinner                      |

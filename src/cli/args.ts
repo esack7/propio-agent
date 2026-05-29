@@ -11,6 +11,8 @@ const CLI_FLAG_DEBUG_LLM = "--debug-llm";
 const CLI_FLAG_DEBUG_LLM_FILE = "--debug-llm-file";
 const CLI_FLAG_HELP = "--help";
 const CLI_FLAG_HELP_SHORT = "-h";
+const CLI_FLAG_VERSION = "--version";
+const CLI_FLAG_VERSION_SHORT = "-v";
 const CLI_FLAG_MAX_ITERATIONS = "--max-iterations";
 const CLI_FLAG_MAX_RETRIES = "--max-retries";
 const CLI_FLAG_BASH_TIMEOUT_MS = "--bash-timeout-ms";
@@ -30,6 +32,7 @@ export interface ParsedCliArgs {
     debugLlm: boolean;
     debugLlmFile?: string;
     help: boolean;
+    version: boolean;
     maxIterations?: number;
     maxRetries?: number;
     bashTimeoutMs?: number;
@@ -89,6 +92,8 @@ const BOOL_FLAG_MAP: ReadonlyMap<string, BoolFlagKeys> = new Map([
   [CLI_FLAG_DEBUG_LLM, "debugLlm"],
   [CLI_FLAG_HELP, "help"],
   [CLI_FLAG_HELP_SHORT, "help"],
+  [CLI_FLAG_VERSION, "version"],
+  [CLI_FLAG_VERSION_SHORT, "version"],
 ]);
 
 type DebugLlmFileResult = { consumed: boolean } | null;
@@ -168,6 +173,7 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     debugLlm: false,
     debugLlmFile: undefined,
     help: false,
+    version: false,
     maxIterations: undefined,
     maxRetries: undefined,
     bashTimeoutMs: undefined,

@@ -1,4 +1,4 @@
-import { STARTUP_BANNER } from "../banner.js";
+import { STARTUP_BANNER, printStartupBanner } from "../banner.js";
 
 describe("banner module", () => {
   describe("STARTUP_BANNER", () => {
@@ -13,6 +13,26 @@ describe("banner module", () => {
         STARTUP_BANNER.includes("P R O P I O") ||
         STARTUP_BANNER.includes("████");
       expect(hasPropio).toBe(true);
+    });
+  });
+
+  describe("printStartupBanner", () => {
+    it("renders the banner and a subtle version line", () => {
+      const infoLines: string[] = [];
+      const subtleLines: string[] = [];
+      const ui = {
+        info: (text: string) => {
+          infoLines.push(text);
+        },
+        subtle: (text: string) => {
+          subtleLines.push(text);
+        },
+      };
+
+      printStartupBanner(ui, "1.2.3");
+
+      expect(infoLines).toEqual([STARTUP_BANNER]);
+      expect(subtleLines).toEqual(["                    v1.2.3"]);
     });
   });
 });

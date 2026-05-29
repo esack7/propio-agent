@@ -4,6 +4,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import type { Agent as AgentType } from "./agent.js";
 import { parseCliArgs } from "./cli/args.js";
+import { getPackageVersion } from "./packageVersion.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import {
   loadRuntimeConfig,
@@ -106,6 +107,7 @@ Options:
   --debug-llm         Emit provider/stream/tool diagnostic events to stderr
   --debug-llm-file    Append provider/stream/tool diagnostic events to a file
   -h, --help          Show this help text
+  -v, --version       Print package version and exit
 `;
 
 function createDiagnosticLogger(options: {
@@ -968,7 +970,7 @@ async function runConfiguredSession(options: {
   abortState: AbortStateController;
 }): Promise<number> {
   if (!options.ui.isJsonMode()) {
-    printStartupBanner(options.ui);
+    printStartupBanner(options.ui, getPackageVersion());
     options.ui.command("");
   }
 
@@ -1015,6 +1017,11 @@ async function runConfiguredSession(options: {
 async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
   const parsedArgs = parseCliArgs(rawArgs);
+
+  if (parsedArgs.flags.version) {
+    process.stdout.write(`${getPackageVersion()}\n`);
+    return 0;
+  }
 
   const sandboxExitCode = await maybeRunSandboxDelegation(rawArgs);
   if (sandboxExitCode !== null) {
