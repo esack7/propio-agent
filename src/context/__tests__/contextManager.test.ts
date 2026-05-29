@@ -208,6 +208,70 @@ describe("ContextManager", () => {
     });
   });
 
+  describe("abandonSyntheticMentionOnlyTurn", () => {
+    function addSyntheticMentionTurn(userMessage = "@src/info.txt go") {
+      manager.beginUserTurn(userMessage);
+      manager.commitAssistantResponse("", [
+        {
+          id: "mention_1",
+          function: {
+            name: "read",
+            arguments: {
+              path: "src/info.txt",
+              resolvedPath: "/workspace/src/info.txt",
+            },
+          },
+        },
+      ]);
+      manager.recordToolResults([
+        toolResult("mention_1", "read", "alpha\nbeta"),
+      ]);
+    }
+
+    it("removes mention-only failed turns and cleans up artifacts", () => {
+      addSyntheticMentionTurn();
+      const artifactIds = manager
+        .getConversationState()
+        .turns[0].entries.find((entry) => entry.kind === "tool")
+        ?.toolInvocations?.map((invocation) => invocation.artifactId);
+
+      manager.abandonSyntheticMentionOnlyTurn();
+
+      expect(manager.getConversationState().turns).toHaveLength(0);
+      for (const artifactId of artifactIds ?? []) {
+        expect(
+          manager
+            .getConversationState()
+            .artifacts.some((artifact) => artifact.id === artifactId),
+        ).toBe(false);
+      }
+    });
+
+    it("preserves real tool-call partial turns", () => {
+      manager.beginUserTurn("Run tool");
+      manager.commitAssistantResponse("Calling", [
+        { id: "call-1", function: { name: "bash", arguments: { cmd: "ls" } } },
+      ]);
+      manager.recordToolResults([toolResult("call-1", "bash", "ok")]);
+
+      manager.abandonSyntheticMentionOnlyTurn();
+
+      expect(manager.getConversationState().turns).toHaveLength(1);
+      expect(manager.getConversationState().artifacts).toHaveLength(1);
+    });
+
+    it("keeps successful mention turns in conversation history", () => {
+      addSyntheticMentionTurn();
+      manager.commitAssistantResponse("Done");
+
+      manager.abandonSyntheticMentionOnlyTurn();
+
+      expect(manager.getConversationState().turns).toHaveLength(1);
+      expect(manager.getConversationState().turns[0].completedAt).toBeDefined();
+      expect(manager.getConversationState().turns[0].entries).toHaveLength(3);
+    });
+  });
+
   describe("getSnapshot and cloning", () => {
     it("should return a defensive copy that is not affected by later mutations", () => {
       manager.beginUserTurn("Hello");

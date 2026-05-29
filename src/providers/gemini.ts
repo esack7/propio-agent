@@ -22,6 +22,10 @@ import {
   OpenAiCompatibleProvider,
   type OpenAiCompatibleProviderOptions,
 } from "./openAiCompatibleProvider.js";
+import {
+  formatSyntheticMentionInlineContext,
+  isSyntheticMentionMessagePair,
+} from "../fileSearch/syntheticMention.js";
 
 const GEMINI_API_URL =
   "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
@@ -512,12 +516,37 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
     return reader;
   }
 
+  private sanitizeMessagesForGemini(messages: ChatMessage[]): ChatMessage[] {
+    const sanitized: ChatMessage[] = [];
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      const nextMessage = messages[index + 1];
+      if (isSyntheticMentionMessagePair(message, nextMessage)) {
+        sanitized.push({
+          role: "user",
+          content: formatSyntheticMentionInlineContext(message, nextMessage),
+        });
+        index += 1;
+        continue;
+      }
+
+      sanitized.push(message);
+    }
+
+    return sanitized;
+  }
+
   private buildGeminiRequestBody(
     request: ChatRequest,
   ): Record<string, unknown> {
     const effectiveModel = request.model || this.model;
+    const sanitizedRequest: ChatRequest = {
+      ...request,
+      messages: this.sanitizeMessagesForGemini(request.messages),
+    };
     return buildOpenAIChatCompletionRequestBody({
-      request,
+      request: sanitizedRequest,
       model: effectiveModel,
       mapMessage: (msg) => this.chatMessageToOpenAIMessage(msg),
       mapTool: (tool) => this.chatToolToOpenAITool(tool),

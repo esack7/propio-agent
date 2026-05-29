@@ -2316,6 +2316,7 @@ export class Agent {
       if (options?.abortSignal?.reason === "escape") {
         this.contextManager.abandonIncompleteTurn();
       }
+      this.contextManager.abandonSyntheticMentionOnlyTurn();
 
       this.emitDiagnostic({
         type: "provider_error",

@@ -9,6 +9,7 @@ import {
   ChatStreamEvent,
   ChatChunk,
   ChatMessage,
+  ChatToolCall,
   ProviderContextLengthError,
 } from "../providers/types.js";
 import { ProvidersConfig } from "../providers/config.js";
@@ -45,6 +46,46 @@ class MockProvider implements LLMProvider {
     yield { delta: "Mock " };
     yield { delta: "response" };
   }
+}
+
+function createImmediateFailProvider(
+  name: string,
+  message: string,
+): LLMProvider {
+  return {
+    name,
+    getCapabilities: () => ({ contextWindowTokens: 128000 }),
+    async *streamChat() {
+      throw new Error(message);
+    },
+  };
+}
+
+function createFirstToolCallThenFailProvider(options: {
+  name: string;
+  toolCalls: ChatToolCall[];
+  errorMessage: string;
+  reasoningContent?: string;
+}): LLMProvider {
+  const requests: ChatRequest[] = [];
+  return {
+    name: options.name,
+    getCapabilities: () => ({ contextWindowTokens: 128000 }),
+    async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
+      requests.push(request);
+      if (requests.length === 1) {
+        yield {
+          type: "tool_calls",
+          toolCalls: options.toolCalls,
+          ...(options.reasoningContent
+            ? { reasoningContent: options.reasoningContent }
+            : {}),
+        };
+        return;
+      }
+      throw new Error(options.errorMessage);
+    },
+  };
 }
 
 const testProvidersConfig: ProvidersConfig = sharedTestProvidersConfig;
@@ -270,18 +311,25 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("File mentions", () => {
-    it("attaches mentioned files before the provider call", async () => {
-      const workspaceRoot = path.join(tempDir, "mentions-workspace");
+    function createMentionsWorkspace(workspaceName: string): string {
+      const workspaceRoot = path.join(tempDir, workspaceName);
       fs.mkdirSync(path.join(workspaceRoot, "src"), { recursive: true });
       fs.writeFileSync(
         path.join(workspaceRoot, "src", "info.txt"),
         "alpha\nbeta\ngamma",
       );
+      return workspaceRoot;
+    }
 
-      const agent = new Agent({
+    function createMentionsAgent(workspaceName: string): Agent {
+      return new Agent({
         providersConfig: testProvidersConfig,
-        cwd: workspaceRoot,
+        cwd: createMentionsWorkspace(workspaceName),
       });
+    }
+
+    it("attaches mentioned files before the provider call", async () => {
+      const agent = createMentionsAgent("mentions-workspace");
       const mockProvider = new MockProvider();
       (agent as any).provider = mockProvider;
 
@@ -313,25 +361,61 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
       expect(toolMessage?.toolResults?.[0].content).toContain("beta");
     });
+
+    it("drops mention-only failed turns after provider errors", async () => {
+      const agent = createMentionsAgent("mentions-failure-workspace");
+      (agent as any).provider = createImmediateFailProvider(
+        "failing-after-mentions",
+        "provider failed after mentions",
+      );
+
+      await expect(
+        agent.streamChat(userSubmission("@src/info.txt summarize"), () => {}),
+      ).rejects.toThrow(/provider failed after mentions/i);
+
+      expect(agent.getConversationState().turns).toHaveLength(0);
+      expect(agent.getConversationState().artifacts).toHaveLength(0);
+    });
+
+    it("preserves real tool partial turns after provider errors", async () => {
+      const provider = createFirstToolCallThenFailProvider({
+        name: "failing-after-real-tool",
+        toolCalls: [
+          {
+            id: "call-1",
+            function: {
+              name: "read",
+              arguments: { path: "package.json" },
+            },
+          },
+        ],
+        errorMessage: "provider failed after real tool",
+      });
+      const agent = createTestAgent(provider);
+
+      await expect(
+        agent.streamChat(userSubmission("Inspect package"), () => {}),
+      ).rejects.toThrow(/provider failed after real tool/i);
+
+      expect(agent.getConversationState().turns).toHaveLength(1);
+      expect(agent.getConversationState().turns[0].entries).toHaveLength(2);
+      expect(agent.getConversationState().artifacts).toHaveLength(1);
+    });
   });
 
   describe("Provider reasoning content", () => {
     it("carries reasoning content through same-turn tool-call loops", async () => {
-      class ReasoningToolProvider implements LLMProvider {
-        name = "reasoning-tool";
-        readonly requests: ChatRequest[] = [];
-
-        getCapabilities() {
-          return { contextWindowTokens: 128000 };
-        }
-
+      const requests: ChatRequest[] = [];
+      const provider: LLMProvider = {
+        name: "reasoning-tool",
+        getCapabilities: () => ({ contextWindowTokens: 128000 }),
         async *streamChat(
           request: ChatRequest,
         ): AsyncIterable<ChatStreamEvent> {
-          this.requests.push(request);
-          if (this.requests.length === 1) {
+          requests.push(request);
+          if (requests.length === 1) {
             yield {
-              type: "tool_calls" as const,
+              type: "tool_calls",
               reasoningContent: "I should inspect package metadata.",
               toolCalls: [
                 {
@@ -345,17 +429,15 @@ describe("Agent with Multi-Provider Configuration", () => {
             };
             return;
           }
-          yield { type: "assistant_text" as const, delta: "Done" };
-        }
-      }
-
-      const provider = new ReasoningToolProvider();
+          yield { type: "assistant_text", delta: "Done" };
+        },
+      };
       const agent = createTestAgent(provider);
 
       await agent.streamChat(userSubmission("Inspect package"), () => {});
 
-      expect(provider.requests).toHaveLength(2);
-      const replayedAssistant = provider.requests[1].messages.find(
+      expect(requests).toHaveLength(2);
+      const replayedAssistant = requests[1].messages.find(
         (message) => message.role === "assistant" && message.toolCalls?.length,
       );
       expect(replayedAssistant?.reasoningContent).toBe(

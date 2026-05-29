@@ -597,5 +597,171 @@ describe("GeminiProvider", () => {
 
       expect(capturedBody.model).toBe("gemini-future-preview");
     });
+
+    it("should convert synthetic mention assistant/tool pairs into inline user context", async () => {
+      const capturedBody = (await captureGeminiRequestBody({
+        model: "gemini-3.1-pro-preview",
+        messages: [
+          { role: "user", content: "@src/info.txt summarize" },
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "mention_1",
+                function: {
+                  name: "read",
+                  arguments: {
+                    path: "src/info.txt",
+                    resolvedPath: "/workspace/src/info.txt",
+                  },
+                },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: "",
+            toolResults: [
+              {
+                toolCallId: "mention_1",
+                toolName: "read",
+                content: "alpha\nbeta",
+              },
+            ],
+          },
+        ],
+      })) as {
+        messages: Array<{
+          role: string;
+          content?: string;
+          tool_calls?: unknown[];
+        }>;
+      };
+
+      const mentionInline = capturedBody.messages.find(
+        (message) =>
+          message.role === "user" &&
+          typeof message.content === "string" &&
+          message.content.includes('mention_id="mention_1"'),
+      );
+      expect(mentionInline).toBeDefined();
+      expect(mentionInline?.content).toContain("alpha");
+      expect(mentionInline?.content).toContain('path="src/info.txt"');
+      expect(mentionInline?.content).toContain(
+        'resolved_path="/workspace/src/info.txt"',
+      );
+      expect(
+        capturedBody.messages.some(
+          (message) =>
+            message.role === "assistant" && message.tool_calls != null,
+        ),
+      ).toBe(false);
+      expect(
+        capturedBody.messages.some((message) => message.role === "tool"),
+      ).toBe(false);
+    });
+
+    it("should not send unsigned mention tool_calls in Gemini request history", async () => {
+      const capturedBody = (await captureGeminiRequestBody({
+        model: "gemini-3.1-pro-preview",
+        messages: [
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "mention_1",
+                function: {
+                  name: "ls",
+                  arguments: { path: "src", resolvedPath: "/workspace/src" },
+                },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: "",
+            toolResults: [
+              {
+                toolCallId: "mention_1",
+                toolName: "ls",
+                content: "info.txt",
+              },
+            ],
+          },
+        ],
+      })) as {
+        messages: Array<{ role: string; tool_calls?: unknown[] }>;
+      };
+
+      for (const message of capturedBody.messages) {
+        if (message.role === "assistant" && message.tool_calls) {
+          for (const toolCall of message.tool_calls as Array<{ id?: string }>) {
+            expect(toolCall.id).not.toMatch(/^mention_/);
+          }
+        }
+      }
+    });
+
+    it("should preserve signed Gemini tool calls with thought signatures", async () => {
+      const capturedBody = (await captureGeminiRequestBody({
+        model: "gemini-3.1-pro-preview",
+        messages: [
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "call_1",
+                thoughtSignature: "sig-weather",
+                function: {
+                  name: "get_weather",
+                  arguments: { location: "NYC" },
+                },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: "",
+            toolResults: [
+              {
+                toolCallId: "call_1",
+                toolName: "get_weather",
+                content: "sunny",
+              },
+            ],
+          },
+        ],
+      })) as {
+        messages: Array<{
+          role: string;
+          tool_calls?: Array<{
+            id: string;
+            extra_content?: { google?: { thought_signature?: string } };
+          }>;
+        }>;
+      };
+
+      const assistant = capturedBody.messages.find(
+        (message) => message.role === "assistant" && message.tool_calls?.length,
+      );
+      expect(assistant?.tool_calls?.[0]).toMatchObject({
+        id: "call_1",
+        extra_content: {
+          google: {
+            thought_signature: "sig-weather",
+          },
+        },
+      });
+      expect(
+        capturedBody.messages.some(
+          (message) =>
+            message.role === "tool" &&
+            (message as { tool_call_id?: string }).tool_call_id === "call_1",
+        ),
+      ).toBe(true);
+    });
   });
 });
