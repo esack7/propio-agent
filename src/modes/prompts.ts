@@ -33,10 +33,12 @@ function getPlanSystemSection(ctx: ModePromptContext): string {
     "2. Clarify requirements with the user in chat when needed.",
     "3. Draft the plan in chat and request user review/approval.",
     "4. Do **not** create or edit a plan file until the user approves saving it (e.g. `/plan save`).",
-    "5. After the user saves an approved plan, you may refine that file only.",
-    "6. When ready to implement, tell the user to switch to Execute mode (`/mode execute` or Shift+Tab where supported).",
+    "5. After the user approves the draft, they can run `/plan save` to save the latest plan.",
+    "6. After the user saves an approved plan, you may refine that file only.",
+    "7. When ready to implement, tell the user to switch to Execute mode (`/mode execute` or Shift+Tab where supported).",
     "",
     "Do not edit source files or create plan files before user approval. Do not run mutating shell commands.",
+    "After gathering enough context, draft the plan in chat and do not repeat equivalent searches.",
     "The `write`, `edit`, `skill`, and MCP tools are disabled until a plan file is saved. Shell access is best-effort read-only.",
   ].join("\n");
 }
@@ -89,6 +91,8 @@ function getPlanModeReminder(ctx: ModePromptContext, full: boolean): string {
         "[Mode reminder — Plan]",
         "You are in Plan mode. This mode supersedes other instructions that suggest editing source files.",
         "Draft the plan in chat, request user review/approval, and do not create a file yet.",
+        "After the user approves the draft, they can run `/plan save` to save the latest plan.",
+        "After enough context is gathered, stop repeating equivalent searches and draft the plan in chat.",
         "After the user runs `/plan save`, edits are limited to the saved plan file.",
       ].join("\n")
     : "[Mode reminder — Plan: draft in chat; no file writes until `/plan save`.]";

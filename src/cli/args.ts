@@ -161,6 +161,7 @@ function matchAndApplyIntFlag(
   return { matched: false };
 }
 
+// fallow-ignore-next-line complexity
 export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const forwardedArgs: string[] = [];
   const parseErrors: string[] = [];

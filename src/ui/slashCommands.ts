@@ -49,8 +49,9 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
         description: "switch to Discover mode (read-only exploration)",
       },
       {
-        command: "/plan save <content>",
-        description: "save an approved plan file (Plan mode only)",
+        command: "/plan save [content]",
+        description:
+          "save the latest assistant plan draft, or explicit content (Plan mode only)",
       },
     ],
   },

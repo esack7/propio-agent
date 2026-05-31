@@ -216,6 +216,24 @@ function stableArgsKey(
     .join("|");
 }
 
+function normalizeAssistantText(content: string | undefined | null): string {
+  return (content ?? "").trim().replace(/\s+/g, " ");
+}
+
+function buildAssistantToolIterationSignature(
+  content: string | undefined | null,
+  toolCalls: ReadonlyArray<ChatToolCall> | undefined,
+): string {
+  const textSignature = normalizeAssistantText(content);
+  const toolSignature = (toolCalls ?? [])
+    .map(
+      (toolCall) =>
+        `${toolCall.function.name}:${stableArgsKey(toolCall.function.arguments)}`,
+    )
+    .join(",");
+  return `${textSignature}|${toolSignature}`;
+}
+
 export class Agent {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
@@ -255,6 +273,8 @@ export class Agent {
   private pendingToolResultBytes = 0;
   private modeState: AgentModeState = { mode: "execute" };
   private pendingExecuteSwitchReminder = false;
+  private latestPlanModeAssistantDraft?: string;
+  private planDraftSearchStartTurnIndex?: number;
 
   constructor(
     options: {
@@ -479,6 +499,7 @@ export class Agent {
     });
   }
 
+  // fallow-ignore-next-line complexity
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
@@ -616,33 +637,27 @@ export class Agent {
     const recentEntries = lastTurn.entries.slice(-lookback);
     // commitAssistantResponse already ran before this check, so the current
     // iteration's assistant entry is already in history; read from there only.
-    const { signatures, hasAnyAssistantText } =
-      this.gatherSignaturesFromTurnEntries(recentEntries);
+    const signatures =
+      this.gatherIterationSignaturesFromTurnEntries(recentEntries);
 
-    if (hasAnyAssistantText) return false;
-    if (signatures.length < 3) return false;
+    if (signatures.length < Agent.MAX_EMPTY_TOOL_ONLY_STREAK) return false;
 
     return new Set(signatures).size === 1;
   }
 
-  private gatherSignaturesFromTurnEntries(entries: ReadonlyArray<TurnEntry>): {
-    signatures: string[];
-    hasAnyAssistantText: boolean;
-  } {
+  private gatherIterationSignaturesFromTurnEntries(
+    entries: ReadonlyArray<TurnEntry>,
+  ): string[] {
     const signatures: string[] = [];
-    let hasAnyAssistantText = false;
     for (const entry of entries) {
       if (entry.kind !== "assistant") continue;
-      if (entry.message.content?.trim().length > 0) {
-        hasAnyAssistantText = true;
-      }
-      for (const tc of entry.message.toolCalls ?? []) {
-        signatures.push(
-          `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
-        );
-      }
+      const toolCalls = entry.message.toolCalls;
+      if (!toolCalls || toolCalls.length === 0) continue;
+      signatures.push(
+        buildAssistantToolIterationSignature(entry.message.content, toolCalls),
+      );
     }
-    return { signatures, hasAnyAssistantText };
+    return signatures;
   }
 
   private synthesizeAgentReasoningSummary(
@@ -1353,6 +1368,7 @@ export class Agent {
 
     this.throwIfAbortCancelled(abortSignal);
     this.contextManager.commitAssistantResponse(streamState.fullResponse);
+    this.recordPlanModeAssistantDraft(streamState.fullResponse);
     this.emitDiagnostic({
       type: "iteration_finished",
       provider: this.provider.name,
@@ -1843,6 +1859,7 @@ export class Agent {
       normalizedToolCalls,
       hasToolCalls ? { reasoningContent } : undefined,
     );
+    this.recordPlanModeAssistantDraft(fullResponse);
     this.emitTurnFinishedDiagnostics(
       fullResponse,
       iterationCount,
@@ -2502,6 +2519,84 @@ export class Agent {
     return this.modeState.planSaveApproved ?? false;
   }
 
+  getLatestAssistantPlanDraft(): string | undefined {
+    if (this.latestPlanModeAssistantDraft) {
+      return this.latestPlanModeAssistantDraft;
+    }
+    return this.findLatestAssistantDraftFromPlanBoundary();
+  }
+
+  private resetPlanModeDraftTracking(): void {
+    this.latestPlanModeAssistantDraft = undefined;
+    this.planDraftSearchStartTurnIndex = undefined;
+  }
+
+  private beginPlanModeDraftTracking(): void {
+    this.planDraftSearchStartTurnIndex =
+      this.contextManager.getConversationState().turns.length;
+    this.latestPlanModeAssistantDraft = undefined;
+  }
+
+  private restorePlanModeDraftTrackingFromImport(
+    boundaryTurnIndex: number | undefined,
+  ): void {
+    if (this.modeState.mode !== "plan") {
+      this.resetPlanModeDraftTracking();
+      return;
+    }
+
+    this.planDraftSearchStartTurnIndex = boundaryTurnIndex ?? 0;
+    this.latestPlanModeAssistantDraft = undefined;
+    this.rebuildPlanModeAssistantDraftFromHistory();
+  }
+
+  private rebuildPlanModeAssistantDraftFromHistory(): void {
+    const draft = this.findLatestAssistantDraftFromPlanBoundary();
+    if (draft) {
+      this.latestPlanModeAssistantDraft = draft;
+    }
+  }
+
+  private findLatestAssistantDraftFromPlanBoundary(): string | undefined {
+    if (this.planDraftSearchStartTurnIndex === undefined) {
+      return undefined;
+    }
+
+    const state = this.contextManager.getConversationState();
+    for (
+      let turnIndex = state.turns.length - 1;
+      turnIndex >= this.planDraftSearchStartTurnIndex;
+      turnIndex--
+    ) {
+      const turn = state.turns[turnIndex]!;
+      for (
+        let entryIndex = turn.entries.length - 1;
+        entryIndex >= 0;
+        entryIndex--
+      ) {
+        const entry = turn.entries[entryIndex]!;
+        if (entry.kind !== "assistant") continue;
+        const content = entry.message.content?.trim();
+        if (content) {
+          return content;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private recordPlanModeAssistantDraft(content: string): void {
+    if (this.modeState.mode !== "plan") {
+      return;
+    }
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return;
+    }
+    this.latestPlanModeAssistantDraft = trimmed;
+  }
+
   saveApprovedPlan(
     content: string,
     options?: {
@@ -2541,6 +2636,30 @@ export class Agent {
     return planFilePath;
   }
 
+  private updatePlanDraftTrackingForModeChange(
+    previousMode: AgentMode,
+    mode: AgentMode,
+  ): void {
+    if (mode === "plan" && previousMode !== "plan") {
+      this.beginPlanModeDraftTracking();
+      return;
+    }
+
+    if (mode !== "plan" && previousMode === "plan") {
+      this.resetPlanModeDraftTracking();
+    }
+  }
+
+  private shouldRemindAfterExecuteSwitch(
+    previousMode: AgentMode,
+    mode: AgentMode,
+  ): boolean {
+    return (
+      mode === "execute" &&
+      (previousMode === "plan" || previousMode === "discover")
+    );
+  }
+
   setAgentMode(
     mode: AgentMode,
     options?: {
@@ -2561,10 +2680,9 @@ export class Agent {
       previousMode,
     };
 
-    if (
-      mode === "execute" &&
-      (previousMode === "plan" || previousMode === "discover")
-    ) {
+    this.updatePlanDraftTrackingForModeChange(previousMode, mode);
+
+    if (this.shouldRemindAfterExecuteSwitch(previousMode, mode)) {
       this.pendingExecuteSwitchReminder = true;
     }
 
@@ -2600,6 +2718,12 @@ export class Agent {
       sessionId: this.sessionId,
       agentMode: this.modeState.mode,
       ...(approvedPlan ?? {}),
+      ...(this.modeState.mode === "plan" &&
+      this.planDraftSearchStartTurnIndex !== undefined
+        ? {
+            planDraftSearchStartTurnIndex: this.planDraftSearchStartTurnIndex,
+          }
+        : {}),
     };
     return serializeSession(state, metadata);
   }
@@ -2649,6 +2773,9 @@ export class Agent {
       ...resolveImportedPlanState(persisted.metadata),
     };
     this.pendingExecuteSwitchReminder = false;
+    this.restorePlanModeDraftTrackingFromImport(
+      persisted.metadata.planDraftSearchStartTurnIndex,
+    );
   }
 
   // -------------------------------------------------------------------

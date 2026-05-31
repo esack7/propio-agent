@@ -1,24 +1,16 @@
 import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { spawn } from "child_process";
 import { FileSearchIndex } from "../fileSearchIndex.js";
-
-function makeWorkspace(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "propio-file-index-"));
-}
-
-function writeFile(root: string, relativePath: string): void {
-  const absolutePath = path.join(root, relativePath);
-  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-  fs.writeFileSync(absolutePath, "test");
-}
+import {
+  makeWorkspace,
+  writeWorkspaceFile,
+} from "../../__tests__/workspaceTestHelpers.js";
 
 describe("FileSearchIndex", () => {
   it("returns top-level entries for empty queries", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/agent.ts");
-    writeFile(workspaceRoot, "docs/readme.md");
+    const workspaceRoot = makeWorkspace("propio-file-index-");
+    writeWorkspaceFile(workspaceRoot, "src/agent.ts");
+    writeWorkspaceFile(workspaceRoot, "docs/readme.md");
 
     const index = new FileSearchIndex(workspaceRoot);
     await index.refresh(true);
@@ -32,9 +24,9 @@ describe("FileSearchIndex", () => {
   });
 
   it("favors exact case matches and downranks test files", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/Agent.ts");
-    writeFile(workspaceRoot, "src/agent.test.ts");
+    const workspaceRoot = makeWorkspace("propio-file-index-");
+    writeWorkspaceFile(workspaceRoot, "src/Agent.ts");
+    writeWorkspaceFile(workspaceRoot, "src/agent.test.ts");
 
     const index = new FileSearchIndex(workspaceRoot);
     await index.refresh(true);
@@ -52,8 +44,8 @@ describe("FileSearchIndex", () => {
   });
 
   it("includes directory entries in fuzzy search results", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/utils/helpers.ts");
+    const workspaceRoot = makeWorkspace("propio-file-index-");
+    writeWorkspaceFile(workspaceRoot, "src/utils/helpers.ts");
 
     const index = new FileSearchIndex(workspaceRoot);
     await index.refresh(true);
@@ -65,7 +57,7 @@ describe("FileSearchIndex", () => {
   });
 
   it("keeps retrying refreshes while the index is empty", async () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-file-index-");
     const index = new FileSearchIndex(workspaceRoot);
     const refreshSpy = jest.spyOn(index, "refresh");
 
@@ -77,8 +69,8 @@ describe("FileSearchIndex", () => {
   });
 
   it("opportunistically refreshes warm indexes during search", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/agent.ts");
+    const workspaceRoot = makeWorkspace("propio-file-index-");
+    writeWorkspaceFile(workspaceRoot, "src/agent.ts");
 
     const index = new FileSearchIndex(workspaceRoot);
     await index.refresh(true);
@@ -93,8 +85,8 @@ describe("FileSearchIndex", () => {
   });
 
   it("builds entries from git without requiring rg fallback", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/agent.ts");
+    const workspaceRoot = makeWorkspace("propio-file-index-");
+    writeWorkspaceFile(workspaceRoot, "src/agent.ts");
 
     await run("git", ["init"], workspaceRoot);
     await run("git", ["add", "src/agent.ts"], workspaceRoot);

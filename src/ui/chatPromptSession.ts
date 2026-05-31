@@ -1640,6 +1640,26 @@ export function createChatPromptSession(
     return true;
   };
 
+  const applyCallbackFooter = (nextFooter: string | null | undefined): void => {
+    if (callbacks.refreshPromptFooters) {
+      applyFooterSnapshot(callbacks.refreshPromptFooters());
+      render();
+      return;
+    }
+
+    if (nextFooter === undefined || nextFooter === null) {
+      return;
+    }
+
+    activeFooter = nextFooter;
+    if (inputMode === "bash") {
+      bashFooter = nextFooter;
+    } else {
+      promptFooter = nextFooter;
+    }
+    render();
+  };
+
   const handleModeCycleKeys = (key: readline.Key): boolean => {
     const isShiftTab =
       (key.name === "tab" && key.shift && !key.ctrl && !key.meta) ||
@@ -1650,21 +1670,7 @@ export function createChatPromptSession(
     }
 
     const nextFooter = callbacks.cycleAgentMode?.();
-    if (callbacks.refreshPromptFooters) {
-      applyFooterSnapshot(callbacks.refreshPromptFooters());
-      render();
-      return true;
-    }
-
-    if (nextFooter !== undefined && nextFooter !== null) {
-      activeFooter = nextFooter;
-      if (inputMode === "bash") {
-        bashFooter = nextFooter;
-      } else {
-        promptFooter = nextFooter;
-      }
-      render();
-    }
+    applyCallbackFooter(nextFooter);
     return true;
   };
 
@@ -1672,22 +1678,7 @@ export function createChatPromptSession(
     const applyFooterToggle = (
       toggle: (() => string | null | undefined) | undefined,
     ): boolean => {
-      const nextFooter = toggle?.();
-      if (callbacks.refreshPromptFooters) {
-        applyFooterSnapshot(callbacks.refreshPromptFooters());
-        render();
-        return true;
-      }
-
-      if (nextFooter !== undefined && nextFooter !== null) {
-        activeFooter = nextFooter;
-        if (inputMode === "bash") {
-          bashFooter = nextFooter;
-        } else {
-          promptFooter = nextFooter;
-        }
-        render();
-      }
+      applyCallbackFooter(toggle?.());
       return true;
     };
 

@@ -1,5 +1,4 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "@jest/globals";
 import {
@@ -7,21 +6,14 @@ import {
   isPlanFilePath,
   writePlanFile,
 } from "../planFile.js";
+import { createTempDirTracker } from "../../__tests__/tempDirs.js";
 
 describe("planFile", () => {
-  const tempDirs: string[] = [];
+  const { makeTempDir, cleanupTempDirs } = createTempDirTracker();
 
   afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    cleanupTempDirs();
   });
-
-  function makeTempDir(prefix: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    tempDirs.push(dir);
-    return dir;
-  }
 
   it("allocates a plan file under home when cwd is not a git repo", () => {
     const cwd = makeTempDir("plan-cwd-");

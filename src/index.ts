@@ -633,6 +633,35 @@ async function handleModeSubmission(
   return null;
 }
 
+function resolvePlanSaveContent(args: string, agent: AgentType): string {
+  const inlineContent =
+    args === "save" ? "" : args.slice("save".length).trimStart();
+  return inlineContent || agent.getLatestAssistantPlanDraft?.() || "";
+}
+
+function reportMissingPlanDraft(ui: TerminalUi): void {
+  ui.error(
+    "No plan draft found to save. Ask the assistant to draft a plan first, or use /plan save <content>.",
+  );
+  ui.command("");
+}
+
+function saveApprovedPlanFromCommand(
+  agent: AgentType,
+  ui: TerminalUi,
+  content: string,
+): void {
+  try {
+    const planPath = agent.saveApprovedPlan(content);
+    ui.success(`Plan saved: ${planPath}`);
+  } catch (error) {
+    ui.error(
+      error instanceof Error ? error.message : "Failed to save plan file.",
+    );
+  }
+  ui.command("");
+}
+
 async function handlePlanSubmission(
   trimmedInput: string,
   context: InteractiveSubmissionContext,
@@ -651,28 +680,18 @@ async function handlePlanSubmission(
       return null;
     }
 
-    const content =
-      args === "save" ? "" : args.slice("save".length).trimStart();
+    const content = resolvePlanSaveContent(args, agent);
     if (!content) {
-      ui.error("Usage: /plan save <approved plan content>");
-      ui.command("");
+      reportMissingPlanDraft(ui);
       return null;
     }
 
-    try {
-      const planPath = agent.saveApprovedPlan(content);
-      ui.success(`Plan saved: ${planPath}`);
-    } catch (error) {
-      ui.error(
-        error instanceof Error ? error.message : "Failed to save plan file.",
-      );
-    }
-    ui.command("");
+    saveApprovedPlanFromCommand(agent, ui, content);
     return null;
   }
 
   ui.error(`Unknown /plan usage: "${args}"`);
-  ui.command("Usage: /plan save <approved plan content>");
+  ui.command("Usage: /plan save [content]");
   ui.command("");
   return null;
 }
@@ -742,6 +761,7 @@ function buildFooterVisibility(
   };
 }
 
+// fallow-ignore-next-line complexity
 export async function runInteractiveSession(
   agent: AgentType,
   ui: TerminalUi,

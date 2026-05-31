@@ -1,6 +1,4 @@
 import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { afterEach, describe, expect, it } from "@jest/globals";
 import { Agent } from "../agent.js";
 import { handleInteractiveSubmission } from "../index.js";
@@ -16,6 +14,7 @@ import {
   createTestAgent,
   createMockWriteStream,
   testProvidersConfig,
+  ToolCallMockProvider,
   userSubmission,
 } from "./testHelpers.js";
 import type {
@@ -26,20 +25,35 @@ import type {
 import { createMockTool } from "./testHelpers.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createPlainSubmission } from "../ui/input/promptSubmission.js";
+import { createTempDirTracker } from "./tempDirs.js";
+import type { TurnEntry } from "../context/types.js";
 
 describe("agent modes", () => {
-  const tempDirs: string[] = [];
+  const { makeTempDir, cleanupTempDirs } = createTempDirTracker();
 
   afterEach(() => {
-    for (const dir of tempDirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    cleanupTempDirs();
   });
 
-  function makeTempDir(prefix: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    tempDirs.push(dir);
-    return dir;
+  function getFirstToolNames(provider: { streamChatCalls: ChatRequest[] }) {
+    return (
+      provider.streamChatCalls[0].tools?.map((tool) => tool.function.name) ?? []
+    );
+  }
+
+  function getLastToolEntry(
+    agent: Agent,
+  ): Extract<TurnEntry, { kind: "tool" }> | undefined {
+    return agent
+      .getConversationState()
+      .turns.at(-1)
+      ?.entries.find((entry) => entry.kind === "tool");
+  }
+
+  function expectLastToolError(agent: Agent, message: string): void {
+    const toolEntry = getLastToolEntry(agent);
+    expect(toolEntry?.toolInvocations?.[0]?.status).toBe("error");
+    expect(toolEntry?.toolInvocations?.[0]?.resultSummary).toContain(message);
   }
 
   function createPlanAgent(): Agent {
@@ -50,40 +64,6 @@ describe("agent modes", () => {
       cwd,
       homeDir,
     });
-  }
-
-  class SingleToolCallProvider implements LLMProvider {
-    readonly name = "mock-single-tool";
-    streamChatCalls: ChatRequest[] = [];
-
-    constructor(
-      private readonly toolName: string,
-      private readonly toolArgs: Record<string, unknown>,
-    ) {}
-
-    getCapabilities() {
-      return { contextWindowTokens: 128000 };
-    }
-
-    async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
-      this.streamChatCalls.push(request);
-      if (this.streamChatCalls.length === 1) {
-        yield {
-          delta: "",
-          toolCalls: [
-            {
-              id: "call-1",
-              function: {
-                name: this.toolName,
-                arguments: this.toolArgs,
-              },
-            },
-          ],
-        };
-        return;
-      }
-      yield { delta: "Done." };
-    }
   }
 
   async function runSlashCommand(agent: Agent, text: string): Promise<string> {
@@ -136,7 +116,7 @@ describe("agent modes", () => {
   });
 
   it("hides write and skill tools in discover mode schemas and denies execution", async () => {
-    const mockProvider = new SingleToolCallProvider("write", {
+    const mockProvider = new ToolCallMockProvider("write", {
       path: "src/foo.ts",
       content: "x",
     });
@@ -145,10 +125,7 @@ describe("agent modes", () => {
 
     await agent.streamChat(userSubmission("Try to write"), () => {});
 
-    const toolNames =
-      mockProvider.streamChatCalls[0].tools?.map(
-        (tool) => tool.function.name,
-      ) ?? [];
+    const toolNames = getFirstToolNames(mockProvider);
     expect(toolNames).not.toContain("write");
     expect(toolNames).not.toContain("edit");
     expect(toolNames).not.toContain("skill");
@@ -192,7 +169,7 @@ describe("agent modes", () => {
   });
 
   it("omits write/edit in plan mode before approval", async () => {
-    const mockProvider = new SingleToolCallProvider("write", {
+    const mockProvider = new ToolCallMockProvider("write", {
       path: "src/foo.ts",
       content: "x",
     });
@@ -204,16 +181,13 @@ describe("agent modes", () => {
 
     await agent.streamChat(userSubmission("Write plan"), () => {});
 
-    const toolNames =
-      mockProvider.streamChatCalls[0].tools?.map(
-        (tool) => tool.function.name,
-      ) ?? [];
+    const toolNames = getFirstToolNames(mockProvider);
     expect(toolNames).not.toContain("write");
     expect(toolNames).not.toContain("edit");
   });
 
   it("denies direct write calls in plan mode before approval", async () => {
-    const mockProvider = new SingleToolCallProvider("write", {
+    const mockProvider = new ToolCallMockProvider("write", {
       path: "src/foo.ts",
       content: "x",
     });
@@ -223,14 +197,7 @@ describe("agent modes", () => {
 
     await agent.streamChat(userSubmission("Write source"), () => {});
 
-    const toolEntry = agent
-      .getConversationState()
-      .turns.at(-1)
-      ?.entries.find((entry) => entry.kind === "tool");
-    expect(toolEntry?.toolInvocations?.[0]?.status).toBe("error");
-    expect(toolEntry?.toolInvocations?.[0]?.resultSummary).toContain(
-      "Tool not available",
-    );
+    expectLastToolError(agent, "Tool not available");
   });
 
   it("allows plan-file write only after approved save", async () => {
@@ -241,45 +208,32 @@ describe("agent modes", () => {
     expect(fs.existsSync(planPath)).toBe(true);
     expect(agent.isPlanSaveApproved()).toBe(true);
 
-    const mockProvider = new SingleToolCallProvider("write", {
+    const mockProvider = new ToolCallMockProvider("write", {
       path: planPath,
       content: "# Updated plan\n",
     });
     (agent as any).provider = mockProvider;
     await agent.streamChat(userSubmission("Update plan file"), () => {});
 
-    const toolNames =
-      mockProvider.streamChatCalls[0].tools?.map(
-        (tool) => tool.function.name,
-      ) ?? [];
+    const toolNames = getFirstToolNames(mockProvider);
     expect(toolNames).toContain("write");
     expect(toolNames).toContain("edit");
 
-    const allowedEntry = agent
-      .getConversationState()
-      .turns.at(-1)
-      ?.entries.find((entry) => entry.kind === "tool");
+    const allowedEntry = getLastToolEntry(agent);
     expect(allowedEntry?.toolInvocations?.[0]?.status).toBe("success");
 
-    const deniedProvider = new SingleToolCallProvider("write", {
+    const deniedProvider = new ToolCallMockProvider("write", {
       path: "src/foo.ts",
       content: "x",
     });
     (agent as any).provider = deniedProvider;
     await agent.streamChat(userSubmission("Write source"), () => {});
 
-    const deniedEntry = agent
-      .getConversationState()
-      .turns.at(-1)
-      ?.entries.find((entry) => entry.kind === "tool");
-    expect(deniedEntry?.toolInvocations?.[0]?.status).toBe("error");
-    expect(deniedEntry?.toolInvocations?.[0]?.resultSummary).toContain(
-      "approved plan file",
-    );
+    expectLastToolError(agent, "approved plan file");
   });
 
   it("denies bash mutators in discover mode", async () => {
-    const mockProvider = new SingleToolCallProvider("bash", {
+    const mockProvider = new ToolCallMockProvider("bash", {
       command: "rm -rf /tmp/x",
     });
     const agent = createTestAgent(mockProvider);
@@ -287,14 +241,7 @@ describe("agent modes", () => {
 
     await agent.streamChat(userSubmission("Remove files"), () => {});
 
-    const toolEntry = agent
-      .getConversationState()
-      .turns.at(-1)
-      ?.entries.find((entry) => entry.kind === "tool");
-    expect(toolEntry?.toolInvocations?.[0]?.status).toBe("error");
-    expect(toolEntry?.toolInvocations?.[0]?.resultSummary).toContain(
-      "not allowed",
-    );
+    expectLastToolError(agent, "not allowed");
   });
 
   it("exports plan mode without planFilePath before approved save", () => {
@@ -326,8 +273,43 @@ describe("agent modes", () => {
     expect(imported.isPlanSaveApproved()).toBe(true);
   });
 
+  it("restores plan drafts from imported session history for plain /plan save", async () => {
+    class PlanDraftProvider implements LLMProvider {
+      readonly name = "plan-draft-provider";
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
+        yield { delta: "# Imported draft\n\nStep 1: ship feature" };
+      }
+    }
+
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    (agent as any).provider = new PlanDraftProvider();
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+
+    const json = agent.exportSession();
+    const parsed = JSON.parse(json);
+    expect(parsed.metadata.planDraftSearchStartTurnIndex).toBe(0);
+
+    const imported = createPlanAgent();
+    imported.importSession(json);
+    expect(imported.getLatestAssistantPlanDraft()).toContain(
+      "Step 1: ship feature",
+    );
+
+    const output = await runSlashCommand(imported, "/plan save");
+    expect(output).toContain("Plan saved:");
+    expect(fs.readFileSync(imported.getPlanFilePath()!, "utf8")).toContain(
+      "Step 1: ship feature",
+    );
+  });
+
   it("excludes MCP tools from discover mode allowlist", async () => {
-    const mockProvider = new SingleToolCallProvider("read", {
+    const mockProvider = new ToolCallMockProvider("read", {
       path: "README.md",
     });
     const agent = createTestAgent(mockProvider);
@@ -356,10 +338,7 @@ describe("agent modes", () => {
     agent.setAgentMode("discover");
     await agent.streamChat(userSubmission("Search"), () => {});
 
-    const toolNames =
-      mockProvider.streamChatCalls[0].tools?.map(
-        (tool) => tool.function.name,
-      ) ?? [];
+    const toolNames = getFirstToolNames(mockProvider);
     expect(toolNames).not.toContain("mcp_search");
   });
 
@@ -402,6 +381,111 @@ describe("agent modes", () => {
     expect(agent.getPlanFilePath()).toBeDefined();
     expect(agent.isPlanSaveApproved()).toBe(true);
     expect(fs.existsSync(agent.getPlanFilePath()!)).toBe(true);
+  });
+
+  it("saves the latest assistant draft via plain /plan save", async () => {
+    class PlanDraftProvider implements LLMProvider {
+      readonly name = "plan-draft-provider";
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
+        yield { delta: "# Draft plan\n\nStep 1: refactor auth" };
+      }
+    }
+
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    (agent as any).provider = new PlanDraftProvider();
+
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+
+    const output = await runSlashCommand(agent, "/plan save");
+
+    expect(output).toContain("Plan saved:");
+    expect(agent.getPlanFilePath()).toBeDefined();
+    expect(fs.readFileSync(agent.getPlanFilePath()!, "utf8")).toContain(
+      "Step 1: refactor auth",
+    );
+  });
+
+  it("shows a helpful error when plain /plan save has no draft to save", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+
+    const output = await runSlashCommand(agent, "/plan save");
+
+    expect(output).toContain("No plan draft found to save");
+    expect(agent.getPlanFilePath()).toBeUndefined();
+  });
+
+  it("does not save stale execute-mode assistant content via plain /plan save", async () => {
+    class ExecuteThenPlanProvider implements LLMProvider {
+      readonly name = "execute-then-plan-provider";
+      callCount = 0;
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
+        this.callCount += 1;
+        if (this.callCount === 1) {
+          yield { delta: "Execute mode answer about unrelated topic." };
+          return;
+        }
+        yield { delta: "# Plan draft\n\nReal plan content." };
+      }
+    }
+
+    const agent = createPlanAgent();
+    (agent as any).provider = new ExecuteThenPlanProvider();
+
+    await agent.streamChat(userSubmission("Help in execute mode"), () => {});
+    agent.setAgentMode("plan");
+
+    const saveBeforePlanChat = await runSlashCommand(agent, "/plan save");
+    expect(saveBeforePlanChat).toContain("No plan draft found to save");
+
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+
+    const saveAfterPlanChat = await runSlashCommand(agent, "/plan save");
+    expect(saveAfterPlanChat).toContain("Plan saved:");
+    const savedContent = fs.readFileSync(agent.getPlanFilePath()!, "utf8");
+    expect(savedContent).toContain("Real plan content");
+    expect(savedContent).not.toContain("unrelated topic");
+  });
+
+  it("does not show the plan path in the footer after saving", async () => {
+    class PlanDraftProvider implements LLMProvider {
+      readonly name = "plan-draft-provider";
+
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      }
+
+      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
+        yield { delta: "# Draft plan\n" };
+      }
+    }
+
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    (agent as any).provider = new PlanDraftProvider();
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+    await runSlashCommand(agent, "/plan save");
+
+    expect(
+      getIdleFooterText({
+        showToolCalls: true,
+        showThinking: true,
+        agentMode: "plan",
+      }),
+    ).toBe(
+      "Enter to send | ? help | mode: plan | tools: shown | thinking: shown",
+    );
   });
 
   it("emits plan_saved once when saveApprovedPlan receives onEvent", () => {

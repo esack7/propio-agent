@@ -25,6 +25,12 @@ describe("mode prompts", () => {
     expect(getModeSystemSection({ mode: "plan" })).toContain(
       "create or edit a plan file",
     );
+    expect(getModeSystemSection({ mode: "plan" })).toContain(
+      "run `/plan save` to save the latest plan",
+    );
+    expect(getModeSystemSection({ mode: "plan" })).toContain(
+      "do not repeat equivalent searches",
+    );
   });
 
   it("includes post-save plan workflow text", () => {

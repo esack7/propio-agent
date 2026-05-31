@@ -101,6 +101,7 @@ export interface SessionMetadata {
   readonly agentMode?: AgentMode;
   readonly planFilePath?: string;
   readonly planSaveApproved?: boolean;
+  readonly planDraftSearchStartTurnIndex?: number;
 }
 
 export interface PersistedSessionV1 {
@@ -755,26 +756,20 @@ function validateInvokedSkillRecord(record: unknown, label: string): void {
 
 const VALID_AGENT_MODES = new Set<AgentMode>(["execute", "plan", "discover"]);
 
-function validateMetadata(metadata: unknown): void {
-  assertObject(metadata, "metadata");
-  const meta = metadata as Record<string, unknown>;
-  assertString(meta.providerName, "metadata.providerName");
-  assertString(meta.modelKey, "metadata.modelKey");
-  assertString(meta.systemPrompt, "metadata.systemPrompt");
-  assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
-  assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
-  assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
-  if (meta.sessionId !== undefined) {
-    assertString(meta.sessionId, "metadata.sessionId");
+function validateAgentModeMetadata(meta: Record<string, unknown>): void {
+  if (meta.agentMode === undefined) {
+    return;
   }
-  if (meta.agentMode !== undefined) {
-    assertString(meta.agentMode, "metadata.agentMode");
-    if (!VALID_AGENT_MODES.has(meta.agentMode as AgentMode)) {
-      throw new SessionParseError(
-        `metadata.agentMode must be execute, plan, or discover`,
-      );
-    }
+
+  assertString(meta.agentMode, "metadata.agentMode");
+  if (!VALID_AGENT_MODES.has(meta.agentMode as AgentMode)) {
+    throw new SessionParseError(
+      `metadata.agentMode must be execute, plan, or discover`,
+    );
   }
+}
+
+function validatePlanMetadata(meta: Record<string, unknown>): void {
   if (meta.planFilePath !== undefined) {
     assertString(meta.planFilePath, "metadata.planFilePath");
   }
@@ -792,10 +787,44 @@ function validateMetadata(metadata: unknown): void {
   }
 }
 
+function validatePlanDraftMetadata(meta: Record<string, unknown>): void {
+  if (meta.planDraftSearchStartTurnIndex === undefined) {
+    return;
+  }
+
+  assertNumber(
+    meta.planDraftSearchStartTurnIndex,
+    "metadata.planDraftSearchStartTurnIndex",
+  );
+  if (meta.planDraftSearchStartTurnIndex < 0) {
+    throw new SessionParseError(
+      "metadata.planDraftSearchStartTurnIndex must be >= 0",
+    );
+  }
+}
+
+function validateMetadata(metadata: unknown): void {
+  assertObject(metadata, "metadata");
+  const meta = metadata as Record<string, unknown>;
+  assertString(meta.providerName, "metadata.providerName");
+  assertString(meta.modelKey, "metadata.modelKey");
+  assertString(meta.systemPrompt, "metadata.systemPrompt");
+  assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
+  assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
+  assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
+  if (meta.sessionId !== undefined) {
+    assertString(meta.sessionId, "metadata.sessionId");
+  }
+  validateAgentModeMetadata(meta);
+  validatePlanMetadata(meta);
+  validatePlanDraftMetadata(meta);
+}
+
 // ---------------------------------------------------------------------------
 // Parsing (JSON string → validated PersistedSessionV1)
 // ---------------------------------------------------------------------------
 
+// fallow-ignore-next-line complexity
 export function parseSession(
   json: string,
 ):

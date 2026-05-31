@@ -18,6 +18,37 @@ describe("resolveEffectiveToolAllowlist", () => {
   ];
   const connectedMcpToolNames = ["mcp_search", "mcp_write"];
 
+  function expectReadOnlyModeBaseline(options: {
+    mode: "discover" | "plan";
+    allowedTools: string[];
+    deniedTool: string;
+  }): void {
+    const allowed = resolveEffectiveToolAllowlist({
+      mode: options.mode,
+      skillScopes: [
+        {
+          invocationSource: "user",
+          skillName: "scope-lock",
+          skillRoot: "/tmp",
+          skillFile: "/tmp/SKILL.md",
+          allowedTools: options.allowedTools,
+        },
+      ],
+      enabledBuiltinNames,
+      connectedMcpToolNames,
+    });
+
+    expect(allowed).toEqual(
+      new Set(
+        DISCOVER_MODE_TOOLS.filter((name) =>
+          enabledBuiltinNames.includes(name),
+        ),
+      ),
+    );
+    expect(allowed?.has("write")).toBe(false);
+    expect(allowed?.has(options.deniedTool)).toBe(false);
+  }
+
   it("returns undefined in execute mode without skill scopes", () => {
     expect(
       resolveEffectiveToolAllowlist({
@@ -49,57 +80,19 @@ describe("resolveEffectiveToolAllowlist", () => {
   });
 
   it("returns discover baseline without MCP or skill narrowing", () => {
-    const allowed = resolveEffectiveToolAllowlist({
+    expectReadOnlyModeBaseline({
       mode: "discover",
-      skillScopes: [
-        {
-          invocationSource: "user",
-          skillName: "scope-lock",
-          skillRoot: "/tmp",
-          skillFile: "/tmp/SKILL.md",
-          allowedTools: ["write"],
-        },
-      ],
-      enabledBuiltinNames,
-      connectedMcpToolNames,
+      allowedTools: ["write"],
+      deniedTool: "mcp_search",
     });
-
-    expect(allowed).toEqual(
-      new Set(
-        DISCOVER_MODE_TOOLS.filter((name) =>
-          enabledBuiltinNames.includes(name),
-        ),
-      ),
-    );
-    expect(allowed?.has("write")).toBe(false);
-    expect(allowed?.has("mcp_search")).toBe(false);
   });
 
   it("returns read/search/bash only in plan mode before approval", () => {
-    const allowed = resolveEffectiveToolAllowlist({
+    expectReadOnlyModeBaseline({
       mode: "plan",
-      skillScopes: [
-        {
-          invocationSource: "user",
-          skillName: "scope-lock",
-          skillRoot: "/tmp",
-          skillFile: "/tmp/SKILL.md",
-          allowedTools: ["read"],
-        },
-      ],
-      enabledBuiltinNames,
-      connectedMcpToolNames,
+      allowedTools: ["read"],
+      deniedTool: "edit",
     });
-
-    expect(allowed).toEqual(
-      new Set(
-        DISCOVER_MODE_TOOLS.filter((name) =>
-          enabledBuiltinNames.includes(name),
-        ),
-      ),
-    );
-    expect(allowed?.has("write")).toBe(false);
-    expect(allowed?.has("edit")).toBe(false);
   });
 
   it("returns plan baseline with write/edit after approved save", () => {
