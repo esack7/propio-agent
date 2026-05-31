@@ -40,6 +40,9 @@ export interface RuntimeConfig {
 
   // Summary configuration
   readonly rollingSummaryTargetTokens: number;
+
+  // Safety gates
+  readonly allowGlobalInstallsWithoutPrompt: boolean;
 }
 
 /**
@@ -71,6 +74,8 @@ const DEFAULTS: RuntimeConfig = {
   consecutive529FallbackLimit: 3,
 
   rollingSummaryTargetTokens: 2048,
+
+  allowGlobalInstallsWithoutPrompt: false,
 };
 
 /**
@@ -83,130 +88,165 @@ export interface CLIOverrides {
   readonly streamIdleTimeoutMs?: number;
 }
 
+type ConfigSourceValues = Partial<Record<keyof RuntimeConfig, unknown>>;
+
+function pickConfigValue<K extends keyof RuntimeConfig>(
+  key: K,
+  envValues: ConfigSourceValues,
+  settingsValues: ConfigSourceValues,
+): RuntimeConfig[K] {
+  const envValue = envValues[key];
+  if (envValue !== undefined) {
+    return envValue as RuntimeConfig[K];
+  }
+
+  const settingsValue = settingsValues[key];
+  if (settingsValue !== undefined) {
+    return settingsValue as RuntimeConfig[K];
+  }
+
+  return DEFAULTS[key];
+}
+
+function pickCliFirstConfigValue<K extends keyof RuntimeConfig>(
+  key: K,
+  cliValue: RuntimeConfig[K] | undefined,
+  envValues: ConfigSourceValues,
+  settingsValues: ConfigSourceValues,
+): RuntimeConfig[K] {
+  if (cliValue !== undefined) {
+    return cliValue;
+  }
+
+  return pickConfigValue(key, envValues, settingsValues);
+}
+
 /**
  * Load RuntimeConfig from all sources: CLI > env > settings file > defaults.
  */
 export function loadRuntimeConfig(overrides?: {
   cliOverrides?: CLIOverrides;
+  settingsPath?: string;
 }): RuntimeConfig {
   const envVars = parseEnvVars();
-  const settingsFile = loadSettingsFile();
+  const settingsFile = loadSettingsFile(overrides?.settingsPath);
+  const cli = overrides?.cliOverrides;
 
-  const config: { -readonly [K in keyof RuntimeConfig]: RuntimeConfig[K] } = {
-    maxIterations:
-      overrides?.cliOverrides?.maxIterations ??
-      envVars.maxIterations ??
-      settingsFile.maxIterations ??
-      DEFAULTS.maxIterations,
-
-    maxRetries:
-      overrides?.cliOverrides?.maxRetries ??
-      envVars.maxRetries ??
-      settingsFile.maxRetries ??
-      DEFAULTS.maxRetries,
-
-    useNoProgressDetector:
-      envVars.useNoProgressDetector ??
-      settingsFile.useNoProgressDetector ??
-      DEFAULTS.useNoProgressDetector,
-
-    emptyToolOnlyStreakLimit:
-      envVars.emptyToolOnlyStreakLimit ??
-      settingsFile.emptyToolOnlyStreakLimit ??
-      DEFAULTS.emptyToolOnlyStreakLimit,
-
-    bashDefaultTimeoutMs:
-      overrides?.cliOverrides?.bashDefaultTimeoutMs ??
-      envVars.bashDefaultTimeoutMs ??
-      settingsFile.bashDefaultTimeoutMs ??
-      DEFAULTS.bashDefaultTimeoutMs,
-
-    bashMaxTimeoutMs:
-      envVars.bashMaxTimeoutMs ??
-      settingsFile.bashMaxTimeoutMs ??
-      DEFAULTS.bashMaxTimeoutMs,
-
-    streamIdleTimeoutMs:
-      overrides?.cliOverrides?.streamIdleTimeoutMs ??
-      envVars.streamIdleTimeoutMs ??
-      settingsFile.streamIdleTimeoutMs ??
-      DEFAULTS.streamIdleTimeoutMs,
-
-    maxRecentTurns:
-      envVars.maxRecentTurns ??
-      settingsFile.maxRecentTurns ??
-      DEFAULTS.maxRecentTurns,
-
-    artifactInlineCharCap:
-      envVars.artifactInlineCharCap ??
-      settingsFile.artifactInlineCharCap ??
-      DEFAULTS.artifactInlineCharCap,
-
-    rehydrationMaxChars:
-      envVars.rehydrationMaxChars ??
-      settingsFile.rehydrationMaxChars ??
-      DEFAULTS.rehydrationMaxChars,
-
-    pinnedMemoryMaxContentLength:
-      envVars.pinnedMemoryMaxContentLength ??
-      settingsFile.pinnedMemoryMaxContentLength ??
-      DEFAULTS.pinnedMemoryMaxContentLength,
-
-    toolOutputInlineLimit:
-      envVars.toolOutputInlineLimit ??
-      settingsFile.toolOutputInlineLimit ??
-      DEFAULTS.toolOutputInlineLimit,
-
-    toolOutputPersistThreshold:
-      envVars.toolOutputPersistThreshold ??
-      settingsFile.toolOutputPersistThreshold ??
-      DEFAULTS.toolOutputPersistThreshold,
-
-    aggregateToolResultsLimit:
-      envVars.aggregateToolResultsLimit ??
-      settingsFile.aggregateToolResultsLimit ??
-      DEFAULTS.aggregateToolResultsLimit,
-
-    toolResultSummaryMaxChars:
-      envVars.toolResultSummaryMaxChars ??
-      settingsFile.toolResultSummaryMaxChars ??
-      DEFAULTS.toolResultSummaryMaxChars,
-
-    artifactRetentionDays:
-      envVars.artifactRetentionDays ??
-      settingsFile.artifactRetentionDays ??
-      DEFAULTS.artifactRetentionDays,
-
-    compactionFailureLimit:
-      envVars.compactionFailureLimit ??
-      settingsFile.compactionFailureLimit ??
-      DEFAULTS.compactionFailureLimit,
-
-    outputTokenRecoveryLimit:
-      envVars.outputTokenRecoveryLimit ??
-      settingsFile.outputTokenRecoveryLimit ??
-      DEFAULTS.outputTokenRecoveryLimit,
-
-    consecutive529FallbackLimit:
-      envVars.consecutive529FallbackLimit ??
-      settingsFile.consecutive529FallbackLimit ??
-      DEFAULTS.consecutive529FallbackLimit,
-
-    rollingSummaryTargetTokens:
-      envVars.rollingSummaryTargetTokens ??
-      settingsFile.rollingSummaryTargetTokens ??
-      DEFAULTS.rollingSummaryTargetTokens,
+  return {
+    maxIterations: pickCliFirstConfigValue(
+      "maxIterations",
+      cli?.maxIterations,
+      envVars,
+      settingsFile,
+    ),
+    maxRetries: pickCliFirstConfigValue(
+      "maxRetries",
+      cli?.maxRetries,
+      envVars,
+      settingsFile,
+    ),
+    useNoProgressDetector: pickConfigValue(
+      "useNoProgressDetector",
+      envVars,
+      settingsFile,
+    ),
+    emptyToolOnlyStreakLimit: pickConfigValue(
+      "emptyToolOnlyStreakLimit",
+      envVars,
+      settingsFile,
+    ),
+    bashDefaultTimeoutMs: pickCliFirstConfigValue(
+      "bashDefaultTimeoutMs",
+      cli?.bashDefaultTimeoutMs,
+      envVars,
+      settingsFile,
+    ),
+    bashMaxTimeoutMs: pickConfigValue(
+      "bashMaxTimeoutMs",
+      envVars,
+      settingsFile,
+    ),
+    streamIdleTimeoutMs: pickCliFirstConfigValue(
+      "streamIdleTimeoutMs",
+      cli?.streamIdleTimeoutMs,
+      envVars,
+      settingsFile,
+    ),
+    maxRecentTurns: pickConfigValue("maxRecentTurns", envVars, settingsFile),
+    artifactInlineCharCap: pickConfigValue(
+      "artifactInlineCharCap",
+      envVars,
+      settingsFile,
+    ),
+    rehydrationMaxChars: pickConfigValue(
+      "rehydrationMaxChars",
+      envVars,
+      settingsFile,
+    ),
+    pinnedMemoryMaxContentLength: pickConfigValue(
+      "pinnedMemoryMaxContentLength",
+      envVars,
+      settingsFile,
+    ),
+    toolOutputInlineLimit: pickConfigValue(
+      "toolOutputInlineLimit",
+      envVars,
+      settingsFile,
+    ),
+    toolOutputPersistThreshold: pickConfigValue(
+      "toolOutputPersistThreshold",
+      envVars,
+      settingsFile,
+    ),
+    aggregateToolResultsLimit: pickConfigValue(
+      "aggregateToolResultsLimit",
+      envVars,
+      settingsFile,
+    ),
+    toolResultSummaryMaxChars: pickConfigValue(
+      "toolResultSummaryMaxChars",
+      envVars,
+      settingsFile,
+    ),
+    artifactRetentionDays: pickConfigValue(
+      "artifactRetentionDays",
+      envVars,
+      settingsFile,
+    ),
+    compactionFailureLimit: pickConfigValue(
+      "compactionFailureLimit",
+      envVars,
+      settingsFile,
+    ),
+    outputTokenRecoveryLimit: pickConfigValue(
+      "outputTokenRecoveryLimit",
+      envVars,
+      settingsFile,
+    ),
+    consecutive529FallbackLimit: pickConfigValue(
+      "consecutive529FallbackLimit",
+      envVars,
+      settingsFile,
+    ),
+    rollingSummaryTargetTokens: pickConfigValue(
+      "rollingSummaryTargetTokens",
+      envVars,
+      settingsFile,
+    ),
+    allowGlobalInstallsWithoutPrompt: pickConfigValue(
+      "allowGlobalInstallsWithoutPrompt",
+      envVars,
+      settingsFile,
+    ),
   };
-
-  return config;
 }
 
 /**
  * Parse PROPIO_* environment variables into a typed object.
  * Invalid values are silently ignored (fallback to next source in precedence).
  */
-function parseEnvVars(): Record<keyof RuntimeConfig, any> {
-  const result: Record<string, any> = {};
+function parseEnvVars(): ConfigSourceValues {
+  const result: Record<string, unknown> = {};
 
   const parseNum = (env: string): number | undefined => {
     const val = process.env[env];
@@ -259,21 +299,25 @@ function parseEnvVars(): Record<keyof RuntimeConfig, any> {
   result.rollingSummaryTargetTokens = parseNum(
     "PROPIO_ROLLING_SUMMARY_TARGET_TOKENS",
   );
+  result.allowGlobalInstallsWithoutPrompt = parseBoolean(
+    "PROPIO_ALLOW_GLOBAL_INSTALLS",
+  );
 
-  return result as Record<keyof RuntimeConfig, any>;
+  return result;
 }
 
 /**
  * Load settings from ~/.propio/settings.json, specifically the runtime object.
  */
-function loadSettingsFile(): Record<keyof RuntimeConfig, any> {
+function loadSettingsFile(settingsPath?: string): ConfigSourceValues {
   try {
-    const settingsPath = path.join(os.homedir(), ".propio", "settings.json");
-    if (!fs.existsSync(settingsPath)) {
-      return {} as Record<keyof RuntimeConfig, any>;
+    const resolvedSettingsPath =
+      settingsPath ?? path.join(os.homedir(), ".propio", "settings.json");
+    if (!fs.existsSync(resolvedSettingsPath)) {
+      return {};
     }
 
-    const content = fs.readFileSync(settingsPath, "utf-8");
+    const content = fs.readFileSync(resolvedSettingsPath, "utf-8");
     const json = JSON.parse(content);
     const runtime = json.runtime ?? {};
 
@@ -298,8 +342,10 @@ function loadSettingsFile(): Record<keyof RuntimeConfig, any> {
       outputTokenRecoveryLimit: runtime.outputTokenRecoveryLimit,
       consecutive529FallbackLimit: runtime.consecutive529FallbackLimit,
       rollingSummaryTargetTokens: runtime.rollingSummaryTargetTokens,
-    } as Record<keyof RuntimeConfig, any>;
+      allowGlobalInstallsWithoutPrompt:
+        runtime.allowGlobalInstallsWithoutPrompt,
+    };
   } catch (error) {
-    return {} as Record<keyof RuntimeConfig, any>;
+    return {};
   }
 }

@@ -65,4 +65,31 @@ describe("RuntimeConfig", () => {
     expect(config.artifactRetentionDays).toBe(14);
     expect(config.compactionFailureLimit).toBe(5);
   });
+
+  it("defaults allowGlobalInstallsWithoutPrompt to false", () => {
+    delete process.env.PROPIO_ALLOW_GLOBAL_INSTALLS;
+    const config = loadRuntimeConfig();
+    expect(config.allowGlobalInstallsWithoutPrompt).toBe(false);
+  });
+
+  it("parses PROPIO_ALLOW_GLOBAL_INSTALLS=1 as true", () => {
+    process.env.PROPIO_ALLOW_GLOBAL_INSTALLS = "1";
+    const config = loadRuntimeConfig();
+    expect(config.allowGlobalInstallsWithoutPrompt).toBe(true);
+  });
+
+  it("honors allowGlobalInstallsWithoutPrompt from settings file", () => {
+    const settingsPath = path.join(testSettingsDir, "settings.json");
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        runtime: {
+          allowGlobalInstallsWithoutPrompt: true,
+        },
+      }),
+    );
+
+    const config = loadRuntimeConfig({ settingsPath });
+    expect(config.allowGlobalInstallsWithoutPrompt).toBe(true);
+  });
 });

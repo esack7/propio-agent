@@ -1,4 +1,4 @@
-import { BashTool } from "./bash.js";
+import { BashTool, type BashGlobalInstallGateConfig } from "./bash.js";
 import { EditTool } from "./edit.js";
 import { FindTool } from "./find.js";
 import { GrepTool } from "./grep.js";
@@ -17,6 +17,7 @@ export interface BuiltinToolDefinition {
 export interface BuiltinToolManifestOptions {
   readonly skillToolInvoker: SkillToolInvoker;
   readonly runtimeConfig?: RuntimeConfig;
+  readonly bashGlobalInstallGate?: BashGlobalInstallGateConfig;
 }
 
 export function createBuiltinToolManifest(
@@ -37,6 +38,7 @@ export function createBuiltinToolManifest(
         defaultTimeoutMs: config?.bashDefaultTimeoutMs,
         maxTimeoutMs: config?.bashMaxTimeoutMs,
         outputInlineLimit: toolOutputInlineLimit,
+        globalInstallGate: options.bashGlobalInstallGate,
       }),
       enabledByDefault: true,
     },

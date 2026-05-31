@@ -1044,6 +1044,28 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(agent.isToolEnabled("read")).toBe(true);
       expect(agent.isToolEnabled("grep")).toBe(false);
     });
+
+    it("wires setGlobalInstallApprovalCallback into bash tool execution", async () => {
+      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const approval = jest.fn().mockResolvedValue(false);
+      agent.setGlobalInstallApprovalCallback(approval);
+
+      const result = await (agent as any).toolRegistry.executeWithStatus(
+        "bash",
+        {
+          command: "npm install -g eslint",
+        },
+      );
+
+      expect(approval).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: "npm install -g eslint",
+          reason: expect.stringMatching(/npm/i),
+        }),
+      );
+      expect(result.status).toBe("error");
+      expect(result.content).toMatch(/Global software install blocked/);
+    });
   });
 
   function startEscapeAbortedChat(

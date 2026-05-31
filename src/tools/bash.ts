@@ -1,12 +1,27 @@
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "../providers/types.js";
+import {
+  classifyGlobalInstallCommand,
+  GLOBAL_INSTALL_DENIED_MESSAGE,
+  type GlobalInstallApprovalRequest,
+} from "./globalInstallGuard.js";
 import { runShellCommand } from "./runShellCommand.js";
+
+export type { GlobalInstallApprovalRequest } from "./globalInstallGuard.js";
+
+export interface BashGlobalInstallGateConfig {
+  requestGlobalInstallApproval?: (
+    request: GlobalInstallApprovalRequest,
+  ) => Promise<boolean>;
+  allowGlobalInstallsWithoutPrompt: boolean;
+}
 
 export interface BashToolConfig {
   readonly defaultTimeoutMs?: number;
   readonly maxTimeoutMs?: number;
   readonly outputInlineLimit?: number;
+  readonly globalInstallGate?: BashGlobalInstallGateConfig;
 }
 
 interface BashToolResult {
@@ -51,11 +66,13 @@ export class BashTool implements ExecutableTool {
   private readonly defaultTimeoutMs: number;
   private readonly maxTimeoutMs: number;
   private readonly outputInlineLimit: number;
+  private readonly globalInstallGate?: BashGlobalInstallGateConfig;
 
   constructor(config?: BashToolConfig) {
     this.defaultTimeoutMs = config?.defaultTimeoutMs ?? 120000;
     this.maxTimeoutMs = config?.maxTimeoutMs ?? 600000;
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
+    this.globalInstallGate = config?.globalInstallGate;
   }
 
   getDisplayAdapter(): ToolDisplayAdapter {
@@ -131,6 +148,8 @@ export class BashTool implements ExecutableTool {
       timeout = this.maxTimeoutMs;
     }
 
+    await this.assertGlobalInstallAllowed(command);
+
     const result = await runShellCommand({
       command,
       cwd,
@@ -148,5 +167,34 @@ export class BashTool implements ExecutableTool {
       null,
       2,
     );
+  }
+
+  private async assertGlobalInstallAllowed(command: string): Promise<void> {
+    const classification = classifyGlobalInstallCommand(command);
+    if (!classification.matched) {
+      return;
+    }
+
+    const gate = this.globalInstallGate;
+    if (gate?.allowGlobalInstallsWithoutPrompt) {
+      return;
+    }
+
+    const reason =
+      classification.reason ??
+      "This command would install software globally on the system.";
+
+    if (gate?.requestGlobalInstallApproval) {
+      const approved = await gate.requestGlobalInstallApproval({
+        command,
+        reason,
+      });
+      if (!approved) {
+        throw new Error(`${GLOBAL_INSTALL_DENIED_MESSAGE} Command: ${command}`);
+      }
+      return;
+    }
+
+    throw new Error(`${GLOBAL_INSTALL_DENIED_MESSAGE} Command: ${command}`);
   }
 }
