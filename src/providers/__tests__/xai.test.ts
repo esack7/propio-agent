@@ -1,20 +1,18 @@
 import { XaiProvider } from "../xai.js";
 import {
-  ProviderAuthenticationError,
-  ProviderRateLimitError,
-  ProviderModelNotFoundError,
-  ProviderContextLengthError,
-  ProviderError,
-} from "../types.js";
-import { ChatRequest, ChatMessage } from "../types.js";
-import {
+  OPENAI_COMPATIBLE_PROVIDER_TEST_ENV,
   OpenRouterTestFixture,
+  ProviderAuthenticationError,
+  ProviderError,
   registerAcceptsApiKeyTest,
+  registerOpenAiCompatibleStreamErrorTests,
+  registerOpenAiCompatibleToolResultExpansionTest,
   registerProviderTestLifecycle,
-} from "./openrouterTestHelpers.js";
+  setupOpenAiCompatibleProviderTests,
+  type ChatRequest,
+} from "./openAiCompatibleTestHelpers.js";
 
-const originalEnv = process.env;
-const originalFetch = globalThis.fetch;
+const { originalEnv, originalFetch } = OPENAI_COMPATIBLE_PROVIDER_TEST_ENV;
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
 const DEFAULT_CONTEXT_WINDOW = 2_000_000;
 const DEFAULT_REQUEST: ChatRequest = {
@@ -35,66 +33,16 @@ function createProvider(
   });
 }
 
-function createRequest(overrides: Partial<ChatRequest> = {}): ChatRequest {
-  return {
-    ...DEFAULT_REQUEST,
-    ...overrides,
-    messages: overrides.messages ?? DEFAULT_REQUEST.messages,
-  };
-}
-
-async function expectStreamChatToThrow(
-  provider: XaiProvider,
-  matcher: string | RegExp | (new (...args: unknown[]) => unknown),
-  request: ChatRequest = DEFAULT_REQUEST,
-): Promise<void> {
-  await expect(async () => {
-    for await (const _chunk of provider.streamChat(request)) {
-      // consume
-    }
-  }).rejects.toThrow(matcher as any);
-}
-
-async function expectRequestError(
-  response: Record<string, unknown>,
-  matcher: string | RegExp | (new (...args: unknown[]) => unknown),
-  providerOptions: Partial<ConstructorParameters<typeof XaiProvider>[0]> = {},
-): Promise<void> {
-  globalThis.fetch = jest.fn().mockResolvedValue(response);
-  await expectStreamChatToThrow(createProvider(providerOptions), matcher);
-}
-
-async function expectProviderErrorAndMessage(
-  response: Record<string, unknown>,
-  messageMatcher: string | RegExp,
-  providerOptions: Partial<ConstructorParameters<typeof XaiProvider>[0]> = {},
-): Promise<void> {
-  globalThis.fetch = jest.fn().mockResolvedValue(response);
-  const provider = createProvider(providerOptions);
-  await expectStreamChatToThrow(provider, ProviderError);
-  await expectStreamChatToThrow(provider, messageMatcher);
-}
-
-async function collectToolMessages(
-  messages: ChatMessage[],
-): Promise<unknown[]> {
-  const mockFetch = jest.fn().mockResolvedValue({
-    ok: true,
-    body: createSseStream([
-      'data: {"choices":[{"delta":{"content":"Done"}}]}\n\n',
-    ]),
-  });
-  globalThis.fetch = mockFetch;
-
-  for await (const _chunk of createProvider().streamChat(
-    createRequest({ messages }),
-  )) {
-    // consume
-  }
-
-  const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-  return requestBody.messages.filter((message: any) => message.role === "tool");
-}
+const {
+  createRequest,
+  expectStreamChatToThrow,
+  expectRequestError,
+  expectProviderErrorAndMessage,
+  collectToolMessages,
+} = setupOpenAiCompatibleProviderTests({
+  createProvider,
+  defaultRequest: DEFAULT_REQUEST,
+});
 
 describe("XaiProvider", () => {
   registerProviderTestLifecycle(originalEnv, originalFetch);
@@ -251,113 +199,16 @@ describe("XaiProvider", () => {
       );
     });
 
-    it("should expand batched tool results into individual messages", async () => {
-      const toolMessages = await collectToolMessages([
-        { role: "user", content: "Test" },
-        {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            { id: "call1", function: { name: "tool1", arguments: {} } },
-          ],
-        },
-        {
-          role: "tool",
-          content: "",
-          toolResults: [
-            { toolCallId: "call1", toolName: "tool1", content: "result1" },
-          ],
-        },
-      ]);
+    registerOpenAiCompatibleToolResultExpansionTest({ collectToolMessages });
 
-      expect(toolMessages).toHaveLength(1);
-      expect(toolMessages[0]).toMatchObject({
-        role: "tool",
-        content: "result1",
-        tool_call_id: "call1",
-      });
-    });
-
-    it("should throw ProviderAuthenticationError on 401", async () => {
-      await expectRequestError(
-        { ok: false, status: 401 },
-        ProviderAuthenticationError,
-      );
-    });
-
-    it("should throw ProviderRateLimitError on 429", async () => {
-      await expectRequestError(
-        {
-          ok: false,
-          status: 429,
-          headers: new Map([["retry-after", "30"]]),
-        },
-        ProviderRateLimitError,
-      );
-    });
-
-    it("should throw ProviderModelNotFoundError on 404", async () => {
-      await expectRequestError(
-        { ok: false, status: 404 },
-        ProviderModelNotFoundError,
-      );
-    });
-
-    it("should throw ProviderError on 5xx", async () => {
-      await expectProviderErrorAndMessage(
-        {
-          ok: false,
-          status: 503,
-          text: () => Promise.resolve("upstream connect error"),
-        },
-        /upstream connect error/,
-        { retryConfig: { maxRetries: 0, consecutive529Limit: 1 } },
-      );
-    });
-
-    it("should throw ProviderError on network failure", async () => {
-      globalThis.fetch = jest.fn().mockRejectedValue(new Error("fetch failed"));
-      await expectStreamChatToThrow(createProvider(), ProviderError);
-    });
-
-    it("should throw ProviderContextLengthError on 400 with context length message in body", async () => {
-      await expectRequestError(
-        {
-          ok: false,
-          status: 400,
-          text: () =>
-            Promise.resolve(
-              JSON.stringify({
-                error: {
-                  message:
-                    "This model's maximum context length is 131072 tokens. However, your messages resulted in 200000 tokens.",
-                },
-              }),
-            ),
-        },
-        ProviderContextLengthError,
-      );
-    });
-
-    it("should throw generic ProviderError on 400 without context length message", async () => {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        status: 400,
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({ error: { message: "Invalid request format" } }),
-          ),
-      });
-
-      const provider = createProvider({
-        retryConfig: { maxRetries: 0, consecutive529Limit: 1 },
-      });
-      await expectStreamChatToThrow(provider, ProviderError);
-      await expect(async () => {
-        for await (const _chunk of provider.streamChat(DEFAULT_REQUEST)) {
-          // consume
-        }
-      }).rejects.not.toThrow(ProviderContextLengthError);
+    registerOpenAiCompatibleStreamErrorTests({
+      createProvider,
+      expectRequestError,
+      expectProviderErrorAndMessage,
+      expectStreamChatToThrow,
+      defaultRequest: DEFAULT_REQUEST,
+      contextLengthErrorMessage:
+        "This model's maximum context length is 131072 tokens. However, your messages resulted in 200000 tokens.",
     });
 
     it("should fall back to a regional endpoint when the global endpoint returns 503", async () => {

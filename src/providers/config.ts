@@ -63,6 +63,15 @@ export interface XaiProviderConfig extends BaseProviderConfig {
 }
 
 /**
+ * Cloudflare Workers AI provider configuration using the OpenAI-compatible API.
+ */
+export interface CloudflareProviderConfig extends BaseProviderConfig {
+  type: "cloudflare";
+  apiKey?: string;
+  accountId?: string;
+}
+
+/**
  * Gemini provider configuration using Google's OpenAI-compatible API.
  */
 export interface GeminiProviderConfig extends BaseProviderConfig {
@@ -78,7 +87,8 @@ export type ProviderConfig =
   | BedrockProviderConfig
   | OpenRouterProviderConfig
   | GeminiProviderConfig
-  | XaiProviderConfig;
+  | XaiProviderConfig
+  | CloudflareProviderConfig;
 
 /**
  * Multi-provider configuration

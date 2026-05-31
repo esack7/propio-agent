@@ -157,7 +157,7 @@ MCP server configuration lives in `~/.propio/mcp.json`:
   "providers": [
     {
       "name": "string — unique identifier for this entry",
-      "type": "ollama | bedrock | openrouter | gemini | xai",
+      "type": "ollama | bedrock | openrouter | gemini | xai | cloudflare",
       "models": [
         {
           "name": "Human label",
@@ -324,6 +324,27 @@ The `apiKey` can also be set via the `GEMINI_API_KEY` environment variable, with
 ```
 
 The `apiKey` can also be set via the `XAI_API_KEY` environment variable.
+
+### Cloudflare Workers AI
+
+```json
+{
+  "name": "cloudflare",
+  "type": "cloudflare",
+  "models": [
+    {
+      "name": "Kimi K2.6",
+      "key": "cf/moonshotai/kimi-k2.6",
+      "contextWindowTokens": 262144
+    }
+  ],
+  "defaultModel": "cf/moonshotai/kimi-k2.6",
+  "apiKey": "cf-...",
+  "accountId": "your-account-id"
+}
+```
+
+The `accountId` can also be set via the `CLOUDFLARE_ACCOUNT_ID` environment variable. The API token can be set via `CLOUDFLARE_API_TOKEN`, with `CLOUDFLARE_AUTH_TOKEN` and `CLOUDFLARE_API_KEY` as fallbacks. Model keys prefixed with `cf/` in config are normalized to `@cf/...` when sent to the Cloudflare API.
 
 ## MCP
 
@@ -505,6 +526,7 @@ propio/
 │   │   ├── openrouter.ts       # OpenRouter provider
 │   │   ├── gemini.ts           # Gemini provider
 │   │   ├── xai.ts              # xAI provider
+│   │   ├── cloudflare.ts       # Cloudflare Workers AI provider
 │   │   └── __tests__/
 │   ├── tools/
 │   │   ├── interface.ts        # Tool interface

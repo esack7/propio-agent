@@ -7,17 +7,19 @@ import {
   ProviderError,
 } from "./types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
-import { withRetry } from "./withRetry.js";
 import {
   accumulateOpenAIStreamToolCall,
+  applyOpenAIMessageCore,
   buildOpenAIChatCompletionRequestBody,
   buildOpenAIStreamToolCalls,
-  applyOpenAIMessageCore,
+  createOpenAIMessageWithImages,
   createOpenAIToolCall,
   parseJsonMaybe,
   parseOpenAIStreamToolCallArguments,
   readSseDataLines,
+  type OpenAIMessageContentPart,
 } from "./shared.js";
+import { fetchOpenAiCompatibleStreamReader } from "./openAiStream.js";
 import {
   OpenAiCompatibleProvider,
   type OpenAiCompatibleProviderOptions,
@@ -33,12 +35,6 @@ const GEMINI_THOUGHT_TAG_PATTERN = /<\/?thought(?:\s[^>]*)?>/gi;
 const GEMINI_THOUGHT_BLOCK_PATTERN =
   /<thought(?:\s[^>]*)?>([\s\S]*?)<\/thought>/gi;
 const GEMINI_PARTIAL_THOUGHT_TAG_PATTERN = /<\/?(?:th(?:ought)?)?$/i;
-
-interface OpenAIMessageContentPart {
-  type: "text" | "image_url";
-  text?: string;
-  image_url?: { url: string };
-}
 
 interface OpenAIMessage {
   role: "user" | "assistant" | "system" | "tool";
@@ -150,42 +146,8 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
     this.onDiagnosticEvent = options.onDiagnosticEvent;
   }
 
-  private imageToUrl(image: Uint8Array | string): string {
-    if (typeof image === "string") {
-      if (image.startsWith("data:")) {
-        return image;
-      }
-      if (/^https?:\/\//i.test(image)) {
-        return image;
-      }
-      return `data:image/png;base64,${image}`;
-    }
-
-    return `data:image/png;base64,${Buffer.from(image).toString("base64")}`;
-  }
-
   protected chatMessageToOpenAIMessage(msg: ChatMessage): OpenAIMessage {
-    const role = msg.role as OpenAIMessage["role"];
-    const out: OpenAIMessage = {
-      role,
-      content: msg.content ?? "",
-    };
-
-    if (msg.role === "user" && msg.images && msg.images.length > 0) {
-      const parts: OpenAIMessageContentPart[] = [];
-      if (msg.content) {
-        parts.push({ type: "text", text: msg.content });
-      }
-      for (const image of msg.images) {
-        parts.push({
-          type: "image_url",
-          image_url: {
-            url: this.imageToUrl(image),
-          },
-        });
-      }
-      out.content = parts;
-    }
+    const out = createOpenAIMessageWithImages<OpenAIMessage>(msg);
 
     applyOpenAIMessageCore(out, msg);
     if (msg.toolCalls && msg.toolCalls.length > 0) {
@@ -500,20 +462,19 @@ export class GeminiProvider extends OpenAiCompatibleProvider {
     request: ChatRequest,
   ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
     const body = this.buildGeminiRequestBody(request);
-    const response = await withRetry(
-      () => this.fetchGeminiStream(body, request.signal),
-      this.buildRetryOptions(
+    return fetchOpenAiCompatibleStreamReader({
+      body,
+      signal: request.signal,
+      fetchStream: (streamBody, signal) =>
+        this.fetchGeminiStream(streamBody, signal),
+      retryOptions: this.buildRetryOptions(
         request,
         this.model,
         this.retryConfig,
         this.onDiagnosticEvent,
       ),
-    );
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw this.translateError(new Error("No response body"));
-    }
-    return reader;
+      translateError: (error) => this.translateError(error),
+    });
   }
 
   private sanitizeMessagesForGemini(messages: ChatMessage[]): ChatMessage[] {
