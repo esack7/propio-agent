@@ -18,6 +18,7 @@ import {
 import { ChatMessage, ChatToolCall, ToolResult } from "../providers/types.js";
 import type { SkillInvocationScope } from "../skills/types.js";
 import type { InvokedSkillRecord } from "../skills/types.js";
+import type { AgentMode } from "../modes/types.js";
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -97,6 +98,9 @@ export interface SessionMetadata {
   readonly summaryPolicy: SummaryPolicy;
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
+  readonly agentMode?: AgentMode;
+  readonly planFilePath?: string;
+  readonly planSaveApproved?: boolean;
 }
 
 export interface PersistedSessionV1 {
@@ -168,6 +172,20 @@ export interface PersistedSessionV2 {
 
 export interface PersistedSessionV3 {
   readonly version: 3;
+  readonly savedAt: string;
+  readonly metadata: SessionMetadata;
+  readonly context: {
+    readonly preamble: ReadonlyArray<PersistedChatMessage>;
+    readonly turns: ReadonlyArray<PersistedTurnRecord>;
+    readonly rollingSummary?: RollingSummaryRecord;
+    readonly artifacts: ReadonlyArray<PersistedArtifactRecord>;
+    readonly pinnedMemory: ReadonlyArray<PersistedPinnedMemoryRecord>;
+    readonly invokedSkills: ReadonlyArray<PersistedInvokedSkillRecord>;
+  };
+}
+
+export interface PersistedSessionV4 {
+  readonly version: 4;
   readonly savedAt: string;
   readonly metadata: SessionMetadata;
   readonly context: {
@@ -320,8 +338,8 @@ export function serializeSession(
   state: ConversationState,
   metadata: SessionMetadata,
 ): string {
-  const persisted: PersistedSessionV3 = {
-    version: 3,
+  const persisted: PersistedSessionV4 = {
+    version: 4,
     savedAt: new Date().toISOString(),
     metadata: { ...metadata },
     context: {
@@ -735,6 +753,8 @@ function validateInvokedSkillRecord(record: unknown, label: string): void {
   }
 }
 
+const VALID_AGENT_MODES = new Set<AgentMode>(["execute", "plan", "discover"]);
+
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
   const meta = metadata as Record<string, unknown>;
@@ -747,6 +767,29 @@ function validateMetadata(metadata: unknown): void {
   if (meta.sessionId !== undefined) {
     assertString(meta.sessionId, "metadata.sessionId");
   }
+  if (meta.agentMode !== undefined) {
+    assertString(meta.agentMode, "metadata.agentMode");
+    if (!VALID_AGENT_MODES.has(meta.agentMode as AgentMode)) {
+      throw new SessionParseError(
+        `metadata.agentMode must be execute, plan, or discover`,
+      );
+    }
+  }
+  if (meta.planFilePath !== undefined) {
+    assertString(meta.planFilePath, "metadata.planFilePath");
+  }
+  if (meta.planSaveApproved !== undefined) {
+    if (typeof meta.planSaveApproved !== "boolean") {
+      throw new SessionParseError(
+        "metadata.planSaveApproved must be a boolean",
+      );
+    }
+  }
+  if (meta.planFilePath !== undefined && meta.planSaveApproved === false) {
+    throw new SessionParseError(
+      "metadata.planFilePath requires metadata.planSaveApproved to be true",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -755,7 +798,11 @@ function validateMetadata(metadata: unknown): void {
 
 export function parseSession(
   json: string,
-): PersistedSessionV1 | PersistedSessionV2 | PersistedSessionV3 {
+):
+  | PersistedSessionV1
+  | PersistedSessionV2
+  | PersistedSessionV3
+  | PersistedSessionV4 {
   let raw: unknown;
   try {
     raw = JSON.parse(json);
@@ -766,9 +813,9 @@ export function parseSession(
   assertObject(raw, "session");
 
   const version = raw.version;
-  if (version !== 1 && version !== 2 && version !== 3) {
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) {
     throw new SessionParseError(
-      `Unsupported session version: ${String(version)}. Supported versions: 1, 2, 3.`,
+      `Unsupported session version: ${String(version)}. Supported versions: 1, 2, 3, 4.`,
     );
   }
 
@@ -800,7 +847,7 @@ export function parseSession(
     validateRollingSummary(ctx.rollingSummary, "context.rollingSummary");
   }
 
-  if (version === 2 || version === 3) {
+  if (version === 2 || version === 3 || version === 4) {
     assertArray(ctx.pinnedMemory, "context.pinnedMemory");
     for (let i = 0; i < (ctx.pinnedMemory as unknown[]).length; i++) {
       validatePinnedMemoryRecord(
@@ -810,7 +857,7 @@ export function parseSession(
     }
   }
 
-  if (version === 3) {
+  if (version === 3 || version === 4) {
     assertArray(ctx.invokedSkills, "context.invokedSkills");
     for (let i = 0; i < (ctx.invokedSkills as unknown[]).length; i++) {
       validateInvokedSkillRecord(
@@ -818,7 +865,7 @@ export function parseSession(
         `context.invokedSkills[${i}]`,
       );
     }
-    return raw as unknown as PersistedSessionV3;
+    return raw as unknown as PersistedSessionV3 | PersistedSessionV4;
   }
 
   if (version === 2) {
@@ -972,16 +1019,22 @@ function restoreInvokedSkill(
 }
 
 export function restoreConversationState(
-  persisted: PersistedSessionV1 | PersistedSessionV2 | PersistedSessionV3,
+  persisted:
+    | PersistedSessionV1
+    | PersistedSessionV2
+    | PersistedSessionV3
+    | PersistedSessionV4,
 ): ConversationState {
   const pinnedMemory =
-    persisted.version === 2 || persisted.version === 3
+    persisted.version === 2 ||
+    persisted.version === 3 ||
+    persisted.version === 4
       ? (persisted as PersistedSessionV2).context.pinnedMemory.map(
           restorePinnedMemory,
         )
       : [];
   const invokedSkills =
-    persisted.version === 3
+    persisted.version === 3 || persisted.version === 4
       ? (persisted as PersistedSessionV3).context.invokedSkills.map(
           restoreInvokedSkill,
         )

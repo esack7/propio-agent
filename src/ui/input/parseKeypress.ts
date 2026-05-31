@@ -110,6 +110,7 @@ const SPECIAL_KEY_NAMES_BY_SEQUENCE: Record<string, string> = {
   "\x1b[4~": "end",
   "\x1b[5~": "pageup",
   "\x1b[6~": "pagedown",
+  "\x1b[Z": "backtab",
 };
 
 function synthesizeSpecialKey(

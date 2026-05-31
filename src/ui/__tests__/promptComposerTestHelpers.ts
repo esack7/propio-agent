@@ -197,6 +197,7 @@ export function createTtyHarness(options?: {
   renderState?: (state: unknown) => void;
   onToggleToolCalls?: () => string | null | undefined;
   onToggleThinking?: () => string | null | undefined;
+  onCycleAgentMode?: () => string | null | undefined;
   workspaceRoot?: string;
   enableReverseHistorySearch?: boolean;
   enableTypeahead?: boolean;
@@ -230,6 +231,7 @@ export function createTtyHarness(options?: {
     renderState: options?.renderState as ((state: unknown) => void) | undefined,
     onToggleToolCalls: options?.onToggleToolCalls,
     onToggleThinking: options?.onToggleThinking,
+    onCycleAgentMode: options?.onCycleAgentMode,
   });
 
   const emitKeypress = (

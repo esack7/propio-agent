@@ -229,7 +229,7 @@ describe("createPromptComposer", () => {
     await flush();
     expect(renderFooter).not.toHaveBeenCalled();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | tools: shown | thinking: shown\nName? ",
+      "Enter to send | ? help | mode: execute | tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -241,17 +241,53 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | tools: hidden | thinking: shown\nName? ",
+      "Enter to send | ? help | mode: execute | tools: hidden | thinking: shown\nName? ",
     );
     expect(toggleOutput).not.toContain("tools: shown | thinking: shown");
     expect(renderState).toHaveBeenLastCalledWith(
       expect.objectContaining({
         buffer: "",
-        footer: "Enter to send | ? help | tools: hidden | thinking: shown",
+        footer:
+          "Enter to send | ? help | mode: execute | tools: hidden | thinking: shown",
       }),
     );
 
     harness.composer.close();
+  });
+
+  it("cycles agent mode when Shift+Tab is pressed", async () => {
+    const onCycleAgentMode = jest.fn(() => "Enter to send | mode: plan");
+    const renderState = jest.fn();
+    const harness = createTtyHarness({
+      renderState,
+      enableReverseHistorySearch: false,
+      enableTypeahead: false,
+      onCycleAgentMode,
+    });
+
+    const prompt = composeChatPrompt(harness, {
+      footer: "Enter to send | mode: execute",
+    });
+    await flush();
+
+    harness.inputStream.emit("keypress", "\t", {
+      name: "tab",
+      sequence: "\t",
+      ctrl: false,
+      meta: false,
+      shift: true,
+    });
+
+    await flush();
+    expect(onCycleAgentMode).toHaveBeenCalledTimes(1);
+    expect(renderState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        footer: "Enter to send | mode: plan",
+      }),
+    );
+
+    harness.composer.close();
+    await expect(prompt).resolves.toEqual({ status: "closed" });
   });
 
   it("updates the active footer when thinking is toggled", async () => {
@@ -269,7 +305,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | tools: shown | thinking: shown\nName? ",
+      "Enter to send | ? help | mode: execute | tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u0014", {
@@ -281,7 +317,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | tools: shown | thinking: hidden\nName? ",
+      "Enter to send | ? help | mode: execute | tools: shown | thinking: hidden\nName? ",
     );
 
     harness.composer.close();
@@ -305,7 +341,7 @@ describe("createPromptComposer", () => {
     });
     await flush();
     expect(stripAnsiControls(harness.takeOutput())).toContain(
-      "Enter to send | ? help | tools: shown |\n thinking: shown\nName? ",
+      "Enter to send | ? help | mode: execute\n| tools: shown | thinking: shown\nName? ",
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
@@ -317,7 +353,7 @@ describe("createPromptComposer", () => {
 
     const toggleOutput = stripAnsiControls(harness.takeOutput());
     expect(toggleOutput).toContain(
-      "Enter to send | ? help | tools: hidden\n| thinking: shown\nName? ",
+      "Enter to send | ? help | mode: execute\n| tools: hidden | thinking: shown\nName? ",
     );
     expect(toggleOutput).not.toContain("shown | thinking: shown\nName? ");
 
@@ -379,10 +415,12 @@ describe("createPromptComposer", () => {
     harness.outputStream.emit("resize");
 
     const narrowOutput = harness.takeOutput();
-    expect(narrowOutput).toContain("\u001b[3A");
+    expect(narrowOutput).toContain("\u001b[4A");
     const narrowText = stripAnsiControls(narrowOutput);
     expect(narrowText).toContain("Enter to send | ?");
-    expect(narrowText).toContain("help | tools: shown");
+    expect(narrowText).toContain("help | mode:");
+    expect(narrowText).toContain("execute | tools:");
+    expect(narrowText).toContain("shown");
     expect(narrowText).toContain("thinking:");
     expect(narrowText).toContain("hidden");
     expect(narrowText).toContain("Name? ");
@@ -391,9 +429,9 @@ describe("createPromptComposer", () => {
     harness.outputStream.emit("resize");
 
     const wideOutput = harness.takeOutput();
-    expect(wideOutput).toContain("\u001b[3A");
+    expect(wideOutput).toContain("\u001b[5A");
     expect(stripAnsiControls(wideOutput)).toContain(
-      "Enter to send | ? help | tools: shown | thinking: hidden\nName? ",
+      "Enter to send | ? help | mode: execute | tools: shown | thinking: hidden\nName? ",
     );
 
     harness.composer.close();

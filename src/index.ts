@@ -39,6 +39,7 @@ import {
   isHelpCommand,
   getBashFooterText,
   getIdleFooterText,
+  type FooterVisibilityOptions,
 } from "./ui/slashCommands.js";
 import { processBashCommand } from "./ui/processBashCommand.js";
 import { createShellRunOptionsFromRuntimeConfig } from "./tools/runShellCommand.js";
@@ -454,6 +455,11 @@ async function handleSkillSubmission(
   }
 
   const { agent, ui } = context;
+  if (agent.getAgentMode() !== "execute") {
+    ui.error("Switch to Execute mode to run skills (/mode execute).");
+    ui.command("");
+    return null;
+  }
   const args = trimmedInput.slice("/skill".length).trim();
   if (!args) {
     ui.error("Usage: /skill <name> [arguments]");
@@ -596,6 +602,81 @@ async function handleModelSubmission(
   return undefined;
 }
 
+async function handleModeSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/mode" && !trimmedInput.startsWith("/mode ")) {
+    return undefined;
+  }
+
+  const { agent, ui } = context;
+  const args = trimmedInput.slice("/mode".length).trim();
+
+  if (!args) {
+    const mode = agent.getAgentMode();
+    ui.info(`Current mode: ${mode}`);
+    ui.command("");
+    return null;
+  }
+
+  if (args === "execute" || args === "plan" || args === "discover") {
+    agent.setAgentMode(args);
+    ui.success(`Switched to ${args} mode.`);
+    ui.command("");
+    return null;
+  }
+
+  ui.error(`Unknown /mode usage: "${args}"`);
+  ui.command("Usage: /mode [execute | plan | discover]");
+  ui.command("");
+  return null;
+}
+
+async function handlePlanSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (trimmedInput !== "/plan" && !trimmedInput.startsWith("/plan ")) {
+    return undefined;
+  }
+
+  const { agent, ui } = context;
+  const args = trimmedInput.slice("/plan".length).trim();
+
+  if (args === "save" || args.startsWith("save ")) {
+    if (agent.getAgentMode() !== "plan") {
+      ui.error("Switch to Plan mode to save a plan (/mode plan).");
+      ui.command("");
+      return null;
+    }
+
+    const content =
+      args === "save" ? "" : args.slice("save".length).trimStart();
+    if (!content) {
+      ui.error("Usage: /plan save <approved plan content>");
+      ui.command("");
+      return null;
+    }
+
+    try {
+      const planPath = agent.saveApprovedPlan(content);
+      ui.success(`Plan saved: ${planPath}`);
+    } catch (error) {
+      ui.error(
+        error instanceof Error ? error.message : "Failed to save plan file.",
+      );
+    }
+    ui.command("");
+    return null;
+  }
+
+  ui.error(`Unknown /plan usage: "${args}"`);
+  ui.command("Usage: /plan save <approved plan content>");
+  ui.command("");
+  return null;
+}
+
 async function handleChatSubmission(
   submission: PromptSubmission,
   context: InteractiveSubmissionContext,
@@ -631,6 +712,8 @@ export async function handleInteractiveSubmission(
     handleClearSubmission,
     handleSkillsSubmission,
     handleSkillSubmission,
+    handleModeSubmission,
+    handlePlanSubmission,
     handleContextSubmission,
     handleSessionSubmission,
     handleToolsSubmission,
@@ -647,6 +730,16 @@ export async function handleInteractiveSubmission(
 
   const chatResult = await handleChatSubmission(submission, context);
   return chatResult ?? null;
+}
+
+function buildFooterVisibility(
+  snapshot: { showToolCalls: boolean; showThinking: boolean },
+  agent: AgentType,
+): FooterVisibilityOptions {
+  return {
+    ...snapshot,
+    agentMode: agent.getAgentMode?.() ?? "execute",
+  };
 }
 
 export async function runInteractiveSession(
@@ -667,10 +760,13 @@ export async function runInteractiveSession(
   ];
   const getPromptFooters = (
     snapshot = visibilityState.getSnapshot(),
-  ): { prompt: string; bash: string } => ({
-    prompt: getIdleFooterText(snapshot),
-    bash: getBashFooterText(snapshot),
-  });
+  ): { prompt: string; bash: string } => {
+    const footerVisibility = buildFooterVisibility(snapshot, agent);
+    return {
+      prompt: getIdleFooterText(footerVisibility),
+      bash: getBashFooterText(footerVisibility),
+    };
+  };
 
   const composer = createPromptComposer({
     input: inputStream,
@@ -691,6 +787,12 @@ export async function runInteractiveSession(
     },
     onToggleThinking: () => {
       visibilityState.toggleThinking();
+      return composer.getState()?.inputMode === "bash"
+        ? getPromptFooters().bash
+        : getPromptFooters().prompt;
+    },
+    onCycleAgentMode: () => {
+      agent.cycleAgentMode?.();
       return composer.getState()?.inputMode === "bash"
         ? getPromptFooters().bash
         : getPromptFooters().prompt;
@@ -725,7 +827,10 @@ export async function runInteractiveSession(
         shownReadyPromptMessage = true;
       }
 
-      const visibilitySnapshot = visibilityState.getSnapshot();
+      const visibilitySnapshot = buildFooterVisibility(
+        visibilityState.getSnapshot(),
+        agent,
+      );
       const nextInput = await composer.compose({
         mode: "chat",
         inputMode,
@@ -766,6 +871,7 @@ export async function runInteractiveSession(
           await processBashCommand(trimmedText, ui, {
             cwd: process.cwd(),
             abortSignal: bashAbort.signal,
+            agentMode: agent.getAgentMode?.() ?? "execute",
             ...shellRunOptions,
           });
         } finally {
@@ -933,6 +1039,10 @@ async function createInitializedAgent(
     runtimeConfig,
   });
   await agent.initialize();
+
+  if (parsedArgs.flags.mode) {
+    agent.setAgentMode(parsedArgs.flags.mode);
+  }
 
   return { agent, configPath };
 }

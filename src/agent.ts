@@ -93,6 +93,27 @@ import { SkillRegistry } from "./skills/registry.js";
 import { createMissingSkillError } from "./skills/shared.js";
 import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
 import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
+import { resolveEffectiveToolAllowlist } from "./modes/policies.js";
+import { checkBashAllowedForMode } from "./modes/bashPolicy.js";
+import {
+  allocatePlanFile,
+  isPlanFilePath,
+  writePlanFile,
+} from "./modes/planFile.js";
+import {
+  composeExtraUserInstruction,
+  getExecuteSwitchReminder,
+  getModeReminder,
+} from "./modes/prompts.js";
+import {
+  AGENT_MODE_CYCLE,
+  getApprovedPlanPersistenceFields,
+  resolveImportedPlanState,
+  type AgentMode,
+  type AgentModeState,
+} from "./modes/types.js";
+
+export type { AgentMode, AgentModeState };
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -129,6 +150,15 @@ export type AgentVisibilityEvent =
   | {
       type: "prompt_plan_built";
       snapshot: PromptPlanSnapshot;
+    }
+  | {
+      type: "mode_changed";
+      mode: AgentMode;
+      planFilePath?: string;
+    }
+  | {
+      type: "plan_saved";
+      planFilePath: string;
     };
 
 export interface TurnReasoningSummary {
@@ -223,6 +253,8 @@ export class Agent {
   private readonly configuredSessionsDir?: string;
   private turnScratchpadDir: string | undefined;
   private pendingToolResultBytes = 0;
+  private modeState: AgentModeState = { mode: "execute" };
+  private pendingExecuteSwitchReminder = false;
 
   constructor(
     options: {
@@ -455,8 +487,39 @@ export class Agent {
     if (allowedTools && !allowedTools.has(name)) {
       return {
         status: "tool_disabled",
-        content: `Tool not available in the current skill scope: ${name}`,
+        content: `Tool not available in the current mode or skill scope: ${name}`,
       };
+    }
+
+    const mode = this.modeState.mode;
+    if (mode === "plan" && (name === "write" || name === "edit")) {
+      if (!this.modeState.planSaveApproved || !this.modeState.planFilePath) {
+        return {
+          status: "tool_disabled",
+          content:
+            "In Plan mode, file writes require an approved plan save (/plan save) before write/edit is enabled.",
+        };
+      }
+      if (!isPlanFilePath(args.path, this.modeState.planFilePath)) {
+        return {
+          status: "tool_disabled",
+          content: `In Plan mode, write/edit is only allowed for the approved plan file (${this.modeState.planFilePath})`,
+        };
+      }
+    }
+
+    if (name === "bash" && (mode === "plan" || mode === "discover")) {
+      const command =
+        typeof args.command === "string"
+          ? args.command
+          : String(args.command ?? "");
+      const bashPolicy = checkBashAllowedForMode(command, mode);
+      if (!bashPolicy.allowed) {
+        return {
+          status: "tool_disabled",
+          content: bashPolicy.reason ?? "Command not allowed in this mode",
+        };
+      }
     }
 
     if (this.toolRegistry.hasTool(name)) {
@@ -892,6 +955,11 @@ export class Agent {
       {
         baseRules: this.baseRules,
         agentsMdContent: this.agentsMdContent,
+        modeContext: {
+          mode: this.modeState.mode,
+          planFilePath: this.modeState.planFilePath,
+          planSaveApproved: this.modeState.planSaveApproved ?? false,
+        },
       },
       this.systemPromptRegistry,
     );
@@ -907,32 +975,38 @@ export class Agent {
   } {
     const { core, runtimeContextOverflowBlock } =
       this.compileSystemCore(allowedTools);
-    const discoveryBlock = this.composeSkillDiscoveryBlock();
+    const discoveryBlock =
+      this.modeState.mode === "execute"
+        ? this.composeSkillDiscoveryBlock()
+        : "";
     const systemPrompt = discoveryBlock ? `${core}\n\n${discoveryBlock}` : core;
 
     return { systemPrompt, runtimeContextOverflowBlock };
   }
 
-  private deriveAllowedToolScope(
-    scopes: ReadonlyArray<SkillInvocationScope>,
+  private getEnabledBuiltinNames(): string[] {
+    return this.toolRegistry
+      .getEnabledSchemas()
+      .map((schema) => schema.function.name);
+  }
+
+  private getConnectedMcpToolNames(): string[] {
+    return this.mcpManager
+      .getConnectedToolSchemas()
+      .map((schema) => schema.function.name);
+  }
+
+  private resolveAllowedTools(
+    skillScopes: ReadonlyArray<SkillInvocationScope>,
   ): ReadonlySet<string> | undefined {
-    const scopedLists = scopes
-      .map((scope) => scope.allowedTools)
-      .filter(
-        (allowedTools): allowedTools is readonly string[] =>
-          Array.isArray(allowedTools) && allowedTools.length > 0,
-      );
-
-    if (scopedLists.length === 0) {
-      return undefined;
-    }
-
-    let allowed = new Set(scopedLists[0]);
-    for (const list of scopedLists.slice(1)) {
-      allowed = new Set([...allowed].filter((tool) => list.includes(tool)));
-    }
-
-    return allowed;
+    return resolveEffectiveToolAllowlist({
+      mode: this.modeState.mode,
+      skillScopes,
+      enabledBuiltinNames: this.getEnabledBuiltinNames(),
+      connectedMcpToolNames: this.getConnectedMcpToolNames(),
+      planFilePath: this.modeState.planFilePath,
+      planSaveApproved: this.modeState.planSaveApproved,
+    });
   }
 
   /**
@@ -1314,9 +1388,7 @@ export class Agent {
     let retryLevel = 0;
     let shrinkCount = 0;
 
-    const allowedTools = this.deriveAllowedToolScope(
-      this.getActiveSkillScopes(),
-    );
+    const allowedTools = this.resolveAllowedTools(this.getActiveSkillScopes());
 
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
       const plan = this.buildPlan(
@@ -2105,6 +2177,40 @@ export class Agent {
     return instruction;
   }
 
+  private composeTurnExtraInstruction(
+    options?: AgentStreamOptions,
+  ): string | undefined {
+    let composed = this.normalizeExtraInstruction(options);
+
+    if (this.pendingExecuteSwitchReminder) {
+      const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+      composed = composeExtraUserInstruction(
+        composed,
+        getExecuteSwitchReminder(approvedPlan?.planFilePath),
+      );
+      this.pendingExecuteSwitchReminder = false;
+    }
+
+    const mode = this.modeState.mode;
+    if (mode === "plan" || mode === "discover") {
+      const userTurnNumber =
+        this.contextManager.getConversationState().turns.length;
+      composed = composeExtraUserInstruction(
+        composed,
+        getModeReminder(
+          {
+            mode,
+            planFilePath: this.modeState.planFilePath,
+            planSaveApproved: this.modeState.planSaveApproved ?? false,
+          },
+          userTurnNumber,
+        ),
+      );
+    }
+
+    return composed;
+  }
+
   private selectTurnReasoningSummary(
     agentSummary: string,
     providerReasoningSummary: TurnReasoningSummary | null,
@@ -2177,7 +2283,7 @@ export class Agent {
     let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
-    const extraUserInstruction = this.normalizeExtraInstruction(options);
+    const extraUserInstruction = this.composeTurnExtraInstruction(options);
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
@@ -2223,7 +2329,7 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
         const activeSkillScopes = this.getActiveSkillScopes();
-        const allowedTools = this.deriveAllowedToolScope(activeSkillScopes);
+        const allowedTools = this.resolveAllowedTools(activeSkillScopes);
 
         const plan = this.buildPlan(
           extraUserInstruction,
@@ -2379,8 +2485,111 @@ export class Agent {
    * resume UX. The metadata is informational; importing a snapshot does
    * not auto-switch provider/model.
    */
+  getAgentMode(): AgentMode {
+    return this.modeState.mode;
+  }
+
+  // fallow-ignore-next-line unused-class-member
+  getAgentModeState(): AgentModeState {
+    return { ...this.modeState };
+  }
+
+  getPlanFilePath(): string | undefined {
+    return this.modeState.planFilePath;
+  }
+
+  isPlanSaveApproved(): boolean {
+    return this.modeState.planSaveApproved ?? false;
+  }
+
+  saveApprovedPlan(
+    content: string,
+    options?: {
+      slugHint?: string;
+      onEvent?: (event: AgentVisibilityEvent) => void;
+    },
+  ): string {
+    if (this.modeState.mode !== "plan") {
+      throw new Error("Plan save is only available in Plan mode.");
+    }
+
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+      throw new Error("Plan content cannot be empty.");
+    }
+
+    const planFilePath = allocatePlanFile({
+      sessionId: this.sessionId,
+      cwd: this.skillContext.cwd,
+      homeDir: this.skillContext.homeDir,
+      slugHint: options?.slugHint,
+    });
+    writePlanFile(planFilePath, trimmed);
+
+    this.modeState = {
+      ...this.modeState,
+      planFilePath,
+      planSaveApproved: true,
+    };
+
+    const event: AgentVisibilityEvent = {
+      type: "plan_saved",
+      planFilePath,
+    };
+    this.emitVisibilityEvent({ onEvent: options?.onEvent }, event);
+
+    return planFilePath;
+  }
+
+  setAgentMode(
+    mode: AgentMode,
+    options?: {
+      slugHint?: string;
+      onEvent?: (event: AgentVisibilityEvent) => void;
+    },
+  ): void {
+    const previousMode = this.modeState.mode;
+    if (previousMode === mode) {
+      return;
+    }
+
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+
+    this.modeState = {
+      mode,
+      ...(approvedPlan ?? {}),
+      previousMode,
+    };
+
+    if (
+      mode === "execute" &&
+      (previousMode === "plan" || previousMode === "discover")
+    ) {
+      this.pendingExecuteSwitchReminder = true;
+    }
+
+    const event: AgentVisibilityEvent = {
+      type: "mode_changed",
+      mode,
+      ...(approvedPlan ? { planFilePath: approvedPlan.planFilePath } : {}),
+    };
+    options?.onEvent?.(event);
+    this.emitVisibilityEvent({ onEvent: options?.onEvent }, event);
+  }
+
+  cycleAgentMode(options?: {
+    onEvent?: (event: AgentVisibilityEvent) => void;
+  }): AgentMode {
+    const currentIndex = AGENT_MODE_CYCLE.indexOf(this.modeState.mode);
+    const nextMode =
+      AGENT_MODE_CYCLE[(currentIndex + 1) % AGENT_MODE_CYCLE.length]!;
+    this.setAgentMode(nextMode, options);
+    return nextMode;
+  }
+
   exportSession(): string {
     const state = this.contextManager.getConversationState();
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
     const metadata: SessionMetadata = {
       providerName: this.provider.name,
       modelKey: this.model,
@@ -2389,6 +2598,8 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      agentMode: this.modeState.mode,
+      ...(approvedPlan ?? {}),
     };
     return serializeSession(state, metadata);
   }
@@ -2431,6 +2642,13 @@ export class Agent {
     }
 
     this.contextManager.importState(state);
+
+    const importedMode = persisted.metadata.agentMode ?? "execute";
+    this.modeState = {
+      mode: importedMode,
+      ...resolveImportedPlanState(persisted.metadata),
+    };
+    this.pendingExecuteSwitchReminder = false;
   }
 
   // -------------------------------------------------------------------

@@ -17,6 +17,9 @@ const CLI_FLAG_MAX_ITERATIONS = "--max-iterations";
 const CLI_FLAG_MAX_RETRIES = "--max-retries";
 const CLI_FLAG_BASH_TIMEOUT_MS = "--bash-timeout-ms";
 const CLI_FLAG_STREAM_IDLE_TIMEOUT_MS = "--stream-idle-timeout-ms";
+const CLI_FLAG_MODE = "--mode";
+
+export type CliAgentMode = "execute" | "plan" | "discover";
 
 export interface ParsedCliArgs {
   flags: {
@@ -37,6 +40,7 @@ export interface ParsedCliArgs {
     maxRetries?: number;
     bashTimeoutMs?: number;
     streamIdleTimeoutMs?: number;
+    mode?: CliAgentMode;
   };
   forwardedArgs: string[];
   parseErrors: string[];
@@ -178,6 +182,7 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     maxRetries: undefined,
     bashTimeoutMs: undefined,
     streamIdleTimeoutMs: undefined,
+    mode: undefined,
   };
 
   const intFlagDefs: Array<[string, number, string, (v: number) => void]> = [
@@ -220,6 +225,39 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
 
     if (arg === CLI_FLAG_SANDBOX) {
       flags.sandbox = true;
+      continue;
+    }
+
+    if (arg.startsWith(`${CLI_FLAG_MODE}=`)) {
+      const modeValue = arg.substring(CLI_FLAG_MODE.length + 1);
+      if (
+        modeValue === "execute" ||
+        modeValue === "plan" ||
+        modeValue === "discover"
+      ) {
+        flags.mode = modeValue;
+        forwardedArgs.push(arg);
+      } else {
+        parseErrors.push(`${CLI_FLAG_MODE} must be execute, plan, or discover`);
+      }
+      continue;
+    }
+
+    if (arg === CLI_FLAG_MODE) {
+      const modeValue = args[i + 1];
+      if (
+        modeValue === "execute" ||
+        modeValue === "plan" ||
+        modeValue === "discover"
+      ) {
+        flags.mode = modeValue;
+        forwardedArgs.push(arg, modeValue);
+        i++;
+      } else {
+        parseErrors.push(
+          `${CLI_FLAG_MODE} requires execute, plan, or discover`,
+        );
+      }
       continue;
     }
 

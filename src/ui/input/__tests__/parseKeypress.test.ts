@@ -133,6 +133,22 @@ describe("createKeypressParser", () => {
     expect(events).toEqual([{ kind: "key", str: undefined, key }]);
   });
 
+  it("parses Shift+Tab backtab escape sequence", () => {
+    expect(parseSequence("\x1b[Z")).toEqual([
+      {
+        kind: "key",
+        str: undefined,
+        key: {
+          sequence: "\x1b[Z",
+          name: "backtab",
+          ctrl: false,
+          meta: false,
+          shift: false,
+        },
+      },
+    ]);
+  });
+
   it("passes arrow keys through without delay", () => {
     const parser = createKeypressParser();
     const key = baseKey({ sequence: "\x1b[A", name: "up" });

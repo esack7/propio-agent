@@ -44,6 +44,10 @@ describe("typeahead", () => {
     expect(state?.target.kind).toBe("command");
     expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual([
       "/model",
+      "/mode",
+      "/mode execute",
+      "/mode plan",
+      "/mode discover",
     ]);
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
