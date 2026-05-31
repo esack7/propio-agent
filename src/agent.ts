@@ -23,6 +23,8 @@ import {
 } from "./providers/configLoader.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
+import type { BashGlobalInstallGateConfig } from "./tools/bash.js";
+import type { GlobalInstallApprovalRequest } from "./tools/globalInstallGuard.js";
 import { ExecutableTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
 import type {
@@ -216,6 +218,7 @@ export class Agent {
   };
   private readonly sessionId: string;
   private readonly runtimeConfig: RuntimeConfig;
+  private readonly bashGlobalInstallGate: BashGlobalInstallGateConfig;
   private sessionsDir: string | null = null;
   private readonly configuredSessionsDir?: string;
   private turnScratchpadDir: string | undefined;
@@ -262,6 +265,10 @@ export class Agent {
 
     this.sessionId = randomUUID();
     this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
+    this.bashGlobalInstallGate = {
+      allowGlobalInstallsWithoutPrompt:
+        this.runtimeConfig.allowGlobalInstallsWithoutPrompt,
+    };
     this.initializeProvider(
       this.providersConfig,
       options.providerName,
@@ -276,6 +283,7 @@ export class Agent {
     });
     this.toolRegistry = createDefaultToolRegistry({
       runtimeConfig: this.runtimeConfig,
+      bashGlobalInstallGate: this.bashGlobalInstallGate,
       skillToolInvoker: {
         invokeSkill: async (
           name: string,
@@ -2464,6 +2472,16 @@ export class Agent {
   setSystemPrompt(prompt: string): void {
     this.baseRules = prompt;
     this.systemPromptRegistry.invalidateCoreIdentity();
+  }
+
+  setGlobalInstallApprovalCallback(
+    callback?: (request: GlobalInstallApprovalRequest) => Promise<boolean>,
+  ): void {
+    if (callback) {
+      this.bashGlobalInstallGate.requestGlobalInstallApproval = callback;
+      return;
+    }
+    delete this.bashGlobalInstallGate.requestGlobalInstallApproval;
   }
 
   getTools(): ChatTool[] {

@@ -68,6 +68,7 @@ function createRuntimeConfig(
     outputTokenRecoveryLimit: 3,
     consecutive529FallbackLimit: 3,
     rollingSummaryTargetTokens: 2048,
+    allowGlobalInstallsWithoutPrompt: false,
     ...overrides,
   };
 }
@@ -92,6 +93,7 @@ function createMockAgent() {
   return {
     streamChat: jest.fn(),
     listUserInvocableSkills: () => [],
+    setGlobalInstallApprovalCallback: jest.fn(),
     getConversationState: () => ({
       preamble: [],
       turns: [],

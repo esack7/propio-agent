@@ -2,6 +2,7 @@ import { ToolRegistry } from "./registry.js";
 import { createBuiltinToolManifest } from "./manifest.js";
 import type { SkillToolInvoker } from "./skill.js";
 import type { RuntimeConfig } from "../config/runtimeConfig.js";
+import type { BashGlobalInstallGateConfig } from "./bash.js";
 
 /**
  * Creates a ToolRegistry pre-loaded with the built-in 7-tool surface.
@@ -9,6 +10,7 @@ import type { RuntimeConfig } from "../config/runtimeConfig.js";
 export function createDefaultToolRegistry(options?: {
   readonly skillToolInvoker: SkillToolInvoker;
   readonly runtimeConfig?: RuntimeConfig;
+  readonly bashGlobalInstallGate?: BashGlobalInstallGateConfig;
 }): ToolRegistry {
   const registry = new ToolRegistry();
 
@@ -19,6 +21,7 @@ export function createDefaultToolRegistry(options?: {
       },
     },
     runtimeConfig: options?.runtimeConfig,
+    bashGlobalInstallGate: options?.bashGlobalInstallGate,
   })) {
     registry.register(definition.tool, definition.enabledByDefault);
   }

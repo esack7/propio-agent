@@ -700,6 +700,14 @@ export async function runInteractiveSession(
     },
   });
   abortState.setActiveComposer(composer);
+  agent.setGlobalInstallApprovalCallback(async (request) => {
+    return await composer.confirm({
+      promptText: ui.prompt(
+        `${request.reason}\n\nCommand: ${request.command}\n\nAllow this global install?`,
+      ),
+      defaultValue: false,
+    });
+  });
 
   try {
     ui.command("Type /help or ? to view available commands.");

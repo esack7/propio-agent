@@ -364,6 +364,96 @@ describe("Tool Implementations", () => {
       expect(parsed.stdout).toEqual(largeOutput);
       expect(parsed.stdout.length).toBe(60 * 1024);
     });
+
+    it("runs normal commands without approval", async () => {
+      const requestGlobalInstallApproval = jest.fn();
+      const tool = new BashTool({
+        globalInstallGate: {
+          allowGlobalInstallsWithoutPrompt: false,
+          requestGlobalInstallApproval,
+        },
+      });
+      mockExecFileAsync.mockResolvedValue({
+        stdout: "ok\n",
+        stderr: "",
+      });
+
+      await tool.execute({ command: "echo ok" });
+
+      expect(requestGlobalInstallApproval).not.toHaveBeenCalled();
+      expect(mockExecFileAsync).toHaveBeenCalled();
+    });
+
+    it("prompts and runs when approval returns true", async () => {
+      const requestGlobalInstallApproval = jest.fn().mockResolvedValue(true);
+      const tool = new BashTool({
+        globalInstallGate: {
+          allowGlobalInstallsWithoutPrompt: false,
+          requestGlobalInstallApproval,
+        },
+      });
+      mockExecFileAsync.mockResolvedValue({
+        stdout: "",
+        stderr: "",
+      });
+
+      await tool.execute({ command: "npm install -g eslint" });
+
+      expect(requestGlobalInstallApproval).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: "npm install -g eslint",
+          reason: expect.stringMatching(/npm/i),
+        }),
+      );
+      expect(mockExecFileAsync).toHaveBeenCalled();
+    });
+
+    it("throws and does not run when approval returns false", async () => {
+      const requestGlobalInstallApproval = jest.fn().mockResolvedValue(false);
+      const tool = new BashTool({
+        globalInstallGate: {
+          allowGlobalInstallsWithoutPrompt: false,
+          requestGlobalInstallApproval,
+        },
+      });
+
+      await expect(
+        tool.execute({ command: "npm install -g eslint" }),
+      ).rejects.toThrow(/Global software install blocked/);
+      expect(mockExecFileAsync).not.toHaveBeenCalled();
+    });
+
+    it("throws and does not run when no approval callback is available", async () => {
+      const tool = new BashTool({
+        globalInstallGate: {
+          allowGlobalInstallsWithoutPrompt: false,
+        },
+      });
+
+      await expect(
+        tool.execute({ command: "brew install ripgrep" }),
+      ).rejects.toThrow(/Global software install blocked/);
+      expect(mockExecFileAsync).not.toHaveBeenCalled();
+    });
+
+    it("runs without prompting when allowGlobalInstallsWithoutPrompt is true", async () => {
+      const requestGlobalInstallApproval = jest.fn();
+      const tool = new BashTool({
+        globalInstallGate: {
+          allowGlobalInstallsWithoutPrompt: true,
+          requestGlobalInstallApproval,
+        },
+      });
+      mockExecFileAsync.mockResolvedValue({
+        stdout: "",
+        stderr: "",
+      });
+
+      await tool.execute({ command: "npm install -g eslint" });
+
+      expect(requestGlobalInstallApproval).not.toHaveBeenCalled();
+      expect(mockExecFileAsync).toHaveBeenCalled();
+    });
   });
 
   describe("GrepTool", () => {
