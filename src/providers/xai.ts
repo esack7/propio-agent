@@ -11,14 +11,14 @@ import {
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import { withRetry } from "./withRetry.js";
 import {
-  accumulateOpenAIStreamToolCall,
   buildOpenAIChatCompletionRequestBody,
-  buildOpenAIStreamToolCalls,
   expandToolResultMessages,
   parseJsonMaybe,
   parseOpenAIStreamToolCallArguments,
   readSseDataLines,
+  type OpenAIStreamToolCallAccumulator,
 } from "./shared.js";
+import { consumeOpenAiChatCompletionsStream } from "./openAiStream.js";
 import {
   OpenAiCompatibleProvider,
   type OpenAiCompatibleProviderOptions,
@@ -161,7 +161,10 @@ export class XaiProvider extends OpenAiCompatibleProvider {
         XAI_CHAT_COMPLETIONS_API_URLS,
         body,
       );
-      const toolCallsByIndex = new Map<number, AccumulatedToolCall>();
+      const toolCallsByIndex = new Map<
+        number,
+        OpenAIStreamToolCallAccumulator
+      >();
       yield* this.consumeChatCompletionsStream(reader, toolCallsByIndex);
     } catch (error) {
       if (error instanceof ProviderError) throw error;
@@ -359,141 +362,9 @@ export class XaiProvider extends OpenAiCompatibleProvider {
 
   private async *consumeChatCompletionsStream(
     reader: ReadableStreamDefaultReader<Uint8Array>,
-    toolCallsByIndex: Map<number, AccumulatedToolCall>,
+    toolCallsByIndex: Map<number, OpenAIStreamToolCallAccumulator>,
   ): AsyncIterable<ChatStreamEvent> {
-    let finishReason: any = "end_turn";
-
-    for await (const data of readSseDataLines(reader)) {
-      const result = this.parseStreamLine(data, toolCallsByIndex);
-      if (result.stopReason) {
-        finishReason = result.stopReason;
-      }
-      for (const event of result.events) {
-        yield event;
-      }
-    }
-
-    // Emit normalized terminal event (Phase 4.5)
-    yield { type: "terminal", stopReason: finishReason };
-  }
-
-  private mapXaiFinishReason(finishReason: string): string {
-    const finishReasonMap: Record<string, string> = {
-      length: "max_tokens",
-      stop: "end_turn",
-      tool_calls: "tool_use",
-    };
-    return finishReasonMap[finishReason] ?? "end_turn";
-  }
-
-  private buildToolCallsFromFinishReason(
-    finishReason: string | undefined,
-    toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): ChatStreamEvent | null {
-    if (finishReason !== "tool_calls") {
-      return null;
-    }
-
-    const toolCalls = buildOpenAIStreamToolCalls(toolCallsByIndex, (acc) => ({
-      id: acc.id,
-      function: {
-        name: acc.name || "",
-        arguments: parseOpenAIStreamToolCallArguments(acc.argsString),
-      },
-    }));
-    return toolCalls.length > 0 ? { type: "tool_calls", toolCalls } : null;
-  }
-
-  private parseXaiStreamChoice(data: string):
-    | {
-        delta?: {
-          content?: string;
-          tool_calls?: Array<{
-            index?: number;
-            id?: string;
-            function?: { name?: string; arguments?: string };
-          }>;
-        };
-        finish_reason?: string;
-      }
-    | undefined {
-    return parseJsonMaybe<{
-      choices?: Array<{
-        delta?: {
-          content?: string;
-          tool_calls?: Array<{
-            index?: number;
-            id?: string;
-            function?: { name?: string; arguments?: string };
-          }>;
-        };
-        finish_reason?: string;
-      }>;
-    }>(data)?.choices?.[0];
-  }
-
-  private appendXaiContentEvent(
-    content: string | undefined,
-    events: ChatStreamEvent[],
-  ): void {
-    if (content != null && content !== "") {
-      events.push({ type: "assistant_text", delta: content });
-    }
-  }
-
-  private accumulateXaiToolCalls(
-    toolCalls:
-      | Array<{
-          index?: number;
-          id?: string;
-          function?: { name?: string; arguments?: string };
-        }>
-      | undefined,
-    toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): void {
-    if (!toolCalls || !Array.isArray(toolCalls)) {
-      return;
-    }
-
-    for (const toolCall of toolCalls) {
-      accumulateOpenAIStreamToolCall(toolCall, toolCallsByIndex, () => ({
-        name: "",
-        argsString: "",
-      }));
-    }
-  }
-
-  private parseStreamLine(
-    data: string,
-    toolCallsByIndex: Map<number, AccumulatedToolCall>,
-  ): { events: ChatStreamEvent[]; stopReason?: string } {
-    if (data === "[DONE]") {
-      return { events: [] };
-    }
-
-    const choice = this.parseXaiStreamChoice(data);
-    if (!choice?.delta) {
-      return { events: [] };
-    }
-
-    const events: ChatStreamEvent[] = [];
-    this.appendXaiContentEvent(choice.delta.content, events);
-    this.accumulateXaiToolCalls(choice.delta.tool_calls, toolCallsByIndex);
-
-    const toolCallsEvent = this.buildToolCallsFromFinishReason(
-      choice.finish_reason,
-      toolCallsByIndex,
-    );
-    if (toolCallsEvent) {
-      events.push(toolCallsEvent);
-    }
-
-    return {
-      events,
-      stopReason: choice.finish_reason
-        ? this.mapXaiFinishReason(choice.finish_reason)
-        : undefined,
-    };
+    yield* consumeOpenAiChatCompletionsStream(reader, toolCallsByIndex);
   }
 
   private mapXaiResponsesStopReason(
@@ -690,12 +561,6 @@ export class XaiProvider extends OpenAiCompatibleProvider {
       requestFailedMessage: "xAI request failed",
     });
   }
-}
-
-interface AccumulatedToolCall {
-  id?: string;
-  name: string;
-  argsString: string;
 }
 
 interface ResponsesFunctionCall {

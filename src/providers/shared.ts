@@ -26,7 +26,13 @@ export interface OpenAIMessageCore {
   tool_call_id?: string;
 }
 
-interface OpenAIStreamToolCallAccumulator {
+export interface OpenAIMessageContentPart {
+  type: "text" | "image_url";
+  text?: string;
+  image_url?: { url: string };
+}
+
+export interface OpenAIStreamToolCallAccumulator {
   id?: string;
   name: string;
   argsString: string;
@@ -270,6 +276,55 @@ export function applyOpenAIMessageCore<T extends OpenAIMessageCore>(
   return out;
 }
 
+export function createOpenAIMessageWithImages<T extends OpenAIMessageCore>(
+  msg: ChatMessage,
+): T {
+  const role = msg.role as T["role"];
+  const out = {
+    role,
+    content: msg.content ?? "",
+  } as T;
+
+  if (msg.role === "user" && msg.images && msg.images.length > 0) {
+    out.content = buildOpenAIImageContentParts(msg.content, msg.images);
+  }
+
+  return out;
+}
+
+function imageToOpenAIUrl(image: Uint8Array | string): string {
+  if (typeof image === "string") {
+    if (image.startsWith("data:")) {
+      return image;
+    }
+    if (/^https?:\/\//i.test(image)) {
+      return image;
+    }
+    return `data:image/png;base64,${image}`;
+  }
+
+  return `data:image/png;base64,${Buffer.from(image).toString("base64")}`;
+}
+
+function buildOpenAIImageContentParts(
+  content: string | undefined,
+  images: Array<Uint8Array | string>,
+): OpenAIMessageContentPart[] {
+  const parts: OpenAIMessageContentPart[] = [];
+  if (content) {
+    parts.push({ type: "text", text: content });
+  }
+  for (const image of images) {
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: imageToOpenAIUrl(image),
+      },
+    });
+  }
+  return parts;
+}
+
 export function normalizeErrorMessage(message: string): string {
   const trimmed = message.trim();
   if (!trimmed) {
@@ -280,9 +335,18 @@ export function normalizeErrorMessage(message: string): string {
     const parsed = JSON.parse(trimmed) as {
       error?: { message?: string };
       message?: string;
+      errors?: Array<{ message?: string }>;
     };
     if (typeof parsed.error?.message === "string") {
       return parsed.error.message;
+    }
+    if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
+      const errorMessages = parsed.errors
+        .map((entry) => entry.message)
+        .filter((entry): entry is string => typeof entry === "string");
+      if (errorMessages.length > 0) {
+        return errorMessages.join("; ");
+      }
     }
     if (typeof parsed.message === "string") {
       return parsed.message;

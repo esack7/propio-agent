@@ -7,12 +7,14 @@ import {
   OpenRouterProviderConfig,
   GeminiProviderConfig,
   XaiProviderConfig,
+  CloudflareProviderConfig,
 } from "../config.js";
 import { OllamaProvider } from "../ollama.js";
 import { BedrockProvider } from "../bedrock.js";
 import { OpenRouterProvider } from "../openrouter.js";
 import { GeminiProvider } from "../gemini.js";
 import { XaiProvider } from "../xai.js";
+import { CloudflareProvider } from "../cloudflare.js";
 
 describe("Provider Factory", () => {
   describe("createProvider", () => {
@@ -150,7 +152,7 @@ describe("Provider Factory", () => {
       };
 
       expect(() => createProvider(config)).toThrow(
-        /ollama.*bedrock|bedrock.*ollama|openrouter|gemini|xai/,
+        /ollama.*bedrock|bedrock.*ollama|openrouter|gemini|xai|cloudflare/,
       );
     });
 
@@ -215,6 +217,29 @@ describe("Provider Factory", () => {
 
       expect(provider).toBeInstanceOf(GeminiProvider);
       expect(provider.getCapabilities().contextWindowTokens).toBe(2_000_000);
+    });
+
+    it("should create CloudflareProvider from cloudflare config", () => {
+      const config: CloudflareProviderConfig = {
+        name: "cloudflare",
+        type: "cloudflare",
+        models: [
+          {
+            name: "Kimi K2.6",
+            key: "cf/moonshotai/kimi-k2.6",
+            contextWindowTokens: 262_144,
+          },
+        ],
+        defaultModel: "cf/moonshotai/kimi-k2.6",
+        apiKey: "cf-test-token",
+        accountId: "test-account-id",
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(CloudflareProvider);
+      expect(provider.name).toBe("cloudflare");
+      expect(provider.getCapabilities().contextWindowTokens).toBe(262_144);
     });
 
     it("should use flat host field for Ollama", () => {

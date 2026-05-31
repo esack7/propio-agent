@@ -5,6 +5,7 @@ import {
   BedrockProviderConfig,
   OpenRouterProviderConfig,
   GeminiProviderConfig,
+  CloudflareProviderConfig,
   ProvidersConfig,
 } from "../config.js";
 
@@ -157,6 +158,24 @@ describe("Configuration Types (New Structure)", () => {
       };
       expect(config.type).toBe("gemini");
     });
+
+    it("should accept CloudflareProviderConfig", () => {
+      const config: ProviderConfig = {
+        name: "cloudflare",
+        type: "cloudflare",
+        models: [
+          {
+            name: "Kimi K2.6",
+            key: "cf/moonshotai/kimi-k2.6",
+            contextWindowTokens: 262_144,
+          },
+        ],
+        defaultModel: "cf/moonshotai/kimi-k2.6",
+        apiKey: "cf-token",
+        accountId: "account-id",
+      };
+      expect(config.type).toBe("cloudflare");
+    });
   });
 
   describe("OpenRouterProviderConfig", () => {
@@ -214,6 +233,28 @@ describe("Configuration Types (New Structure)", () => {
       };
       expect(config.type).toBe("gemini");
       expect(config.apiKey).toBe("gemini-key");
+    });
+  });
+
+  describe("CloudflareProviderConfig", () => {
+    it("should define cloudflare provider with optional apiKey and accountId", () => {
+      const config: CloudflareProviderConfig = {
+        name: "cloudflare",
+        type: "cloudflare",
+        models: [
+          {
+            name: "Kimi K2.6",
+            key: "cf/moonshotai/kimi-k2.6",
+            contextWindowTokens: 262_144,
+          },
+        ],
+        defaultModel: "cf/moonshotai/kimi-k2.6",
+        apiKey: "cf-token",
+        accountId: "account-id",
+      };
+      expect(config.type).toBe("cloudflare");
+      expect(config.apiKey).toBe("cf-token");
+      expect(config.accountId).toBe("account-id");
     });
   });
 
