@@ -3,6 +3,7 @@ import * as path from "path";
 import { afterEach, describe, expect, it } from "@jest/globals";
 import {
   allocatePlanFile,
+  extractProposedPlanContent,
   isPlanFilePath,
   writePlanFile,
 } from "../planFile.js";
@@ -47,5 +48,25 @@ describe("planFile", () => {
     } finally {
       process.chdir(previousCwd);
     }
+  });
+
+  it("extracts the latest proposed plan block from assistant text", () => {
+    const content = [
+      "Acknowledgement text.",
+      "<proposed_plan>",
+      "# Draft one",
+      "</proposed_plan>",
+      "More text.",
+      "<proposed_plan>",
+      "# Draft two",
+      "",
+      "Step 1",
+      "</proposed_plan>",
+    ].join("\n");
+
+    expect(extractProposedPlanContent(content)).toBe("# Draft two\n\nStep 1");
+    expect(
+      extractProposedPlanContent("Plain acknowledgement only"),
+    ).toBeUndefined();
   });
 });

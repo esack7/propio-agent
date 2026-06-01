@@ -5,6 +5,8 @@ import { normalizeToolPath } from "../tools/shared.js";
 
 const PLANS_DIR_NAME = "plans";
 const PROPIO_DIR = ".propio";
+const PROPOSED_PLAN_BLOCK_PATTERN =
+  "<proposed_plan>([\\s\\S]*?)</proposed_plan>";
 
 function canonicalizePath(rawPath: string): string {
   const normalized = normalizeToolPath(rawPath);
@@ -47,6 +49,26 @@ function resolvePlansRoot(cwd: string, homeDir: string): string {
 
 function ensurePlanDirectoryExists(plansRoot: string): void {
   fs.mkdirSync(plansRoot, { recursive: true });
+}
+
+export function extractProposedPlanContent(
+  content: string,
+): string | undefined {
+  if (typeof content !== "string") {
+    return undefined;
+  }
+
+  const matches = [
+    ...content.matchAll(new RegExp(PROPOSED_PLAN_BLOCK_PATTERN, "gi")),
+  ];
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const proposedPlan = matches[index]?.[1]?.trim();
+    if (proposedPlan) {
+      return proposedPlan;
+    }
+  }
+
+  return undefined;
 }
 
 export interface AllocatePlanFileInput {

@@ -1,4 +1,5 @@
 import { LLMProvider } from "./providers/interface.js";
+import * as fs from "fs";
 import * as os from "os";
 import { randomUUID } from "crypto";
 import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
@@ -97,11 +98,13 @@ import { resolveEffectiveToolAllowlist } from "./modes/policies.js";
 import { checkBashAllowedForMode } from "./modes/bashPolicy.js";
 import {
   allocatePlanFile,
+  extractProposedPlanContent,
   isPlanFilePath,
   writePlanFile,
 } from "./modes/planFile.js";
 import {
   composeExtraUserInstruction,
+  EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS,
   getExecuteSwitchReminder,
   getModeReminder,
 } from "./modes/prompts.js";
@@ -2200,10 +2203,9 @@ export class Agent {
     let composed = this.normalizeExtraInstruction(options);
 
     if (this.pendingExecuteSwitchReminder) {
-      const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
       composed = composeExtraUserInstruction(
         composed,
-        getExecuteSwitchReminder(approvedPlan?.planFilePath),
+        this.buildExecuteSwitchReminder(),
       );
       this.pendingExecuteSwitchReminder = false;
     }
@@ -2526,6 +2528,38 @@ export class Agent {
     return this.findLatestAssistantDraftFromPlanBoundary();
   }
 
+  private consumePendingPlanDraft(): void {
+    this.latestPlanModeAssistantDraft = undefined;
+    this.planDraftSearchStartTurnIndex =
+      this.contextManager.getConversationState().turns.length;
+  }
+
+  private buildExecuteSwitchReminder(): string {
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+    if (!approvedPlan) {
+      return getExecuteSwitchReminder();
+    }
+
+    try {
+      const planContent = fs.readFileSync(approvedPlan.planFilePath, "utf8");
+      const truncated =
+        planContent.length > EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS;
+      return getExecuteSwitchReminder({
+        planFilePath: approvedPlan.planFilePath,
+        planContent: truncated
+          ? planContent.slice(0, EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS)
+          : planContent,
+        planContentTruncated: truncated,
+      });
+    } catch (error) {
+      return getExecuteSwitchReminder({
+        planFilePath: approvedPlan.planFilePath,
+        unreadablePlanFileReason:
+          error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private resetPlanModeDraftTracking(): void {
     this.latestPlanModeAssistantDraft = undefined;
     this.planDraftSearchStartTurnIndex = undefined;
@@ -2577,8 +2611,11 @@ export class Agent {
         const entry = turn.entries[entryIndex]!;
         if (entry.kind !== "assistant") continue;
         const content = entry.message.content?.trim();
-        if (content) {
-          return content;
+        const proposedPlan = content
+          ? extractProposedPlanContent(content)
+          : undefined;
+        if (proposedPlan) {
+          return proposedPlan;
         }
       }
     }
@@ -2590,11 +2627,10 @@ export class Agent {
     if (this.modeState.mode !== "plan") {
       return;
     }
-    const trimmed = content.trim();
-    if (!trimmed) {
-      return;
+    const proposedPlan = extractProposedPlanContent(content);
+    if (proposedPlan) {
+      this.latestPlanModeAssistantDraft = proposedPlan;
     }
-    this.latestPlanModeAssistantDraft = trimmed;
   }
 
   saveApprovedPlan(
@@ -2613,12 +2649,15 @@ export class Agent {
       throw new Error("Plan content cannot be empty.");
     }
 
-    const planFilePath = allocatePlanFile({
-      sessionId: this.sessionId,
-      cwd: this.skillContext.cwd,
-      homeDir: this.skillContext.homeDir,
-      slugHint: options?.slugHint,
-    });
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+    const planFilePath = approvedPlan?.planFilePath
+      ? approvedPlan.planFilePath
+      : allocatePlanFile({
+          sessionId: this.sessionId,
+          cwd: this.skillContext.cwd,
+          homeDir: this.skillContext.homeDir,
+          slugHint: options?.slugHint,
+        });
     writePlanFile(planFilePath, trimmed);
 
     this.modeState = {
@@ -2626,6 +2665,7 @@ export class Agent {
       planFilePath,
       planSaveApproved: true,
     };
+    this.consumePendingPlanDraft();
 
     const event: AgentVisibilityEvent = {
       type: "plan_saved",

@@ -22,9 +22,7 @@ describe("mode prompts", () => {
     expect(getModeSystemSection({ mode: "plan" })).toContain(
       "Draft the plan in chat",
     );
-    expect(getModeSystemSection({ mode: "plan" })).toContain(
-      "create or edit a plan file",
-    );
+    expect(getModeSystemSection({ mode: "plan" })).toContain("<proposed_plan>");
     expect(getModeSystemSection({ mode: "plan" })).toContain(
       "run `/plan save` to save the latest plan",
     );
@@ -66,14 +64,31 @@ describe("mode prompts", () => {
   });
 
   it("returns pre-save plan reminder text", () => {
-    expect(getModeReminder({ mode: "plan" }, 1)).toContain(
-      "do not create a file yet",
-    );
+    expect(getModeReminder({ mode: "plan" }, 1)).toContain("<proposed_plan>");
   });
 
   it("returns post-save execute switch reminder", () => {
     expect(getExecuteSwitchReminder("/tmp/plan.md")).toContain(
       "If an approved plan file exists at /tmp/plan.md",
     );
+  });
+
+  it("includes approved plan content in the execute switch reminder", () => {
+    const reminder = getExecuteSwitchReminder({
+      planFilePath: "/tmp/plan.md",
+      planContent: "# Plan\n\nStep 1: ship it",
+    });
+
+    expect(reminder).toContain("Approved plan content:");
+    expect(reminder).toContain("Step 1: ship it");
+  });
+
+  it("notes when execute switch plan content is truncated", () => {
+    const reminder = getExecuteSwitchReminder({
+      planFilePath: "/tmp/plan.md",
+      planContent: "a".repeat(12_001),
+    });
+
+    expect(reminder).toContain("truncated at 12000 characters");
   });
 });

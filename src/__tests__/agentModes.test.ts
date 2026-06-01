@@ -66,6 +66,62 @@ describe("agent modes", () => {
     });
   }
 
+  type CapturingProvider = LLMProvider & {
+    readonly streamChatCalls: ChatRequest[];
+  };
+
+  function createSequentialTextProvider(
+    name: string,
+    responses: ReadonlyArray<string>,
+  ): CapturingProvider {
+    const streamChatCalls: ChatRequest[] = [];
+
+    return {
+      name,
+      streamChatCalls,
+      getCapabilities() {
+        return { contextWindowTokens: 128000 };
+      },
+      async *streamChat(request: ChatRequest): AsyncIterable<ChatChunk> {
+        streamChatCalls.push(request);
+        const response =
+          responses[Math.min(streamChatCalls.length - 1, responses.length - 1)];
+        if (response !== undefined) {
+          yield { delta: response };
+        }
+      },
+    };
+  }
+
+  function getLastUserMessage(provider: CapturingProvider): string {
+    return (
+      provider.streamChatCalls[0]?.messages
+        .filter((message) => message.role === "user")
+        .at(-1)?.content ?? ""
+    );
+  }
+
+  async function captureExecuteReminderMessage(options: {
+    readonly deletePlanFile?: boolean;
+  }): Promise<{ planPath: string; lastUser: string }> {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    const planPath = agent.saveApprovedPlan("# Plan\n\nStep 1: build it");
+    if (options.deletePlanFile) {
+      fs.unlinkSync(planPath);
+    }
+
+    const provider = createSequentialTextProvider("execute-reminder-provider", [
+      "ok",
+    ]);
+    (agent as any).provider = provider;
+
+    agent.setAgentMode("execute");
+    await agent.streamChat(userSubmission("Implement the plan"), () => {});
+
+    return { planPath, lastUser: getLastUserMessage(provider) };
+  }
+
   async function runSlashCommand(agent: Agent, text: string): Promise<string> {
     const stdout = createMockWriteStream();
     const stderr = createMockWriteStream();
@@ -274,21 +330,14 @@ describe("agent modes", () => {
   });
 
   it("restores plan drafts from imported session history for plain /plan save", async () => {
-    class PlanDraftProvider implements LLMProvider {
-      readonly name = "plan-draft-provider";
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
-
-      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
-        yield { delta: "# Imported draft\n\nStep 1: ship feature" };
-      }
-    }
-
     const agent = createPlanAgent();
     agent.setAgentMode("plan");
-    (agent as any).provider = new PlanDraftProvider();
+    (agent as any).provider = createSequentialTextProvider(
+      "plan-draft-provider",
+      [
+        "<proposed_plan>\n# Imported draft\n\nStep 1: ship feature\n</proposed_plan>",
+      ],
+    );
     await agent.streamChat(userSubmission("Draft a plan"), () => {});
 
     const json = agent.exportSession();
@@ -383,22 +432,15 @@ describe("agent modes", () => {
     expect(fs.existsSync(agent.getPlanFilePath()!)).toBe(true);
   });
 
-  it("saves the latest assistant draft via plain /plan save", async () => {
-    class PlanDraftProvider implements LLMProvider {
-      readonly name = "plan-draft-provider";
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
-
-      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
-        yield { delta: "# Draft plan\n\nStep 1: refactor auth" };
-      }
-    }
-
+  it("saves the latest proposed plan draft via plain /plan save", async () => {
     const agent = createPlanAgent();
     agent.setAgentMode("plan");
-    (agent as any).provider = new PlanDraftProvider();
+    (agent as any).provider = createSequentialTextProvider(
+      "plan-draft-provider",
+      [
+        "<proposed_plan>\n# Draft plan\n\nStep 1: refactor auth\n</proposed_plan>",
+      ],
+    );
 
     await agent.streamChat(userSubmission("Draft a plan"), () => {});
 
@@ -409,6 +451,31 @@ describe("agent modes", () => {
     expect(fs.readFileSync(agent.getPlanFilePath()!, "utf8")).toContain(
       "Step 1: refactor auth",
     );
+  });
+
+  it("keeps the pending plan draft when later assistant replies are acknowledgements", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    (agent as any).provider = createSequentialTextProvider(
+      "plan-ack-provider",
+      [
+        "<proposed_plan>\n# Draft plan\n\nStep 1: refactor auth\n</proposed_plan>",
+        "Great, run /plan save when you are ready.",
+      ],
+    );
+
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+    await agent.streamChat(userSubmission("Acknowledge the draft"), () => {});
+
+    expect(agent.getLatestAssistantPlanDraft()).toContain(
+      "Step 1: refactor auth",
+    );
+
+    const output = await runSlashCommand(agent, "/plan save");
+    expect(output).toContain("Plan saved:");
+    const savedContent = fs.readFileSync(agent.getPlanFilePath()!, "utf8");
+    expect(savedContent).toContain("Step 1: refactor auth");
+    expect(savedContent).not.toContain("Great, run /plan save");
   });
 
   it("shows a helpful error when plain /plan save has no draft to save", async () => {
@@ -422,26 +489,14 @@ describe("agent modes", () => {
   });
 
   it("does not save stale execute-mode assistant content via plain /plan save", async () => {
-    class ExecuteThenPlanProvider implements LLMProvider {
-      readonly name = "execute-then-plan-provider";
-      callCount = 0;
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
-
-      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
-        this.callCount += 1;
-        if (this.callCount === 1) {
-          yield { delta: "Execute mode answer about unrelated topic." };
-          return;
-        }
-        yield { delta: "# Plan draft\n\nReal plan content." };
-      }
-    }
-
     const agent = createPlanAgent();
-    (agent as any).provider = new ExecuteThenPlanProvider();
+    (agent as any).provider = createSequentialTextProvider(
+      "execute-then-plan-provider",
+      [
+        "Execute mode answer about unrelated topic.",
+        "<proposed_plan>\n# Plan draft\n\nReal plan content.\n</proposed_plan>",
+      ],
+    );
 
     await agent.streamChat(userSubmission("Help in execute mode"), () => {});
     agent.setAgentMode("plan");
@@ -458,22 +513,115 @@ describe("agent modes", () => {
     expect(savedContent).not.toContain("unrelated topic");
   });
 
-  it("does not show the plan path in the footer after saving", async () => {
-    class PlanDraftProvider implements LLMProvider {
-      readonly name = "plan-draft-provider";
-
-      getCapabilities() {
-        return { contextWindowTokens: 128000 };
-      }
-
-      async *streamChat(_request: ChatRequest): AsyncIterable<ChatChunk> {
-        yield { delta: "# Draft plan\n" };
-      }
-    }
-
+  it("saves approved plan content through /plan approve", async () => {
     const agent = createPlanAgent();
     agent.setAgentMode("plan");
-    (agent as any).provider = new PlanDraftProvider();
+
+    const output = await runSlashCommand(
+      agent,
+      "/plan approve # Approved plan\n\nStep 1",
+    );
+
+    expect(output).toContain("Plan saved:");
+    expect(agent.getPlanFilePath()).toBeDefined();
+    expect(fs.readFileSync(agent.getPlanFilePath()!, "utf8")).toContain(
+      "Step 1",
+    );
+  });
+
+  it("reuses the same plan file path after repeated approved saves", () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+
+    const firstPath = agent.saveApprovedPlan("# First plan\n");
+    const secondPath = agent.saveApprovedPlan("# Updated plan\n");
+
+    expect(secondPath).toBe(firstPath);
+    expect(fs.readFileSync(firstPath, "utf8")).toContain("Updated plan");
+  });
+
+  it("keeps refined approved plan edits when saving again without a newer draft", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+
+    const planPath = agent.saveApprovedPlan("# Original plan\n\nStep 1");
+    fs.writeFileSync(planPath, "# Refined plan\n\nStep 1\nStep 2", "utf8");
+
+    const saveOutput = await runSlashCommand(agent, "/plan save");
+    expect(saveOutput).toContain("Plan saved:");
+    expect(fs.readFileSync(planPath, "utf8")).toContain("Step 2");
+    expect(fs.readFileSync(planPath, "utf8")).not.toContain("Original plan");
+
+    fs.writeFileSync(planPath, "# Refined plan\n\nStep 1\nStep 2", "utf8");
+    const approveOutput = await runSlashCommand(agent, "/plan approve");
+    expect(approveOutput).toContain("Plan saved:");
+    expect(fs.readFileSync(planPath, "utf8")).toContain("Step 2");
+    expect(fs.readFileSync(planPath, "utf8")).not.toContain("Original plan");
+  });
+
+  it("shows the saved plan file when /plan show is run after approval", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    const planPath = agent.saveApprovedPlan("# Saved plan\n\nStep 1");
+
+    const output = await runSlashCommand(agent, "/plan show");
+
+    expect(output).toContain(`Saved plan: ${planPath}`);
+    expect(output).toContain("Step 1");
+  });
+
+  it("shows the pending plan draft when /plan show is run before approval", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    (agent as any).provider = createSequentialTextProvider(
+      "plan-show-provider",
+      [
+        "<proposed_plan>\n# Pending draft\n\nStep 1: investigate\n</proposed_plan>",
+      ],
+    );
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+
+    const output = await runSlashCommand(agent, "/plan show");
+
+    expect(output).toContain("Pending plan draft:");
+    expect(output).toContain("Step 1: investigate");
+  });
+
+  it("shows a helpful empty state when /plan show has no draft yet", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+
+    const output = await runSlashCommand(agent, "/plan show");
+
+    expect(output).toContain("No plan draft found");
+  });
+
+  it("includes approved plan content in the execute switch reminder", async () => {
+    const { planPath, lastUser } = await captureExecuteReminderMessage({});
+    expect(lastUser).toContain(
+      `If an approved plan file exists at ${planPath}`,
+    );
+    expect(lastUser).toContain("Approved plan content:");
+    expect(lastUser).toContain("Step 1: build it");
+  });
+
+  it("falls back safely in the execute switch reminder when the plan file cannot be read", async () => {
+    const { planPath, lastUser } = await captureExecuteReminderMessage({
+      deletePlanFile: true,
+    });
+    expect(lastUser).toContain(
+      `If an approved plan file exists at ${planPath}`,
+    );
+    expect(lastUser).toContain("Could not read the approved plan file content");
+  });
+
+  it("does not show the plan path in the footer after saving", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+    (agent as any).provider = createSequentialTextProvider(
+      "plan-draft-provider",
+      ["<proposed_plan>\n# Draft plan\n</proposed_plan>"],
+    );
     await agent.streamChat(userSubmission("Draft a plan"), () => {});
     await runSlashCommand(agent, "/plan save");
 

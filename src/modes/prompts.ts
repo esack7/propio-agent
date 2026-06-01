@@ -6,6 +6,15 @@ export interface ModePromptContext {
   readonly planSaveApproved?: boolean;
 }
 
+export const EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS = 12_000;
+
+export interface ExecuteSwitchReminderContext {
+  readonly planFilePath?: string;
+  readonly planContent?: string;
+  readonly planContentTruncated?: boolean;
+  readonly unreadablePlanFileReason?: string;
+}
+
 function getPlanSystemSection(ctx: ModePromptContext): string {
   if (ctx.planFilePath && ctx.planSaveApproved) {
     return [
@@ -31,7 +40,7 @@ function getPlanSystemSection(ctx: ModePromptContext): string {
     "**Workflow:**",
     "1. Explore read-only (parallel reads when helpful).",
     "2. Clarify requirements with the user in chat when needed.",
-    "3. Draft the plan in chat and request user review/approval.",
+    "3. Draft the plan in chat, wrap the final draft in `<proposed_plan>...</proposed_plan>`, and request user review/approval.",
     "4. Do **not** create or edit a plan file until the user approves saving it (e.g. `/plan save`).",
     "5. After the user approves the draft, they can run `/plan save` to save the latest plan.",
     "6. After the user saves an approved plan, you may refine that file only.",
@@ -90,12 +99,12 @@ function getPlanModeReminder(ctx: ModePromptContext, full: boolean): string {
     ? [
         "[Mode reminder — Plan]",
         "You are in Plan mode. This mode supersedes other instructions that suggest editing source files.",
-        "Draft the plan in chat, request user review/approval, and do not create a file yet.",
+        "Draft the plan in chat, wrap the final draft in `<proposed_plan>...</proposed_plan>`, request user review/approval, and do not create a file yet.",
         "After the user approves the draft, they can run `/plan save` to save the latest plan.",
         "After enough context is gathered, stop repeating equivalent searches and draft the plan in chat.",
         "After the user runs `/plan save`, edits are limited to the saved plan file.",
       ].join("\n")
-    : "[Mode reminder — Plan: draft in chat; no file writes until `/plan save`.]";
+    : "[Mode reminder — Plan: draft in chat with `<proposed_plan>` tags; no file writes until `/plan save`.]";
 }
 
 export function getModeReminder(
@@ -121,12 +130,58 @@ export function getModeReminder(
   return getPlanModeReminder(ctx, full);
 }
 
-export function getExecuteSwitchReminder(planFilePath?: string): string {
-  if (planFilePath) {
+function truncatePlanContent(content: string): {
+  readonly text: string;
+  readonly truncated: boolean;
+} {
+  if (content.length <= EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS) {
+    return { text: content, truncated: false };
+  }
+
+  return {
+    text: content.slice(0, EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS),
+    truncated: true,
+  };
+}
+
+export function getExecuteSwitchReminder(
+  reminder: string | ExecuteSwitchReminderContext = {},
+): string {
+  const ctx =
+    typeof reminder === "string" ? { planFilePath: reminder } : reminder;
+
+  if (ctx.planFilePath && ctx.unreadablePlanFileReason) {
     return [
       "[Mode switch — Execute]",
       "You may edit files and use the full tool surface again.",
-      `If an approved plan file exists at ${planFilePath}, treat it as the implementation spec.`,
+      `If an approved plan file exists at ${ctx.planFilePath}, treat it as the implementation spec.`,
+      `Could not read the approved plan file content: ${ctx.unreadablePlanFileReason}`,
+    ].join("\n");
+  }
+
+  if (ctx.planFilePath && ctx.planContent) {
+    const { text, truncated } = truncatePlanContent(ctx.planContent);
+    const isTruncated = ctx.planContentTruncated ?? truncated;
+    return [
+      "[Mode switch — Execute]",
+      "You may edit files and use the full tool surface again.",
+      `If an approved plan file exists at ${ctx.planFilePath}, treat it as the implementation spec.`,
+      "Approved plan content:",
+      text,
+      ...(isTruncated
+        ? [
+            "",
+            `The approved plan content above is truncated at ${EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS} characters; read the file on disk for the full plan.`,
+          ]
+        : []),
+    ].join("\n");
+  }
+
+  if (ctx.planFilePath) {
+    return [
+      "[Mode switch — Execute]",
+      "You may edit files and use the full tool surface again.",
+      `If an approved plan file exists at ${ctx.planFilePath}, treat it as the implementation spec.`,
     ].join("\n");
   }
 

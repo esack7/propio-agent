@@ -43,6 +43,9 @@ describe("slashCommands", () => {
     expect(text).toContain("/context");
     expect(text).toContain("/session list");
     expect(text).toContain("/session load <id>");
+    expect(text).toContain("/plan save [content]");
+    expect(text).toContain("/plan approve [content]");
+    expect(text).toContain("/plan show");
   });
 
   it("keeps the idle footer concise", () => {

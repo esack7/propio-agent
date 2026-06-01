@@ -633,15 +633,47 @@ async function handleModeSubmission(
   return null;
 }
 
-function resolvePlanSaveContent(args: string, agent: AgentType): string {
+function resolvePlanCommandContent(
+  command: "save" | "approve",
+  args: string,
+  agent: AgentType,
+): string {
   const inlineContent =
-    args === "save" ? "" : args.slice("save".length).trimStart();
-  return inlineContent || agent.getLatestAssistantPlanDraft?.() || "";
+    args === command ? "" : args.slice(command.length).trimStart();
+  if (inlineContent) {
+    return inlineContent;
+  }
+
+  const latestDraft = agent.getLatestAssistantPlanDraft?.()?.trim();
+  if (latestDraft) {
+    return latestDraft;
+  }
+
+  const planPath = agent.getPlanFilePath?.();
+  if (planPath) {
+    try {
+      const planContent = fs.readFileSync(planPath, "utf8").trim();
+      if (planContent) {
+        return planContent;
+      }
+    } catch {
+      // Fall through to the missing-draft path.
+    }
+  }
+
+  return "";
 }
 
 function reportMissingPlanDraft(ui: TerminalUi): void {
   ui.error(
-    "No plan draft found to save. Ask the assistant to draft a plan first, or use /plan save <content>.",
+    "No plan draft found to save. Ask the assistant to draft a `<proposed_plan>` block first, or use /plan save <content>.",
+  );
+  ui.command("");
+}
+
+function reportMissingPlanShowContent(ui: TerminalUi): void {
+  ui.info(
+    "No plan draft found. Ask the assistant to draft a `<proposed_plan>` block first, or use /plan save <content>.",
   );
   ui.command("");
 }
@@ -662,6 +694,68 @@ function saveApprovedPlanFromCommand(
   ui.command("");
 }
 
+function showPlanDraftOrFile(agent: AgentType, ui: TerminalUi): void {
+  const planPath = agent.getPlanFilePath();
+  if (planPath) {
+    try {
+      const planContent = fs.readFileSync(planPath, "utf8");
+      ui.command(`Saved plan: ${planPath}`);
+      ui.command("");
+      ui.info(planContent);
+    } catch (error) {
+      ui.error(
+        `Failed to read saved plan file ${planPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    ui.command("");
+    return;
+  }
+
+  const draft = agent.getLatestAssistantPlanDraft?.()?.trim();
+  if (draft) {
+    ui.command("Pending plan draft:");
+    ui.command("");
+    ui.info(draft);
+    ui.command("");
+    return;
+  }
+
+  reportMissingPlanShowContent(ui);
+}
+
+function handlePlanShowCommand(agent: AgentType, ui: TerminalUi): void {
+  if (agent.getAgentMode() !== "plan") {
+    ui.error("Switch to Plan mode to view the plan (/mode plan).");
+    ui.command("");
+    return;
+  }
+
+  showPlanDraftOrFile(agent, ui);
+}
+
+function handlePlanSaveOrApproveCommand(
+  command: "save" | "approve",
+  args: string,
+  agent: AgentType,
+  ui: TerminalUi,
+): void {
+  if (agent.getAgentMode() !== "plan") {
+    ui.error("Switch to Plan mode to save a plan (/mode plan).");
+    ui.command("");
+    return;
+  }
+
+  const content = resolvePlanCommandContent(command, args, agent);
+  if (!content) {
+    reportMissingPlanDraft(ui);
+    return;
+  }
+
+  saveApprovedPlanFromCommand(agent, ui, content);
+}
+
 async function handlePlanSubmission(
   trimmedInput: string,
   context: InteractiveSubmissionContext,
@@ -673,25 +767,25 @@ async function handlePlanSubmission(
   const { agent, ui } = context;
   const args = trimmedInput.slice("/plan".length).trim();
 
+  if (args === "show") {
+    handlePlanShowCommand(agent, ui);
+    return null;
+  }
+
   if (args === "save" || args.startsWith("save ")) {
-    if (agent.getAgentMode() !== "plan") {
-      ui.error("Switch to Plan mode to save a plan (/mode plan).");
-      ui.command("");
-      return null;
-    }
+    handlePlanSaveOrApproveCommand("save", args, agent, ui);
+    return null;
+  }
 
-    const content = resolvePlanSaveContent(args, agent);
-    if (!content) {
-      reportMissingPlanDraft(ui);
-      return null;
-    }
-
-    saveApprovedPlanFromCommand(agent, ui, content);
+  if (args === "approve" || args.startsWith("approve ")) {
+    handlePlanSaveOrApproveCommand("approve", args, agent, ui);
     return null;
   }
 
   ui.error(`Unknown /plan usage: "${args}"`);
-  ui.command("Usage: /plan save [content]");
+  ui.command(
+    "Usage: /plan save [content] | /plan approve [content] | /plan show",
+  );
   ui.command("");
   return null;
 }
