@@ -513,20 +513,34 @@ describe("agent modes", () => {
     expect(savedContent).not.toContain("unrelated topic");
   });
 
-  it("saves approved plan content through /plan approve", async () => {
+  it("saves the latest pending proposed plan draft through /plan approve", async () => {
     const agent = createPlanAgent();
     agent.setAgentMode("plan");
-
-    const output = await runSlashCommand(
-      agent,
-      "/plan approve # Approved plan\n\nStep 1",
+    (agent as any).provider = createSequentialTextProvider(
+      "plan-approve-provider",
+      ["<proposed_plan>\n# Approved plan\n\nStep 1\n</proposed_plan>"],
     );
+
+    await agent.streamChat(userSubmission("Draft a plan"), () => {});
+
+    const output = await runSlashCommand(agent, "/plan approve");
 
     expect(output).toContain("Plan saved:");
     expect(agent.getPlanFilePath()).toBeDefined();
     expect(fs.readFileSync(agent.getPlanFilePath()!, "utf8")).toContain(
       "Step 1",
     );
+  });
+
+  it("rejects inline /plan approve content with usage help", async () => {
+    const agent = createPlanAgent();
+    agent.setAgentMode("plan");
+
+    const output = await runSlashCommand(agent, "/plan approve # Inline plan");
+
+    expect(output).toContain('Unknown /plan usage: "approve # Inline plan"');
+    expect(output).toContain("Usage: /plan approve");
+    expect(agent.getPlanFilePath()).toBeUndefined();
   });
 
   it("reuses the same plan file path after repeated approved saves", () => {
@@ -552,9 +566,8 @@ describe("agent modes", () => {
     expect(fs.readFileSync(planPath, "utf8")).toContain("Step 2");
     expect(fs.readFileSync(planPath, "utf8")).not.toContain("Original plan");
 
-    fs.writeFileSync(planPath, "# Refined plan\n\nStep 1\nStep 2", "utf8");
     const approveOutput = await runSlashCommand(agent, "/plan approve");
-    expect(approveOutput).toContain("Plan saved:");
+    expect(approveOutput).toContain("No plan draft found to approve");
     expect(fs.readFileSync(planPath, "utf8")).toContain("Step 2");
     expect(fs.readFileSync(planPath, "utf8")).not.toContain("Original plan");
   });

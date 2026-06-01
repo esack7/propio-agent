@@ -634,7 +634,7 @@ async function handleModeSubmission(
 }
 
 function resolvePlanCommandContent(
-  command: "save" | "approve",
+  command: "save",
   args: string,
   agent: AgentType,
 ): string {
@@ -667,6 +667,13 @@ function resolvePlanCommandContent(
 function reportMissingPlanDraft(ui: TerminalUi): void {
   ui.error(
     "No plan draft found to save. Ask the assistant to draft a `<proposed_plan>` block first, or use /plan save <content>.",
+  );
+  ui.command("");
+}
+
+function reportMissingPlanApproveDraft(ui: TerminalUi): void {
+  ui.error(
+    "No plan draft found to approve. Ask the assistant to draft a `<proposed_plan>` block first, then run /plan approve.",
   );
   ui.command("");
 }
@@ -736,7 +743,6 @@ function handlePlanShowCommand(agent: AgentType, ui: TerminalUi): void {
 }
 
 function handlePlanSaveOrApproveCommand(
-  command: "save" | "approve",
   args: string,
   agent: AgentType,
   ui: TerminalUi,
@@ -747,9 +753,36 @@ function handlePlanSaveOrApproveCommand(
     return;
   }
 
-  const content = resolvePlanCommandContent(command, args, agent);
+  const content = resolvePlanCommandContent("save", args, agent);
   if (!content) {
     reportMissingPlanDraft(ui);
+    return;
+  }
+
+  saveApprovedPlanFromCommand(agent, ui, content);
+}
+
+function handlePlanApproveCommand(
+  args: string,
+  agent: AgentType,
+  ui: TerminalUi,
+): void {
+  if (agent.getAgentMode() !== "plan") {
+    ui.error("Switch to Plan mode to save a plan (/mode plan).");
+    ui.command("");
+    return;
+  }
+
+  if (args !== "approve") {
+    ui.error(`Unknown /plan usage: "${args}"`);
+    ui.command("Usage: /plan approve");
+    ui.command("");
+    return;
+  }
+
+  const content = agent.getLatestAssistantPlanDraft?.()?.trim();
+  if (!content) {
+    reportMissingPlanApproveDraft(ui);
     return;
   }
 
@@ -773,19 +806,17 @@ async function handlePlanSubmission(
   }
 
   if (args === "save" || args.startsWith("save ")) {
-    handlePlanSaveOrApproveCommand("save", args, agent, ui);
+    handlePlanSaveOrApproveCommand(args, agent, ui);
     return null;
   }
 
   if (args === "approve" || args.startsWith("approve ")) {
-    handlePlanSaveOrApproveCommand("approve", args, agent, ui);
+    handlePlanApproveCommand(args, agent, ui);
     return null;
   }
 
   ui.error(`Unknown /plan usage: "${args}"`);
-  ui.command(
-    "Usage: /plan save [content] | /plan approve [content] | /plan show",
-  );
+  ui.command("Usage: /plan save [content] | /plan approve | /plan show");
   ui.command("");
   return null;
 }
