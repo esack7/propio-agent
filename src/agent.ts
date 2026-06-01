@@ -1,4 +1,5 @@
 import { LLMProvider } from "./providers/interface.js";
+import * as fs from "fs";
 import * as os from "os";
 import { randomUUID } from "crypto";
 import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
@@ -93,6 +94,29 @@ import { SkillRegistry } from "./skills/registry.js";
 import { createMissingSkillError } from "./skills/shared.js";
 import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
 import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
+import { resolveEffectiveToolAllowlist } from "./modes/policies.js";
+import { checkBashAllowedForMode } from "./modes/bashPolicy.js";
+import {
+  allocatePlanFile,
+  extractProposedPlanContent,
+  isPlanFilePath,
+  writePlanFile,
+} from "./modes/planFile.js";
+import {
+  composeExtraUserInstruction,
+  EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS,
+  getExecuteSwitchReminder,
+  getModeReminder,
+} from "./modes/prompts.js";
+import {
+  AGENT_MODE_CYCLE,
+  getApprovedPlanPersistenceFields,
+  resolveImportedPlanState,
+  type AgentMode,
+  type AgentModeState,
+} from "./modes/types.js";
+
+export type { AgentMode, AgentModeState };
 
 export type AgentVisibilityEvent =
   | { type: "status"; status: string; phase?: string }
@@ -129,6 +153,15 @@ export type AgentVisibilityEvent =
   | {
       type: "prompt_plan_built";
       snapshot: PromptPlanSnapshot;
+    }
+  | {
+      type: "mode_changed";
+      mode: AgentMode;
+      planFilePath?: string;
+    }
+  | {
+      type: "plan_saved";
+      planFilePath: string;
     };
 
 export interface TurnReasoningSummary {
@@ -186,6 +219,24 @@ function stableArgsKey(
     .join("|");
 }
 
+function normalizeAssistantText(content: string | undefined | null): string {
+  return (content ?? "").trim().replace(/\s+/g, " ");
+}
+
+function buildAssistantToolIterationSignature(
+  content: string | undefined | null,
+  toolCalls: ReadonlyArray<ChatToolCall> | undefined,
+): string {
+  const textSignature = normalizeAssistantText(content);
+  const toolSignature = (toolCalls ?? [])
+    .map(
+      (toolCall) =>
+        `${toolCall.function.name}:${stableArgsKey(toolCall.function.arguments)}`,
+    )
+    .join(",");
+  return `${textSignature}|${toolSignature}`;
+}
+
 export class Agent {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
@@ -223,6 +274,10 @@ export class Agent {
   private readonly configuredSessionsDir?: string;
   private turnScratchpadDir: string | undefined;
   private pendingToolResultBytes = 0;
+  private modeState: AgentModeState = { mode: "execute" };
+  private pendingExecuteSwitchReminder = false;
+  private latestPlanModeAssistantDraft?: string;
+  private planDraftSearchStartTurnIndex?: number;
 
   constructor(
     options: {
@@ -447,6 +502,7 @@ export class Agent {
     });
   }
 
+  // fallow-ignore-next-line complexity
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
@@ -455,8 +511,39 @@ export class Agent {
     if (allowedTools && !allowedTools.has(name)) {
       return {
         status: "tool_disabled",
-        content: `Tool not available in the current skill scope: ${name}`,
+        content: `Tool not available in the current mode or skill scope: ${name}`,
       };
+    }
+
+    const mode = this.modeState.mode;
+    if (mode === "plan" && (name === "write" || name === "edit")) {
+      if (!this.modeState.planSaveApproved || !this.modeState.planFilePath) {
+        return {
+          status: "tool_disabled",
+          content:
+            "In Plan mode, file writes require an approved plan save (/plan save) before write/edit is enabled.",
+        };
+      }
+      if (!isPlanFilePath(args.path, this.modeState.planFilePath)) {
+        return {
+          status: "tool_disabled",
+          content: `In Plan mode, write/edit is only allowed for the approved plan file (${this.modeState.planFilePath})`,
+        };
+      }
+    }
+
+    if (name === "bash" && (mode === "plan" || mode === "discover")) {
+      const command =
+        typeof args.command === "string"
+          ? args.command
+          : String(args.command ?? "");
+      const bashPolicy = checkBashAllowedForMode(command, mode);
+      if (!bashPolicy.allowed) {
+        return {
+          status: "tool_disabled",
+          content: bashPolicy.reason ?? "Command not allowed in this mode",
+        };
+      }
     }
 
     if (this.toolRegistry.hasTool(name)) {
@@ -553,33 +640,27 @@ export class Agent {
     const recentEntries = lastTurn.entries.slice(-lookback);
     // commitAssistantResponse already ran before this check, so the current
     // iteration's assistant entry is already in history; read from there only.
-    const { signatures, hasAnyAssistantText } =
-      this.gatherSignaturesFromTurnEntries(recentEntries);
+    const signatures =
+      this.gatherIterationSignaturesFromTurnEntries(recentEntries);
 
-    if (hasAnyAssistantText) return false;
-    if (signatures.length < 3) return false;
+    if (signatures.length < Agent.MAX_EMPTY_TOOL_ONLY_STREAK) return false;
 
     return new Set(signatures).size === 1;
   }
 
-  private gatherSignaturesFromTurnEntries(entries: ReadonlyArray<TurnEntry>): {
-    signatures: string[];
-    hasAnyAssistantText: boolean;
-  } {
+  private gatherIterationSignaturesFromTurnEntries(
+    entries: ReadonlyArray<TurnEntry>,
+  ): string[] {
     const signatures: string[] = [];
-    let hasAnyAssistantText = false;
     for (const entry of entries) {
       if (entry.kind !== "assistant") continue;
-      if (entry.message.content?.trim().length > 0) {
-        hasAnyAssistantText = true;
-      }
-      for (const tc of entry.message.toolCalls ?? []) {
-        signatures.push(
-          `${tc.function.name}:${stableArgsKey(tc.function.arguments)}`,
-        );
-      }
+      const toolCalls = entry.message.toolCalls;
+      if (!toolCalls || toolCalls.length === 0) continue;
+      signatures.push(
+        buildAssistantToolIterationSignature(entry.message.content, toolCalls),
+      );
     }
-    return { signatures, hasAnyAssistantText };
+    return signatures;
   }
 
   private synthesizeAgentReasoningSummary(
@@ -892,6 +973,11 @@ export class Agent {
       {
         baseRules: this.baseRules,
         agentsMdContent: this.agentsMdContent,
+        modeContext: {
+          mode: this.modeState.mode,
+          planFilePath: this.modeState.planFilePath,
+          planSaveApproved: this.modeState.planSaveApproved ?? false,
+        },
       },
       this.systemPromptRegistry,
     );
@@ -907,32 +993,38 @@ export class Agent {
   } {
     const { core, runtimeContextOverflowBlock } =
       this.compileSystemCore(allowedTools);
-    const discoveryBlock = this.composeSkillDiscoveryBlock();
+    const discoveryBlock =
+      this.modeState.mode === "execute"
+        ? this.composeSkillDiscoveryBlock()
+        : "";
     const systemPrompt = discoveryBlock ? `${core}\n\n${discoveryBlock}` : core;
 
     return { systemPrompt, runtimeContextOverflowBlock };
   }
 
-  private deriveAllowedToolScope(
-    scopes: ReadonlyArray<SkillInvocationScope>,
+  private getEnabledBuiltinNames(): string[] {
+    return this.toolRegistry
+      .getEnabledSchemas()
+      .map((schema) => schema.function.name);
+  }
+
+  private getConnectedMcpToolNames(): string[] {
+    return this.mcpManager
+      .getConnectedToolSchemas()
+      .map((schema) => schema.function.name);
+  }
+
+  private resolveAllowedTools(
+    skillScopes: ReadonlyArray<SkillInvocationScope>,
   ): ReadonlySet<string> | undefined {
-    const scopedLists = scopes
-      .map((scope) => scope.allowedTools)
-      .filter(
-        (allowedTools): allowedTools is readonly string[] =>
-          Array.isArray(allowedTools) && allowedTools.length > 0,
-      );
-
-    if (scopedLists.length === 0) {
-      return undefined;
-    }
-
-    let allowed = new Set(scopedLists[0]);
-    for (const list of scopedLists.slice(1)) {
-      allowed = new Set([...allowed].filter((tool) => list.includes(tool)));
-    }
-
-    return allowed;
+    return resolveEffectiveToolAllowlist({
+      mode: this.modeState.mode,
+      skillScopes,
+      enabledBuiltinNames: this.getEnabledBuiltinNames(),
+      connectedMcpToolNames: this.getConnectedMcpToolNames(),
+      planFilePath: this.modeState.planFilePath,
+      planSaveApproved: this.modeState.planSaveApproved,
+    });
   }
 
   /**
@@ -1279,6 +1371,7 @@ export class Agent {
 
     this.throwIfAbortCancelled(abortSignal);
     this.contextManager.commitAssistantResponse(streamState.fullResponse);
+    this.recordPlanModeAssistantDraft(streamState.fullResponse);
     this.emitDiagnostic({
       type: "iteration_finished",
       provider: this.provider.name,
@@ -1314,9 +1407,7 @@ export class Agent {
     let retryLevel = 0;
     let shrinkCount = 0;
 
-    const allowedTools = this.deriveAllowedToolScope(
-      this.getActiveSkillScopes(),
-    );
+    const allowedTools = this.resolveAllowedTools(this.getActiveSkillScopes());
 
     while (retryLevel <= Agent.MAX_CONTEXT_RETRY_LEVEL) {
       const plan = this.buildPlan(
@@ -1771,6 +1862,7 @@ export class Agent {
       normalizedToolCalls,
       hasToolCalls ? { reasoningContent } : undefined,
     );
+    this.recordPlanModeAssistantDraft(fullResponse);
     this.emitTurnFinishedDiagnostics(
       fullResponse,
       iterationCount,
@@ -2105,6 +2197,39 @@ export class Agent {
     return instruction;
   }
 
+  private composeTurnExtraInstruction(
+    options?: AgentStreamOptions,
+  ): string | undefined {
+    let composed = this.normalizeExtraInstruction(options);
+
+    if (this.pendingExecuteSwitchReminder) {
+      composed = composeExtraUserInstruction(
+        composed,
+        this.buildExecuteSwitchReminder(),
+      );
+      this.pendingExecuteSwitchReminder = false;
+    }
+
+    const mode = this.modeState.mode;
+    if (mode === "plan" || mode === "discover") {
+      const userTurnNumber =
+        this.contextManager.getConversationState().turns.length;
+      composed = composeExtraUserInstruction(
+        composed,
+        getModeReminder(
+          {
+            mode,
+            planFilePath: this.modeState.planFilePath,
+            planSaveApproved: this.modeState.planSaveApproved ?? false,
+          },
+          userTurnNumber,
+        ),
+      );
+    }
+
+    return composed;
+  }
+
   private selectTurnReasoningSummary(
     agentSummary: string,
     providerReasoningSummary: TurnReasoningSummary | null,
@@ -2177,7 +2302,7 @@ export class Agent {
     let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
-    const extraUserInstruction = this.normalizeExtraInstruction(options);
+    const extraUserInstruction = this.composeTurnExtraInstruction(options);
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
@@ -2223,7 +2348,7 @@ export class Agent {
       while (continueLoop && iterationCount < maxIterations) {
         iterationCount++;
         const activeSkillScopes = this.getActiveSkillScopes();
-        const allowedTools = this.deriveAllowedToolScope(activeSkillScopes);
+        const allowedTools = this.resolveAllowedTools(activeSkillScopes);
 
         const plan = this.buildPlan(
           extraUserInstruction,
@@ -2379,8 +2504,250 @@ export class Agent {
    * resume UX. The metadata is informational; importing a snapshot does
    * not auto-switch provider/model.
    */
+  getAgentMode(): AgentMode {
+    return this.modeState.mode;
+  }
+
+  // fallow-ignore-next-line unused-class-member
+  getAgentModeState(): AgentModeState {
+    return { ...this.modeState };
+  }
+
+  getPlanFilePath(): string | undefined {
+    return this.modeState.planFilePath;
+  }
+
+  isPlanSaveApproved(): boolean {
+    return this.modeState.planSaveApproved ?? false;
+  }
+
+  getLatestAssistantPlanDraft(): string | undefined {
+    if (this.latestPlanModeAssistantDraft) {
+      return this.latestPlanModeAssistantDraft;
+    }
+    return this.findLatestAssistantDraftFromPlanBoundary();
+  }
+
+  private consumePendingPlanDraft(): void {
+    this.latestPlanModeAssistantDraft = undefined;
+    this.planDraftSearchStartTurnIndex =
+      this.contextManager.getConversationState().turns.length;
+  }
+
+  private buildExecuteSwitchReminder(): string {
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+    if (!approvedPlan) {
+      return getExecuteSwitchReminder();
+    }
+
+    try {
+      const planContent = fs.readFileSync(approvedPlan.planFilePath, "utf8");
+      const truncated =
+        planContent.length > EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS;
+      return getExecuteSwitchReminder({
+        planFilePath: approvedPlan.planFilePath,
+        planContent: truncated
+          ? planContent.slice(0, EXECUTE_SWITCH_REMINDER_PLAN_CONTENT_MAX_CHARS)
+          : planContent,
+        planContentTruncated: truncated,
+      });
+    } catch (error) {
+      return getExecuteSwitchReminder({
+        planFilePath: approvedPlan.planFilePath,
+        unreadablePlanFileReason:
+          error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private resetPlanModeDraftTracking(): void {
+    this.latestPlanModeAssistantDraft = undefined;
+    this.planDraftSearchStartTurnIndex = undefined;
+  }
+
+  private beginPlanModeDraftTracking(): void {
+    this.planDraftSearchStartTurnIndex =
+      this.contextManager.getConversationState().turns.length;
+    this.latestPlanModeAssistantDraft = undefined;
+  }
+
+  private restorePlanModeDraftTrackingFromImport(
+    boundaryTurnIndex: number | undefined,
+  ): void {
+    if (this.modeState.mode !== "plan") {
+      this.resetPlanModeDraftTracking();
+      return;
+    }
+
+    this.planDraftSearchStartTurnIndex = boundaryTurnIndex ?? 0;
+    this.latestPlanModeAssistantDraft = undefined;
+    this.rebuildPlanModeAssistantDraftFromHistory();
+  }
+
+  private rebuildPlanModeAssistantDraftFromHistory(): void {
+    const draft = this.findLatestAssistantDraftFromPlanBoundary();
+    if (draft) {
+      this.latestPlanModeAssistantDraft = draft;
+    }
+  }
+
+  private findLatestAssistantDraftFromPlanBoundary(): string | undefined {
+    if (this.planDraftSearchStartTurnIndex === undefined) {
+      return undefined;
+    }
+
+    const state = this.contextManager.getConversationState();
+    for (
+      let turnIndex = state.turns.length - 1;
+      turnIndex >= this.planDraftSearchStartTurnIndex;
+      turnIndex--
+    ) {
+      const turn = state.turns[turnIndex]!;
+      for (
+        let entryIndex = turn.entries.length - 1;
+        entryIndex >= 0;
+        entryIndex--
+      ) {
+        const entry = turn.entries[entryIndex]!;
+        if (entry.kind !== "assistant") continue;
+        const content = entry.message.content?.trim();
+        const proposedPlan = content
+          ? extractProposedPlanContent(content)
+          : undefined;
+        if (proposedPlan) {
+          return proposedPlan;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
+  private recordPlanModeAssistantDraft(content: string): void {
+    if (this.modeState.mode !== "plan") {
+      return;
+    }
+    const proposedPlan = extractProposedPlanContent(content);
+    if (proposedPlan) {
+      this.latestPlanModeAssistantDraft = proposedPlan;
+    }
+  }
+
+  saveApprovedPlan(
+    content: string,
+    options?: {
+      slugHint?: string;
+      onEvent?: (event: AgentVisibilityEvent) => void;
+    },
+  ): string {
+    if (this.modeState.mode !== "plan") {
+      throw new Error("Plan save is only available in Plan mode.");
+    }
+
+    const trimmed = content.trim();
+    if (trimmed.length === 0) {
+      throw new Error("Plan content cannot be empty.");
+    }
+
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+    const planFilePath = approvedPlan?.planFilePath
+      ? approvedPlan.planFilePath
+      : allocatePlanFile({
+          sessionId: this.sessionId,
+          cwd: this.skillContext.cwd,
+          homeDir: this.skillContext.homeDir,
+          slugHint: options?.slugHint,
+        });
+    writePlanFile(planFilePath, trimmed);
+
+    this.modeState = {
+      ...this.modeState,
+      planFilePath,
+      planSaveApproved: true,
+    };
+    this.consumePendingPlanDraft();
+
+    const event: AgentVisibilityEvent = {
+      type: "plan_saved",
+      planFilePath,
+    };
+    this.emitVisibilityEvent({ onEvent: options?.onEvent }, event);
+
+    return planFilePath;
+  }
+
+  private updatePlanDraftTrackingForModeChange(
+    previousMode: AgentMode,
+    mode: AgentMode,
+  ): void {
+    if (mode === "plan" && previousMode !== "plan") {
+      this.beginPlanModeDraftTracking();
+      return;
+    }
+
+    if (mode !== "plan" && previousMode === "plan") {
+      this.resetPlanModeDraftTracking();
+    }
+  }
+
+  private shouldRemindAfterExecuteSwitch(
+    previousMode: AgentMode,
+    mode: AgentMode,
+  ): boolean {
+    return (
+      mode === "execute" &&
+      (previousMode === "plan" || previousMode === "discover")
+    );
+  }
+
+  setAgentMode(
+    mode: AgentMode,
+    options?: {
+      slugHint?: string;
+      onEvent?: (event: AgentVisibilityEvent) => void;
+    },
+  ): void {
+    const previousMode = this.modeState.mode;
+    if (previousMode === mode) {
+      return;
+    }
+
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
+
+    this.modeState = {
+      mode,
+      ...(approvedPlan ?? {}),
+      previousMode,
+    };
+
+    this.updatePlanDraftTrackingForModeChange(previousMode, mode);
+
+    if (this.shouldRemindAfterExecuteSwitch(previousMode, mode)) {
+      this.pendingExecuteSwitchReminder = true;
+    }
+
+    const event: AgentVisibilityEvent = {
+      type: "mode_changed",
+      mode,
+      ...(approvedPlan ? { planFilePath: approvedPlan.planFilePath } : {}),
+    };
+    options?.onEvent?.(event);
+    this.emitVisibilityEvent({ onEvent: options?.onEvent }, event);
+  }
+
+  cycleAgentMode(options?: {
+    onEvent?: (event: AgentVisibilityEvent) => void;
+  }): AgentMode {
+    const currentIndex = AGENT_MODE_CYCLE.indexOf(this.modeState.mode);
+    const nextMode =
+      AGENT_MODE_CYCLE[(currentIndex + 1) % AGENT_MODE_CYCLE.length]!;
+    this.setAgentMode(nextMode, options);
+    return nextMode;
+  }
+
   exportSession(): string {
     const state = this.contextManager.getConversationState();
+    const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
     const metadata: SessionMetadata = {
       providerName: this.provider.name,
       modelKey: this.model,
@@ -2389,6 +2756,14 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      agentMode: this.modeState.mode,
+      ...(approvedPlan ?? {}),
+      ...(this.modeState.mode === "plan" &&
+      this.planDraftSearchStartTurnIndex !== undefined
+        ? {
+            planDraftSearchStartTurnIndex: this.planDraftSearchStartTurnIndex,
+          }
+        : {}),
     };
     return serializeSession(state, metadata);
   }
@@ -2431,6 +2806,16 @@ export class Agent {
     }
 
     this.contextManager.importState(state);
+
+    const importedMode = persisted.metadata.agentMode ?? "execute";
+    this.modeState = {
+      mode: importedMode,
+      ...resolveImportedPlanState(persisted.metadata),
+    };
+    this.pendingExecuteSwitchReminder = false;
+    this.restorePlanModeDraftTrackingFromImport(
+      persisted.metadata.planDraftSearchStartTurnIndex,
+    );
   }
 
   // -------------------------------------------------------------------

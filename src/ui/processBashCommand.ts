@@ -1,3 +1,5 @@
+import type { AgentMode } from "../modes/types.js";
+import { checkBashAllowedForMode } from "../modes/bashPolicy.js";
 import { runShellCommand } from "../tools/runShellCommand.js";
 import type { TerminalUi } from "./terminal.js";
 
@@ -6,6 +8,7 @@ export interface ProcessBashCommandOptions {
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   maxBuffer?: number;
+  agentMode?: AgentMode;
 }
 
 export async function processBashCommand(
@@ -15,6 +18,13 @@ export async function processBashCommand(
 ): Promise<void> {
   const trimmed = command.trim();
   if (trimmed.length === 0) {
+    return;
+  }
+
+  const mode = options.agentMode ?? "execute";
+  const bashPolicy = checkBashAllowedForMode(trimmed, mode);
+  if (!bashPolicy.allowed) {
+    ui.error(bashPolicy.reason ?? "Command not allowed in this mode");
     return;
   }
 

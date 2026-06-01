@@ -1,22 +1,25 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { FileSearchIndex } from "../../fileSearch/index.js";
+import {
+  makeWorkspace,
+  writeWorkspaceFile,
+} from "../../__tests__/workspaceTestHelpers.js";
 import { acceptTypeaheadState, createTypeaheadState } from "../typeahead.js";
 
-function makeWorkspace(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "propio-typeahead-"));
-}
-
-function writeFile(root: string, relativePath: string): void {
-  const absolutePath = path.join(root, relativePath);
-  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-  fs.writeFileSync(absolutePath, "test");
-}
-
 describe("typeahead", () => {
+  function expectPathSuggestions(
+    state: ReturnType<typeof createTypeaheadState>,
+    expectedValues: string[],
+  ): void {
+    expect(state?.target.kind).toBe("path");
+    expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual(
+      expectedValues,
+    );
+  }
+
   it("detects slash command prefixes and filters concrete commands", () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
     const state = createTypeaheadState({
       buffer: "/con",
       cursor: 4,
@@ -34,7 +37,7 @@ describe("typeahead", () => {
   });
 
   it("includes /model in slash command suggestions", () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
     const state = createTypeaheadState({
       buffer: "/mo",
       cursor: 3,
@@ -44,13 +47,17 @@ describe("typeahead", () => {
     expect(state?.target.kind).toBe("command");
     expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual([
       "/model",
+      "/mode",
+      "/mode execute",
+      "/mode plan",
+      "/mode discover",
     ]);
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
   it("ignores slash commands that appear mid-sentence", () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
 
     expect(
       createTypeaheadState({
@@ -66,8 +73,8 @@ describe("typeahead", () => {
   });
 
   it("detects path-like tokens after file reference verbs", () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/ui/promptComposer.ts");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, "src/ui/promptComposer.ts");
 
     const state = createTypeaheadState({
       buffer: "read src/ui/pro",
@@ -75,17 +82,14 @@ describe("typeahead", () => {
       workspaceRoot,
     });
 
-    expect(state?.target.kind).toBe("path");
-    expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual([
-      "src/ui/promptComposer.ts",
-    ]);
+    expectPathSuggestions(state, ["src/ui/promptComposer.ts"]);
 
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
   it("completes absolute paths when they stay inside the workspace", () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "docs/project.md");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, "docs/project.md");
 
     const absolutePrefix = path.join(workspaceRoot, "docs", "pro");
     const state = createTypeaheadState({
@@ -94,8 +98,7 @@ describe("typeahead", () => {
       workspaceRoot,
     });
 
-    expect(state?.target.kind).toBe("path");
-    expect(state?.suggestions.map((suggestion) => suggestion.value)).toEqual([
+    expectPathSuggestions(state, [
       path.join(workspaceRoot, "docs", "project.md"),
     ]);
 
@@ -103,8 +106,8 @@ describe("typeahead", () => {
   });
 
   it("keeps dot-relative completions in dot-relative form", () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "docs/project.md");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, "docs/project.md");
 
     const state = createTypeaheadState({
       buffer: "read ./docs/pro",
@@ -120,8 +123,8 @@ describe("typeahead", () => {
   });
 
   it("replaces quoted partial paths without dropping the opening quote", () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "docs/project.md");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, "docs/project.md");
 
     const state = createTypeaheadState({
       buffer: 'read "docs/pro',
@@ -139,9 +142,9 @@ describe("typeahead", () => {
   });
 
   it("allows hidden entries only when the basename starts with a dot", () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, ".secret");
-    writeFile(workspaceRoot, "visible.txt");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, ".secret");
+    writeWorkspaceFile(workspaceRoot, "visible.txt");
 
     const visibleState = createTypeaheadState({
       buffer: "read v",
@@ -165,7 +168,7 @@ describe("typeahead", () => {
   });
 
   it("sorts directories first, limits results, and skips ignored directories", () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
     for (const directory of [
       "a-dir",
       "b-dir",
@@ -203,7 +206,7 @@ describe("typeahead", () => {
       "u-file.txt",
       "v-file.txt",
     ]) {
-      writeFile(workspaceRoot, fileName);
+      writeWorkspaceFile(workspaceRoot, fileName);
     }
 
     const state = createTypeaheadState({
@@ -227,7 +230,7 @@ describe("typeahead", () => {
   });
 
   it("returns no matches for relative path escape attempts", () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
 
     expect(
       createTypeaheadState({
@@ -243,7 +246,7 @@ describe("typeahead", () => {
   });
 
   it("returns no matches for absolute paths outside the workspace", () => {
-    const workspaceRoot = makeWorkspace();
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
 
     expect(
       createTypeaheadState({
@@ -259,9 +262,9 @@ describe("typeahead", () => {
   });
 
   it("opens mention suggestions for bare @ tokens", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "src/agent.ts");
-    writeFile(workspaceRoot, "docs/readme.md");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, "src/agent.ts");
+    writeWorkspaceFile(workspaceRoot, "docs/readme.md");
     const index = FileSearchIndex.forWorkspace(workspaceRoot);
 
     try {
@@ -282,8 +285,8 @@ describe("typeahead", () => {
   });
 
   it("accepts quoted mention suggestions with trailing spaces", async () => {
-    const workspaceRoot = makeWorkspace();
-    writeFile(workspaceRoot, "docs/my file.md");
+    const workspaceRoot = makeWorkspace("propio-typeahead-");
+    writeWorkspaceFile(workspaceRoot, "docs/my file.md");
     const index = FileSearchIndex.forWorkspace(workspaceRoot);
     await index.refresh(true);
 

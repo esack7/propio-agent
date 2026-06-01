@@ -72,6 +72,7 @@ export interface ChatPromptSessionCallbacks {
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
+  cycleAgentMode?: () => string | null | undefined;
   refreshPromptFooters?: () => PromptFooters;
   close(): void;
 }
@@ -1639,26 +1640,45 @@ export function createChatPromptSession(
     return true;
   };
 
+  const applyCallbackFooter = (nextFooter: string | null | undefined): void => {
+    if (callbacks.refreshPromptFooters) {
+      applyFooterSnapshot(callbacks.refreshPromptFooters());
+      render();
+      return;
+    }
+
+    if (nextFooter === undefined || nextFooter === null) {
+      return;
+    }
+
+    activeFooter = nextFooter;
+    if (inputMode === "bash") {
+      bashFooter = nextFooter;
+    } else {
+      promptFooter = nextFooter;
+    }
+    render();
+  };
+
+  const handleModeCycleKeys = (key: readline.Key): boolean => {
+    const isShiftTab =
+      (key.name === "tab" && key.shift && !key.ctrl && !key.meta) ||
+      key.name === "backtab";
+
+    if (!isShiftTab) {
+      return false;
+    }
+
+    const nextFooter = callbacks.cycleAgentMode?.();
+    applyCallbackFooter(nextFooter);
+    return true;
+  };
+
   const handleToolToggleKeys = (key: readline.Key): boolean => {
     const applyFooterToggle = (
       toggle: (() => string | null | undefined) | undefined,
     ): boolean => {
-      const nextFooter = toggle?.();
-      if (callbacks.refreshPromptFooters) {
-        applyFooterSnapshot(callbacks.refreshPromptFooters());
-        render();
-        return true;
-      }
-
-      if (nextFooter !== undefined && nextFooter !== null) {
-        activeFooter = nextFooter;
-        if (inputMode === "bash") {
-          bashFooter = nextFooter;
-        } else {
-          promptFooter = nextFooter;
-        }
-        render();
-      }
+      applyCallbackFooter(toggle?.());
       return true;
     };
 
@@ -1698,6 +1718,7 @@ export function createChatPromptSession(
     handleLifecycleKeys(key) ||
     handleEditorHandoffKeys(key) ||
     handleSearchCancelKeys(key) ||
+    handleModeCycleKeys(key) ||
     handleToolToggleKeys(key) ||
     handleNewlineAndEnterKeys(str, key);
 

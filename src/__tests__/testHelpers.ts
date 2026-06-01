@@ -114,11 +114,11 @@ export function createTestAgent(
 export class ToolCallMockProvider implements LLMProvider {
   readonly name = "mock-tool-call";
   readonly streamChatCalls: ChatRequest[] = [];
-  private readonly toolName: string;
 
-  constructor(toolName: string) {
-    this.toolName = toolName;
-  }
+  constructor(
+    private readonly toolName: string,
+    private readonly toolArgs?: Record<string, unknown>,
+  ) {}
 
   getCapabilities() {
     return { contextWindowTokens: 128000 };
@@ -134,7 +134,9 @@ export class ToolCallMockProvider implements LLMProvider {
             id: `call-${this.toolName}-1`,
             function: {
               name: this.toolName,
-              arguments: { index: this.streamChatCalls.length },
+              arguments: this.toolArgs ?? {
+                index: this.streamChatCalls.length,
+              },
             },
           },
         ],

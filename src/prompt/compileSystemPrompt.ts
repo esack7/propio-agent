@@ -1,4 +1,8 @@
 import {
+  getModeSystemSection,
+  type ModePromptContext,
+} from "../modes/prompts.js";
+import {
   DEFAULT_CORE_IDENTITY,
   formatRuntimeEnvironmentSection,
   formatRuntimeOverflowBlock,
@@ -12,6 +16,7 @@ import { SystemPromptSectionRegistry } from "./systemPromptSectionRegistry.js";
 
 export type SystemPromptSectionId =
   | "coreIdentity"
+  | "agentMode"
   | "agentsMd"
   | "toolUtilization"
   | "responseFormatting"
@@ -28,6 +33,7 @@ export interface CompiledSystemPrompt {
 export interface CompileSystemPromptOptions {
   agentsMdContent?: string;
   baseRules?: string;
+  modeContext?: ModePromptContext;
 }
 
 export interface CompileSystemPromptResult {
@@ -39,6 +45,7 @@ export { DEFAULT_CORE_IDENTITY };
 
 const SECTION_ORDER: readonly SystemPromptSectionId[] = [
   "coreIdentity",
+  "agentMode",
   "agentsMd",
   "toolUtilization",
   "responseFormatting",
@@ -105,6 +112,9 @@ export function compileSystemPrompt(
   const agentsMdContent = options.agentsMdContent ?? "";
 
   const coreIdentity = registry.getCoreIdentity(baseRules);
+  const agentMode = options.modeContext
+    ? getModeSystemSection(options.modeContext)
+    : undefined;
   const agentsMd =
     agentsMdContent.trim().length > 0
       ? registry.getAgentsMd(agentsMdContent)
@@ -121,6 +131,9 @@ export function compileSystemPrompt(
     ["responseFormatting", responseFormatting],
     ["runtimeEnvironment", runtimeEnvironment],
   ]);
+  if (agentMode) {
+    sectionMap.set("agentMode", agentMode);
+  }
   if (agentsMd) {
     sectionMap.set("agentsMd", agentsMd);
   }

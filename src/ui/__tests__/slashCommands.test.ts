@@ -27,6 +27,7 @@ describe("slashCommands", () => {
     expect(text).toContain("Enter");
     expect(text).toContain("! <command>");
     expect(text).toContain("Ctrl+J");
+    expect(text).toContain("Shift+Tab");
     expect(text).not.toContain("Alt+Enter");
     expect(text).toContain("Ctrl+O");
     expect(text).toContain("toggle tool output");
@@ -42,26 +43,31 @@ describe("slashCommands", () => {
     expect(text).toContain("/context");
     expect(text).toContain("/session list");
     expect(text).toContain("/session load <id>");
+    expect(text).toContain("/plan save [content]");
+    expect(text).toContain("/plan approve");
+    expect(text).toContain("/plan show");
   });
 
   it("keeps the idle footer concise", () => {
     expect(getIdleFooterText()).toBe(
-      "Enter to send | ? help | tools: shown | thinking: shown",
+      "Enter to send | ? help | mode: execute | tools: shown | thinking: shown",
     );
     expect(getIdleFooterText(false)).toBe(
-      "Enter to send | ? help | tools: hidden | thinking: shown",
+      "Enter to send | ? help | mode: execute | tools: hidden | thinking: shown",
     );
     expect(
       getIdleFooterText({ showToolCalls: false, showThinking: true }),
-    ).toBe("Enter to send | ? help | tools: hidden | thinking: shown");
+    ).toBe(
+      "Enter to send | ? help | mode: execute | tools: hidden | thinking: shown",
+    );
   });
 
   it("keeps the bash footer concise", () => {
     expect(getBashFooterText()).toBe(
-      "Enter to run | tools: shown | thinking: shown",
+      "Enter to run | mode: execute | tools: shown | thinking: shown",
     );
     expect(getBashFooterText(false)).toBe(
-      "Enter to run | tools: hidden | thinking: shown",
+      "Enter to run | mode: execute | tools: hidden | thinking: shown",
     );
   });
 

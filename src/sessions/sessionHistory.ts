@@ -371,7 +371,8 @@ function parseSnapshotObject(parsed: unknown): {
   if (
     snapshot.version !== 1 &&
     snapshot.version !== 2 &&
-    snapshot.version !== 3
+    snapshot.version !== 3 &&
+    snapshot.version !== 4
   ) {
     return null;
   }

@@ -68,6 +68,7 @@ export interface PromptComposerOptions {
   renderState?: (state: PromptState | null) => void;
   onToggleToolCalls?: () => string | null | undefined;
   onToggleThinking?: () => string | null | undefined;
+  onCycleAgentMode?: () => string | null | undefined;
   refreshPromptFooters?: () => import("./chatPromptSession.js").PromptFooters;
   historyStore?: PromptHistoryStore;
   pasteCache?: PasteCache;
@@ -322,6 +323,9 @@ export function createPromptComposer(
             },
             toggleThinking: () => {
               return options.onToggleThinking?.();
+            },
+            cycleAgentMode: () => {
+              return options.onCycleAgentMode?.();
             },
             refreshPromptFooters: options.refreshPromptFooters,
             close,

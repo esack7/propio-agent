@@ -50,6 +50,7 @@ function minimalSessionJson(overrides: Record<string, unknown> = {}): string {
         contextPressureThreshold: 0.6,
       },
       contextWindowTokens: 128000,
+      ...(overrides.metadata as Record<string, unknown> | undefined),
     },
     context: {
       preamble: [],
@@ -106,6 +107,17 @@ describe("sessionHistory", () => {
   // =================================================================
 
   describe("writeSnapshot", () => {
+    function expectSnapshotAccepted(
+      dir: string,
+      json: string,
+    ): SessionIndexEntry {
+      const entry = writeSnapshot(dir, json);
+      expect(entry.turnCount).toBe(1);
+      expect(entry.providerName).toBe("test-provider");
+      expect(readIndex(dir)!.entries[0].snapshotFile).toBe(entry.snapshotFile);
+      return entry;
+    }
+
     it("should create a snapshot file and update the index", () => {
       const dir = freshDir();
       const json = minimalSessionJson({
@@ -190,7 +202,7 @@ describe("sessionHistory", () => {
 
     it("should accept current v3 snapshots with invoked skills", () => {
       const dir = freshDir();
-      const entry = writeSnapshot(
+      expectSnapshotAccepted(
         dir,
         minimalSessionJson({
           version: 3,
@@ -213,10 +225,23 @@ describe("sessionHistory", () => {
           ],
         }),
       );
+    });
 
-      expect(entry.turnCount).toBe(1);
-      expect(entry.providerName).toBe("test-provider");
-      expect(readIndex(dir)!.entries[0].snapshotFile).toBe(entry.snapshotFile);
+    it("should accept current v4 plan-mode snapshots", () => {
+      const dir = freshDir();
+      expectSnapshotAccepted(
+        dir,
+        minimalSessionJson({
+          version: 4,
+          turns: [makeTurn("t1", "write a plan")],
+          metadata: {
+            agentMode: "plan",
+            planFilePath: "/tmp/plan.md",
+            planSaveApproved: true,
+            planDraftSearchStartTurnIndex: 0,
+          },
+        }),
+      );
     });
   });
 

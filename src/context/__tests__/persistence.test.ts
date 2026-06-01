@@ -274,12 +274,12 @@ describe("persistence", () => {
   // =================================================================
 
   describe("metadata", () => {
-    it("should include version 3 in the serialized output", () => {
+    it("should include version 4 in the serialized output", () => {
       const manager = new ContextManager();
       const state = manager.getConversationState();
       const json = serializeSession(state, TEST_METADATA);
       const parsed = parseSession(json);
-      expect(parsed.version).toBe(3);
+      expect(parsed.version).toBe(4);
     });
 
     it("should include savedAt timestamp", () => {
@@ -303,6 +303,31 @@ describe("persistence", () => {
       expect(parsed.metadata.contextWindowTokens).toBe(128000);
       expect(parsed.metadata.promptBudgetPolicy).toEqual(DEFAULT_BUDGET_POLICY);
       expect(parsed.metadata.summaryPolicy).toEqual(DEFAULT_SUMMARY_POLICY);
+    });
+
+    it("accepts plan mode metadata without planFilePath before save", () => {
+      const manager = new ContextManager();
+      const state = manager.getConversationState();
+      const metadata: SessionMetadata = {
+        ...TEST_METADATA,
+        agentMode: "plan",
+      };
+      const parsed = parseSession(serializeSession(state, metadata));
+      expect(parsed.metadata.agentMode).toBe("plan");
+      expect(parsed.metadata.planFilePath).toBeUndefined();
+    });
+
+    it("rejects planFilePath when planSaveApproved is false", () => {
+      const manager = new ContextManager();
+      const state = manager.getConversationState();
+      const metadata: SessionMetadata = {
+        ...TEST_METADATA,
+        agentMode: "plan",
+        planFilePath: "/tmp/plan.md",
+        planSaveApproved: false,
+      };
+      const json = serializeSession(state, metadata);
+      expect(() => parseSession(json)).toThrow(SessionParseError);
     });
   });
 
@@ -748,7 +773,7 @@ describe("persistence", () => {
       });
       expectParseError(
         json,
-        "Unsupported session version: 99. Supported versions: 1, 2, 3.",
+        "Unsupported session version: 99. Supported versions: 1, 2, 3, 4.",
       );
     });
 

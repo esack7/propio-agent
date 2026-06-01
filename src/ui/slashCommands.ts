@@ -13,6 +13,12 @@ export interface SlashCommandGroup {
   readonly commands: ReadonlyArray<SlashCommand>;
 }
 
+export interface FooterVisibilityOptions {
+  readonly showToolCalls: boolean;
+  readonly showThinking: boolean;
+  readonly agentMode?: "execute" | "plan" | "discover";
+}
+
 export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
   {
     name: "Chat",
@@ -25,6 +31,36 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
       {
         command: "/model",
         description: "switch the active provider/model or update defaults",
+      },
+      {
+        command: "/mode",
+        description: "show or switch agent mode (execute, plan, discover)",
+      },
+      {
+        command: "/mode execute",
+        description: "switch to Execute mode (full tool access)",
+      },
+      {
+        command: "/mode plan",
+        description: "switch to Plan mode (plan file writes only)",
+      },
+      {
+        command: "/mode discover",
+        description: "switch to Discover mode (read-only exploration)",
+      },
+      {
+        command: "/plan save [content]",
+        description:
+          "save the latest assistant plan draft, or explicit content (Plan mode only)",
+      },
+      {
+        command: "/plan approve",
+        description: "approve and save the latest plan draft (Plan mode only)",
+      },
+      {
+        command: "/plan show",
+        description:
+          "show the saved plan file or the current pending draft (Plan mode only)",
       },
     ],
   },
@@ -117,6 +153,10 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
     style: "info",
   });
   lines.push({
+    text: formatLabelLine("Shift+Tab", "cycle agent mode (best-effort)"),
+    style: "info",
+  });
+  lines.push({
     text: formatLabelLine("Ctrl+O", "toggle tool output"),
     style: "info",
   });
@@ -140,37 +180,47 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
 }
 
 export function getIdleFooterText(
-  visibility:
-    | boolean
-    | {
-        showToolCalls: boolean;
-        showThinking: boolean;
-      } = true,
+  visibility: boolean | FooterVisibilityOptions = true,
 ): string {
   const showToolCalls =
     typeof visibility === "boolean" ? visibility : visibility.showToolCalls;
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
+  const agentMode =
+    typeof visibility === "boolean"
+      ? "execute"
+      : (visibility.agentMode ?? "execute");
+  const modeLabel =
+    agentMode === "execute"
+      ? "execute"
+      : agentMode === "plan"
+        ? "plan"
+        : "discover";
 
-  return `Enter to send | ? help | tools: ${
+  return `Enter to send | ? help | mode: ${modeLabel} | tools: ${
     showToolCalls ? "shown" : "hidden"
   } | thinking: ${showThinking ? "shown" : "hidden"}`;
 }
 
 export function getBashFooterText(
-  visibility:
-    | boolean
-    | {
-        showToolCalls: boolean;
-        showThinking: boolean;
-      } = true,
+  visibility: boolean | FooterVisibilityOptions = true,
 ): string {
   const showToolCalls =
     typeof visibility === "boolean" ? visibility : visibility.showToolCalls;
   const showThinking =
     typeof visibility === "boolean" ? true : visibility.showThinking;
+  const agentMode =
+    typeof visibility === "boolean"
+      ? "execute"
+      : (visibility.agentMode ?? "execute");
+  const modeLabel =
+    agentMode === "execute"
+      ? "execute"
+      : agentMode === "plan"
+        ? "plan"
+        : "discover";
 
-  return `Enter to run | tools: ${
+  return `Enter to run | mode: ${modeLabel} | tools: ${
     showToolCalls ? "shown" : "hidden"
   } | thinking: ${showThinking ? "shown" : "hidden"}`;
 }
