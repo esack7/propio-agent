@@ -784,7 +784,6 @@
       "integrity": "sha512-CGOfOJqWjg2qW/Mb6zNsDm+u5vFQ8DxXfbM09z69p5Z6+mE1ikP2jUXw+j42Pf1XTYED2Rni5f95npYeuwMDQA==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "@babel/code-frame": "^7.29.0",
         "@babel/generator": "^7.29.0",
@@ -1272,6 +1271,29 @@
       },
       "engines": {
         "node": ">=12"
+      }
+    },
+    "node_modules/@emnapi/core": {
+      "version": "1.10.0",
+      "resolved": "https://registry.npmjs.org/@emnapi/core/-/core-1.10.0.tgz",
+      "integrity": "sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==",
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "dependencies": {
+        "@emnapi/wasi-threads": "1.2.1",
+        "tslib": "^2.4.0"
+      }
+    },
+    "node_modules/@emnapi/runtime": {
+      "version": "1.10.0",
+      "resolved": "https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.10.0.tgz",
+      "integrity": "sha512-ewvYlk86xUoGI0zQRNq/mC+16R1QeDlKQy21Ki3oSYXNgLb45GV1P6A0M+/s6nyCuNDqe5VpaY84BzXGwVbwFA==",
+      "dev": true,
+      "license": "MIT",
+      "optional": true,
+      "dependencies": {
+        "tslib": "^2.4.0"
       }
     },
     "node_modules/@emnapi/wasi-threads": {
@@ -3060,7 +3082,6 @@
       "integrity": "sha512-tO4ZIRKNC+MDWV4qKVZe3Ql/woTnmHDr5JD8UI5hn2pwBrHEwOEMZK7WlNb5RKB6EoJ02gwmQS9OrjuFnZYdpg==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "undici-types": "~7.18.0"
       }
@@ -3583,7 +3604,6 @@
         }
       ],
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "baseline-browser-mapping": "^2.9.0",
         "caniuse-lite": "^1.0.30001759",
@@ -4487,7 +4507,6 @@
       "resolved": "https://registry.npmjs.org/express/-/express-5.2.1.tgz",
       "integrity": "sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==",
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "accepts": "^2.0.0",
         "body-parser": "^2.2.1",
@@ -4968,7 +4987,6 @@
       "resolved": "https://registry.npmjs.org/hono/-/hono-4.12.15.tgz",
       "integrity": "sha512-qM0jDhFEaCBb4TxoW7f53Qrpv9RBiayUHo0S52JudprkhvpjIrGoU1mnnr29Fvd1U335ZFPZQY1wlkqgfGXyLg==",
       "license": "MIT",
-      "peer": true,
       "engines": {
         "node": ">=16.9.0"
       }
@@ -5290,7 +5308,6 @@
       "integrity": "sha512-AkXIIFcaazymvey2i/+F94XRnM6TsVLZDhBMLsd1Sf/W0wzsvvpjeyUrCZD6HGG4SDYPgDJDBKeiJTBb10WzMg==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "@jest/core": "30.3.0",
         "@jest/types": "30.3.0",
@@ -8048,7 +8065,6 @@
       "integrity": "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "engines": {
         "node": ">=12"
       },
@@ -8179,7 +8195,6 @@
       "integrity": "sha512-f0FFpIdcHgn8zcPSbf1dRevwt047YMnaiJM3u2w2RewrB+fob/zePZcrOyQoLMMO7aBIddLcQIEK5dYjkLnGrQ==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "@cspotcode/source-map-support": "^0.8.0",
         "@tsconfig/node10": "^1.0.7",
@@ -8230,7 +8245,6 @@
       "integrity": "sha512-5C1sg4USs1lfG0GFb2RLXsdpXqBSEhAaA/0kPL01wxzpMqLILNxIxIOKiILz+cdg/pLnOUxFYOR5yhHU666wbw==",
       "dev": true,
       "license": "MIT",
-      "peer": true,
       "dependencies": {
         "esbuild": "~0.27.0",
         "get-tsconfig": "^4.7.5"
@@ -8288,7 +8302,6 @@
       "integrity": "sha512-bGdAIrZ0wiGDo5l8c++HWtbaNCWTS4UTv7RaTH/ThVIgjkveJt83m74bBHMJkuCbslY8ixgLBVZJIOiQlQTjfQ==",
       "dev": true,
       "license": "Apache-2.0",
-      "peer": true,
       "bin": {
         "tsc": "bin/tsc",
         "tsserver": "bin/tsserver"
@@ -8820,7 +8833,6 @@
       "resolved": "https://registry.npmjs.org/yaml/-/yaml-2.8.3.tgz",
       "integrity": "sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg==",
       "license": "ISC",
-      "peer": true,
       "bin": {
         "yaml": "bin.mjs"
       },
@@ -8960,7 +8972,6 @@
       "resolved": "https://registry.npmjs.org/zod/-/zod-4.3.6.tgz",
       "integrity": "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==",
       "license": "MIT",
-      "peer": true,
       "funding": {
         "url": "https://github.com/sponsors/colinhacks"
       }
