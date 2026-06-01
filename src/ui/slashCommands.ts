@@ -53,6 +53,15 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
         description:
           "save the latest assistant plan draft, or explicit content (Plan mode only)",
       },
+      {
+        command: "/plan approve [content]",
+        description: "approve and save the latest plan draft (Plan mode only)",
+      },
+      {
+        command: "/plan show",
+        description:
+          "show the saved plan file or the current pending draft (Plan mode only)",
+      },
     ],
   },
   {
