@@ -102,7 +102,10 @@ export class AnthropicProvider implements LLMProvider {
         if (event.type === "content_block_start") {
           this.handleContentBlockStart(event as Anthropic.RawContentBlockStartEvent, state);
         } else if (event.type === "content_block_delta") {
-          this.handleContentBlockDelta(event as Anthropic.RawContentBlockDeltaEvent, state, request);
+          const text = this.handleContentBlockDelta(event as Anthropic.RawContentBlockDeltaEvent, state);
+          if (text) {
+            yield { type: "assistant_text", delta: text };
+          }
         } else if (event.type === "content_block_stop") {
           this.handleContentBlockStop(state);
         } else if (event.type === "message_stop") {
@@ -148,23 +151,17 @@ export class AnthropicProvider implements LLMProvider {
   private handleContentBlockDelta(
     event: Anthropic.RawContentBlockDeltaEvent,
     state: AnthropicStreamState,
-    request: ChatRequest,
-  ): void {
+  ): string | undefined {
     const delta = event.delta;
 
     if (delta.type === "text_delta") {
-      const textDelta = delta as Anthropic.TextDelta;
-      if (textDelta.text) {
-        // We yield here in the actual loop
-        // This is handled by accumulating in the loop
-      }
+      return (delta as Anthropic.TextDelta).text || undefined;
     } else if (delta.type === "thinking_delta") {
-      const thinkingDelta = delta as Anthropic.ThinkingDelta;
-      state.thinkingContent += thinkingDelta.thinking || "";
+      state.thinkingContent += (delta as Anthropic.ThinkingDelta).thinking || "";
     } else if (delta.type === "input_json_delta") {
-      const jsonDelta = delta as Anthropic.InputJSONDelta;
-      state.currentToolInputJson += jsonDelta.partial_json || "";
+      state.currentToolInputJson += (delta as Anthropic.InputJSONDelta).partial_json || "";
     }
+    return undefined;
   }
 
   private handleContentBlockStop(state: AnthropicStreamState): void {
