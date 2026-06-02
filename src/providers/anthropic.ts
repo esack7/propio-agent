@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { LLMProvider, ProviderCapabilities } from "./interface.js";
-import { createProviderCapabilities } from "./capabilities.js";
+import { ProviderCapabilities } from "./interface.js";
+import { BaseProvider, BaseProviderOptions } from "./baseProvider.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -16,7 +16,6 @@ import {
 } from "./types.js";
 import { withRetry } from "./withRetry.js";
 import { createProviderRetryOptions } from "./shared.js";
-import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
 // Default budget and min output headroom when extended thinking is enabled.
 const THINKING_BUDGET_TOKENS = 10000;
@@ -36,37 +35,19 @@ interface AnthropicStreamState {
   rawStopReason: string;
 }
 
-export class AnthropicProvider implements LLMProvider {
+export class AnthropicProvider extends BaseProvider {
   readonly name = "anthropic";
   private client: Anthropic;
-  private model: string;
-  private capabilities: ProviderCapabilities;
-  private retryConfig?: { maxRetries: number; consecutive529Limit: number };
-  private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
-  constructor(options: {
-    model: string;
-    contextWindowTokens: number;
-    apiKey?: string;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number };
-    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-  }) {
+  constructor(options: BaseProviderOptions & { apiKey?: string }) {
     const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
       throw new ProviderAuthenticationError(
         "Anthropic API key not found. Set ANTHROPIC_API_KEY environment variable or provide apiKey in config.",
       );
     }
-
+    super(options);
     this.client = new Anthropic({ apiKey });
-    this.retryConfig = options.retryConfig;
-    this.onDiagnosticEvent = options.onDiagnosticEvent;
-    this.capabilities = createProviderCapabilities(options.contextWindowTokens);
-    this.model = options.model;
-  }
-
-  getCapabilities(): ProviderCapabilities {
-    return this.capabilities;
   }
 
   // fallow-ignore-next-line complexity

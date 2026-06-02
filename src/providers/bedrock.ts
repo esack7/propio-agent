@@ -3,8 +3,8 @@ import {
   ConverseCommand,
   ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
-import { LLMProvider, ProviderCapabilities } from "./interface.js";
-import { createProviderCapabilities } from "./capabilities.js";
+import { ProviderCapabilities } from "./interface.js";
+import { BaseProvider, BaseProviderOptions } from "./baseProvider.js";
 import {
   ChatMessage,
   ChatRequest,
@@ -19,7 +19,6 @@ import {
   ProviderCapacityError,
 } from "./types.js";
 import { withRetry } from "./withRetry.js";
-import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
 interface BedrockStreamState {
   toolCalls: ChatToolCall[];
@@ -37,31 +36,13 @@ interface BedrockErrorDetails {
 /**
  * Bedrock implementation of LLMProvider
  */
-export class BedrockProvider implements LLMProvider {
+export class BedrockProvider extends BaseProvider {
   readonly name = "bedrock";
   private client: BedrockRuntimeClient;
-  private model: string;
-  private capabilities: ProviderCapabilities;
-  private retryConfig?: { maxRetries: number; consecutive529Limit: number };
-  private onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
 
-  constructor(options: {
-    model: string;
-    contextWindowTokens: number;
-    region?: string;
-    retryConfig?: { maxRetries: number; consecutive529Limit: number };
-    onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
-  }) {
-    const region = options.region || "us-east-1";
-    this.retryConfig = options.retryConfig;
-    this.client = new BedrockRuntimeClient({ region });
-    this.onDiagnosticEvent = options.onDiagnosticEvent;
-    this.capabilities = createProviderCapabilities(options.contextWindowTokens);
-    this.model = options.model;
-  }
-
-  getCapabilities(): ProviderCapabilities {
-    return this.capabilities;
+  constructor(options: BaseProviderOptions & { region?: string }) {
+    super(options);
+    this.client = new BedrockRuntimeClient({ region: options.region ?? "us-east-1" });
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
