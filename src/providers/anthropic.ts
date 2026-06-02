@@ -20,7 +20,6 @@ interface AnthropicStreamState {
   toolCalls: ChatToolCall[];
   currentToolCall: Partial<ChatToolCall> | null;
   currentToolInputJson: string;
-  thinkingContent: string;
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
 }
 
@@ -94,7 +93,6 @@ export class AnthropicProvider implements LLMProvider {
         toolCalls: [],
         currentToolCall: null,
         currentToolInputJson: "",
-        thinkingContent: "",
         stopReason: "end_turn",
       };
 
@@ -102,9 +100,12 @@ export class AnthropicProvider implements LLMProvider {
         if (event.type === "content_block_start") {
           this.handleContentBlockStart(event as Anthropic.RawContentBlockStartEvent, state);
         } else if (event.type === "content_block_delta") {
-          const text = this.handleContentBlockDelta(event as Anthropic.RawContentBlockDeltaEvent, state);
+          const { text, thinking } = this.handleContentBlockDelta(event as Anthropic.RawContentBlockDeltaEvent, state);
           if (text) {
             yield { type: "assistant_text", delta: text };
+          }
+          if (thinking) {
+            yield { type: "thinking_delta", delta: thinking };
           }
         } else if (event.type === "content_block_stop") {
           this.handleContentBlockStop(state);
@@ -114,10 +115,6 @@ export class AnthropicProvider implements LLMProvider {
             state.stopReason = this.mapStopReason((stopEvent as any).message.stop_reason);
           }
         }
-      }
-
-      if (state.thinkingContent) {
-        yield { type: "thinking_delta", delta: state.thinkingContent };
       }
 
       if (state.toolCalls.length > 0) {
@@ -151,17 +148,17 @@ export class AnthropicProvider implements LLMProvider {
   private handleContentBlockDelta(
     event: Anthropic.RawContentBlockDeltaEvent,
     state: AnthropicStreamState,
-  ): string | undefined {
+  ): { text?: string; thinking?: string } {
     const delta = event.delta;
 
     if (delta.type === "text_delta") {
-      return (delta as Anthropic.TextDelta).text || undefined;
+      return { text: (delta as Anthropic.TextDelta).text || undefined };
     } else if (delta.type === "thinking_delta") {
-      state.thinkingContent += (delta as Anthropic.ThinkingDelta).thinking || "";
+      return { thinking: (delta as Anthropic.ThinkingDelta).thinking || undefined };
     } else if (delta.type === "input_json_delta") {
       state.currentToolInputJson += (delta as Anthropic.InputJSONDelta).partial_json || "";
     }
-    return undefined;
+    return {};
   }
 
   private handleContentBlockStop(state: AnthropicStreamState): void {
