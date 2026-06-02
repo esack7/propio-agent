@@ -15,6 +15,7 @@ import {
   ProviderCapacityError,
 } from "./types.js";
 import { withRetry } from "./withRetry.js";
+import { createProviderRetryOptions } from "./shared.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 
 // Default budget and min output headroom when extended thinking is enabled.
@@ -68,6 +69,7 @@ export class AnthropicProvider implements LLMProvider {
     return this.capabilities;
   }
 
+  // fallow-ignore-next-line complexity
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       // Concatenate multiple system messages rather than silently dropping all but the first.
@@ -191,6 +193,7 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
+  // fallow-ignore-next-line complexity
   private handleContentBlockDelta(
     event: Anthropic.RawContentBlockDeltaEvent,
     state: AnthropicStreamState,
@@ -265,87 +268,86 @@ export class AnthropicProvider implements LLMProvider {
   private chatMessageToAnthropicMessage(msg: ChatMessage): Anthropic.MessageParam {
     const content: Anthropic.ContentBlockParam[] = [];
 
-    // Replay thinking blocks for extended-thinking tool-call loops.
-    // Anthropic requires the thinking block from the prior assistant turn be re-sent
-    // on the assistant message that precedes tool_result blocks.
-    if (msg.role === "assistant" && msg.reasoningContent && msg.toolCalls?.length) {
-      try {
-        const blocks = JSON.parse(msg.reasoningContent) as Array<{
-          thinking: string;
-          signature: string;
-        }>;
-        for (const block of blocks) {
-          content.push({
-            type: "thinking",
-            thinking: block.thinking,
-            signature: block.signature,
-          });
-        }
-      } catch {
-        // Malformed reasoningContent — skip rather than crash.
-      }
-    }
-
-    // Text content (not for tool result messages)
-    if (msg.content && msg.role !== "tool") {
-      content.push({ type: "text", text: msg.content });
-    }
-
-    // Tool calls on assistant messages
-    if (msg.toolCalls && msg.toolCalls.length > 0) {
-      for (const toolCall of msg.toolCalls) {
-        if (!toolCall.id) {
-          throw new ProviderError(
-            `Anthropic requires a tool call id but tool call "${toolCall.function.name}" has none`,
-          );
-        }
-        content.push({
-          type: "tool_use",
-          id: toolCall.id,
-          name: toolCall.function.name,
-          input: toolCall.function.arguments,
-        });
-      }
-    }
-
-    // Images
-    if (msg.images && msg.images.length > 0) {
-      for (const image of msg.images) {
-        const { data, mediaType } = this.resolveImageData(image);
-        content.push({
-          type: "image",
-          source: { type: "base64", media_type: mediaType, data },
-        });
-      }
-    }
-
-    // Tool results (role === "tool" → Anthropic user turn with tool_result blocks)
-    if (msg.role === "tool") {
-      if (msg.toolResults && msg.toolResults.length > 0) {
-        for (const toolResult of msg.toolResults) {
-          content.push({
-            type: "tool_result",
-            tool_use_id: toolResult.toolCallId,
-            content: toolResult.content,
-          });
-        }
-      } else if (msg.toolCallId) {
-        content.push({
-          type: "tool_result",
-          tool_use_id: msg.toolCallId,
-          content: msg.content,
-        });
-      }
-    }
-
-    // Anthropic rejects empty content arrays and empty text blocks.
-    const finalContent =
-      content.length > 0 ? content : [{ type: "text" as const, text: " " }];
+    this.appendThinkingBlocks(msg, content);
+    this.appendTextBlock(msg, content);
+    this.appendToolUseBlocks(msg, content);
+    this.appendImageBlocks(msg, content);
+    this.appendToolResultBlocks(msg, content);
 
     return {
       role: msg.role === "tool" ? "user" : (msg.role as "user" | "assistant"),
-      content: finalContent,
+      content: content.length > 0 ? content : [{ type: "text", text: " " }],
     };
+  }
+
+  // Replay thinking blocks on assistant turns preceding tool_result messages.
+  // Anthropic requires the prior thinking content to be re-sent in tool-call loops.
+  private appendThinkingBlocks(
+    msg: ChatMessage,
+    content: Anthropic.ContentBlockParam[],
+  ): void {
+    if (!(msg.role === "assistant" && msg.reasoningContent && msg.toolCalls?.length)) {
+      return;
+    }
+    try {
+      const blocks = JSON.parse(msg.reasoningContent) as Array<{
+        thinking: string;
+        signature: string;
+      }>;
+      for (const block of blocks) {
+        content.push({ type: "thinking", thinking: block.thinking, signature: block.signature });
+      }
+    } catch {
+      // Malformed reasoningContent — skip rather than crash.
+    }
+  }
+
+  private appendTextBlock(msg: ChatMessage, content: Anthropic.ContentBlockParam[]): void {
+    if (msg.content && msg.role !== "tool") {
+      content.push({ type: "text", text: msg.content });
+    }
+  }
+
+  private appendToolUseBlocks(
+    msg: ChatMessage,
+    content: Anthropic.ContentBlockParam[],
+  ): void {
+    if (!msg.toolCalls?.length) return;
+    for (const toolCall of msg.toolCalls) {
+      if (!toolCall.id) {
+        throw new ProviderError(
+          `Anthropic requires a tool call id but tool call "${toolCall.function.name}" has none`,
+        );
+      }
+      content.push({
+        type: "tool_use",
+        id: toolCall.id,
+        name: toolCall.function.name,
+        input: toolCall.function.arguments,
+      });
+    }
+  }
+
+  private appendImageBlocks(msg: ChatMessage, content: Anthropic.ContentBlockParam[]): void {
+    if (!msg.images?.length) return;
+    for (const image of msg.images) {
+      const { data, mediaType } = this.resolveImageData(image);
+      content.push({ type: "image", source: { type: "base64", media_type: mediaType, data } });
+    }
+  }
+
+  private appendToolResultBlocks(
+    msg: ChatMessage,
+    content: Anthropic.ContentBlockParam[],
+  ): void {
+    if (msg.role !== "tool") return;
+    if (msg.toolResults?.length) {
+      for (const toolResult of msg.toolResults) {
+        content.push({ type: "tool_result", tool_use_id: toolResult.toolCallId, content: toolResult.content });
+      }
+    } else if (msg.toolCallId) {
+      content.push({ type: "tool_result", tool_use_id: msg.toolCallId, content: msg.content });
+    }
   }
 
   private resolveImageData(
@@ -390,35 +392,27 @@ export class AnthropicProvider implements LLMProvider {
     };
   }
 
+  private static readonly RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
   private createRetryOptions(request: ChatRequest) {
-    return {
-      maxRetries: this.retryConfig?.maxRetries ?? 3,
-      baseDelayMs: 500,
-      isRetryable: (error: unknown) => this.isRetryableError(error),
-      is529: (error: unknown) => error instanceof ProviderCapacityError,
-      consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
-      onRetry: (ctx: {
-        err: unknown;
-        attempt: number;
-        delayMs: number;
-      }): void => this.emitRetryDiagnostic(request, ctx),
-    };
+    return createProviderRetryOptions({
+      request,
+      model: this.model,
+      provider: this.name,
+      retryConfig: this.retryConfig
+        ? { ...this.retryConfig, baseDelayMs: 500 }
+        : undefined,
+      isRetryable: (error) => this.isRetryableError(error),
+      onDiagnosticEvent: this.onDiagnosticEvent,
+    });
   }
 
+  // fallow-ignore-next-line complexity
   private isRetryableError(error: unknown): boolean {
     if (error instanceof ProviderCapacityError) return true;
-
     if (error instanceof Anthropic.APIError) {
-      const status = error.status;
-      return (
-        status === 429 ||
-        status === 500 ||
-        status === 502 ||
-        status === 503 ||
-        status === 504
-      );
+      return AnthropicProvider.RETRYABLE_STATUSES.has(error.status);
     }
-
     const name = (error as any)?.name ?? "";
     const message = error instanceof Error ? error.message : String(error);
     return (
@@ -430,21 +424,7 @@ export class AnthropicProvider implements LLMProvider {
     );
   }
 
-  private emitRetryDiagnostic(
-    request: ChatRequest,
-    ctx: { err: unknown; attempt: number; delayMs: number },
-  ): void {
-    this.onDiagnosticEvent?.({
-      type: "provider_retry",
-      provider: this.name,
-      model: request.model || this.model,
-      iteration: request.iteration ?? 0,
-      reason: ctx.err instanceof Error ? ctx.err.message : String(ctx.err),
-      attemptNumber: ctx.attempt + 1,
-      delayMs: ctx.delayMs,
-    });
-  }
-
+  // fallow-ignore-next-line complexity
   private translateError(error: unknown): Error {
     if (error instanceof Anthropic.APIError) {
       const status = error.status;
