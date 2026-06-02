@@ -12,15 +12,27 @@ import {
   ProviderRateLimitError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
+  ProviderCapacityError,
 } from "./types.js";
 import { withRetry } from "./withRetry.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
+
+// Default budget and min output headroom when extended thinking is enabled.
+const THINKING_BUDGET_TOKENS = 10000;
+const THINKING_OUTPUT_HEADROOM = 1000;
 
 interface AnthropicStreamState {
   toolCalls: ChatToolCall[];
   currentToolCall: Partial<ChatToolCall> | null;
   currentToolInputJson: string;
+  // Per-block thinking accumulation (text + signature for replay)
+  currentThinkingText: string;
+  currentThinkingSignature: string;
+  inThinkingBlock: boolean;
+  // Accumulated thinking blocks for tool-call replay
+  thinkingBlocks: Array<{ thinking: string; signature: string }>;
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+  rawStopReason: string;
 }
 
 export class AnthropicProvider implements LLMProvider {
@@ -58,7 +70,12 @@ export class AnthropicProvider implements LLMProvider {
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
-      const systemMessage = request.messages.find((m) => m.role === "system");
+      // Concatenate multiple system messages rather than silently dropping all but the first.
+      const systemMessages = request.messages.filter((m) => m.role === "system");
+      const systemContent = systemMessages.length > 0
+        ? systemMessages.map((m) => m.content).join("\n\n")
+        : undefined;
+
       const messages = request.messages
         .filter((m) => m.role !== "system")
         .map((msg) => this.chatMessageToAnthropicMessage(msg));
@@ -67,21 +84,27 @@ export class AnthropicProvider implements LLMProvider {
         this.chatToolToAnthropicTool(tool),
       );
 
-      const thinkingBudget = request.requestReasoning ? 10000 : undefined;
-      const maxTokens = thinkingBudget ? Math.max(thinkingBudget + 1000, 16000) : 4096;
+      const thinkingBudget = request.requestReasoning ? THINKING_BUDGET_TOKENS : undefined;
+      // max_tokens must exceed thinking.budget_tokens; use 16k floor for normal requests.
+      const maxTokens = thinkingBudget
+        ? Math.max(thinkingBudget + THINKING_OUTPUT_HEADROOM, 16000)
+        : 16384;
 
       const createStream = () =>
         Promise.resolve(
-          this.client.messages.stream({
-            model: request.model || this.model,
-            max_tokens: maxTokens,
-            system: systemMessage?.content,
-            messages: messages as Anthropic.MessageParam[],
-            tools: anthropicTools as Anthropic.Tool[] | undefined,
-            thinking: thinkingBudget
-              ? { type: "enabled", budget_tokens: thinkingBudget }
-              : undefined,
-          }),
+          this.client.messages.stream(
+            {
+              model: request.model || this.model,
+              max_tokens: maxTokens,
+              system: systemContent,
+              messages: messages as Anthropic.MessageParam[],
+              tools: anthropicTools as Anthropic.Tool[] | undefined,
+              thinking: thinkingBudget
+                ? { type: "enabled", budget_tokens: thinkingBudget }
+                : undefined,
+            },
+            { signal: request.signal },
+          ),
         );
 
       const stream = await withRetry(
@@ -93,14 +116,22 @@ export class AnthropicProvider implements LLMProvider {
         toolCalls: [],
         currentToolCall: null,
         currentToolInputJson: "",
+        currentThinkingText: "",
+        currentThinkingSignature: "",
+        inThinkingBlock: false,
+        thinkingBlocks: [],
         stopReason: "end_turn",
+        rawStopReason: "end_turn",
       };
 
       for await (const event of stream) {
         if (event.type === "content_block_start") {
           this.handleContentBlockStart(event as Anthropic.RawContentBlockStartEvent, state);
         } else if (event.type === "content_block_delta") {
-          const { text, thinking } = this.handleContentBlockDelta(event as Anthropic.RawContentBlockDeltaEvent, state);
+          const { text, thinking } = this.handleContentBlockDelta(
+            event as Anthropic.RawContentBlockDeltaEvent,
+            state,
+          );
           if (text) {
             yield { type: "assistant_text", delta: text };
           }
@@ -109,19 +140,30 @@ export class AnthropicProvider implements LLMProvider {
           }
         } else if (event.type === "content_block_stop") {
           this.handleContentBlockStop(state);
-        } else if (event.type === "message_stop") {
-          const stopEvent = event as Anthropic.RawMessageStopEvent;
-          if ((stopEvent as any).message?.stop_reason) {
-            state.stopReason = this.mapStopReason((stopEvent as any).message.stop_reason);
+        } else if (event.type === "message_delta") {
+          // stop_reason lives on message_delta, not message_stop
+          const deltaEvent = event as Anthropic.RawMessageDeltaEvent;
+          if (deltaEvent.delta.stop_reason) {
+            state.rawStopReason = deltaEvent.delta.stop_reason;
+            state.stopReason = this.mapStopReason(deltaEvent.delta.stop_reason);
           }
         }
       }
 
       if (state.toolCalls.length > 0) {
-        yield { type: "tool_calls", toolCalls: state.toolCalls };
+        // Attach accumulated thinking blocks as reasoningContent for replay in the next turn.
+        const reasoningContent =
+          state.thinkingBlocks.length > 0
+            ? JSON.stringify(state.thinkingBlocks)
+            : undefined;
+        yield { type: "tool_calls", toolCalls: state.toolCalls, reasoningContent };
       }
 
-      yield { type: "terminal", stopReason: state.stopReason };
+      yield {
+        type: "terminal",
+        stopReason: state.stopReason,
+        rawProviderReason: state.rawStopReason,
+      };
     } catch (error) {
       throw this.translateError(error);
     }
@@ -142,6 +184,10 @@ export class AnthropicProvider implements LLMProvider {
         },
       };
       state.currentToolInputJson = "";
+    } else if (block.type === "thinking") {
+      state.inThinkingBlock = true;
+      state.currentThinkingText = "";
+      state.currentThinkingSignature = "";
     }
   }
 
@@ -154,7 +200,11 @@ export class AnthropicProvider implements LLMProvider {
     if (delta.type === "text_delta") {
       return { text: (delta as Anthropic.TextDelta).text || undefined };
     } else if (delta.type === "thinking_delta") {
-      return { thinking: (delta as Anthropic.ThinkingDelta).thinking || undefined };
+      const text = (delta as Anthropic.ThinkingDelta).thinking || "";
+      state.currentThinkingText += text;
+      return { thinking: text || undefined };
+    } else if (delta.type === "signature_delta") {
+      state.currentThinkingSignature += (delta as Anthropic.SignatureDelta).signature || "";
     } else if (delta.type === "input_json_delta") {
       state.currentToolInputJson += (delta as Anthropic.InputJSONDelta).partial_json || "";
     }
@@ -162,10 +212,21 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private handleContentBlockStop(state: AnthropicStreamState): void {
-    if (
-      !state.currentToolCall?.function ||
-      !state.currentToolInputJson
-    ) {
+    if (state.inThinkingBlock) {
+      // Finalize the thinking block — keep text+signature for replay.
+      if (state.currentThinkingText || state.currentThinkingSignature) {
+        state.thinkingBlocks.push({
+          thinking: state.currentThinkingText,
+          signature: state.currentThinkingSignature,
+        });
+      }
+      state.inThinkingBlock = false;
+      state.currentThinkingText = "";
+      state.currentThinkingSignature = "";
+      return;
+    }
+
+    if (!state.currentToolCall?.function || !state.currentToolInputJson) {
       return;
     }
 
@@ -185,7 +246,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private mapStopReason(
-    reason: string,
+    reason: string | null,
   ): "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" {
     switch (reason) {
       case "end_turn":
@@ -204,46 +265,61 @@ export class AnthropicProvider implements LLMProvider {
   private chatMessageToAnthropicMessage(msg: ChatMessage): Anthropic.MessageParam {
     const content: Anthropic.ContentBlockParam[] = [];
 
-    // Add text content
-    if (msg.content && msg.role !== "tool") {
-      content.push({
-        type: "text",
-        text: msg.content,
-      });
+    // Replay thinking blocks for extended-thinking tool-call loops.
+    // Anthropic requires the thinking block from the prior assistant turn be re-sent
+    // on the assistant message that precedes tool_result blocks.
+    if (msg.role === "assistant" && msg.reasoningContent && msg.toolCalls?.length) {
+      try {
+        const blocks = JSON.parse(msg.reasoningContent) as Array<{
+          thinking: string;
+          signature: string;
+        }>;
+        for (const block of blocks) {
+          content.push({
+            type: "thinking",
+            thinking: block.thinking,
+            signature: block.signature,
+          });
+        }
+      } catch {
+        // Malformed reasoningContent — skip rather than crash.
+      }
     }
 
-    // Add tool calls (when replaying an assistant message with tool calls)
+    // Text content (not for tool result messages)
+    if (msg.content && msg.role !== "tool") {
+      content.push({ type: "text", text: msg.content });
+    }
+
+    // Tool calls on assistant messages
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       for (const toolCall of msg.toolCalls) {
+        if (!toolCall.id) {
+          throw new ProviderError(
+            `Anthropic requires a tool call id but tool call "${toolCall.function.name}" has none`,
+          );
+        }
         content.push({
           type: "tool_use",
-          id: toolCall.id || `${toolCall.function.name}-${Date.now()}`,
+          id: toolCall.id,
           name: toolCall.function.name,
           input: toolCall.function.arguments,
         });
       }
     }
 
-    // Add images
+    // Images
     if (msg.images && msg.images.length > 0) {
       for (const image of msg.images) {
-        const imageData = typeof image === "string" ? image : Buffer.from(image).toString("base64");
-        const mediaType = this.extractMediaType(imageData);
-
+        const { data, mediaType } = this.resolveImageData(image);
         content.push({
           type: "image",
-          source: {
-            type: "base64",
-            media_type: mediaType as any,
-            data: imageData.includes(",")
-              ? imageData.split(",")[1]
-              : imageData,
-          },
+          source: { type: "base64", media_type: mediaType, data },
         });
       }
     }
 
-    // Add tool results for tool role messages
+    // Tool results (role === "tool" → Anthropic user turn with tool_result blocks)
     if (msg.role === "tool") {
       if (msg.toolResults && msg.toolResults.length > 0) {
         for (const toolResult of msg.toolResults) {
@@ -262,29 +338,47 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
+    // Anthropic rejects empty content arrays and empty text blocks.
+    const finalContent =
+      content.length > 0 ? content : [{ type: "text" as const, text: " " }];
+
     return {
-      role: msg.role === "tool" ? "user" : (msg.role as any),
-      content: content.length > 0 ? content : [{ type: "text", text: "" }],
+      role: msg.role === "tool" ? "user" : (msg.role as "user" | "assistant"),
+      content: finalContent,
     };
   }
 
-  private extractMediaType(
-    image: string,
-  ): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
-    if (image.startsWith("data:")) {
-      const match = image.match(/:(.*?);/);
-      if (match && match[1]) {
-        const type = match[1];
-        if (
-          type === "image/jpeg" ||
-          type === "image/png" ||
-          type === "image/gif" ||
-          type === "image/webp"
-        ) {
-          return type;
+  private resolveImageData(
+    image: Uint8Array | string,
+  ): {
+    data: string;
+    mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  } {
+    if (typeof image === "string") {
+      if (image.startsWith("data:")) {
+        const match = image.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/);
+        if (match) {
+          return {
+            mediaType: match[1] as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+            data: match[2],
+          };
         }
       }
+      return { data: image, mediaType: "image/png" };
     }
+
+    // Sniff magic bytes for Uint8Array images
+    const mediaType = this.sniffImageMediaType(image);
+    return { data: Buffer.from(image).toString("base64"), mediaType };
+  }
+
+  private sniffImageMediaType(
+    bytes: Uint8Array,
+  ): "image/jpeg" | "image/png" | "image/gif" | "image/webp" {
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+    if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png"; // \x89P
+    if (bytes[0] === 0x47 && bytes[1] === 0x49) return "image/gif"; // GI
+    if (bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp"; // RIFF....WEBP
     return "image/png";
   }
 
@@ -301,6 +395,7 @@ export class AnthropicProvider implements LLMProvider {
       maxRetries: this.retryConfig?.maxRetries ?? 3,
       baseDelayMs: 500,
       isRetryable: (error: unknown) => this.isRetryableError(error),
+      is529: (error: unknown) => error instanceof ProviderCapacityError,
       consecutive529Limit: this.retryConfig?.consecutive529Limit ?? 3,
       onRetry: (ctx: {
         err: unknown;
@@ -311,16 +406,16 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private isRetryableError(error: unknown): boolean {
-    const isAnthropicError = error instanceof Anthropic.APIError;
+    if (error instanceof ProviderCapacityError) return true;
 
-    if (isAnthropicError) {
+    if (error instanceof Anthropic.APIError) {
       const status = error.status;
       return (
-        status === 429 || // rate limit
-        status === 500 || // internal server error
-        status === 502 || // bad gateway
-        status === 503 || // service unavailable
-        status === 504 // gateway timeout
+        status === 429 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504
       );
     }
 
@@ -351,7 +446,6 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private translateError(error: unknown): Error {
-    // Handle Anthropic SDK errors
     if (error instanceof Anthropic.APIError) {
       const status = error.status;
 
@@ -372,6 +466,13 @@ export class AnthropicProvider implements LLMProvider {
         );
       }
 
+      if (status === 529) {
+        return new ProviderCapacityError(
+          `Anthropic overloaded: ${error.message}`,
+          error,
+        );
+      }
+
       if (status === 404 || error.message.includes("Model not found")) {
         return new ProviderModelNotFoundError(
           this.model,
@@ -380,28 +481,20 @@ export class AnthropicProvider implements LLMProvider {
         );
       }
 
-      if (
-        status === 400 &&
-        error.message.includes("context length")
-      ) {
+      if (status === 400 && error.message.includes("context length")) {
         return new ProviderContextLengthError(
           `Anthropic context length exceeded: ${error.message}`,
           error,
         );
       }
 
-      return new ProviderError(
-        `Anthropic API error: ${error.message}`,
-        error,
-      );
+      return new ProviderError(`Anthropic API error (${status}): ${error.message}`, error);
     }
 
     if (error instanceof Error) {
       return new ProviderError(`Anthropic provider error: ${error.message}`, error);
     }
 
-    return new ProviderError(
-      `Anthropic provider error: ${String(error)}`,
-    );
+    return new ProviderError(`Anthropic provider error: ${String(error)}`);
   }
 }
