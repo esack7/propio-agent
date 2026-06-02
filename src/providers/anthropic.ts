@@ -68,16 +68,19 @@ export class AnthropicProvider implements LLMProvider {
         this.chatToolToAnthropicTool(tool),
       );
 
+      const thinkingBudget = request.requestReasoning ? 10000 : undefined;
+      const maxTokens = thinkingBudget ? Math.max(thinkingBudget + 1000, 16000) : 4096;
+
       const createStream = () =>
         Promise.resolve(
           this.client.messages.stream({
             model: request.model || this.model,
-            max_tokens: 4096,
+            max_tokens: maxTokens,
             system: systemMessage?.content,
             messages: messages as Anthropic.MessageParam[],
             tools: anthropicTools as Anthropic.Tool[] | undefined,
-            thinking: request.requestReasoning
-              ? { type: "enabled", budget_tokens: 10000 }
+            thinking: thinkingBudget
+              ? { type: "enabled", budget_tokens: thinkingBudget }
               : undefined,
           }),
         );
