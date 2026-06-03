@@ -102,6 +102,14 @@ function getTerminalEvent(events: ChatStreamEvent[]) {
   return events.find((event) => event.type === "terminal") as any;
 }
 
+function getToolCallEvent(events: ChatStreamEvent[]) {
+  return events.find((event) => event.type === "tool_calls") as any;
+}
+
+function getToolCallReasoningBlocks(events: ChatStreamEvent[]) {
+  return JSON.parse(getToolCallEvent(events).reasoningContent);
+}
+
 function textStreamEvents(text = "Hello!") {
   return [
     {
@@ -173,6 +181,27 @@ function thinkingToolCallStreamEvents(
       delta: { type: "signature_delta", signature },
     },
     { type: "content_block_stop", index: 0 },
+    ...toolCallStreamTail(toolName, toolId),
+  ];
+}
+
+function redactedThinkingToolCallStreamEvents(
+  data = "redacted-blob",
+  toolName = "my_tool",
+  toolId = "call-1",
+) {
+  return [
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "redacted_thinking", data },
+    },
+    ...toolCallStreamTail(toolName, toolId),
+  ];
+}
+
+function toolCallStreamTail(toolName = "my_tool", toolId = "call-1") {
+  return [
     {
       type: "content_block_start",
       index: 1,
@@ -374,12 +403,25 @@ describe("AnthropicProvider", () => {
         createTestProvider(),
         createChatRequest("think", { requestReasoning: true }),
       );
-      const toolEvent = events.find((e) => e.type === "tool_calls") as any;
-      expect(toolEvent.reasoningContent).toBeDefined();
-      const blocks = JSON.parse(toolEvent.reasoningContent);
+      const blocks = getToolCallReasoningBlocks(events);
       expect(blocks[0]).toMatchObject({
         thinking: "my thoughts",
         signature: "sig-123",
+      });
+    });
+
+    it("preserves redacted_thinking blocks in reasoningContent", async () => {
+      mockStream.mockReturnValue(
+        makeStream(redactedThinkingToolCallStreamEvents("redacted-123")),
+      );
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest("think", { requestReasoning: true }),
+      );
+      const blocks = getToolCallReasoningBlocks(events);
+      expect(blocks).toContainEqual({
+        type: "redacted_thinking",
+        data: "redacted-123",
       });
     });
 
@@ -489,6 +531,21 @@ describe("AnthropicProvider", () => {
       });
     });
 
+    it("replays redacted_thinking blocks from reasoningContent", () => {
+      const result = provider.chatMessageToAnthropicMessage({
+        role: "assistant",
+        content: "",
+        reasoningContent: JSON.stringify([
+          { type: "redacted_thinking", data: "redacted-123" },
+        ]),
+        toolCalls: [{ id: "tc-1", function: { name: "fn", arguments: {} } }],
+      } as ChatMessage);
+      expect(result.content[0]).toMatchObject({
+        type: "redacted_thinking",
+        data: "redacted-123",
+      });
+    });
+
     it("does NOT insert thinking block when message has no toolCalls", () => {
       const result = provider.chatMessageToAnthropicMessage({
         role: "assistant",
@@ -537,6 +594,12 @@ describe("AnthropicProvider", () => {
       const result = provider.resolveImageData("data:image/webp;base64,abc123");
       expect(result.mediaType).toBe("image/webp");
       expect(result.data).toBe("abc123");
+    });
+
+    it("rejects unsupported data URL media types", () => {
+      expect(() =>
+        provider.resolveImageData("data:image/svg+xml;base64,abc123"),
+      ).toThrow(ProviderError);
     });
   });
 

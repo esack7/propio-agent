@@ -20,6 +20,25 @@ import { createProviderRetryOptions } from "./shared.js";
 // Default budget and min output headroom when extended thinking is enabled.
 const THINKING_BUDGET_TOKENS = 10000;
 const THINKING_OUTPUT_HEADROOM = 1000;
+const DEFAULT_MAX_TOKENS = 16384;
+
+type AnthropicReplayBlock =
+  | {
+      type: "thinking";
+      thinking: string;
+      signature: string;
+    }
+  | {
+      type: "redacted_thinking";
+      data: string;
+    };
+
+type AnthropicReplayBlockInput = {
+  type?: "thinking" | "redacted_thinking";
+  thinking?: string;
+  signature?: string;
+  data?: string;
+};
 
 interface AnthropicStreamState {
   toolCalls: ChatToolCall[];
@@ -29,8 +48,8 @@ interface AnthropicStreamState {
   currentThinkingText: string;
   currentThinkingSignature: string;
   inThinkingBlock: boolean;
-  // Accumulated thinking blocks for tool-call replay
-  thinkingBlocks: Array<{ thinking: string; signature: string }>;
+  // Accumulated thinking blocks for tool-call replay.
+  thinkingBlocks: AnthropicReplayBlock[];
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
   rawStopReason: string;
 }
@@ -75,8 +94,11 @@ export class AnthropicProvider extends BaseProvider {
         : undefined;
       // max_tokens must exceed thinking.budget_tokens; use 16k floor for normal requests.
       const maxTokens = thinkingBudget
-        ? Math.max(thinkingBudget + THINKING_OUTPUT_HEADROOM, 16000)
-        : 16384;
+        ? Math.max(
+            thinkingBudget + THINKING_OUTPUT_HEADROOM,
+            DEFAULT_MAX_TOKENS,
+          )
+        : DEFAULT_MAX_TOKENS;
 
       const createStream = () =>
         this.client.messages.create(
@@ -182,6 +204,11 @@ export class AnthropicProvider extends BaseProvider {
       state.inThinkingBlock = true;
       state.currentThinkingText = "";
       state.currentThinkingSignature = "";
+    } else if (block.type === "redacted_thinking") {
+      state.thinkingBlocks.push({
+        type: "redacted_thinking",
+        data: block.data,
+      });
     }
   }
 
@@ -213,6 +240,7 @@ export class AnthropicProvider extends BaseProvider {
       // Finalize the thinking block — keep text+signature for replay.
       if (state.currentThinkingText || state.currentThinkingSignature) {
         state.thinkingBlocks.push({
+          type: "thinking",
           thinking: state.currentThinkingText,
           signature: state.currentThinkingSignature,
         });
@@ -292,20 +320,51 @@ export class AnthropicProvider extends BaseProvider {
       return;
     }
     try {
-      const blocks = JSON.parse(msg.reasoningContent) as Array<{
-        thinking: string;
-        signature: string;
-      }>;
+      const blocks = JSON.parse(
+        msg.reasoningContent,
+      ) as AnthropicReplayBlockInput[];
       for (const block of blocks) {
-        content.push({
-          type: "thinking",
-          thinking: block.thinking,
-          signature: block.signature,
-        });
+        if (this.appendRedactedThinkingBlock(block, content)) continue;
+        this.appendThinkingReplayBlock(block, content);
       }
     } catch {
       // Malformed reasoningContent — skip rather than crash.
     }
+  }
+
+  private appendRedactedThinkingBlock(
+    block: AnthropicReplayBlockInput,
+    content: Anthropic.ContentBlockParam[],
+  ): boolean {
+    if (block.type !== "redacted_thinking" || typeof block.data !== "string") {
+      return false;
+    }
+
+    content.push({ type: "redacted_thinking", data: block.data });
+    return true;
+  }
+
+  private appendThinkingReplayBlock(
+    block: AnthropicReplayBlockInput,
+    content: Anthropic.ContentBlockParam[],
+  ): boolean {
+    if (block.type !== undefined && block.type !== "thinking") {
+      return false;
+    }
+
+    if (
+      typeof block.thinking !== "string" ||
+      typeof block.signature !== "string"
+    ) {
+      return false;
+    }
+
+    content.push({
+      type: "thinking",
+      thinking: block.thinking,
+      signature: block.signature,
+    });
+    return true;
   }
 
   private appendTextBlock(
@@ -379,19 +438,37 @@ export class AnthropicProvider extends BaseProvider {
   } {
     if (typeof image === "string") {
       if (image.startsWith("data:")) {
-        const match = image.match(
-          /^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/,
-        );
-        if (match) {
+        const semicolonIndex = image.indexOf(";");
+        const commaIndex = image.indexOf(",");
+        if (semicolonIndex === -1 || commaIndex === -1) {
+          throw new ProviderError(
+            "Anthropic image data URLs must include a base64 payload",
+          );
+        }
+
+        const mediaType = image.slice(5, semicolonIndex);
+        const data = image.slice(commaIndex + 1);
+        const supportedMediaTypes = new Set([
+          "image/jpeg",
+          "image/png",
+          "image/gif",
+          "image/webp",
+        ]);
+
+        if (supportedMediaTypes.has(mediaType)) {
           return {
-            mediaType: match[1] as
+            mediaType: mediaType as
               | "image/jpeg"
               | "image/png"
               | "image/gif"
               | "image/webp",
-            data: match[2],
+            data,
           };
         }
+
+        throw new ProviderError(
+          `Anthropic does not support image data URL media type "${mediaType || "unknown"}"`,
+        );
       }
       return { data: image, mediaType: "image/png" };
     }
@@ -468,7 +545,9 @@ export class AnthropicProvider extends BaseProvider {
 
       if (status === 429) {
         const retryAfter = error.headers?.["retry-after"];
-        const retryAfterSeconds = retryAfter ? parseInt(retryAfter) : undefined;
+        const retryAfterSeconds = retryAfter
+          ? parseInt(retryAfter, 10)
+          : undefined;
         return new ProviderRateLimitError(
           `Anthropic rate limit exceeded: ${error.message}`,
           retryAfterSeconds,
