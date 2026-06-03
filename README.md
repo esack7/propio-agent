@@ -1,6 +1,6 @@
 # propio-agent
 
-A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, and xAI) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `propio-agent`, then run the `propio` command.
+A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, xAI, Cloudflare Workers AI, and Anthropic) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `propio-agent`, then run the `propio` command.
 
 ## Table of Contents
 
@@ -157,7 +157,7 @@ MCP server configuration lives in `~/.propio/mcp.json`:
   "providers": [
     {
       "name": "string — unique identifier for this entry",
-      "type": "ollama | bedrock | openrouter | gemini | xai | cloudflare",
+      "type": "ollama | bedrock | openrouter | gemini | xai | cloudflare | anthropic",
       "models": [
         {
           "name": "Human label",
@@ -346,6 +346,33 @@ The `apiKey` can also be set via the `XAI_API_KEY` environment variable.
 
 The `accountId` can also be set via the `CLOUDFLARE_ACCOUNT_ID` environment variable. The API token can be set via `CLOUDFLARE_API_TOKEN`, with `CLOUDFLARE_AUTH_TOKEN` and `CLOUDFLARE_API_KEY` as fallbacks. Model keys prefixed with `cf/` in config are normalized to `@cf/...` when sent to the Cloudflare API.
 
+### Anthropic (Claude API)
+
+Calls the Claude API directly through the official `@anthropic-ai/sdk`. Unlike running Claude via Bedrock, this provider supports **extended thinking** (visible reasoning tokens replayed across tool-call rounds).
+
+```json
+{
+  "name": "anthropic",
+  "type": "anthropic",
+  "models": [
+    {
+      "name": "Claude Sonnet 4.5",
+      "key": "claude-sonnet-4-5",
+      "contextWindowTokens": 200000
+    },
+    {
+      "name": "Claude Opus 4.5",
+      "key": "claude-opus-4-5",
+      "contextWindowTokens": 200000
+    }
+  ],
+  "defaultModel": "claude-sonnet-4-5",
+  "apiKey": "sk-ant-..."
+}
+```
+
+The `apiKey` can also be set via the `ANTHROPIC_API_KEY` environment variable. HTTP 529 (overloaded) responses are mapped to a retryable capacity error; rate limits, context-length errors, and model-not-found errors are surfaced as typed provider errors.
+
 ## MCP
 
 `propio` loads MCP servers from `~/.propio/mcp.json` and exposes them through `/mcp`. Built-in tools still live under `/tools`.
@@ -465,7 +492,7 @@ In interactive chat mode, you can drag or paste **local image file paths** into 
 ### How images reach the model
 
 1. **Prompt pills** — `[Image #N]` in the buffer is what you see; on submit it expands to `[Attached image: filename]` in the text sent to the agent, with image bytes attached separately as `images` on the user turn.
-2. **Providers** — **Bedrock**, **Gemini**, and **Ollama** send multimodal user messages (`content` plus `images` as data URLs or bytes). **OpenRouter** and **xAI** currently forward text only (`images` are accepted in the prompt and stored in sessions but not sent upstream). The live transcript shows pills (`displayText`), not expanded bodies or base64.
+2. **Providers** — **Bedrock**, **Gemini**, **Ollama**, and **Anthropic** send multimodal user messages (`content` plus `images` as data URLs or bytes). **OpenRouter** and **xAI** currently forward text only (`images` are accepted in the prompt and stored in sessions but not sent upstream). The live transcript shows pills (`displayText`), not expanded bodies or base64.
 3. **Session files** — Saved sessions under `~/.propio/sessions/` store expanded marker text in `userMessage.content` and attachments in `userMessage.images`. Image-heavy sessions can grow large; pasted images may contain sensitive data.
 4. **One-shot / piped stdin** — Non-interactive runs (`echo "hi" | propio`) do not accept pasted or dropped images; use the interactive TTY prompt for image input.
 
@@ -527,6 +554,7 @@ propio/
 │   │   ├── gemini.ts           # Gemini provider
 │   │   ├── xai.ts              # xAI provider
 │   │   ├── cloudflare.ts       # Cloudflare Workers AI provider
+│   │   ├── anthropic.ts        # Anthropic (Claude API) provider
 │   │   └── __tests__/
 │   ├── tools/
 │   │   ├── interface.ts        # Tool interface
@@ -672,6 +700,7 @@ The sandbox runs the agent in Docker with filesystem isolation:
 | `GEMINI_API_KEY`, `GOOGLE_API_KEY`                                | Gemini     |
 | `OPENROUTER_API_KEY`                                              | OpenRouter |
 | `XAI_API_KEY`                                                     | xAI        |
+| `ANTHROPIC_API_KEY`                                               | Anthropic  |
 
 > **Note:** When using `docker compose run --rm agent` directly, variables are not forwarded automatically — pass them with `-e VAR_NAME`.
 

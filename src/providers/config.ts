@@ -80,6 +80,14 @@ export interface GeminiProviderConfig extends BaseProviderConfig {
 }
 
 /**
+ * Anthropic (Claude API) provider configuration
+ */
+export interface AnthropicProviderConfig extends BaseProviderConfig {
+  type: "anthropic";
+  apiKey?: string;
+}
+
+/**
  * Configuration for a single LLM provider (discriminated union)
  */
 export type ProviderConfig =
@@ -88,7 +96,8 @@ export type ProviderConfig =
   | OpenRouterProviderConfig
   | GeminiProviderConfig
   | XaiProviderConfig
-  | CloudflareProviderConfig;
+  | CloudflareProviderConfig
+  | AnthropicProviderConfig;
 
 /**
  * Multi-provider configuration

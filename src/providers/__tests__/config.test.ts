@@ -6,6 +6,7 @@ import {
   OpenRouterProviderConfig,
   GeminiProviderConfig,
   CloudflareProviderConfig,
+  AnthropicProviderConfig,
   ProvidersConfig,
 } from "../config.js";
 
@@ -176,6 +177,23 @@ describe("Configuration Types (New Structure)", () => {
       };
       expect(config.type).toBe("cloudflare");
     });
+
+    it("should accept AnthropicProviderConfig", () => {
+      const config: ProviderConfig = {
+        name: "anthropic",
+        type: "anthropic",
+        models: [
+          {
+            name: "Claude Sonnet",
+            key: "claude-sonnet-4-6",
+            contextWindowTokens: 200_000,
+          },
+        ],
+        defaultModel: "claude-sonnet-4-6",
+        apiKey: "anthropic-key",
+      } as AnthropicProviderConfig;
+      expect(config.type).toBe("anthropic");
+    });
   });
 
   describe("OpenRouterProviderConfig", () => {
@@ -289,12 +307,26 @@ describe("Configuration Types (New Structure)", () => {
             defaultModel: "anthropic.claude-3-5-sonnet-20241022-v2:0",
             region: "us-west-2",
           },
+          {
+            name: "anthropic",
+            type: "anthropic",
+            models: [
+              {
+                name: "Claude Sonnet",
+                key: "claude-sonnet-4-6",
+                contextWindowTokens: 200_000,
+              },
+            ],
+            defaultModel: "claude-sonnet-4-6",
+            apiKey: "anthropic-key",
+          },
         ],
       };
       expect(config.default).toBe("local-ollama");
-      expect(config.providers).toHaveLength(2);
+      expect(config.providers).toHaveLength(3);
       expect(config.providers[0].type).toBe("ollama");
       expect(config.providers[1].type).toBe("bedrock");
+      expect(config.providers[2].type).toBe("anthropic");
     });
 
     it("should support single provider in config", () => {

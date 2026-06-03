@@ -7,6 +7,7 @@ import {
   GeminiProviderConfig,
   XaiProviderConfig,
   CloudflareProviderConfig,
+  AnthropicProviderConfig,
   Model,
 } from "./config.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
@@ -16,6 +17,7 @@ import { OpenRouterProvider } from "./openrouter.js";
 import { GeminiProvider } from "./gemini.js";
 import { XaiProvider } from "./xai.js";
 import { CloudflareProvider } from "./cloudflare.js";
+import { AnthropicProvider } from "./anthropic.js";
 
 /**
  * Factory function to create LLM provider instances from configuration.
@@ -145,9 +147,20 @@ export function createProvider(
         onDiagnosticEvent,
       });
     }
+    case "anthropic": {
+      const anthropicConfig = config as AnthropicProviderConfig;
+      const modelConfig = resolveModelConfig();
+      return new AnthropicProvider({
+        model,
+        contextWindowTokens: modelConfig.contextWindowTokens,
+        apiKey: anthropicConfig.apiKey,
+        retryConfig,
+        onDiagnosticEvent,
+      });
+    }
     default:
       throw new Error(
-        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter, gemini, xai, cloudflare`,
+        `Unknown provider type: "${(config as any).type}". Valid providers: ollama, bedrock, openrouter, gemini, xai, cloudflare, anthropic`,
       );
   }
 }
