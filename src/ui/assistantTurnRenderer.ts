@@ -47,7 +47,6 @@ export async function streamAssistantTurn(
   let hiddenToolCallInProgress = false;
   let hiddenThinkingStatusActive = false;
   let assistantResponseStarted = false;
-  let thinkingStarted = false;
   let visibleThinkingLineOpen = false;
   let pendingThinkingText = "";
   let thinkingFlushScheduled = false;
@@ -88,8 +87,7 @@ export async function streamAssistantTurn(
       return;
     }
 
-    if (!thinkingStarted) {
-      thinkingStarted = true;
+    if (!visibleThinkingLineOpen) {
       ui.beginThinkingResponse();
     }
 

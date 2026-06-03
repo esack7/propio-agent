@@ -300,6 +300,65 @@ describe("Agent Integration Tests", () => {
       expect(callCount).toBe(2);
     });
 
+    it("should emit thinking events again after tool results", async () => {
+      const mockProvider = new MockIntegrationProvider("test");
+      const thinkingEvents: string[] = [];
+      let callCount = 0;
+
+      mockProvider.streamChat = async function* (
+        request: ChatRequest,
+      ): AsyncIterable<ChatStreamEvent> {
+        callCount++;
+        expect(request.requestReasoning).toBe(true);
+
+        if (callCount === 1) {
+          yield { type: "thinking_delta", delta: "Before tool." };
+          yield {
+            type: "tool_calls",
+            toolCalls: [
+              {
+                id: "call-ls-1",
+                function: {
+                  name: "ls",
+                  arguments: { path: "." },
+                },
+              },
+            ],
+            reasoningContent: "thinking replay payload",
+          };
+          return;
+        }
+
+        expect(
+          request.messages.some(
+            (message) =>
+              message.role === "tool" &&
+              message.toolResults?.[0]?.toolCallId === "call-ls-1",
+          ),
+        ).toBe(true);
+        yield { type: "thinking_delta", delta: "After tool." };
+        yield { type: "assistant_text", delta: "Done" };
+      };
+
+      const agent = createAgentWithProvider(mockProvider);
+      const response = await agent.streamChat(
+        userSubmission("Run tool"),
+        () => {},
+        {
+          requestReasoning: true,
+          onEvent: (event) => {
+            if (event.type === "thinking_delta") {
+              thinkingEvents.push(event.delta);
+            }
+          },
+        },
+      );
+
+      expect(response).toBe("Done");
+      expect(callCount).toBe(2);
+      expect(thinkingEvents).toEqual(["Before tool.", "After tool."]);
+    });
+
     it("should handle multiple tool calls in sequence", async () => {
       const mockProvider = new MockIntegrationProvider("test");
       let callCount = 0;
