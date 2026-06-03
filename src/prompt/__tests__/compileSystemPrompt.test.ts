@@ -63,6 +63,18 @@ describe("compileSystemPrompt", () => {
     expect(compiled.sections.map((s) => s.id)).not.toContain("agentsMd");
   });
 
+  it("includes file creation overwrite safeguards in the default core identity", () => {
+    const { compiled } = compileSystemPrompt(ctx);
+    const joined = joinSections(compiled);
+
+    expect(joined).toContain(
+      "Before creating a new file or generating an output artifact at a specific path, verify whether that path already exists.",
+    );
+    expect(joined).toContain(
+      "Do not overwrite existing user files unless the request clearly calls for it",
+    );
+  });
+
   it("lists enabled tools in runtime environment", () => {
     const { compiled } = compileSystemPrompt(ctx);
     const runtime = compiled.sections.find(
