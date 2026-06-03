@@ -54,10 +54,13 @@ export class AnthropicProvider extends BaseProvider {
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {
     try {
       // Concatenate multiple system messages rather than silently dropping all but the first.
-      const systemMessages = request.messages.filter((m) => m.role === "system");
-      const systemContent = systemMessages.length > 0
-        ? systemMessages.map((m) => m.content).join("\n\n")
-        : undefined;
+      const systemMessages = request.messages.filter(
+        (m) => m.role === "system",
+      );
+      const systemContent =
+        systemMessages.length > 0
+          ? systemMessages.map((m) => m.content).join("\n\n")
+          : undefined;
 
       const messages = request.messages
         .filter((m) => m.role !== "system")
@@ -67,33 +70,34 @@ export class AnthropicProvider extends BaseProvider {
         this.chatToolToAnthropicTool(tool),
       );
 
-      const thinkingBudget = request.requestReasoning ? THINKING_BUDGET_TOKENS : undefined;
+      const thinkingBudget = request.requestReasoning
+        ? THINKING_BUDGET_TOKENS
+        : undefined;
       // max_tokens must exceed thinking.budget_tokens; use 16k floor for normal requests.
       const maxTokens = thinkingBudget
         ? Math.max(thinkingBudget + THINKING_OUTPUT_HEADROOM, 16000)
         : 16384;
 
       const createStream = () =>
-        Promise.resolve(
-          this.client.messages.stream(
-            {
-              model: request.model || this.model,
-              max_tokens: maxTokens,
-              system: systemContent,
-              messages: messages as Anthropic.MessageParam[],
-              tools: anthropicTools as Anthropic.Tool[] | undefined,
-              thinking: thinkingBudget
-                ? { type: "enabled", budget_tokens: thinkingBudget }
-                : undefined,
-            },
-            { signal: request.signal },
-          ),
+        this.client.messages.create(
+          {
+            model: request.model || this.model,
+            max_tokens: maxTokens,
+            system: systemContent,
+            messages: messages as Anthropic.MessageParam[],
+            tools: anthropicTools as Anthropic.Tool[] | undefined,
+            thinking: thinkingBudget
+              ? { type: "enabled", budget_tokens: thinkingBudget }
+              : undefined,
+            stream: true,
+          },
+          { signal: request.signal },
         );
 
-      const stream = await withRetry(
+      const stream = (await withRetry(
         createStream,
         this.createRetryOptions(request),
-      ) as AsyncIterable<Anthropic.MessageStreamEvent>;
+      )) as AsyncIterable<Anthropic.MessageStreamEvent>;
 
       const state: AnthropicStreamState = {
         toolCalls: [],
@@ -109,7 +113,10 @@ export class AnthropicProvider extends BaseProvider {
 
       for await (const event of stream) {
         if (event.type === "content_block_start") {
-          this.handleContentBlockStart(event as Anthropic.RawContentBlockStartEvent, state);
+          this.handleContentBlockStart(
+            event as Anthropic.RawContentBlockStartEvent,
+            state,
+          );
         } else if (event.type === "content_block_delta") {
           const { text, thinking } = this.handleContentBlockDelta(
             event as Anthropic.RawContentBlockDeltaEvent,
@@ -139,7 +146,11 @@ export class AnthropicProvider extends BaseProvider {
           state.thinkingBlocks.length > 0
             ? JSON.stringify(state.thinkingBlocks)
             : undefined;
-        yield { type: "tool_calls", toolCalls: state.toolCalls, reasoningContent };
+        yield {
+          type: "tool_calls",
+          toolCalls: state.toolCalls,
+          reasoningContent,
+        };
       }
 
       yield {
@@ -188,9 +199,11 @@ export class AnthropicProvider extends BaseProvider {
       state.currentThinkingText += text;
       return { thinking: text || undefined };
     } else if (delta.type === "signature_delta") {
-      state.currentThinkingSignature += (delta as Anthropic.SignatureDelta).signature || "";
+      state.currentThinkingSignature +=
+        (delta as Anthropic.SignatureDelta).signature || "";
     } else if (delta.type === "input_json_delta") {
-      state.currentToolInputJson += (delta as Anthropic.InputJSONDelta).partial_json || "";
+      state.currentToolInputJson +=
+        (delta as Anthropic.InputJSONDelta).partial_json || "";
     }
     return {};
   }
@@ -246,7 +259,9 @@ export class AnthropicProvider extends BaseProvider {
     }
   }
 
-  private chatMessageToAnthropicMessage(msg: ChatMessage): Anthropic.MessageParam {
+  private chatMessageToAnthropicMessage(
+    msg: ChatMessage,
+  ): Anthropic.MessageParam {
     const content: Anthropic.ContentBlockParam[] = [];
 
     this.appendThinkingBlocks(msg, content);
@@ -267,7 +282,13 @@ export class AnthropicProvider extends BaseProvider {
     msg: ChatMessage,
     content: Anthropic.ContentBlockParam[],
   ): void {
-    if (!(msg.role === "assistant" && msg.reasoningContent && msg.toolCalls?.length)) {
+    if (
+      !(
+        msg.role === "assistant" &&
+        msg.reasoningContent &&
+        msg.toolCalls?.length
+      )
+    ) {
       return;
     }
     try {
@@ -276,14 +297,21 @@ export class AnthropicProvider extends BaseProvider {
         signature: string;
       }>;
       for (const block of blocks) {
-        content.push({ type: "thinking", thinking: block.thinking, signature: block.signature });
+        content.push({
+          type: "thinking",
+          thinking: block.thinking,
+          signature: block.signature,
+        });
       }
     } catch {
       // Malformed reasoningContent — skip rather than crash.
     }
   }
 
-  private appendTextBlock(msg: ChatMessage, content: Anthropic.ContentBlockParam[]): void {
+  private appendTextBlock(
+    msg: ChatMessage,
+    content: Anthropic.ContentBlockParam[],
+  ): void {
     if (msg.content && msg.role !== "tool") {
       content.push({ type: "text", text: msg.content });
     }
@@ -309,11 +337,17 @@ export class AnthropicProvider extends BaseProvider {
     }
   }
 
-  private appendImageBlocks(msg: ChatMessage, content: Anthropic.ContentBlockParam[]): void {
+  private appendImageBlocks(
+    msg: ChatMessage,
+    content: Anthropic.ContentBlockParam[],
+  ): void {
     if (!msg.images?.length) return;
     for (const image of msg.images) {
       const { data, mediaType } = this.resolveImageData(image);
-      content.push({ type: "image", source: { type: "base64", media_type: mediaType, data } });
+      content.push({
+        type: "image",
+        source: { type: "base64", media_type: mediaType, data },
+      });
     }
   }
 
@@ -324,25 +358,37 @@ export class AnthropicProvider extends BaseProvider {
     if (msg.role !== "tool") return;
     if (msg.toolResults?.length) {
       for (const toolResult of msg.toolResults) {
-        content.push({ type: "tool_result", tool_use_id: toolResult.toolCallId, content: toolResult.content });
+        content.push({
+          type: "tool_result",
+          tool_use_id: toolResult.toolCallId,
+          content: toolResult.content,
+        });
       }
     } else if (msg.toolCallId) {
-      content.push({ type: "tool_result", tool_use_id: msg.toolCallId, content: msg.content });
+      content.push({
+        type: "tool_result",
+        tool_use_id: msg.toolCallId,
+        content: msg.content,
+      });
     }
   }
 
-  private resolveImageData(
-    image: Uint8Array | string,
-  ): {
+  private resolveImageData(image: Uint8Array | string): {
     data: string;
     mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
   } {
     if (typeof image === "string") {
       if (image.startsWith("data:")) {
-        const match = image.match(/^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/);
+        const match = image.match(
+          /^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/,
+        );
         if (match) {
           return {
-            mediaType: match[1] as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+            mediaType: match[1] as
+              | "image/jpeg"
+              | "image/png"
+              | "image/gif"
+              | "image/webp",
             data: match[2],
           };
         }
@@ -369,11 +415,14 @@ export class AnthropicProvider extends BaseProvider {
     return {
       name: chatTool.function.name,
       description: chatTool.function.description,
-      input_schema: chatTool.function.parameters as Anthropic.Tool["input_schema"],
+      input_schema: chatTool.function
+        .parameters as Anthropic.Tool["input_schema"],
     };
   }
 
-  private static readonly RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+  private static readonly RETRYABLE_STATUSES = new Set([
+    429, 500, 502, 503, 504, 529,
+  ]);
 
   private createRetryOptions(request: ChatRequest) {
     return createProviderRetryOptions({
@@ -449,11 +498,17 @@ export class AnthropicProvider extends BaseProvider {
         );
       }
 
-      return new ProviderError(`Anthropic API error (${status}): ${error.message}`, error);
+      return new ProviderError(
+        `Anthropic API error (${status}): ${error.message}`,
+        error,
+      );
     }
 
     if (error instanceof Error) {
-      return new ProviderError(`Anthropic provider error: ${error.message}`, error);
+      return new ProviderError(
+        `Anthropic provider error: ${error.message}`,
+        error,
+      );
     }
 
     return new ProviderError(`Anthropic provider error: ${String(error)}`);

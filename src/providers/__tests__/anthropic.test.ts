@@ -4,7 +4,11 @@
 class MockAPIError extends Error {
   status: number;
   headers: Record<string, string>;
-  constructor(status: number, message: string, headers: Record<string, string> = {}) {
+  constructor(
+    status: number,
+    message: string,
+    headers: Record<string, string> = {},
+  ) {
     super(message);
     this.name = "APIError";
     this.status = status;
@@ -14,7 +18,7 @@ class MockAPIError extends Error {
 
 const mockStream = jest.fn();
 const MockAnthropicConstructor = jest.fn().mockImplementation(() => ({
-  messages: { stream: mockStream },
+  messages: { create: mockStream, stream: mockStream },
 }));
 (MockAnthropicConstructor as any).APIError = MockAPIError;
 
@@ -94,22 +98,54 @@ async function collectStream(
   return events;
 }
 
+function getTerminalEvent(events: ChatStreamEvent[]) {
+  return events.find((event) => event.type === "terminal") as any;
+}
+
 function textStreamEvents(text = "Hello!") {
   return [
-    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text },
+    },
     { type: "content_block_stop", index: 0 },
-    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: {} },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: {},
+    },
     { type: "message_stop" },
   ];
 }
 
-function toolCallStreamEvents(name = "my_tool", args = '{"x":1}', id = "call-1") {
+function toolCallStreamEvents(
+  name = "my_tool",
+  args = '{"x":1}',
+  id = "call-1",
+) {
   return [
-    { type: "content_block_start", index: 0, content_block: { type: "tool_use", id, name, input: {} } },
-    { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: args } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id, name, input: {} },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: args },
+    },
     { type: "content_block_stop", index: 0 },
-    { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: {} },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: {},
+    },
     { type: "message_stop" },
   ];
 }
@@ -121,14 +157,43 @@ function thinkingToolCallStreamEvents(
   toolId = "call-1",
 ) {
   return [
-    { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
-    { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: thinkingText } },
-    { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "thinking_delta", thinking: thinkingText },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "signature_delta", signature },
+    },
     { type: "content_block_stop", index: 0 },
-    { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: toolId, name: toolName, input: {} } },
-    { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"x":1}' } },
+    {
+      type: "content_block_start",
+      index: 1,
+      content_block: {
+        type: "tool_use",
+        id: toolId,
+        name: toolName,
+        input: {},
+      },
+    },
+    {
+      type: "content_block_delta",
+      index: 1,
+      delta: { type: "input_json_delta", partial_json: '{"x":1}' },
+    },
     { type: "content_block_stop", index: 1 },
-    { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: {} },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: {},
+    },
     { type: "message_stop" },
   ];
 }
@@ -180,38 +245,50 @@ describe("AnthropicProvider", () => {
   describe("streamChat — text response", () => {
     it("yields assistant_text deltas", async () => {
       mockStream.mockReturnValue(makeStream(textStreamEvents("Hi!")));
-      const events = await collectStream(createTestProvider(), createChatRequest());
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
       const textEvents = events.filter((e) => e.type === "assistant_text");
       expect(textEvents).toHaveLength(1);
       expect((textEvents[0] as any).delta).toBe("Hi!");
     });
 
     it("yields terminal event with end_turn stop reason", async () => {
-      const events = await collectStream(createTestProvider(), createChatRequest());
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
       const terminal = events.find((e) => e.type === "terminal") as any;
       expect(terminal).toBeDefined();
       expect(terminal.stopReason).toBe("end_turn");
     });
 
     it("populates rawProviderReason on terminal event", async () => {
-      const events = await collectStream(createTestProvider(), createChatRequest());
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
       const terminal = events.find((e) => e.type === "terminal") as any;
       expect(terminal.rawProviderReason).toBe("end_turn");
     });
 
     it("reads stop_reason from message_delta event", async () => {
-      const customEvents = [
-        ...textStreamEvents("ok"),
-      ];
-      const idx = customEvents.findIndex((e) => (e as any).type === "message_delta");
+      const customEvents = [...textStreamEvents("ok")];
+      const idx = customEvents.findIndex(
+        (e) => (e as any).type === "message_delta",
+      );
       customEvents[idx] = {
         type: "message_delta",
         delta: { stop_reason: "max_tokens", stop_sequence: null },
         usage: {},
       };
       mockStream.mockReturnValue(makeStream(customEvents));
-      const events = await collectStream(createTestProvider(), createChatRequest());
-      const terminal = events.find((e) => e.type === "terminal") as any;
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
+      const terminal = getTerminalEvent(events);
       expect(terminal.stopReason).toBe("max_tokens");
     });
 
@@ -224,6 +301,14 @@ describe("AnthropicProvider", () => {
       expect(mockStream).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({ signal: controller.signal }),
+      );
+    });
+
+    it("passes stream=true to the SDK call", async () => {
+      await collectStream(createTestProvider(), createChatRequest());
+      expect(mockStream).toHaveBeenCalledWith(
+        expect.objectContaining({ stream: true }),
+        expect.any(Object),
       );
     });
 
@@ -240,7 +325,10 @@ describe("AnthropicProvider", () => {
       mockStream.mockReturnValue(
         makeStream(toolCallStreamEvents("search", '{"q":"test"}', "call-99")),
       );
-      const events = await collectStream(createTestProvider(), createChatRequest());
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
       const toolEvent = events.find((e) => e.type === "tool_calls") as any;
       expect(toolEvent).toBeDefined();
       expect(toolEvent.toolCalls[0].function.name).toBe("search");
@@ -250,8 +338,11 @@ describe("AnthropicProvider", () => {
 
     it("sets terminal stop_reason to tool_use", async () => {
       mockStream.mockReturnValue(makeStream(toolCallStreamEvents()));
-      const events = await collectStream(createTestProvider(), createChatRequest());
-      const terminal = events.find((e) => e.type === "terminal") as any;
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
+      const terminal = getTerminalEvent(events);
       expect(terminal.stopReason).toBe("tool_use");
     });
   });
@@ -259,7 +350,9 @@ describe("AnthropicProvider", () => {
   // ---------------------------------------------------------------------------
   describe("streamChat — extended thinking", () => {
     it("yields thinking_delta events before tool_calls", async () => {
-      mockStream.mockReturnValue(makeStream(thinkingToolCallStreamEvents("Hmm")));
+      mockStream.mockReturnValue(
+        makeStream(thinkingToolCallStreamEvents("Hmm")),
+      );
       const events = await collectStream(
         createTestProvider(),
         createChatRequest("think", { requestReasoning: true }),
@@ -268,7 +361,9 @@ describe("AnthropicProvider", () => {
       const toolEvent = events.find((e) => e.type === "tool_calls");
       expect(thinkingEvents.length).toBeGreaterThan(0);
       expect((thinkingEvents[0] as any).delta).toBe("Hmm");
-      expect(events.indexOf(thinkingEvents[0])).toBeLessThan(events.indexOf(toolEvent!));
+      expect(events.indexOf(thinkingEvents[0])).toBeLessThan(
+        events.indexOf(toolEvent!),
+      );
     });
 
     it("attaches thinking+signature as reasoningContent on tool_calls event", async () => {
@@ -282,7 +377,10 @@ describe("AnthropicProvider", () => {
       const toolEvent = events.find((e) => e.type === "tool_calls") as any;
       expect(toolEvent.reasoningContent).toBeDefined();
       const blocks = JSON.parse(toolEvent.reasoningContent);
-      expect(blocks[0]).toMatchObject({ thinking: "my thoughts", signature: "sig-123" });
+      expect(blocks[0]).toMatchObject({
+        thinking: "my thoughts",
+        signature: "sig-123",
+      });
     });
 
     it("sets max_tokens above thinking budget_tokens when reasoning enabled", async () => {
@@ -292,7 +390,9 @@ describe("AnthropicProvider", () => {
         createChatRequest("hi", { requestReasoning: true }),
       );
       const callArgs = mockStream.mock.calls[0][0];
-      expect(callArgs.max_tokens).toBeGreaterThan(callArgs.thinking?.budget_tokens ?? 0);
+      expect(callArgs.max_tokens).toBeGreaterThan(
+        callArgs.thinking?.budget_tokens ?? 0,
+      );
     });
 
     it("enables thinking param when requestReasoning is true", async () => {
@@ -315,12 +415,15 @@ describe("AnthropicProvider", () => {
   // ---------------------------------------------------------------------------
   describe("message translation", () => {
     let provider: any;
-    beforeEach(() => { provider = createTestProvider(); });
+    beforeEach(() => {
+      provider = createTestProvider();
+    });
 
     it("translates user message to user role with text block", () => {
-      const result = provider.chatMessageToAnthropicMessage(
-        { role: "user", content: "Hello" } as ChatMessage,
-      );
+      const result = provider.chatMessageToAnthropicMessage({
+        role: "user",
+        content: "Hello",
+      } as ChatMessage);
       expect(result.role).toBe("user");
       expect(result.content).toContainEqual({ type: "text", text: "Hello" });
     });
@@ -338,9 +441,11 @@ describe("AnthropicProvider", () => {
     });
 
     it("translates legacy single-tool-result message", () => {
-      const result = provider.chatMessageToAnthropicMessage(
-        { role: "tool", content: "result", toolCallId: "id-2" } as ChatMessage,
-      );
+      const result = provider.chatMessageToAnthropicMessage({
+        role: "tool",
+        content: "result",
+        toolCallId: "id-2",
+      } as ChatMessage);
       expect(result.content).toContainEqual(
         expect.objectContaining({ type: "tool_result", tool_use_id: "id-2" }),
       );
@@ -350,7 +455,9 @@ describe("AnthropicProvider", () => {
       const result = provider.chatMessageToAnthropicMessage({
         role: "assistant",
         content: "Calling",
-        toolCalls: [{ id: "tc-1", function: { name: "fn", arguments: { a: 1 } } }],
+        toolCalls: [
+          { id: "tc-1", function: { name: "fn", arguments: { a: 1 } } },
+        ],
       } as ChatMessage);
       expect(result.content).toContainEqual(
         expect.objectContaining({ type: "tool_use", id: "tc-1", name: "fn" }),
@@ -388,13 +495,16 @@ describe("AnthropicProvider", () => {
         content: "hi",
         reasoningContent: JSON.stringify([{ thinking: "t", signature: "s" }]),
       } as ChatMessage);
-      expect(result.content.some((b: any) => b.type === "thinking")).toBe(false);
+      expect(result.content.some((b: any) => b.type === "thinking")).toBe(
+        false,
+      );
     });
 
     it("uses single-space fallback instead of empty text block", () => {
-      const result = provider.chatMessageToAnthropicMessage(
-        { role: "user", content: "" } as ChatMessage,
-      );
+      const result = provider.chatMessageToAnthropicMessage({
+        role: "user",
+        content: "",
+      } as ChatMessage);
       const textBlock = result.content.find((b: any) => b.type === "text");
       expect(textBlock?.text).toBe(" ");
     });
@@ -460,10 +570,40 @@ describe("AnthropicProvider", () => {
       return collectStream(createTestProvider(), createChatRequest());
     }
 
+    it.each([
+      [503, "Service unavailable"],
+      [529, "Overloaded"],
+    ])(
+      "retries a failed stream connection on status %i and succeeds on the second attempt",
+      async (status, message) => {
+        const randomSpy = jest.spyOn(Math, "random").mockReturnValue(0);
+        mockStream
+          .mockRejectedValueOnce(new MockAPIError(status, message))
+          .mockResolvedValueOnce(makeStream(textStreamEvents("Recovered!")));
+
+        try {
+          const events = await collectStream(
+            createTestProvider(),
+            createChatRequest(),
+          );
+
+          expect(mockStream).toHaveBeenCalledTimes(2);
+          expect(
+            events.filter((e) => e.type === "assistant_text"),
+          ).toHaveLength(1);
+          expect(
+            (events.find((e) => e.type === "assistant_text") as any).delta,
+          ).toBe("Recovered!");
+        } finally {
+          randomSpy.mockRestore();
+        }
+      },
+    );
+
     it("maps status 401 to ProviderAuthenticationError", async () => {
-      await expect(throwFromStream(new MockAPIError(401, "Unauthorized"))).rejects.toBeInstanceOf(
-        ProviderAuthenticationError,
-      );
+      await expect(
+        throwFromStream(new MockAPIError(401, "Unauthorized")),
+      ).rejects.toBeInstanceOf(ProviderAuthenticationError);
     });
 
     it("maps authentication message to ProviderAuthenticationError", async () => {
@@ -481,8 +621,12 @@ describe("AnthropicProvider", () => {
     it("includes retry-after seconds on ProviderRateLimitError", async () => {
       let caught: any;
       try {
-        await throwFromStream(new MockAPIError(429, "Rate limited", { "retry-after": "30" }));
-      } catch (e) { caught = e; }
+        await throwFromStream(
+          new MockAPIError(429, "Rate limited", { "retry-after": "30" }),
+        );
+      } catch (e) {
+        caught = e;
+      }
       expect(caught).toBeInstanceOf(ProviderRateLimitError);
       expect(caught.retryAfterSeconds).toBe(30);
     });

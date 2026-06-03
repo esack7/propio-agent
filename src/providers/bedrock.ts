@@ -42,7 +42,9 @@ export class BedrockProvider extends BaseProvider {
 
   constructor(options: BaseProviderOptions & { region?: string }) {
     super(options);
-    this.client = new BedrockRuntimeClient({ region: options.region ?? "us-east-1" });
+    this.client = new BedrockRuntimeClient({
+      region: options.region ?? "us-east-1",
+    });
   }
 
   async *streamChat(request: ChatRequest): AsyncIterable<ChatStreamEvent> {

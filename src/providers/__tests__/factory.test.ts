@@ -8,6 +8,7 @@ import {
   GeminiProviderConfig,
   XaiProviderConfig,
   CloudflareProviderConfig,
+  AnthropicProviderConfig,
 } from "../config.js";
 import { OllamaProvider } from "../ollama.js";
 import { BedrockProvider } from "../bedrock.js";
@@ -15,6 +16,7 @@ import { OpenRouterProvider } from "../openrouter.js";
 import { GeminiProvider } from "../gemini.js";
 import { XaiProvider } from "../xai.js";
 import { CloudflareProvider } from "../cloudflare.js";
+import { AnthropicProvider } from "../anthropic.js";
 
 describe("Provider Factory", () => {
   describe("createProvider", () => {
@@ -240,6 +242,28 @@ describe("Provider Factory", () => {
       expect(provider).toBeInstanceOf(CloudflareProvider);
       expect(provider.name).toBe("cloudflare");
       expect(provider.getCapabilities().contextWindowTokens).toBe(262_144);
+    });
+
+    it("should create AnthropicProvider from anthropic config", () => {
+      const config: AnthropicProviderConfig = {
+        name: "anthropic",
+        type: "anthropic",
+        models: [
+          {
+            name: "Claude Sonnet",
+            key: "claude-sonnet-4-6",
+            contextWindowTokens: 200_000,
+          },
+        ],
+        defaultModel: "claude-sonnet-4-6",
+        apiKey: "anthropic-test-key",
+      };
+
+      const provider = createProvider(config);
+
+      expect(provider).toBeInstanceOf(AnthropicProvider);
+      expect(provider.name).toBe("anthropic");
+      expect(provider.getCapabilities().contextWindowTokens).toBe(200_000);
     });
 
     it("should use flat host field for Ollama", () => {
