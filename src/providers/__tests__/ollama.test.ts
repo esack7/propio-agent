@@ -229,6 +229,32 @@ describe("OllamaProvider", () => {
       expect(chunks[1].delta).toBe("world");
     });
 
+    it("should yield thinking deltas from ollama response", async () => {
+      const provider = createTestProvider();
+
+      mockChat.mockReturnValue(
+        (async function* () {
+          yield { message: { content: "", thinking: "Thinking " } };
+          yield { message: { content: "Hello" } };
+        })(),
+      );
+
+      const chunks: any[] = [];
+      for await (const chunk of provider.streamChat({
+        model: "test-model",
+        messages: [{ role: "user", content: "test" }],
+      })) {
+        if (chunk.type !== "terminal") {
+          chunks.push(chunk);
+        }
+      }
+
+      expect(chunks).toEqual([
+        { type: "thinking_delta", delta: "Thinking " },
+        { type: "assistant_text", delta: "Hello" },
+      ]);
+    });
+
     it("should handle tool calls in response", async () => {
       const provider = createTestProvider();
 

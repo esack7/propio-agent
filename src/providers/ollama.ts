@@ -23,6 +23,7 @@ import {
 interface OllamaStreamChunk {
   message: {
     content?: string;
+    thinking?: string;
     tool_calls?: ToolCall[];
   };
   done_reason?: string;
@@ -191,6 +192,9 @@ export class OllamaProvider implements LLMProvider {
     }
 
     const events: ChatStreamEvent[] = [];
+    if (chunk.message.thinking) {
+      events.push({ type: "thinking_delta", delta: chunk.message.thinking });
+    }
     if (chunk.message.content) {
       events.push({ type: "assistant_text", delta: chunk.message.content });
     }
