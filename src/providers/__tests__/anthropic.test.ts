@@ -557,13 +557,13 @@ describe("AnthropicProvider", () => {
       );
     });
 
-    it("uses single-space fallback instead of empty text block", () => {
+    it("uses non-whitespace fallback instead of empty text block", () => {
       const result = provider.chatMessageToAnthropicMessage({
         role: "user",
         content: "",
       } as ChatMessage);
       const textBlock = result.content.find((b: any) => b.type === "text");
-      expect(textBlock?.text).toBe(" ");
+      expect(textBlock?.text).toBe(".");
     });
 
     it("concatenates multiple system messages into a single system string", async () => {

@@ -300,7 +300,7 @@ export class AnthropicProvider extends BaseProvider {
 
     return {
       role: msg.role === "tool" ? "user" : (msg.role as "user" | "assistant"),
-      content: content.length > 0 ? content : [{ type: "text", text: " " }],
+      content: content.length > 0 ? content : [{ type: "text", text: "." }],
     };
   }
 
