@@ -158,6 +158,23 @@ function toolCallStreamEvents(
   ];
 }
 
+function emptyInputToolCallStreamEvents(name = "snapshot", id = "call-empty") {
+  return [
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id, name, input: {} },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "tool_use", stop_sequence: null },
+      usage: {},
+    },
+    { type: "message_stop" },
+  ];
+}
+
 function thinkingToolCallStreamEvents(
   thinkingText = "Let me think",
   signature = "sig-abc",
@@ -365,6 +382,20 @@ describe("AnthropicProvider", () => {
       expect(toolEvent.toolCalls[0].id).toBe("call-99");
     });
 
+    it("yields tool_calls for empty-input tools with no input_json_delta", async () => {
+      mockStream.mockReturnValue(
+        makeStream(emptyInputToolCallStreamEvents("browser_snapshot")),
+      );
+      const events = await collectStream(
+        createTestProvider(),
+        createChatRequest(),
+      );
+      const toolEvent = getToolCallEvent(events);
+      expect(toolEvent).toBeDefined();
+      expect(toolEvent.toolCalls[0].function.name).toBe("browser_snapshot");
+      expect(toolEvent.toolCalls[0].function.arguments).toEqual({});
+    });
+
     it("sets terminal stop_reason to tool_use", async () => {
       mockStream.mockReturnValue(makeStream(toolCallStreamEvents()));
       const events = await collectStream(
@@ -450,6 +481,43 @@ describe("AnthropicProvider", () => {
 
     it("omits thinking param when requestReasoning is not set", async () => {
       await collectStream(createTestProvider(), createChatRequest());
+      expect(mockStream.mock.calls[0][0].thinking).toBeUndefined();
+    });
+
+    it("does not replay thinking blocks when thinking is not requested", async () => {
+      await collectStream(createTestProvider(), {
+        model: "claude-sonnet-4-6",
+        messages: [
+          {
+            role: "assistant",
+            content: "",
+            reasoningContent: JSON.stringify([
+              { thinking: "prior reasoning", signature: "sig-prior" },
+            ]),
+            toolCalls: [
+              {
+                id: "tc-1",
+                function: { name: "search", arguments: { q: "test" } },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            content: "",
+            toolResults: [
+              { toolCallId: "tc-1", toolName: "search", content: "result" },
+            ],
+          },
+          { role: "user", content: "continue" },
+        ],
+      });
+
+      const assistantMessage = mockStream.mock.calls[0][0].messages[0];
+      expect(
+        assistantMessage.content.some(
+          (block: any) => block.type === "thinking",
+        ),
+      ).toBe(false);
       expect(mockStream.mock.calls[0][0].thinking).toBeUndefined();
     });
   });
@@ -557,13 +625,13 @@ describe("AnthropicProvider", () => {
       );
     });
 
-    it("uses single-space fallback instead of empty text block", () => {
+    it("uses non-whitespace fallback instead of empty text block", () => {
       const result = provider.chatMessageToAnthropicMessage({
         role: "user",
         content: "",
       } as ChatMessage);
       const textBlock = result.content.find((b: any) => b.type === "text");
-      expect(textBlock?.text).toBe(" ");
+      expect(textBlock?.text).toBe(".");
     });
 
     it("concatenates multiple system messages into a single system string", async () => {

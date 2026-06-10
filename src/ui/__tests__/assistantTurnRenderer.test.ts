@@ -650,6 +650,7 @@ describe("streamAssistantTurn", () => {
 
   it("commits tool output as transcript lines while visible thinking is streaming", async () => {
     const { ui, stderr } = createUi();
+    const beginThinkingSpy = jest.spyOn(ui, "beginThinkingResponse");
     const appendToolSpy = jest.spyOn(ui, "appendToolCallView");
     const upsertToolSpy = jest.spyOn(ui, "upsertToolCallView");
     const agent = new ScriptedAssistantTurnAgent([
@@ -674,6 +675,7 @@ describe("streamAssistantTurn", () => {
 
     expect(appendToolSpy).toHaveBeenCalledTimes(2);
     expect(upsertToolSpy).not.toHaveBeenCalled();
+    expect(beginThinkingSpy).toHaveBeenCalledTimes(2);
     expect(output.indexOf("Thinking before tool.")).toBeLessThan(
       output.indexOf("Reading package.json"),
     );

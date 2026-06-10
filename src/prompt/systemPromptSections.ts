@@ -6,6 +6,8 @@ When you need to perform actions like reading files, searching code, or executin
 
 For exploratory questions, analysis requests, or requests that ask whether something is possible, inspect and explain without changing files. Do not write, edit, delete, rename, or otherwise modify files unless the user explicitly asks you to implement, fix, update, create, remove, or change something, or they confirm a proposed plan.
 
+Before creating a new file or generating an output artifact at a specific path, verify whether that path already exists. Do not overwrite existing user files unless the request clearly calls for it or you have inspected the file and the overwrite is intentional.
+
 Always provide clear, concise responses and summarize what you did after completing the user's request.`;
 
 export function getCoreIdentitySection(baseRules: string): string {

@@ -44,6 +44,7 @@ interface AnthropicStreamState {
   toolCalls: ChatToolCall[];
   currentToolCall: Partial<ChatToolCall> | null;
   currentToolInputJson: string;
+  currentToolInputFromStart: Record<string, unknown> | null;
   // Per-block thinking accumulation (text + signature for replay)
   currentThinkingText: string;
   currentThinkingSignature: string;
@@ -81,9 +82,12 @@ export class AnthropicProvider extends BaseProvider {
           ? systemMessages.map((m) => m.content).join("\n\n")
           : undefined;
 
+      const replayThinkingBlocks = request.requestReasoning === true;
       const messages = request.messages
         .filter((m) => m.role !== "system")
-        .map((msg) => this.chatMessageToAnthropicMessage(msg));
+        .map((msg) =>
+          this.chatMessageToAnthropicMessage(msg, { replayThinkingBlocks }),
+        );
 
       const anthropicTools = request.tools?.map((tool) =>
         this.chatToolToAnthropicTool(tool),
@@ -125,6 +129,7 @@ export class AnthropicProvider extends BaseProvider {
         toolCalls: [],
         currentToolCall: null,
         currentToolInputJson: "",
+        currentToolInputFromStart: null,
         currentThinkingText: "",
         currentThinkingSignature: "",
         inThinkingBlock: false,
@@ -200,6 +205,7 @@ export class AnthropicProvider extends BaseProvider {
         },
       };
       state.currentToolInputJson = "";
+      state.currentToolInputFromStart = this.asToolInputObject(toolBlock.input);
     } else if (block.type === "thinking") {
       state.inThinkingBlock = true;
       state.currentThinkingText = "";
@@ -251,23 +257,41 @@ export class AnthropicProvider extends BaseProvider {
       return;
     }
 
-    if (!state.currentToolCall?.function || !state.currentToolInputJson) {
+    if (!state.currentToolCall?.function) {
       return;
     }
 
-    try {
-      state.currentToolCall.function.arguments = JSON.parse(
-        state.currentToolInputJson,
-      );
-    } catch {
-      state.currentToolCall.function.arguments = {
-        raw: state.currentToolInputJson,
-      };
-    }
+    state.currentToolCall.function.arguments =
+      this.parseToolInputArguments(state);
 
     state.toolCalls.push(state.currentToolCall as ChatToolCall);
     state.currentToolCall = null;
     state.currentToolInputJson = "";
+    state.currentToolInputFromStart = null;
+  }
+
+  private parseToolInputArguments(
+    state: AnthropicStreamState,
+  ): Record<string, unknown> {
+    const inputJson = state.currentToolInputJson.trim();
+    if (inputJson.length === 0) {
+      return state.currentToolInputFromStart ?? {};
+    }
+
+    try {
+      return JSON.parse(inputJson) as Record<string, unknown>;
+    } catch {
+      return {
+        raw: state.currentToolInputJson,
+      };
+    }
+  }
+
+  private asToolInputObject(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    return value as Record<string, unknown>;
   }
 
   private mapStopReason(
@@ -289,10 +313,15 @@ export class AnthropicProvider extends BaseProvider {
 
   private chatMessageToAnthropicMessage(
     msg: ChatMessage,
+    options: { replayThinkingBlocks?: boolean } = {
+      replayThinkingBlocks: true,
+    },
   ): Anthropic.MessageParam {
     const content: Anthropic.ContentBlockParam[] = [];
 
-    this.appendThinkingBlocks(msg, content);
+    if (options.replayThinkingBlocks !== false) {
+      this.appendThinkingBlocks(msg, content);
+    }
     this.appendTextBlock(msg, content);
     this.appendToolUseBlocks(msg, content);
     this.appendImageBlocks(msg, content);
@@ -300,7 +329,7 @@ export class AnthropicProvider extends BaseProvider {
 
     return {
       role: msg.role === "tool" ? "user" : (msg.role as "user" | "assistant"),
-      content: content.length > 0 ? content : [{ type: "text", text: " " }],
+      content: content.length > 0 ? content : [{ type: "text", text: "." }],
     };
   }
 
