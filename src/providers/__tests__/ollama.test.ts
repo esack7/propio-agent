@@ -32,6 +32,26 @@ function restoreEnvVar(name: string, value: string | undefined): void {
   process.env[name] = value;
 }
 
+async function collectNonTerminalChunks(
+  provider: InstanceType<typeof OllamaProvider>,
+  request: {
+    model: string;
+    messages: unknown[];
+    tools?: unknown[];
+  } = {
+    model: "test-model",
+    messages: [{ role: "user", content: "test" }],
+  },
+): Promise<any[]> {
+  const chunks: any[] = [];
+  for await (const chunk of provider.streamChat(request)) {
+    if (chunk.type !== "terminal") {
+      chunks.push(chunk);
+    }
+  }
+  return chunks;
+}
+
 function withOllamaEnv(
   env: { host?: string; sandbox?: string },
   testBody: () => void,
@@ -214,15 +234,7 @@ describe("OllamaProvider", () => {
         })(),
       );
 
-      const chunks: any[] = [];
-      for await (const chunk of provider.streamChat({
-        model: "test-model",
-        messages: [{ role: "user", content: "test" }],
-      })) {
-        if (chunk.type !== "terminal") {
-          chunks.push(chunk);
-        }
-      }
+      const chunks = await collectNonTerminalChunks(provider);
 
       expect(chunks).toHaveLength(2);
       expect(chunks[0].delta).toBe("Hello ");
@@ -239,15 +251,7 @@ describe("OllamaProvider", () => {
         })(),
       );
 
-      const chunks: any[] = [];
-      for await (const chunk of provider.streamChat({
-        model: "test-model",
-        messages: [{ role: "user", content: "test" }],
-      })) {
-        if (chunk.type !== "terminal") {
-          chunks.push(chunk);
-        }
-      }
+      const chunks = await collectNonTerminalChunks(provider);
 
       expect(chunks).toEqual([
         { type: "thinking_delta", delta: "Thinking " },
