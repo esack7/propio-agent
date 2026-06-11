@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatToolCall } from "../providers/types.js";
+import type { ChatMessage, ChatToolCall } from "@propio-ai/providers";
 
 const MENTION_TOOL_CALL_ID_PATTERN = /^mention_\d+$/;
 const MENTION_TOOL_NAMES = new Set(["read", "ls"]);
@@ -63,7 +63,7 @@ export function collectMentionToolCallIds(message: ChatMessage): Set<string> {
   );
 }
 
-export function isSyntheticMentionMessagePair(
+function isSyntheticMentionMessagePair(
   assistantMessage: ChatMessage,
   toolMessage: ChatMessage | undefined,
 ): boolean {
@@ -79,7 +79,36 @@ export function isSyntheticMentionMessagePair(
   );
 }
 
-export function formatSyntheticMentionInlineContext(
+/**
+ * Replace synthetic mention assistant/tool message pairs with a single user
+ * message carrying the attachment content inline. Used for providers that
+ * reject fabricated assistant tool-call history
+ * (capabilities.supportsSyntheticToolCallHistory === false).
+ */
+export function inlineSyntheticMentionPairs(
+  messages: ChatMessage[],
+): ChatMessage[] {
+  const sanitized: ChatMessage[] = [];
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    const nextMessage = messages[index + 1];
+    if (isSyntheticMentionMessagePair(message, nextMessage)) {
+      sanitized.push({
+        role: "user",
+        content: formatSyntheticMentionInlineContext(message, nextMessage),
+      });
+      index += 1;
+      continue;
+    }
+
+    sanitized.push(message);
+  }
+
+  return sanitized;
+}
+
+function formatSyntheticMentionInlineContext(
   assistantMessage: ChatMessage,
   toolMessage: ChatMessage,
 ): string {

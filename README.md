@@ -542,20 +542,8 @@ propio/
 │   ├── sessions/               # Session snapshot storage and slash-command handlers
 │   ├── cli/
 │   │   └── args.ts             # CLI argument parsing
-│   ├── providers/
-│   │   ├── interface.ts        # LLMProvider interface
-│   │   ├── types.ts            # Shared message/request/response types
-│   │   ├── config.ts           # Provider config types
-│   │   ├── configLoader.ts     # Config file loading
-│   │   ├── factory.ts          # Provider factory
-│   │   ├── ollama.ts           # Ollama provider
-│   │   ├── bedrock.ts          # Amazon Bedrock provider
-│   │   ├── openrouter.ts       # OpenRouter provider
-│   │   ├── gemini.ts           # Gemini provider
-│   │   ├── xai.ts              # xAI provider
-│   │   ├── cloudflare.ts       # Cloudflare Workers AI provider
-│   │   ├── anthropic.ts        # Anthropic (Claude API) provider
-│   │   └── __tests__/
+│   ├── config/
+│   │   └── providersConfig.ts  # Config path resolution + Propio-flavored loaders
 │   ├── tools/
 │   │   ├── interface.ts        # Tool interface
 │   │   ├── types.ts            # Tool types
@@ -588,11 +576,11 @@ propio/
 
 ### Provider abstraction
 
-All LLM backends implement the `LLMProvider` interface (`src/providers/interface.ts`), which exposes a single `streamChat()` method. The `Agent` class communicates only through this interface, making providers interchangeable at runtime.
+The provider layer lives in the standalone [`@propio-ai/providers`](https://github.com/esack7/propio-providers) package. All LLM backends implement its `LLMProvider` interface, which exposes a single `streamChat()` method. The `Agent` class communicates only through this interface, making providers interchangeable at runtime.
 
-Shared types (`src/providers/types.ts`) — `ChatMessage`, `ChatTool`, `ChatRequest`, `ChatResponse`, etc. — provide a provider-agnostic layer. Each provider implementation translates between these types and its own native API format.
+Shared types from the package — `ChatMessage`, `ChatTool`, `ChatRequest`, `ChatResponse`, etc. — provide a provider-agnostic layer. Each provider implementation translates between these types and its own native API format.
 
-Provider-specific errors (`ProviderError`, `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderModelNotFoundError`) are also defined in `types.ts` and are thrown consistently across providers.
+Provider-specific errors (`ProviderError`, `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderModelNotFoundError`) are also exported by the package and are thrown consistently across providers.
 
 ### Agentic loop
 

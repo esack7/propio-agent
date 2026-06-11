@@ -1,5 +1,5 @@
 import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
-import type { ChatTool } from "../providers/types.js";
+import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "../tools/types.js";
 import { buildMcpToolName } from "./toolName.js";
 import type { ManagedMcpTool } from "./types.js";

@@ -14,7 +14,7 @@ import type {
   SessionMetadata,
 } from "../types.js";
 import { DEFAULT_BUDGET_POLICY, DEFAULT_SUMMARY_POLICY } from "../types.js";
-import type { ChatMessage } from "../../providers/types.js";
+import type { ChatMessage } from "@propio-ai/providers";
 import type {
   PromptBuildRequest,
   PromptBudgetPolicy,

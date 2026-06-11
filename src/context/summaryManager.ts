@@ -1,5 +1,5 @@
 import { estimateTokens, measureMessages } from "../diagnostics.js";
-import { LLMProvider } from "../providers/interface.js";
+import { LLMProvider } from "@propio-ai/providers";
 import {
   RollingSummaryRecord,
   RollingSummarySections,

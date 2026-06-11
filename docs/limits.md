@@ -15,7 +15,7 @@ The most important set — these bound how long the model can spin within a sing
 
 ## Provider-level retries
 
-All providers use the shared `withRetry` helper (`src/providers/withRetry.ts`) to retry transient pre-stream failures with exponential back-off + full jitter. Mid-stream failures and post-emission failures are not auto-retried.
+All providers use the shared `withRetry` helper in `@propio-ai/providers` to retry transient pre-stream failures with exponential back-off + full jitter. Mid-stream failures and post-emission failures are not auto-retried.
 
 | Provider | Retryable conditions | Extra behavior |
 | --- | --- | --- |

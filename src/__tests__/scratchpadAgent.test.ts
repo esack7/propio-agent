@@ -3,8 +3,8 @@ import * as os from "os";
 import * as path from "path";
 import { Agent } from "../agent.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
-import type { LLMProvider } from "../providers/interface.js";
-import type { ChatRequest } from "../providers/types.js";
+import type { LLMProvider } from "@propio-ai/providers";
+import type { ChatRequest } from "@propio-ai/providers";
 import { clearSandboxEnvForTest, restoreSandboxEnv } from "./envTestHelpers.js";
 import {
   testProvidersConfig,

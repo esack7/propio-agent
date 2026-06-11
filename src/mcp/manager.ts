@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
-import type { ChatTool } from "../providers/types.js";
+import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "../tools/types.js";
 import {
   getMcpConfigPath,

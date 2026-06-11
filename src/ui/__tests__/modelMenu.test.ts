@@ -3,8 +3,8 @@ import * as os from "os";
 import * as path from "path";
 import { showModelMenu } from "../modelMenu.js";
 import { createMockMenuUi, MockPromptComposer } from "./menuTestHelpers.js";
-import { loadProvidersConfig } from "../../providers/configLoader.js";
-import type { ProvidersConfig } from "../../providers/config.js";
+import { loadProvidersConfig } from "../../config/providersConfig.js";
+import type { ProvidersConfig } from "@propio-ai/providers";
 
 class MockAgent {
   readonly switchCalls: Array<{ providerName: string; modelKey?: string }> = [];

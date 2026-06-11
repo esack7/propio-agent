@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { ChatMessage, ChatToolCall, ToolResult } from "../providers/types.js";
+import { ChatMessage, ChatToolCall, ToolResult } from "@propio-ai/providers";
 import {
   estimateTokens,
   messageChars,

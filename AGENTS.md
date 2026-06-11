@@ -12,7 +12,7 @@ Instructions for coding agents working in this repository.
 - Language/runtime: TypeScript on Node.js (ESM, `module: NodeNext`).
 - Core entrypoint: `src/index.ts`.
 - Agent orchestration: `src/agent.ts`.
-- Provider abstraction and implementations: `src/providers/`.
+- Provider abstraction and implementations: the `@propio-ai/providers` package (separate repo: https://github.com/esack7/propio-providers); Propio-specific config-path logic lives in `src/config/providersConfig.ts`.
 - Tooling system and built-in tools: `src/tools/`.
 - CLI formatting and UX helpers: `src/ui/`.
 

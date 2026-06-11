@@ -9,7 +9,7 @@ import type {
   TurnRecord,
 } from "../../context/types.js";
 import type { PromptPlanSnapshot } from "../../agent.js";
-import type { ChatMessage } from "../../providers/types.js";
+import type { ChatMessage } from "@propio-ai/providers";
 import {
   formatContextOverview,
   formatContextStats,

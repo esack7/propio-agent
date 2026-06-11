@@ -1,6 +1,6 @@
 import { messageChars } from "../diagnostics.js";
 import { TEST_PNG_DATA_URL } from "./testHelpers.js";
-import type { ChatMessage } from "../providers/types.js";
+import type { ChatMessage } from "@propio-ai/providers";
 
 function dataUrlPayloadChars(dataUrl: string): number {
   const comma = dataUrl.indexOf(",");

@@ -1,14 +1,12 @@
 import type { Agent } from "../agent.js";
-import type {
-  Model,
-  ProviderConfig,
-  ProvidersConfig,
-} from "../providers/config.js";
 import {
+  type Model,
+  type ProviderConfig,
+  type ProvidersConfig,
   getDefaultProviderModelSelection,
-  loadProvidersConfig,
   updateDefaultProviderModelSelectionInFile,
-} from "../providers/configLoader.js";
+} from "@propio-ai/providers";
+import { loadProvidersConfig } from "../config/providersConfig.js";
 import type { PromptComposer } from "./promptComposer.js";
 import type { TerminalUi } from "./terminal.js";
 

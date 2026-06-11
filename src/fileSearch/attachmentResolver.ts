@@ -1,6 +1,6 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
-import { ChatToolCall } from "../providers/types.js";
+import { ChatToolCall } from "@propio-ai/providers";
 import { ArtifactToolResult } from "../context/types.js";
 import {
   formatFileType,
