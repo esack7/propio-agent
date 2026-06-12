@@ -1,4 +1,4 @@
-import { ChatMessage } from "../providers/types.js";
+import { ChatMessage } from "@propio-ai/providers";
 import {
   estimateTokens,
   measureMessages,

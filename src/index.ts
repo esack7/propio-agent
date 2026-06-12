@@ -13,7 +13,7 @@ import {
 import {
   getConfigPath,
   loadProvidersConfigAsync,
-} from "./providers/configLoader.js";
+} from "./config/providersConfig.js";
 import {
   discoverAgentsMdFilesAsync,
   loadAgentsMdContentAsync,

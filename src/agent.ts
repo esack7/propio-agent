@@ -1,27 +1,27 @@
-import { LLMProvider } from "./providers/interface.js";
-import * as fs from "fs";
-import * as os from "os";
-import { randomUUID } from "crypto";
-import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
 import {
-  ChatMessage,
-  ChatTool,
-  ChatToolCall,
-  ChatStreamEvent,
-  ProviderReasoningSummarySource,
+  type LLMProvider,
+  type ChatMessage,
+  type ChatTool,
+  type ChatToolCall,
+  type ChatStreamEvent,
+  type ProviderReasoningSummarySource,
+  type ProviderDiagnosticEvent,
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
   ProviderContextLengthError,
-} from "./providers/types.js";
-import { ProvidersConfig, ProviderConfig } from "./providers/config.js";
-import { createProvider } from "./providers/factory.js";
-import {
-  loadProvidersConfig,
+  type ProvidersConfig,
+  type ProviderConfig,
+  createProvider,
   type ProviderModelSelection,
   resolveProvider,
   resolveModelKey,
-} from "./providers/configLoader.js";
+} from "@propio-ai/providers";
+import * as fs from "fs";
+import * as os from "os";
+import { randomUUID } from "crypto";
+import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
+import { loadProvidersConfig } from "./config/providersConfig.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import type { BashGlobalInstallGateConfig } from "./tools/bash.js";
@@ -94,6 +94,7 @@ import { SkillRegistry } from "./skills/registry.js";
 import { createMissingSkillError } from "./skills/shared.js";
 import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
 import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
+import { inlineSyntheticMentionPairs } from "./fileSearch/syntheticMention.js";
 import { resolveEffectiveToolAllowlist } from "./modes/policies.js";
 import { checkBashAllowedForMode } from "./modes/bashPolicy.js";
 import {
@@ -382,7 +383,7 @@ export class Agent {
     this.provider = createProvider(
       resolvedProvider,
       resolvedModelKey,
-      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+      this.diagnosticsEnabled ? this.forwardProviderDiagnostic : undefined,
       this.diagnosticsEnabled,
       {
         maxRetries: this.runtimeConfig.maxRetries,
@@ -416,6 +417,17 @@ export class Agent {
     }
     this.diagnosticsListener(event);
   }
+
+  /**
+   * Forward provider-owned diagnostic events into the agent diagnostics
+   * stream. ProviderDiagnosticEvent is structurally assignable to the
+   * provider_retry member of AgentDiagnosticEvent.
+   */
+  private readonly forwardProviderDiagnostic = (
+    event: ProviderDiagnosticEvent,
+  ): void => {
+    this.diagnosticsListener?.(event);
+  };
 
   private emitVisibilityEvent(
     options: AgentEventOptions | undefined,
@@ -704,7 +716,7 @@ export class Agent {
     const newProvider = createProvider(
       resolvedProvider,
       resolvedModelKey,
-      this.diagnosticsEnabled ? this.diagnosticsListener : undefined,
+      this.diagnosticsEnabled ? this.forwardProviderDiagnostic : undefined,
       this.diagnosticsEnabled,
       {
         maxRetries: this.runtimeConfig.maxRetries,
@@ -1342,6 +1354,20 @@ export class Agent {
     return normalizedEvent;
   }
 
+  /**
+   * Adapt conversation history for the active provider. Providers that
+   * reject synthetic assistant tool-call history (e.g. Gemini) get @mention
+   * attachment pairs inlined into user messages instead.
+   */
+  private prepareMessagesForProvider(messages: ChatMessage[]): ChatMessage[] {
+    if (
+      this.provider.getCapabilities().supportsSyntheticToolCallHistory === false
+    ) {
+      return inlineSyntheticMentionPairs(messages);
+    }
+    return messages;
+  }
+
   private async streamFinalResponseWithoutTools(
     messages: ChatMessage[],
     onToken: (token: string) => void,
@@ -1354,7 +1380,7 @@ export class Agent {
     for await (const event of this.withStreamIdleWatchdog(
       this.provider.streamChat({
         model: this.model,
-        messages,
+        messages: this.prepareMessagesForProvider(messages),
         signal: abortSignal,
         iteration,
         requestReasoning: options?.requestReasoning,
@@ -1478,7 +1504,7 @@ export class Agent {
     for await (const event of this.withStreamIdleWatchdog(
       this.provider.streamChat({
         model: this.model,
-        messages,
+        messages: this.prepareMessagesForProvider(messages),
         tools: this.getMergedToolSchemas(allowedTools),
         signal: options?.abortSignal,
         iteration,

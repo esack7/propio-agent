@@ -15,7 +15,7 @@ import {
   MemoryOrigin,
   MemorySource,
 } from "./types.js";
-import { ChatMessage, ChatToolCall, ToolResult } from "../providers/types.js";
+import { ChatMessage, ChatToolCall, ToolResult } from "@propio-ai/providers";
 import type { SkillInvocationScope } from "../skills/types.js";
 import type { InvokedSkillRecord } from "../skills/types.js";
 import type { AgentMode } from "../modes/types.js";

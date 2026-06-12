@@ -1,7 +1,7 @@
 import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
-import { ChatTool } from "../providers/types.js";
+import { ChatTool } from "@propio-ai/providers";
 import { formatFileType, normalizeToolPath } from "./shared.js";
 
 export class LsTool implements ExecutableTool {

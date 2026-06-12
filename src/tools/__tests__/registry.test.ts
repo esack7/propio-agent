@@ -1,6 +1,6 @@
 import { ToolRegistry } from "../registry.js";
 import { ExecutableTool } from "../interface.js";
-import { ChatTool } from "../../providers/types.js";
+import { ChatTool } from "@propio-ai/providers";
 
 describe("ToolRegistry", () => {
   let registry: ToolRegistry;

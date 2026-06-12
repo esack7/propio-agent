@@ -3,16 +3,12 @@ import {
   createPlainSubmission,
   type PromptSubmission,
 } from "../ui/input/promptSubmission.js";
-import type { LLMProvider } from "../providers/interface.js";
-import type {
-  ChatRequest,
-  ChatChunk,
-  ChatMessage,
-} from "../providers/types.js";
+import type { LLMProvider } from "@propio-ai/providers";
+import type { ChatRequest, ChatChunk, ChatMessage } from "@propio-ai/providers";
 import type { PromptImage } from "../ui/input/promptSubmission.js";
-import type { ProvidersConfig } from "../providers/config.js";
+import type { ProvidersConfig } from "@propio-ai/providers";
 import type { ExecutableTool } from "../tools/interface.js";
-import type { ChatTool } from "../providers/types.js";
+import type { ChatTool } from "@propio-ai/providers";
 
 export const testProvidersConfig: ProvidersConfig = {
   default: "local-ollama",

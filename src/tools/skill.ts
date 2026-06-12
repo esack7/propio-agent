@@ -1,4 +1,4 @@
-import { ChatTool } from "../providers/types.js";
+import { ChatTool } from "@propio-ai/providers";
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 

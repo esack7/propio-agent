@@ -7,7 +7,7 @@ import {
   ChatRequest,
   LLMProvider,
   ChatStreamEvent,
-} from "../providers/types.js";
+} from "@propio-ai/providers";
 import { testProvidersConfig } from "./testHelpers.js";
 
 class MockProvider implements LLMProvider {

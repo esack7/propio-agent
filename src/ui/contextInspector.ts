@@ -3,7 +3,7 @@ import type {
   TurnRecord,
   TurnEntry,
 } from "../context/types.js";
-import type { ChatMessage } from "../providers/types.js";
+import type { ChatMessage } from "@propio-ai/providers";
 import type { PromptPlanSnapshot } from "../agent.js";
 import { estimateTokens } from "../diagnostics.js";
 

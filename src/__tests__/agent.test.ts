@@ -2,7 +2,7 @@ import * as path from "path";
 import { userSubmission } from "./testHelpers.js";
 import { createRequire } from "module";
 import { Agent } from "../agent.js";
-import { LLMProvider } from "../providers/interface.js";
+import { LLMProvider } from "@propio-ai/providers";
 import {
   ChatRequest,
   ChatResponse,
@@ -11,8 +11,8 @@ import {
   ChatMessage,
   ChatToolCall,
   ProviderContextLengthError,
-} from "../providers/types.js";
-import { ProvidersConfig } from "../providers/config.js";
+} from "@propio-ai/providers";
+import { ProvidersConfig } from "@propio-ai/providers";
 import { ExecutableTool } from "../tools/interface.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";

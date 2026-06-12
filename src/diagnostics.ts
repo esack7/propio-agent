@@ -1,4 +1,4 @@
-import { ChatMessage } from "./providers/types.js";
+import { ChatMessage } from "@propio-ai/providers";
 
 export const RESERVED_OUTPUT_TOKENS = 2048;
 

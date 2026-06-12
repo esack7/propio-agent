@@ -1,13 +1,13 @@
 import { Agent } from "../agent.js";
 import { userSubmission } from "./testHelpers.js";
-import { LLMProvider } from "../providers/interface.js";
+import { LLMProvider } from "@propio-ai/providers";
 import {
   ChatRequest,
   ChatResponse,
   ChatChunk,
   ChatStreamEvent,
-} from "../providers/types.js";
-import { ProvidersConfig } from "../providers/config.js";
+} from "@propio-ai/providers";
+import { ProvidersConfig } from "@propio-ai/providers";
 
 // Test providers config using new format
 const defaultTestProvidersConfig: ProvidersConfig = {

@@ -12,8 +12,8 @@ import {
   TurnRecord,
   TurnEntry,
 } from "../types.js";
-import { LLMProvider } from "../../providers/interface.js";
-import { ChatRequest, ChatStreamEvent } from "../../providers/types.js";
+import { LLMProvider } from "@propio-ai/providers";
+import { ChatRequest, ChatStreamEvent } from "@propio-ai/providers";
 
 import {
   makeTurn as makeTurnBase,

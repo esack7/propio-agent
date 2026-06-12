@@ -17,11 +17,7 @@ import {
   ToolCallMockProvider,
   userSubmission,
 } from "./testHelpers.js";
-import type {
-  ChatRequest,
-  ChatChunk,
-  LLMProvider,
-} from "../providers/types.js";
+import type { ChatRequest, ChatChunk, LLMProvider } from "@propio-ai/providers";
 import { createMockTool } from "./testHelpers.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { createPlainSubmission } from "../ui/input/promptSubmission.js";

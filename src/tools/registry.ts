@@ -1,5 +1,5 @@
 import { ExecutableTool } from "./interface.js";
-import { ChatTool } from "../providers/types.js";
+import { ChatTool } from "@propio-ai/providers";
 import { ToolExecutionResult } from "./types.js";
 
 export interface ToolSummary {
