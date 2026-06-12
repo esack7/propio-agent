@@ -1,6 +1,6 @@
-# propio-agent
+# @propio-ai/agent
 
-A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, xAI, Cloudflare Workers AI, and Anthropic) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `propio-agent`, then run the `propio` command.
+A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, xAI, Cloudflare Workers AI, and Anthropic) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `@propio-ai/agent`, then run the `propio` command.
 
 ## Table of Contents
 
@@ -33,13 +33,13 @@ A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedr
 Install the published CLI package:
 
 ```bash
-npm install -g propio-agent
+npm install -g @propio-ai/agent
 ```
 
 Or run it ad hoc with npm:
 
 ```bash
-npx propio-agent --help
+npx @propio-ai/agent --help
 ```
 
 For local development in this repository:
@@ -117,7 +117,7 @@ For system-wide access from any directory, create a symlink:
 ln -s /path/to/propio/bin/propio-sandbox ~/bin/propio-sandbox
 ```
 
-The sandbox wrapper automatically rebuilds the Docker image when the installed `propio-agent` package version differs from the version baked into the existing sandbox image.
+The sandbox wrapper automatically rebuilds the Docker image when the installed `@propio-ai/agent` package version differs from the version baked into the existing sandbox image.
 
 When developing locally, rebuild the Docker image after same-version source changes:
 

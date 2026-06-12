@@ -1,10 +1,10 @@
-# Publishing `propio-agent`
+# Publishing `@propio-ai/agent`
 
 This document describes the repeatable workflow for publishing the npm package while keeping the installed CLI command as `propio`.
 
 ## Package Identity
 
-- npm package name: `propio-agent`
+- npm package name: `@propio-ai/agent`
 - CLI command: `propio`
 - Published entrypoint: `bin/propio.cjs`
 - Runtime build output: `dist/index.js`
@@ -108,7 +108,7 @@ Create a tarball and install it in a clean temp directory:
 npm pack
 mkdir -p /tmp/propio-release-test
 cd /tmp/propio-release-test
-npm install /path/to/propio-agent-<version>.tgz
+npm install /path/to/propio-ai-agent-<version>.tgz
 ```
 
 Then verify:
@@ -136,7 +136,7 @@ Example:
 
 ```bash
 cd /tmp/propio-release-test
-docker compose -f node_modules/propio-agent/docker-compose.yml build
+docker compose -f node_modules/@propio-ai/agent/docker-compose.yml build
 ./node_modules/.bin/propio --sandbox
 ```
 
