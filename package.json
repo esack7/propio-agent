@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@propio-ai/providers": "^0.1.1",
+    "@propio-ai/providers": "0.1.2",
     "chalk": "5.6.2",
     "cli-highlight": "^2.1.11",
     "fast-glob": "3.3.3",

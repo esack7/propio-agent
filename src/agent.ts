@@ -1386,6 +1386,7 @@ export class Agent {
         requestReasoning: options?.requestReasoning,
       }),
       iteration,
+      abortSignal,
     )) {
       const normalizedEvent = this.normalizeAndEmitStreamEvent(
         event,
@@ -1511,6 +1512,7 @@ export class Agent {
         requestReasoning: options?.requestReasoning,
       }),
       iteration,
+      options?.abortSignal,
     )) {
       const normalizedEvent = this.normalizeAndEmitStreamEvent(
         event,
@@ -1551,32 +1553,33 @@ export class Agent {
   private async *withStreamIdleWatchdog(
     source: AsyncIterable<ChatStreamEvent>,
     iteration: number,
+    abortSignal?: AbortSignal,
   ): AsyncIterable<ChatStreamEvent> {
     const timeoutMs = this.runtimeConfig.streamIdleTimeoutMs;
-    if (timeoutMs <= 0) {
-      yield* source;
-      return;
-    }
-
     const iter = source[Symbol.asyncIterator]();
     try {
       while (true) {
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutHandle = setTimeout(() => {
-            this.emitDiagnostic({
-              type: "stream_idle_aborted",
-              provider: this.provider.name,
-              model: this.model,
-              iteration,
-              timeoutMs,
-            });
-            reject(new Error(`Stream idle timeout after ${timeoutMs}ms`));
-          }, timeoutMs);
-        });
+        const pending = [this.awaitWithAbortSignal(iter.next(), abortSignal)];
+        if (timeoutMs > 0) {
+          pending.push(
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                this.emitDiagnostic({
+                  type: "stream_idle_aborted",
+                  provider: this.provider.name,
+                  model: this.model,
+                  iteration,
+                  timeoutMs,
+                });
+                reject(new Error(`Stream idle timeout after ${timeoutMs}ms`));
+              }, timeoutMs);
+            }),
+          );
+        }
 
         try {
-          const result = await Promise.race([iter.next(), timeoutPromise]);
+          const result = await Promise.race(pending);
           clearTimeout(timeoutHandle);
           if (result.done) return;
           yield result.value;
@@ -1586,7 +1589,12 @@ export class Agent {
         }
       }
     } finally {
-      await iter.return?.();
+      const closeResult = iter.return?.();
+      if (abortSignal?.aborted) {
+        void Promise.resolve(closeResult).catch(() => {});
+      } else {
+        await closeResult;
+      }
     }
   }
 
