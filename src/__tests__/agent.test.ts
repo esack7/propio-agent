@@ -1157,16 +1157,18 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
 
         async *streamChat(): AsyncIterable<ChatChunk> {
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
           yield { delta: "late output" };
         }
       }
 
       const agent = createTestAgent(new IgnoreAbortProvider());
+      const startedAt = Date.now();
 
       await expect(
         startEscapeAbortedChat(agent, "hello", 20),
       ).rejects.toThrow();
+      expect(Date.now() - startedAt).toBeLessThan(300);
       expect(agent.getConversationState().turns).toHaveLength(0);
       expect(agent.getContext()).toEqual([]);
     });

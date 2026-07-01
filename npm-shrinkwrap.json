@@ -1,16 +1,16 @@
 {
   "name": "@propio-ai/agent",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@propio-ai/agent",
-      "version": "1.1.1",
+      "version": "1.1.2",
       "license": "MIT",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.29.0",
-        "@propio-ai/providers": "^0.1.1",
+        "@propio-ai/providers": "0.1.2",
         "chalk": "5.6.2",
         "cli-highlight": "^2.1.11",
         "fast-glob": "3.3.3",
@@ -1964,9 +1964,9 @@
       }
     },
     "node_modules/@propio-ai/providers": {
-      "version": "0.1.1",
-      "resolved": "https://registry.npmjs.org/@propio-ai/providers/-/providers-0.1.1.tgz",
-      "integrity": "sha512-kZjYJa149lWbyiRz8pXqQrI/4U1EHbSjJHsXgV4CPMr0Qj3jfarnse8Znx6sqJ9kwA8ZNt5WR2VXEgEPeXxB6Q==",
+      "version": "0.1.2",
+      "resolved": "https://registry.npmjs.org/@propio-ai/providers/-/providers-0.1.2.tgz",
+      "integrity": "sha512-VjLJoXgWj/xS+qDxXtH4ZH0HR3X774L/NRtaYs+AO/0IkqNs0p/So98SktwuSgJLkTtwqhD1YS0JNZBcTDHjEg==",
       "license": "MIT",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.100.1",
