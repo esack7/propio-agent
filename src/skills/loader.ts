@@ -12,7 +12,10 @@ import type {
   SkillSource,
 } from "./types.js";
 import { SkillRegistry } from "./registry.js";
-import { createSkillDiagnostic as createDiagnostic } from "./shared.js";
+import {
+  cloneSkill,
+  createSkillDiagnostic as createDiagnostic,
+} from "./shared.js";
 
 const IGNORED_DIRECTORY_NAMES = new Set([
   "dist",
@@ -49,6 +52,16 @@ interface LocalSkillScanResult {
   readonly skills: Skill[];
   readonly diagnostics: SkillLoadDiagnostic[];
 }
+
+interface FrontmatterNormalizationContext {
+  readonly parsed: Record<string, unknown>;
+  readonly diagnostics: SkillLoadDiagnostic[];
+  readonly skillFile: string;
+}
+
+type MutableSkillMetadata = {
+  -readonly [Key in keyof SkillMetadata]: SkillMetadata[Key];
+};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -211,16 +224,12 @@ function normalizeContextField(
   return normalized;
 }
 
-function parseSkillFrontmatter(
+function parseFrontmatterRecord(
   frontmatterText: string,
   skillFile: string,
-  source: SkillSource,
-  skillRoot: string,
-  directoryName: string,
-): ParsedSkillEntry | null {
-  const diagnostics: SkillLoadDiagnostic[] = [];
+  diagnostics: SkillLoadDiagnostic[],
+): Record<string, unknown> | null {
   const document = parseDocument(frontmatterText, { prettyErrors: true });
-
   if (document.errors.length > 0) {
     diagnostics.push(
       createDiagnostic(
@@ -230,35 +239,47 @@ function parseSkillFrontmatter(
         skillFile,
       ),
     );
-    return { diagnostics };
+    return null;
   }
 
   const parsed = document.toJS();
-  if (!isPlainObject(parsed)) {
-    diagnostics.push(
-      createDiagnostic(
-        "error",
-        "invalid_frontmatter_shape",
-        `Frontmatter in ${skillFile} must be a YAML mapping/object.`,
-        skillFile,
-      ),
-    );
-    return { diagnostics };
+  if (isPlainObject(parsed)) {
+    return parsed;
   }
 
-  for (const key of Object.keys(parsed)) {
+  diagnostics.push(
+    createDiagnostic(
+      "error",
+      "invalid_frontmatter_shape",
+      `Frontmatter in ${skillFile} must be a YAML mapping/object.`,
+      skillFile,
+    ),
+  );
+  return null;
+}
+
+function appendIgnoredFieldDiagnostics(
+  context: FrontmatterNormalizationContext,
+): void {
+  for (const key of Object.keys(context.parsed)) {
     if (!ALLOWED_FIELD_NAMES.has(key)) {
-      diagnostics.push(
+      context.diagnostics.push(
         createDiagnostic(
           "info",
           "ignored_frontmatter_field",
-          `Ignoring unsupported frontmatter field "${key}" in ${skillFile}.`,
-          skillFile,
+          `Ignoring unsupported frontmatter field "${key}" in ${context.skillFile}.`,
+          context.skillFile,
         ),
       );
     }
   }
+}
 
+function normalizeRequiredMetadata(
+  context: FrontmatterNormalizationContext,
+  directoryName: string,
+): SkillMetadata | null {
+  const { parsed, diagnostics, skillFile } = context;
   const description = normalizeStringField(
     parsed.description,
     "description",
@@ -272,8 +293,8 @@ function parseSkillFrontmatter(
     diagnostics,
     skillFile,
   );
-  const normalizedName = normalizeSkillName(frontmatterName ?? directoryName);
-  if (!normalizedName) {
+  const name = normalizeSkillName(frontmatterName ?? directoryName);
+  if (!name) {
     diagnostics.push(
       createDiagnostic(
         "error",
@@ -283,97 +304,160 @@ function parseSkillFrontmatter(
         frontmatterName ?? directoryName,
       ),
     );
-    return { diagnostics };
+    return null;
   }
 
-  if (!description) {
-    return { diagnostics };
-  }
+  return description ? { name, description } : null;
+}
 
-  const whenToUse = normalizeStringField(
-    parsed.when_to_use,
-    "when_to_use",
-    diagnostics,
-    skillFile,
+function assignDefined<Key extends keyof SkillMetadata>(
+  metadata: MutableSkillMetadata,
+  key: Key,
+  value: SkillMetadata[Key] | undefined,
+): void {
+  if (value !== undefined) {
+    metadata[key] = value;
+  }
+}
+
+function appendInvocationMetadata(
+  metadata: MutableSkillMetadata,
+  context: FrontmatterNormalizationContext,
+): void {
+  const { parsed, diagnostics, skillFile } = context;
+  assignDefined(
+    metadata,
+    "whenToUse",
+    normalizeStringField(
+      parsed.when_to_use,
+      "when_to_use",
+      diagnostics,
+      skillFile,
+    ),
   );
-  const argumentsList = normalizeStringArrayField(
-    parsed.arguments,
+  assignDefined(
+    metadata,
     "arguments",
-    diagnostics,
-    skillFile,
+    normalizeStringArrayField(
+      parsed.arguments,
+      "arguments",
+      diagnostics,
+      skillFile,
+    ),
   );
-  const argumentHint = normalizeStringField(
-    parsed["argument-hint"],
-    "argument-hint",
-    diagnostics,
-    skillFile,
+  assignDefined(
+    metadata,
+    "argumentHint",
+    normalizeStringField(
+      parsed["argument-hint"],
+      "argument-hint",
+      diagnostics,
+      skillFile,
+    ),
   );
-  const allowedTools = normalizeStringArrayField(
-    parsed["allowed-tools"],
-    "allowed-tools",
-    diagnostics,
-    skillFile,
+  assignDefined(
+    metadata,
+    "allowedTools",
+    normalizeStringArrayField(
+      parsed["allowed-tools"],
+      "allowed-tools",
+      diagnostics,
+      skillFile,
+    ),
   );
-  const model = normalizeStringField(
-    parsed.model,
-    "model",
-    diagnostics,
-    skillFile,
-  );
-  const effort = normalizeStringField(
-    parsed.effort,
-    "effort",
-    diagnostics,
-    skillFile,
-  );
-  const disableModelInvocation = normalizeBooleanField(
-    parsed["disable-model-invocation"],
-    "disable-model-invocation",
-    diagnostics,
-    skillFile,
-  );
-  const userInvocable = normalizeBooleanField(
-    parsed["user-invocable"],
-    "user-invocable",
-    diagnostics,
-    skillFile,
-  );
-  const context = normalizeContextField(parsed.context, diagnostics, skillFile);
-  const agent = normalizeStringField(
-    parsed.agent,
-    "agent",
-    diagnostics,
-    skillFile,
-  );
-  const paths = normalizeStringArrayField(
-    parsed.paths,
-    "paths",
-    diagnostics,
-    skillFile,
-  );
-  const version = normalizeStringField(
-    parsed.version,
-    "version",
-    diagnostics,
-    skillFile,
-  );
+}
 
-  const skillMetadata: SkillMetadata = {
-    name: normalizedName,
-    description,
-    ...(whenToUse ? { whenToUse } : {}),
-    ...(argumentsList ? { arguments: argumentsList } : {}),
-    ...(argumentHint ? { argumentHint } : {}),
-    ...(allowedTools ? { allowedTools } : {}),
-    ...(model ? { model } : {}),
-    ...(effort ? { effort } : {}),
-    ...(disableModelInvocation !== undefined ? { disableModelInvocation } : {}),
-    ...(userInvocable !== undefined ? { userInvocable } : {}),
-    ...(context ? { context } : {}),
-    ...(agent ? { agent } : {}),
-    ...(paths ? { paths } : {}),
-    ...(version ? { version } : {}),
-  };
+function appendExecutionMetadata(
+  metadata: MutableSkillMetadata,
+  context: FrontmatterNormalizationContext,
+): void {
+  const { parsed, diagnostics, skillFile } = context;
+  assignDefined(
+    metadata,
+    "model",
+    normalizeStringField(parsed.model, "model", diagnostics, skillFile),
+  );
+  assignDefined(
+    metadata,
+    "effort",
+    normalizeStringField(parsed.effort, "effort", diagnostics, skillFile),
+  );
+  assignDefined(
+    metadata,
+    "disableModelInvocation",
+    normalizeBooleanField(
+      parsed["disable-model-invocation"],
+      "disable-model-invocation",
+      diagnostics,
+      skillFile,
+    ),
+  );
+  assignDefined(
+    metadata,
+    "userInvocable",
+    normalizeBooleanField(
+      parsed["user-invocable"],
+      "user-invocable",
+      diagnostics,
+      skillFile,
+    ),
+  );
+  assignDefined(
+    metadata,
+    "context",
+    normalizeContextField(parsed.context, diagnostics, skillFile),
+  );
+  assignDefined(
+    metadata,
+    "agent",
+    normalizeStringField(parsed.agent, "agent", diagnostics, skillFile),
+  );
+}
+
+function appendResourceMetadata(
+  metadata: MutableSkillMetadata,
+  context: FrontmatterNormalizationContext,
+): void {
+  const { parsed, diagnostics, skillFile } = context;
+  assignDefined(
+    metadata,
+    "paths",
+    normalizeStringArrayField(parsed.paths, "paths", diagnostics, skillFile),
+  );
+  assignDefined(
+    metadata,
+    "version",
+    normalizeStringField(parsed.version, "version", diagnostics, skillFile),
+  );
+}
+
+function parseSkillFrontmatter(
+  frontmatterText: string,
+  skillFile: string,
+  source: SkillSource,
+  skillRoot: string,
+  directoryName: string,
+): ParsedSkillEntry | null {
+  const diagnostics: SkillLoadDiagnostic[] = [];
+  const parsed = parseFrontmatterRecord(
+    frontmatterText,
+    skillFile,
+    diagnostics,
+  );
+  if (!parsed) {
+    return { diagnostics };
+  }
+
+  const context = { parsed, diagnostics, skillFile };
+  appendIgnoredFieldDiagnostics(context);
+  const skillMetadata = normalizeRequiredMetadata(context, directoryName);
+  if (!skillMetadata) {
+    return { diagnostics };
+  }
+
+  appendInvocationMetadata(skillMetadata, context);
+  appendExecutionMetadata(skillMetadata, context);
+  appendResourceMetadata(skillMetadata, context);
 
   const skill: Skill = {
     ...skillMetadata,
@@ -404,15 +488,6 @@ function readSkillBody(skillFile: string): string {
   return content.slice(match[0].length);
 }
 
-function cloneSkill(skill: Skill): Skill {
-  return {
-    ...skill,
-    ...(skill.arguments ? { arguments: [...skill.arguments] } : {}),
-    ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
-    ...(skill.paths ? { paths: [...skill.paths] } : {}),
-  };
-}
-
 const SOURCE_ORDER: Record<SkillSource, number> = {
   project: 0,
   user: 1,
@@ -432,6 +507,21 @@ function compareSkillRecords(a: Skill, b: Skill): number {
   return a.skillFile.localeCompare(b.skillFile);
 }
 
+function isSkillDirectoryEntry(skillRoot: string, entry: fs.Dirent): boolean {
+  if (entry.isDirectory()) {
+    return true;
+  }
+  if (!entry.isSymbolicLink()) {
+    return false;
+  }
+
+  try {
+    return fs.statSync(path.join(skillRoot, entry.name)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function collectSkillDirectories(
   skillRoot: string,
 ): Array<{ readonly directoryName: string; readonly directoryPath: string }> {
@@ -446,7 +536,7 @@ function collectSkillDirectories(
 
   const entries = fs
     .readdirSync(skillRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => isSkillDirectoryEntry(skillRoot, entry))
     .sort((left, right) => left.name.localeCompare(right.name));
 
   return entries.map((entry) => ({

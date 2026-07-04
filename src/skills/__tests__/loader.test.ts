@@ -137,6 +137,78 @@ User body
     expect(diagnostics).toHaveLength(0);
   });
 
+  it("discovers a project skill through a directory symlink", () => {
+    const targetRoot = path.join(tempRoot, "shared-skills");
+    const targetDirectory = path.join(targetRoot, "target-directory");
+    const linkedDirectory = path.join(
+      projectRoot,
+      ".propio",
+      "skills",
+      "linked-skill",
+    );
+    fs.mkdirSync(targetDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(targetDirectory, "SKILL.md"),
+      `---
+description: Linked project skill
+---
+Linked skill body
+`,
+    );
+    fs.mkdirSync(path.dirname(linkedDirectory), { recursive: true });
+    fs.symlinkSync(targetDirectory, linkedDirectory, "dir");
+
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(diagnostics).toHaveLength(0);
+    expect(registry.list()).toEqual([
+      expect.objectContaining({
+        name: "linked-skill",
+        source: "project",
+        skillRoot: linkedDirectory,
+        skillFile: path.join(linkedDirectory, "SKILL.md"),
+      }),
+    ]);
+    expect(registry.materialize("linked-skill")).toContain("Linked skill body");
+  });
+
+  it("ignores broken skill symlinks without diagnostics", () => {
+    const skillRoot = path.join(projectRoot, ".propio", "skills");
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.symlinkSync(
+      path.join(tempRoot, "missing-skill-target"),
+      path.join(skillRoot, "broken-skill"),
+      "dir",
+    );
+
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(registry.list()).toHaveLength(0);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("ignores skill symlinks to non-directory targets without diagnostics", () => {
+    const skillRoot = path.join(projectRoot, ".propio", "skills");
+    const fileTarget = path.join(tempRoot, "not-a-skill-directory");
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.writeFileSync(fileTarget, "SKILL.md-like content");
+    fs.symlinkSync(fileTarget, path.join(skillRoot, "file-skill"), "file");
+
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(registry.list()).toHaveLength(0);
+    expect(diagnostics).toHaveLength(0);
+  });
+
   it("reports invalid names and malformed frontmatter", () => {
     writeSkill(
       projectRoot,
