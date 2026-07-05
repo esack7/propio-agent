@@ -434,7 +434,7 @@ function parseSkillFrontmatter(
   source: SkillSource,
   skillRoot: string,
   directoryName: string,
-): ParsedSkillEntry | null {
+): ParsedSkillEntry {
   const diagnostics: SkillLoadDiagnostic[] = [];
   const parsed = parseFrontmatterRecord(
     frontmatterText,
@@ -547,11 +547,7 @@ function scanSkillDirectory(
   directoryPath: string,
   directoryName: string,
   source: SkillSource,
-): ParsedSkillEntry | null {
-  if (IGNORED_DIRECTORY_NAMES.has(directoryName)) {
-    return null;
-  }
-
+): ParsedSkillEntry {
   const skillFile = path.join(directoryPath, "SKILL.md");
   if (!fs.existsSync(skillFile)) {
     return {
@@ -604,10 +600,6 @@ function scanSkillRoot(
       entry.directoryName,
       root.source,
     );
-    if (!parsed) {
-      continue;
-    }
-
     diagnostics.push(...parsed.diagnostics);
     if (parsed.skill) {
       skills.push(parsed.skill);
