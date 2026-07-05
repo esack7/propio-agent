@@ -35,6 +35,15 @@ export function createSkillDiagnostic(
   };
 }
 
+export function cloneSkill(skill: Skill): Skill {
+  return {
+    ...skill,
+    ...(skill.arguments ? { arguments: [...skill.arguments] } : {}),
+    ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
+    ...(skill.paths ? { paths: [...skill.paths] } : {}),
+  };
+}
+
 function cloneInvocationScope(
   scope: InvokedSkillRecord["scope"],
 ): InvokedSkillRecord["scope"] {

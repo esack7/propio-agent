@@ -1,4 +1,5 @@
 import * as path from "path";
+import * as os from "os";
 import { createRequire } from "module";
 import { loadLocalSkills } from "../index.js";
 import { readFrontmatterText } from "../loader.js";
@@ -7,9 +8,34 @@ const require = createRequire(import.meta.url);
 const fs = require("fs") as typeof import("fs");
 
 describe("skills loader", () => {
-  const tempRoot = path.join("/tmp", "propio-skills-loader-tests");
+  const tempRoot = path.join(os.tmpdir(), "propio-skills-loader-tests");
   const projectRoot = path.join(tempRoot, "project");
   const homeRoot = path.join(tempRoot, "home");
+  const directorySymlinkType =
+    process.platform === "win32" ? "junction" : "dir";
+
+  function supportsFileSymlinks(): boolean {
+    const probeRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "propio-file-symlink-probe-"),
+    );
+    const target = path.join(probeRoot, "target");
+    const link = path.join(probeRoot, "link");
+    fs.writeFileSync(target, "probe");
+
+    try {
+      fs.symlinkSync(target, link, "file");
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPERM") {
+        return false;
+      }
+      throw error;
+    } finally {
+      fs.rmSync(probeRoot, { recursive: true, force: true });
+    }
+  }
+
+  const itWithFileSymlinks = supportsFileSymlinks() ? it : it.skip;
 
   beforeAll(() => {
     fs.mkdirSync(projectRoot, { recursive: true });
@@ -136,6 +162,84 @@ User body
     expect(registry.list()).toHaveLength(0);
     expect(diagnostics).toHaveLength(0);
   });
+
+  it("discovers a project skill through a directory symlink", () => {
+    const targetRoot = path.join(tempRoot, "shared-skills");
+    const targetDirectory = path.join(targetRoot, "target-directory");
+    const linkedDirectory = path.join(
+      projectRoot,
+      ".propio",
+      "skills",
+      "linked-skill",
+    );
+    fs.mkdirSync(targetDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(targetDirectory, "SKILL.md"),
+      `---
+description: Linked project skill
+---
+Linked skill body
+`,
+    );
+    fs.mkdirSync(path.dirname(linkedDirectory), { recursive: true });
+    fs.symlinkSync(targetDirectory, linkedDirectory, directorySymlinkType);
+
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(diagnostics).toHaveLength(0);
+    expect(registry.list()).toEqual([
+      expect.objectContaining({
+        name: "linked-skill",
+        source: "project",
+        skillRoot: linkedDirectory,
+        skillFile: path.join(linkedDirectory, "SKILL.md"),
+      }),
+    ]);
+    expect(registry.materialize("linked-skill")).toContain("Linked skill body");
+  });
+
+  it("ignores broken skill symlinks without diagnostics", () => {
+    const skillRoot = path.join(projectRoot, ".propio", "skills");
+    const missingTarget = path.join(tempRoot, "missing-skill-target");
+    fs.mkdirSync(skillRoot, { recursive: true });
+    fs.mkdirSync(missingTarget, { recursive: true });
+    fs.symlinkSync(
+      missingTarget,
+      path.join(skillRoot, "broken-skill"),
+      directorySymlinkType,
+    );
+    fs.rmSync(missingTarget, { recursive: true, force: true });
+
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: projectRoot,
+      homeDir: homeRoot,
+    });
+
+    expect(registry.list()).toHaveLength(0);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  itWithFileSymlinks(
+    "ignores skill symlinks to non-directory targets without diagnostics",
+    () => {
+      const skillRoot = path.join(projectRoot, ".propio", "skills");
+      const fileTarget = path.join(tempRoot, "not-a-skill-directory");
+      fs.mkdirSync(skillRoot, { recursive: true });
+      fs.writeFileSync(fileTarget, "SKILL.md-like content");
+      fs.symlinkSync(fileTarget, path.join(skillRoot, "file-skill"), "file");
+
+      const { registry, diagnostics } = loadLocalSkills({
+        cwd: projectRoot,
+        homeDir: homeRoot,
+      });
+
+      expect(registry.list()).toHaveLength(0);
+      expect(diagnostics).toHaveLength(0);
+    },
+  );
 
   it("reports invalid names and malformed frontmatter", () => {
     writeSkill(

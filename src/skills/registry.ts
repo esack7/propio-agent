@@ -8,10 +8,11 @@ import type {
   SkillInvocationSource,
   SkillLoadDiagnostic,
 } from "./types.js";
-import { createMissingSkillError } from "./shared.js";
 import {
+  cloneSkill,
   createSkillDiagnostic as createDiagnostic,
   cloneInvokedSkillRecord,
+  createMissingSkillError,
 } from "./shared.js";
 
 type SkillReloadFn = (context: SkillContext) => {
@@ -28,15 +29,6 @@ const SKILL_SOURCE_ORDER: Record<Skill["source"], number> = {
   plugin: 3,
   mcp: 4,
 };
-
-function cloneSkill(skill: Skill): Skill {
-  return {
-    ...skill,
-    ...(skill.arguments ? { arguments: [...skill.arguments] } : {}),
-    ...(skill.allowedTools ? { allowedTools: [...skill.allowedTools] } : {}),
-    ...(skill.paths ? { paths: [...skill.paths] } : {}),
-  };
-}
 
 function normalizePath(value: string): string {
   return path.resolve(value).replace(/\\/g, "/");
