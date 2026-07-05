@@ -12,10 +12,7 @@ import type {
   SkillSource,
 } from "./types.js";
 import { SkillRegistry } from "./registry.js";
-import {
-  cloneSkill,
-  createSkillDiagnostic as createDiagnostic,
-} from "./shared.js";
+import { createSkillDiagnostic as createDiagnostic } from "./shared.js";
 
 const IGNORED_DIRECTORY_NAMES = new Set([
   "dist",
@@ -536,6 +533,7 @@ function collectSkillDirectories(
 
   const entries = fs
     .readdirSync(skillRoot, { withFileTypes: true })
+    .filter((entry) => !IGNORED_DIRECTORY_NAMES.has(entry.name))
     .filter((entry) => isSkillDirectoryEntry(skillRoot, entry))
     .sort((left, right) => left.name.localeCompare(right.name));
 
