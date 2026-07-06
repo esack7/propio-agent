@@ -21,8 +21,7 @@ export interface AssistantTurnVisibilityOptions {
 }
 
 export type AssistantTurnVisibilitySource =
-  | AssistantTurnVisibilityOptions
-  | (() => AssistantTurnVisibilityOptions);
+  AssistantTurnVisibilityOptions | (() => AssistantTurnVisibilityOptions);
 
 export type AssistantTurnAgent = Pick<
   Agent,

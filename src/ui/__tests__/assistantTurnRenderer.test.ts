@@ -66,8 +66,7 @@ class ThrowingAssistantTurnAgent implements AssistantTurnAgent {
   constructor(
     private readonly onStreamStep?: (
       callbacks:
-        | { onEvent?: (event: AgentVisibilityEvent) => void }
-        | undefined,
+        { onEvent?: (event: AgentVisibilityEvent) => void } | undefined,
     ) => void,
   ) {}
 
@@ -198,8 +197,7 @@ async function runInlineAssistantTurnAndNormalize(options: {
   streamChat: AssistantTurnAgent["streamChat"];
   userInput: string;
   visibility:
-    | AssistantTurnVisibilityOptions
-    | (() => AssistantTurnVisibilityOptions);
+    AssistantTurnVisibilityOptions | (() => AssistantTurnVisibilityOptions);
 }): Promise<string> {
   await runInlineAssistantTurn(options);
   return normalizeOutput(options.stderr.chunks);

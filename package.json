@@ -1,6 +1,6 @@
 {
   "name": "@propio-ai/agent",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "Multi-provider AI agent CLI supporting Ollama, Bedrock, OpenRouter, Gemini, xAI, and Cloudflare",
   "type": "module",
   "main": "dist/index.js",
@@ -58,26 +58,26 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@propio-ai/providers": "0.1.2",
+    "@propio-ai/providers": "0.1.3",
     "chalk": "5.6.2",
     "cli-highlight": "^2.1.11",
     "fast-glob": "3.3.3",
-    "marked": "^18.0.4",
+    "marked": "^18.0.5",
     "minimatch": "^10.2.5",
-    "yaml": "^2.8.3",
-    "yocto-spinner": "^1.1.0",
-    "zod": "4.3.6"
+    "yaml": "^2.9.0",
+    "yocto-spinner": "^1.2.1",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@jest/globals": "30.3.0",
+    "@jest/globals": "30.4.1",
     "@types/jest": "30.0.0",
-    "@types/node": "25.5.2",
-    "jest": "30.3.0",
-    "prettier": "3.8.1",
-    "ts-jest": "29.4.9",
+    "@types/node": "26.1.0",
+    "jest": "30.4.2",
+    "prettier": "3.9.4",
+    "ts-jest": "29.4.11",
     "ts-node": "10.9.2",
-    "tsx": "^4.21.0",
-    "typescript": "6.0.2",
-    "vitest": "^4.1.6"
+    "tsx": "^4.23.0",
+    "typescript": "6.0.3",
+    "vitest": "^4.1.10"
   }
 }

@@ -2,11 +2,7 @@ import { clonePromptState, type PromptState } from "./promptState.js";
 import type { ToolCallView } from "./toolCallView.js";
 
 export type ReplAppMode =
-  | "idle"
-  | "running"
-  | "awaitingInput"
-  | "showingResults"
-  | "error";
+  "idle" | "running" | "awaitingInput" | "showingResults" | "error";
 
 export type TranscriptEntry =
   | { kind: "user_message"; text: string }

@@ -19,8 +19,7 @@ type ParserState = {
 };
 
 type ParseStepResult =
-  | { done: true; events: ParsedKeypress[] }
-  | { done: false; index: number };
+  { done: true; events: ParsedKeypress[] } | { done: false; index: number };
 
 function getInputChunk(str: string | undefined, key: readline.Key): string {
   if (str !== undefined && str !== "") {
