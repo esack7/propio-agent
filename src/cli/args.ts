@@ -134,8 +134,7 @@ function parseDebugLlmFileArg(
 }
 
 type IntFlagMatchResult =
-  | { matched: false }
-  | { matched: true; consumed: boolean };
+  { matched: false } | { matched: true; consumed: boolean };
 
 function matchAndApplyIntFlag(
   arg: string,

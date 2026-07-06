@@ -11,9 +11,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 export type ClipboardImageFailureReason =
-  | ImageReadFailureReason
-  | "unsupported_platform"
-  | "no_image";
+  ImageReadFailureReason | "unsupported_platform" | "no_image";
 
 export type ClipboardImageResult =
   | {
@@ -116,8 +114,7 @@ export function encodeClipboardBytes(
 }
 
 type SubprocessReadResult =
-  | { ok: true; stdout: Buffer }
-  | { ok: false; maxBufferExceeded: boolean };
+  { ok: true; stdout: Buffer } | { ok: false; maxBufferExceeded: boolean };
 
 function decodeBase64Output(output: Buffer): Buffer | null {
   const asText = output.toString("utf8").trim();

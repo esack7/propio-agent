@@ -186,7 +186,7 @@ function truncateToDisplayWidth(text: string, maxWidth: number): string {
   let result = "";
   let width = 0;
 
-  for (let index = 0; index < text.length; ) {
+  for (let index = 0; index < text.length;) {
     const ansiMatch = text.slice(index).match(/^\x1B\[[0-?]*[ -/]*[@-~]/);
     if (ansiMatch) {
       result += ansiMatch[0];

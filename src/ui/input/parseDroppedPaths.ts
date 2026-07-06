@@ -1,8 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 export type DroppedPathsLineResult =
-  | { ok: true; paths: string[] }
-  | { ok: false; paths: string[] };
+  { ok: true; paths: string[] } | { ok: false; paths: string[] };
 
 export type DroppedTextClassification = {
   paths: string[];
