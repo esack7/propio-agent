@@ -152,4 +152,10 @@ describe("sandbox delegation", () => {
     expect(script).toContain("GEMINI_API_KEY");
     expect(script).toContain("GOOGLE_API_KEY");
   });
+
+  it("forwards OpenAI and Meta API keys in the sandbox wrapper env list", () => {
+    const wrapperPath = path.resolve(process.cwd(), "bin", "propio-sandbox");
+    const script = fs.readFileSync(wrapperPath, "utf-8");
+    expect(script).toMatch(/for var in .*OPENAI_API_KEY.*META_API_KEY.*; do/);
+  });
 });

@@ -275,6 +275,28 @@ OpenRouter-specific routing fields:
 
 When OpenRouter returns a `429` or `503` for a tool-enabled request, the provider retries once without tools, shows a visible retry status, and emits a `provider_retry` diagnostic. The retry only disables tools for that single request; it does not change the provider's default tool behavior.
 
+### OpenAI
+
+The first-party OpenAI provider uses the Responses API. Model support is configuration-driven, so current and future OpenAI model IDs can be added without a CLI update.
+
+```json
+{
+  "name": "openai",
+  "type": "openai",
+  "models": [
+    {
+      "name": "GPT-5.6 Sol",
+      "key": "gpt-5.6-sol",
+      "contextWindowTokens": 1050000
+    }
+  ],
+  "defaultModel": "gpt-5.6-sol",
+  "apiKey": "sk-..."
+}
+```
+
+The `apiKey` can also be set via the `OPENAI_API_KEY` environment variable. Check [OpenAI's model catalog](https://developers.openai.com/api/docs/models) for current model IDs and context limits before changing configuration.
+
 ### Gemini
 
 ```json
@@ -711,6 +733,7 @@ The sandbox runs the agent in Docker with filesystem isolation:
 | `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `AWS_REGION`                 | Bedrock    |
 | `GEMINI_API_KEY`, `GOOGLE_API_KEY`                                | Gemini     |
 | `OPENROUTER_API_KEY`                                              | OpenRouter |
+| `OPENAI_API_KEY`                                                  | OpenAI     |
 | `XAI_API_KEY`                                                     | xAI        |
 | `ANTHROPIC_API_KEY`                                               | Anthropic  |
 | `META_API_KEY`                                                    | Meta       |
