@@ -1,6 +1,6 @@
 # @propio-ai/agent
 
-A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, Gemini, xAI, Cloudflare Workers AI, and Anthropic) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `@propio-ai/agent`, then run the `propio` command.
+A TypeScript CLI agent that supports multiple LLM providers (Ollama, Amazon Bedrock, OpenRouter, OpenAI, Meta, Gemini, xAI, Cloudflare Workers AI, and Anthropic) through a unified interface, with tool calling, an agentic loop, and optional Docker sandbox isolation. Install it as `@propio-ai/agent`, then run the `propio` command.
 
 ## Table of Contents
 
@@ -157,7 +157,7 @@ MCP server configuration lives in `~/.propio/mcp.json`:
   "providers": [
     {
       "name": "string — unique identifier for this entry",
-      "type": "ollama | bedrock | openrouter | gemini | xai | cloudflare | anthropic",
+      "type": "ollama | bedrock | openrouter | openai | meta | gemini | xai | cloudflare | anthropic",
       "models": [
         {
           "name": "Human label",
@@ -373,6 +373,28 @@ Calls the Claude API directly through the official `@anthropic-ai/sdk`. Unlike r
 
 The `apiKey` can also be set via the `ANTHROPIC_API_KEY` environment variable. HTTP 529 (overloaded) responses are mapped to a retryable capacity error; rate limits, context-length errors, and model-not-found errors are surfaced as typed provider errors.
 
+### Meta Model API
+
+Meta uses the Responses API with streamed, stateless requests. The initial documented model is Muse Spark 1.1, while any future Meta model ID can be configured through the same model list without a CLI update.
+
+```json
+{
+  "name": "meta",
+  "type": "meta",
+  "models": [
+    {
+      "name": "Muse Spark 1.1",
+      "key": "muse-spark-1.1",
+      "contextWindowTokens": 1048576
+    }
+  ],
+  "defaultModel": "muse-spark-1.1",
+  "apiKey": "your-meta-model-api-key"
+}
+```
+
+The `apiKey` can also be set via the `META_API_KEY` environment variable. Inline `apiKey` takes precedence when both are present.
+
 ## MCP
 
 `propio` loads MCP servers from `~/.propio/mcp.json` and exposes them through `/mcp`. Built-in tools still live under `/tools`.
@@ -474,6 +496,8 @@ propio --debug-llm-file /tmp/propio-debug.log
 
 Session snapshots are stored under `~/.propio/sessions/` and are scoped by workspace, so different repositories keep separate histories automatically.
 
+Meta continuation state stored in session snapshots may include plaintext assistant commentary. Protect saved sessions as conversation content.
+
 ### Pasting image file paths (chat)
 
 In interactive chat mode, you can drag or paste **local image file paths** into the prompt:
@@ -492,7 +516,7 @@ In interactive chat mode, you can drag or paste **local image file paths** into 
 ### How images reach the model
 
 1. **Prompt pills** — `[Image #N]` in the buffer is what you see; on submit it expands to `[Attached image: filename]` in the text sent to the agent, with image bytes attached separately as `images` on the user turn.
-2. **Providers** — **Bedrock**, **Gemini**, **Ollama**, and **Anthropic** send multimodal user messages (`content` plus `images` as data URLs or bytes). **OpenRouter** and **xAI** currently forward text only (`images` are accepted in the prompt and stored in sessions but not sent upstream). The live transcript shows pills (`displayText`), not expanded bodies or base64.
+2. **Providers** — **Bedrock**, **OpenAI**, **Meta**, **Gemini**, **Ollama**, and **Anthropic** send multimodal user messages (`content` plus `images` as data URLs or bytes). **OpenRouter** and **xAI** currently forward text only (`images` are accepted in the prompt and stored in sessions but not sent upstream). The live transcript shows pills (`displayText`), not expanded bodies or base64.
 3. **Session files** — Saved sessions under `~/.propio/sessions/` store expanded marker text in `userMessage.content` and attachments in `userMessage.images`. Image-heavy sessions can grow large; pasted images may contain sensitive data.
 4. **One-shot / piped stdin** — Non-interactive runs (`echo "hi" | propio`) do not accept pasted or dropped images; use the interactive TTY prompt for image input.
 
@@ -689,6 +713,7 @@ The sandbox runs the agent in Docker with filesystem isolation:
 | `OPENROUTER_API_KEY`                                              | OpenRouter |
 | `XAI_API_KEY`                                                     | xAI        |
 | `ANTHROPIC_API_KEY`                                               | Anthropic  |
+| `META_API_KEY`                                                    | Meta       |
 
 > **Note:** When using `docker compose run --rm agent` directly, variables are not forwarded automatically — pass them with `-e VAR_NAME`.
 
