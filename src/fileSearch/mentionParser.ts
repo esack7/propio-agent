@@ -26,23 +26,13 @@ function isMentionBoundary(character: string | undefined): boolean {
 
 function parseRange(fragment: string): FileMentionRange | undefined {
   const match = fragment.match(/^#L(\d+)(?:-(\d+))?$/);
-  if (!match) {
-    return undefined;
-  }
+  if (!match) return undefined;
 
   const startLine = Number.parseInt(match[1] ?? "", 10);
   const endLine = match[2] ? Number.parseInt(match[2], 10) : undefined;
-
-  if (!Number.isInteger(startLine) || startLine <= 0) {
+  if (!isValidLineNumber(startLine)) return undefined;
+  if (endLine !== undefined && !isValidEndLine(endLine, startLine))
     return undefined;
-  }
-
-  if (
-    endLine !== undefined &&
-    (!Number.isInteger(endLine) || endLine < startLine)
-  ) {
-    return undefined;
-  }
 
   return {
     startLine,
@@ -50,45 +40,104 @@ function parseRange(fragment: string): FileMentionRange | undefined {
   };
 }
 
+function isValidLineNumber(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
+}
+
+function isValidEndLine(value: number, startLine: number): boolean {
+  return isValidLineNumber(value) && value >= startLine;
+}
+
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?)}\]]+$/u, "");
 }
 
 function isFileLikeMentionPath(rawPath: string): boolean {
-  if (rawPath.length === 0) {
-    return false;
-  }
+  if (!rawPath || rawPath.includes(":")) return false;
+  if (isBareHyphenatedName(rawPath)) return false;
+  return hasExplicitPathPrefix(rawPath) || hasFileLikeSyntax(rawPath);
+}
 
-  if (rawPath.includes(":")) {
-    return false;
-  }
+function isBareHyphenatedName(rawPath: string): boolean {
+  return rawPath.includes("-") && !/[\\/.]/u.test(rawPath);
+}
 
-  if (
-    rawPath.includes("-") &&
-    !rawPath.includes("/") &&
-    !rawPath.includes("\\") &&
-    !rawPath.includes(".")
-  ) {
-    return false;
-  }
+function hasExplicitPathPrefix(rawPath: string): boolean {
+  return ["./", "../", "/", "~/", "~"].some((prefix) =>
+    rawPath.startsWith(prefix),
+  );
+}
 
-  if (
-    rawPath.startsWith("./") ||
-    rawPath.startsWith("../") ||
-    rawPath.startsWith("/") ||
-    rawPath.startsWith("~/") ||
-    rawPath.startsWith("~")
-  ) {
-    return true;
-  }
-
+function hasFileLikeSyntax(rawPath: string): boolean {
   return (
-    rawPath.includes("/") ||
-    rawPath.includes("\\") ||
+    /[\\/]/u.test(rawPath) ||
     rawPath.startsWith(".") ||
     /^[\p{L}\p{N}_]+$/u.test(rawPath) ||
     /\.[^./\s]+$/u.test(rawPath)
   );
+}
+
+interface MentionTokenBounds {
+  readonly quoted: boolean;
+  readonly pathStart: number;
+  readonly pathEnd: number;
+  readonly end: number;
+}
+
+function readMentionTokenBounds(
+  text: string,
+  start: number,
+): MentionTokenBounds | null {
+  const cursor = start + 1;
+  if (cursor >= text.length) return null;
+
+  const quote =
+    text[cursor] === '"' || text[cursor] === "'" ? text[cursor] : undefined;
+  return quote
+    ? readQuotedMentionBounds(text, cursor, quote)
+    : readUnquotedMentionBounds(text, cursor);
+}
+
+function readQuotedMentionBounds(
+  text: string,
+  quoteIndex: number,
+  quote: string,
+): MentionTokenBounds {
+  let cursor = quoteIndex + 1;
+  const pathStart = cursor;
+  while (cursor < text.length && text[cursor] !== quote) cursor += 1;
+  const pathEnd = cursor;
+  cursor = cursor < text.length ? cursor + 1 : text.length;
+  while (cursor < text.length && !/\s/.test(text[cursor])) cursor += 1;
+  return { quoted: true, pathStart, pathEnd, end: cursor };
+}
+
+function readUnquotedMentionBounds(
+  text: string,
+  pathStart: number,
+): MentionTokenBounds {
+  let cursor = pathStart;
+  while (cursor < text.length && !/\s/.test(text[cursor])) cursor += 1;
+  return { quoted: false, pathStart, pathEnd: cursor, end: cursor };
+}
+
+function splitMentionPathAndFragment(
+  text: string,
+  bounds: MentionTokenBounds,
+): { path: string; fragment: string } {
+  const token = text.slice(bounds.pathStart, bounds.pathEnd);
+  if (bounds.quoted) {
+    const suffix = text.slice(bounds.pathEnd + 1, bounds.end);
+    return { path: token, fragment: suffix.startsWith("#") ? suffix : "" };
+  }
+
+  const fragmentIndex = token.indexOf("#");
+  return fragmentIndex < 0
+    ? { path: token, fragment: "" }
+    : {
+        path: token.slice(0, fragmentIndex),
+        fragment: token.slice(fragmentIndex),
+      };
 }
 
 function parseToken(
@@ -103,52 +152,11 @@ function parseToken(
     return null;
   }
 
-  let cursor = index + 1;
-  if (cursor >= text.length) {
-    return null;
-  }
+  const bounds = readMentionTokenBounds(text, index);
+  if (!bounds) return null;
+  const { path, fragment } = splitMentionPathAndFragment(text, bounds);
 
-  const quoted = text[cursor] === '"' || text[cursor] === "'";
-  const quote = quoted ? text[cursor] : undefined;
-  let pathStart = cursor;
-  let pathEnd = cursor;
-
-  if (quoted) {
-    pathStart += 1;
-    pathEnd = pathStart;
-    while (pathEnd < text.length && text[pathEnd] !== quote) {
-      pathEnd += 1;
-    }
-    cursor = pathEnd < text.length ? pathEnd + 1 : text.length;
-    while (cursor < text.length && !/\s/.test(text[cursor])) {
-      cursor += 1;
-    }
-  } else {
-    while (cursor < text.length && !/\s/.test(text[cursor])) {
-      cursor += 1;
-    }
-    pathEnd = cursor;
-  }
-
-  const raw = text.slice(index, cursor);
-  const token = text.slice(pathStart, pathEnd);
-  let path = token;
-  let fragment = "";
-
-  if (quoted) {
-    const suffix = text.slice(pathEnd + 1, cursor);
-    if (suffix.startsWith("#")) {
-      fragment = suffix;
-    }
-  } else {
-    const fragmentIndex = token.indexOf("#");
-    if (fragmentIndex >= 0) {
-      path = token.slice(0, fragmentIndex);
-      fragment = token.slice(fragmentIndex);
-    }
-  }
-
-  const trimmedRaw = trimTrailingPunctuation(raw);
+  const trimmedRaw = trimTrailingPunctuation(text.slice(index, bounds.end));
   const trimmedPath = trimTrailingPunctuation(path);
   const trimmedFragment = trimTrailingPunctuation(fragment);
   if (!isFileLikeMentionPath(trimmedPath)) {
@@ -161,10 +169,10 @@ function parseToken(
     mention: {
       raw: trimmedRaw,
       path: trimmedPath,
-      quoted,
+      quoted: bounds.quoted,
       ...(range ? { range } : {}),
     },
-    end: cursor,
+    end: bounds.end,
   };
 }
 

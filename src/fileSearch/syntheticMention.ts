@@ -125,27 +125,24 @@ function formatSyntheticMentionInlineContext(
 
   for (const toolCall of assistantMessage.toolCalls ?? []) {
     const id = toolCall.id ?? "unknown";
-    const args = toolCall.function.arguments;
-    const originalPath = typeof args.path === "string" ? args.path : undefined;
-    const resolvedPath =
-      typeof args.resolvedPath === "string" ? args.resolvedPath : undefined;
     const result = resultsById.get(id);
-
-    const headerParts = [
-      `[attachment tool="${toolCall.function.name}" mention_id="${id}"`,
-    ];
-    if (originalPath) {
-      headerParts.push(` path="${originalPath}"`);
-    }
-    if (resolvedPath) {
-      headerParts.push(` resolved_path="${resolvedPath}"`);
-    }
-    headerParts.push("]");
-
-    sections.push(headerParts.join(""));
+    sections.push(formatAttachmentHeader(toolCall, id));
     sections.push(result?.content ?? "");
     sections.push("");
   }
 
   return sections.join("\n").trimEnd();
+}
+
+function formatAttachmentHeader(toolCall: ChatToolCall, id: string): string {
+  const args = toolCall.function.arguments;
+  const paths: Array<[unknown, string]> = [
+    [args.path, "path"],
+    [args.resolvedPath, "resolved_path"],
+  ];
+  const attributes = paths
+    .filter((entry): entry is [string, string] => typeof entry[0] === "string")
+    .map(([value, name]) => ` ${name}="${value}"`)
+    .join("");
+  return `[attachment tool="${toolCall.function.name}" mention_id="${id}"${attributes}]`;
 }

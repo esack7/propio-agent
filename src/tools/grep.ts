@@ -11,6 +11,44 @@ export interface GrepToolConfig {
   readonly outputInlineLimit?: number;
 }
 
+function createLineMatcher(
+  pattern: string,
+  useRegex: boolean,
+): (line: string) => boolean {
+  if (!useRegex) {
+    return (line) => line.includes(pattern);
+  }
+
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern);
+  } catch (error) {
+    throw new Error(
+      `Invalid regex pattern: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return (line) => {
+    regex.lastIndex = 0;
+    return regex.test(line);
+  };
+}
+
+async function collectFileMatches(
+  filePath: string,
+  matchesLine: (line: string) => boolean,
+): Promise<string[]> {
+  try {
+    const content = await readUtf8TextFile(filePath);
+    return content
+      .split(/\r?\n/)
+      .flatMap((line, index) =>
+        matchesLine(line) ? [`${filePath}:${index + 1}:${line}`] : [],
+      );
+  } catch {
+    return [];
+  }
+}
+
 export class GrepTool implements ExecutableTool {
   readonly name = "grep";
   readonly description = "Search file contents recursively.";
@@ -105,44 +143,12 @@ export class GrepTool implements ExecutableTool {
 
     const rootPath = normalizeToolPath(rawPath);
 
-    let matcher: RegExp | null = null;
-    if (useRegex) {
-      try {
-        matcher = new RegExp(pattern);
-      } catch (error) {
-        throw new Error(
-          `Invalid regex pattern: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+    const matchesLine = createLineMatcher(pattern, useRegex);
 
     const files = await collectFilesForSearch(rootPath);
     const matches: string[] = [];
-
     for (const filePath of files) {
-      try {
-        const content = await readUtf8TextFile(filePath);
-        const lines = content.split(/\r?\n/);
-
-        for (let index = 0; index < lines.length; index += 1) {
-          const line = lines[index];
-          const isMatch = useRegex
-            ? (() => {
-                matcher!.lastIndex = 0;
-                return matcher!.test(line);
-              })()
-            : line.includes(pattern);
-
-          if (!isMatch) {
-            continue;
-          }
-
-          const formatted = `${filePath}:${index + 1}:${line}`;
-          matches.push(formatted);
-        }
-      } catch {
-        continue;
-      }
+      matches.push(...(await collectFileMatches(filePath, matchesLine)));
     }
 
     if (matches.length === 0) {

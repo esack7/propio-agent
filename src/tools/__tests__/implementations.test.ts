@@ -486,6 +486,38 @@ describe("Tool Implementations", () => {
       expect(result).toContain("/test/dir/b.txt:1:match 123");
     });
 
+    it("reads recursive matches sequentially to bound open files", async () => {
+      const tool = new GrepTool();
+      mockFileStat(true);
+      mockFg.mockResolvedValue(["/test/dir/a.txt", "/test/dir/b.txt"]);
+
+      let resolveFirstRead: (() => void) | undefined;
+      let signalFirstReadStarted: (() => void) | undefined;
+      const firstReadStarted = new Promise<void>((resolve) => {
+        signalFirstReadStarted = resolve;
+      });
+      jest.mocked(mockFsPromises.readFile).mockImplementation((filePath) => {
+        if (filePath === "/test/dir/a.txt") {
+          signalFirstReadStarted?.();
+          return new Promise<Buffer>((resolve) => {
+            resolveFirstRead = () => resolve(Buffer.from("first match"));
+          });
+        }
+        return Promise.resolve(Buffer.from("second match"));
+      });
+
+      const execution = tool.execute({
+        path: "/test/dir",
+        pattern: "match",
+      });
+      await firstReadStarted;
+
+      expect(mockFsPromises.readFile).toHaveBeenCalledTimes(1);
+      resolveFirstRead?.();
+      await expect(execution).resolves.toContain("/test/dir/b.txt");
+      expect(mockFsPromises.readFile).toHaveBeenCalledTimes(2);
+    });
+
     it("returns a no matches message", async () => {
       const tool = new GrepTool();
       mockFileStat(false);

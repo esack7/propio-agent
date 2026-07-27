@@ -3,7 +3,7 @@ import * as fsPromises from "fs/promises";
 import { ExecutableTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
-import { normalizeToolPath } from "./shared.js";
+import { normalizeToolPath, throwDirectoryOperationError } from "./shared.js";
 
 function recursivePattern(pattern: string): string {
   if (pattern.includes("/")) {
@@ -111,19 +111,7 @@ export class FindTool implements ExecutableTool {
 
       return matches.sort().join("\n");
     } catch (error) {
-      const err = error as NodeJS.ErrnoException | Error;
-
-      if (err instanceof Error && err.message.startsWith("Path is not a")) {
-        throw err;
-      }
-      if ("code" in err && err.code === "ENOENT") {
-        throw new Error(`Directory not found: ${rawPath}`);
-      }
-      if ("code" in err && (err.code === "EACCES" || err.code === "EPERM")) {
-        throw new Error(`Permission denied: ${rawPath}`);
-      }
-
-      throw new Error(`Failed to find files: ${err.message || String(error)}`);
+      throwDirectoryOperationError(error, rawPath, "find files");
     }
   }
 }

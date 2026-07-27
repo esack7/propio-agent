@@ -65,30 +65,40 @@ function serializeTurnForSummary(
 
   for (const entry of turn.entries) {
     if (entry.kind === "assistant") {
-      if (entry.message.content.trim()) {
-        lines.push(`Assistant: ${entry.message.content}`);
-      }
-      if (entry.message.toolCalls && entry.message.toolCalls.length > 0) {
-        const names = entry.message.toolCalls.map((tc) => tc.function.name);
-        lines.push(`[Called tools: ${names.join(", ")}]`);
-      }
+      appendAssistantSummary(lines, entry);
     } else if (entry.kind === "tool") {
       const isRecent =
         toolEntryIndex >= totalToolEntries - keepFullToolSummaries;
-      const clipLimit = isRecent ? Infinity : 200;
-      const toolEntry = entry as TurnEntry & { kind: "tool" };
-      for (const inv of toolEntry.toolInvocations) {
-        const summary =
-          clipLimit === Infinity
-            ? inv.resultSummary
-            : inv.resultSummary.substring(0, clipLimit);
-        lines.push(`[${inv.toolName} ${inv.status}]: ${summary}`);
-      }
-      toolEntryIndex++;
+      appendToolSummary(lines, entry, isRecent);
+      toolEntryIndex += 1;
     }
   }
 
   return lines.join("\n");
+}
+
+function appendAssistantSummary(
+  lines: string[],
+  entry: Extract<TurnEntry, { kind: "assistant" }>,
+): void {
+  if (entry.message.content.trim()) {
+    lines.push(`Assistant: ${entry.message.content}`);
+  }
+  const names = entry.message.toolCalls?.map((call) => call.function.name);
+  if (names?.length) lines.push(`[Called tools: ${names.join(", ")}]`);
+}
+
+function appendToolSummary(
+  lines: string[],
+  entry: Extract<TurnEntry, { kind: "tool" }>,
+  keepFullSummary: boolean,
+): void {
+  for (const invocation of entry.toolInvocations) {
+    const summary = keepFullSummary
+      ? invocation.resultSummary
+      : invocation.resultSummary.substring(0, 200);
+    lines.push(`[${invocation.toolName} ${invocation.status}]: ${summary}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +224,56 @@ export interface SummaryGenerationHooks {
   readonly onRequestMeasured?: (metrics: SummaryRequestMetrics) => void;
 }
 
+function parseSummarySections(
+  content: string,
+): RollingSummarySections | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return isRollingSummarySections(parsed)
+      ? (parsed as RollingSummarySections)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function collectSummaryContent(
+  provider: LLMProvider,
+  model: string,
+  messages: Array<{ role: "system" | "user"; content: string }>,
+  signal?: AbortSignal,
+): Promise<string> {
+  let content = "";
+  for await (const event of provider.streamChat({ model, messages, signal })) {
+    if (signal?.aborted) throw new Error("Summary generation cancelled");
+    const delta =
+      "type" in event
+        ? event.type === "assistant_text"
+          ? event.delta
+          : undefined
+        : event.delta;
+    if (delta) content += delta;
+  }
+  return content.trim();
+}
+
+function buildSummaryRecord(
+  content: string,
+  sections: RollingSummarySections | undefined,
+  eligibleTurns: ReadonlyArray<TurnRecord>,
+): RollingSummaryRecord {
+  const renderedContent = sections
+    ? renderSectionsToContent(sections)
+    : content;
+  return {
+    content: renderedContent,
+    updatedAt: new Date().toISOString(),
+    coveredTurnIds: eligibleTurns.map((turn) => turn.id),
+    estimatedTokens: estimateTokens(renderedContent.length),
+    ...(sections ? { sections } : {}),
+  };
+}
+
 /**
  * Generates rolling summaries using an LLM provider. Summaries are built
  * incrementally: the previous summary is combined with newly eligible turns
@@ -251,11 +311,9 @@ export class SummaryManager {
       };
     }
 
-    const turnTexts = newTurns.map(serializeTurnForSummary);
-
     const userPrompt = buildSummarizationUserPrompt(
       previousSummary?.content,
-      turnTexts,
+      newTurns.map(serializeTurnForSummary),
       policy.summaryTargetTokens,
     );
 
@@ -270,49 +328,17 @@ export class SummaryManager {
       estimatedPromptTokens: requestMetrics.estimatedTokens,
     });
 
-    let content = "";
-    for await (const event of provider.streamChat({
+    const content = await collectSummaryContent(
+      provider,
       model,
       messages,
       signal,
-    })) {
-      if (signal?.aborted) {
-        throw new Error("Summary generation cancelled");
-      }
-      const delta =
-        "type" in event
-          ? event.type === "assistant_text"
-            ? event.delta
-            : undefined
-          : event.delta;
-      if (delta) {
-        content += delta;
-      }
-    }
-
-    const trimmed = content.trim();
-    let sections: RollingSummarySections | undefined;
-
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      sections = isRollingSummarySections(parsed)
-        ? (parsed as RollingSummarySections)
-        : undefined;
-    } catch {
-      sections = undefined;
-    }
-
-    const renderedContent = sections
-      ? renderSectionsToContent(sections)
-      : trimmed;
-
-    const summary: RollingSummaryRecord = {
-      content: renderedContent,
-      updatedAt: new Date().toISOString(),
-      coveredTurnIds: eligibleTurns.map((t) => t.id),
-      estimatedTokens: estimateTokens(renderedContent.length),
-      ...(sections !== undefined ? { sections } : {}),
-    };
+    );
+    const summary = buildSummaryRecord(
+      content,
+      parseSummarySections(content),
+      eligibleTurns,
+    );
 
     return {
       summary,

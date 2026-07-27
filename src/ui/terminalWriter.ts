@@ -84,12 +84,10 @@ export class TerminalWriter {
     return this.stderr;
   }
 
-  // fallow-ignore-next-line unused-class-member
   writeStdoutLine(text: string): void {
     this.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
   }
 
-  // fallow-ignore-next-line unused-class-member
   writeStderrLine(text: string): void {
     const normalized = text.endsWith("\n") ? text : `${text}\n`;
     this.writeStderr(this.fitToTerminalWidth(normalized));

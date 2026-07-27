@@ -75,6 +75,69 @@ export function saveSessionOnExit(
   }
 }
 
+function finishSessionCommand(io: SessionCommandIO): void {
+  io.command("");
+}
+
+function listSavedSessions(sessionsDir: string, io: SessionCommandIO): void {
+  const sessions = listSessions(sessionsDir);
+  if (sessions.length === 0) {
+    io.info("No saved sessions.");
+  } else {
+    io.info(`Saved sessions (${sessions.length}):`);
+    for (const entry of sessions) io.command(formatSessionEntry(entry));
+  }
+  finishSessionCommand(io);
+}
+
+async function confirmSessionReplacement(
+  agent: SessionAgent,
+  io: SessionCommandIO,
+): Promise<boolean> {
+  if (!hasSessionContent(agent.getConversationState())) return true;
+  return io.promptConfirm(
+    "This will replace current session context. Continue? [y/N] ",
+  );
+}
+
+async function loadSavedSession(
+  sessionId: string,
+  agent: SessionAgent,
+  sessionsDir: string,
+  io: SessionCommandIO,
+): Promise<void> {
+  const entry = sessionId
+    ? resolveSessionById(sessionsDir, sessionId)
+    : resolveLatestSession(sessionsDir);
+
+  if (!entry) {
+    io.error(
+      sessionId
+        ? `Session not found: ${sessionId}`
+        : "No saved sessions to load.",
+    );
+    finishSessionCommand(io);
+    return;
+  }
+  if (!(await confirmSessionReplacement(agent, io))) {
+    io.info("Load cancelled.");
+    finishSessionCommand(io);
+    return;
+  }
+
+  try {
+    agent.importSession(readSnapshot(sessionsDir, entry.snapshotFile));
+    io.success(
+      `Loaded session: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
+    );
+  } catch (error) {
+    io.error(
+      `Failed to load session: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  finishSessionCommand(io);
+}
+
 export async function handleSessionCommand(
   input: string,
   agent: SessionAgent,
@@ -84,59 +147,13 @@ export async function handleSessionCommand(
   const args = input.slice("/session".length).trim();
 
   if (args === "list") {
-    const sessions = listSessions(sessionsDir);
-    if (sessions.length === 0) {
-      io.info("No saved sessions.");
-    } else {
-      io.info(`Saved sessions (${sessions.length}):`);
-      for (const entry of sessions) {
-        io.command(formatSessionEntry(entry));
-      }
-    }
-    io.command("");
+    listSavedSessions(sessionsDir, io);
     return;
   }
 
   if (args === "load" || args.startsWith("load ")) {
     const sessionId = args.slice("load".length).trim();
-
-    const entry = sessionId
-      ? resolveSessionById(sessionsDir, sessionId)
-      : resolveLatestSession(sessionsDir);
-
-    if (!entry) {
-      if (sessionId) {
-        io.error(`Session not found: ${sessionId}`);
-      } else {
-        io.error("No saved sessions to load.");
-      }
-      io.command("");
-      return;
-    }
-
-    if (hasSessionContent(agent.getConversationState())) {
-      const confirmed = await io.promptConfirm(
-        "This will replace current session context. Continue? [y/N] ",
-      );
-      if (!confirmed) {
-        io.info("Load cancelled.");
-        io.command("");
-        return;
-      }
-    }
-
-    try {
-      const json = readSnapshot(sessionsDir, entry.snapshotFile);
-      agent.importSession(json);
-      io.success(
-        `Loaded session: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
-      );
-    } catch (error) {
-      io.error(
-        `Failed to load session: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    io.command("");
+    await loadSavedSession(sessionId, agent, sessionsDir, io);
     return;
   }
 

@@ -4,6 +4,40 @@ function compact(text: string | undefined): string {
   return text ? text.replace(/\s+/g, " ").trim() : "";
 }
 
+function buildSkillHeaderParts(record: InvokedSkillRecord): string[] {
+  const scope = record.scope;
+  const parts = [
+    `name: ${record.name}`,
+    `source: ${record.source}`,
+    `invocationSource: ${scope.invocationSource}`,
+    `invokedAt: ${record.invokedAt}`,
+  ];
+
+  const optionalParts: Array<[unknown, string]> = [
+    [record.arguments, `arguments: ${compact(record.arguments)}`],
+    [scope.model, `model: ${scope.model}`],
+    [scope.effort, `effort: ${scope.effort}`],
+  ];
+  for (const [value, text] of optionalParts) {
+    if (value) parts.push(text);
+  }
+  if (scope.allowedTools?.length) {
+    parts.push(`allowedTools: ${scope.allowedTools.join(", ")}`);
+  }
+  if (scope.warnings?.length) {
+    parts.push(`warnings: ${scope.warnings.join(" | ")}`);
+  }
+
+  return parts;
+}
+
+function appendSkillRecord(lines: string[], record: InvokedSkillRecord): void {
+  lines.push(`- ${buildSkillHeaderParts(record).join(" | ")}`);
+  if (record.content.trim()) {
+    lines.push(`  ${record.content}`);
+  }
+}
+
 export function renderInvokedSkillBlock(
   records: ReadonlyArray<InvokedSkillRecord>,
 ): string {
@@ -14,34 +48,7 @@ export function renderInvokedSkillBlock(
   const lines: string[] = ["<invoked_skills>"];
 
   for (const record of records) {
-    const scope = record.scope;
-    const headerParts = [
-      `name: ${record.name}`,
-      `source: ${record.source}`,
-      `invocationSource: ${scope.invocationSource}`,
-      `invokedAt: ${record.invokedAt}`,
-    ];
-
-    if (record.arguments) {
-      headerParts.push(`arguments: ${compact(record.arguments)}`);
-    }
-    if (scope.allowedTools && scope.allowedTools.length > 0) {
-      headerParts.push(`allowedTools: ${scope.allowedTools.join(", ")}`);
-    }
-    if (scope.model) {
-      headerParts.push(`model: ${scope.model}`);
-    }
-    if (scope.effort) {
-      headerParts.push(`effort: ${scope.effort}`);
-    }
-    if (scope.warnings && scope.warnings.length > 0) {
-      headerParts.push(`warnings: ${scope.warnings.join(" | ")}`);
-    }
-
-    lines.push(`- ${headerParts.join(" | ")}`);
-    if (record.content.trim().length > 0) {
-      lines.push(`  ${record.content}`);
-    }
+    appendSkillRecord(lines, record);
   }
 
   lines.push("</invoked_skills>");

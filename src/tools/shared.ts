@@ -88,6 +88,33 @@ export function throwToolPathAccessError(
   }
 }
 
+export function throwDirectoryOperationError(
+  error: unknown,
+  rawPath: unknown,
+  operation: string,
+  mapEnotdirToDirectoryError = false,
+): never {
+  const err = error as NodeJS.ErrnoException | Error;
+
+  if (err instanceof Error && err.message.startsWith("Path is not a")) {
+    throw err;
+  }
+
+  if ("code" in err && err.code === "ENOENT") {
+    throw new Error(`Directory not found: ${rawPath}`);
+  }
+
+  if ("code" in err && (err.code === "EACCES" || err.code === "EPERM")) {
+    throw new Error(`Permission denied: ${rawPath}`);
+  }
+
+  if (mapEnotdirToDirectoryError && "code" in err && err.code === "ENOTDIR") {
+    throw new Error(`Path is not a directory: ${rawPath}`);
+  }
+
+  throw new Error(`Failed to ${operation}: ${err.message || String(error)}`);
+}
+
 async function ensureParentDirectory(filePath: string): Promise<void> {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
 }
