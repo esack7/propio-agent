@@ -146,11 +146,10 @@ export class GrepTool implements ExecutableTool {
     const matchesLine = createLineMatcher(pattern, useRegex);
 
     const files = await collectFilesForSearch(rootPath);
-    const matches = (
-      await Promise.all(
-        files.map((filePath) => collectFileMatches(filePath, matchesLine)),
-      )
-    ).flat();
+    const matches: string[] = [];
+    for (const filePath of files) {
+      matches.push(...(await collectFileMatches(filePath, matchesLine)));
+    }
 
     if (matches.length === 0) {
       return `No matches found for pattern: ${pattern}`;
