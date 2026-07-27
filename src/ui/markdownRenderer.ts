@@ -105,50 +105,60 @@ export function defaultTheme(width: number): MarkdownTheme {
 // ─── Token Renderer ──────────────────────────────────────────────────────────
 
 function renderInlineTokens(tokens: Token[], theme: MarkdownTheme): string {
-  return tokens
-    .map((token) => {
-      switch (token.type) {
-        case "strong": {
-          const t = token as Tokens.Strong;
-          return theme.bold(renderInlineTokens(t.tokens ?? [], theme));
-        }
-        case "em": {
-          const t = token as Tokens.Em;
-          return theme.italic(renderInlineTokens(t.tokens ?? [], theme));
-        }
-        case "codespan": {
-          const t = token as Tokens.Codespan;
-          return theme.code(t.text);
-        }
-        case "link": {
-          const t = token as Tokens.Link;
-          const linkText = renderInlineTokens(t.tokens ?? [], theme);
-          return `${theme.link(linkText)} (${theme.linkUrl(t.href)})`;
-        }
-        case "del": {
-          const t = token as Tokens.Del;
-          return theme.strikethrough(renderInlineTokens(t.tokens ?? [], theme));
-        }
-        case "br":
-          return "\n";
-        case "escape": {
-          const t = token as Tokens.Escape;
-          return t.text;
-        }
-        case "text": {
-          const t = token as Tokens.Text;
-          if (t.tokens && t.tokens.length > 0) {
-            return renderInlineTokens(t.tokens, theme);
-          }
-          return chalk.hex("#ABB2BF")(t.text);
-        }
-        default: {
-          const t = token as { text?: string; raw?: string };
-          return t.text ?? t.raw ?? "";
-        }
-      }
-    })
-    .join("");
+  return tokens.map((token) => renderInlineToken(token, theme)).join("");
+}
+
+function renderInlineToken(token: Token, theme: MarkdownTheme): string {
+  const styled = renderStyledInlineToken(token, theme);
+  if (styled !== null) return styled;
+
+  switch (token.type) {
+    case "codespan":
+      return theme.code((token as Tokens.Codespan).text);
+    case "br":
+      return "\n";
+    case "escape":
+      return (token as Tokens.Escape).text;
+    case "text":
+      return renderTextToken(token as Tokens.Text, theme);
+    default: {
+      const fallback = token as { text?: string; raw?: string };
+      return fallback.text ?? fallback.raw ?? "";
+    }
+  }
+}
+
+function renderStyledInlineToken(
+  token: Token,
+  theme: MarkdownTheme,
+): string | null {
+  switch (token.type) {
+    case "strong":
+      return theme.bold(
+        renderInlineTokens((token as Tokens.Strong).tokens ?? [], theme),
+      );
+    case "em":
+      return theme.italic(
+        renderInlineTokens((token as Tokens.Em).tokens ?? [], theme),
+      );
+    case "del":
+      return theme.strikethrough(
+        renderInlineTokens((token as Tokens.Del).tokens ?? [], theme),
+      );
+    case "link": {
+      const link = token as Tokens.Link;
+      const text = renderInlineTokens(link.tokens ?? [], theme);
+      return `${theme.link(text)} (${theme.linkUrl(link.href)})`;
+    }
+    default:
+      return null;
+  }
+}
+
+function renderTextToken(token: Tokens.Text, theme: MarkdownTheme): string {
+  return token.tokens?.length
+    ? renderInlineTokens(token.tokens, theme)
+    : chalk.hex("#ABB2BF")(token.text);
 }
 
 function appendWrappedListLines(
@@ -182,63 +192,84 @@ function renderList(
 ): string {
   const lines: string[] = [];
 
-  token.items.forEach((item, i) => {
-    const bullet = token.ordered
-      ? chalk.hex("#E5C07B")(`${(token.start || 1) + i}.`)
-      : theme.listBullet;
-
-    const firstPrefix = `${bullet} `;
-    const continuationPrefix = " ".repeat(visibleLength(firstPrefix));
-    let renderedItemContent = false;
-
-    for (const t of item.tokens) {
-      if (t.type === "text") {
-        const textToken = t as Tokens.Text;
-        const text =
-          textToken.tokens && textToken.tokens.length > 0
-            ? renderInlineTokens(textToken.tokens, theme)
-            : chalk.hex("#ABB2BF")(textToken.text);
-
-        appendWrappedListLines(
-          lines,
-          text,
-          renderedItemContent ? continuationPrefix : firstPrefix,
-          continuationPrefix,
-          width,
-        );
-        renderedItemContent = true;
-      } else if (t.type === "list") {
-        if (!renderedItemContent) {
-          lines.push(firstPrefix.trimEnd());
-          renderedItemContent = true;
-        }
-
-        const nestedWidth = Math.max(
-          width - visibleLength(continuationPrefix),
-          10,
-        );
-        const nested = renderList(t as Tokens.List, theme, nestedWidth);
-        for (const nestedLine of nested.split("\n")) {
-          lines.push(`${continuationPrefix}${nestedLine}`);
-        }
-      } else {
-        appendWrappedListLines(
-          lines,
-          renderToken(t, theme, width - visibleLength(continuationPrefix)),
-          renderedItemContent ? continuationPrefix : firstPrefix,
-          continuationPrefix,
-          width,
-        );
-        renderedItemContent = true;
-      }
-    }
-
-    if (!renderedItemContent) {
-      lines.push(firstPrefix.trimEnd());
-    }
-  });
+  token.items.forEach((item, index) =>
+    appendListItem(lines, item, token, index, theme, width),
+  );
 
   return lines.join("\n");
+}
+
+function appendListItem(
+  lines: string[],
+  item: Tokens.ListItem,
+  list: Tokens.List,
+  index: number,
+  theme: MarkdownTheme,
+  width: number,
+): void {
+  const bullet = list.ordered
+    ? chalk.hex("#E5C07B")(`${(list.start || 1) + index}.`)
+    : theme.listBullet;
+  const firstPrefix = `${bullet} `;
+  const continuationPrefix = " ".repeat(visibleLength(firstPrefix));
+  let hasContent = false;
+
+  for (const token of item.tokens) {
+    appendListToken(
+      lines,
+      token,
+      theme,
+      width,
+      hasContent ? continuationPrefix : firstPrefix,
+      continuationPrefix,
+    );
+    hasContent = true;
+  }
+  if (!hasContent) lines.push(firstPrefix.trimEnd());
+}
+
+function appendListToken(
+  lines: string[],
+  token: Token,
+  theme: MarkdownTheme,
+  width: number,
+  firstPrefix: string,
+  continuationPrefix: string,
+): void {
+  if (token.type === "list") {
+    appendNestedList(
+      lines,
+      token as Tokens.List,
+      theme,
+      width,
+      continuationPrefix,
+    );
+    return;
+  }
+  const content =
+    token.type === "text"
+      ? renderTextToken(token as Tokens.Text, theme)
+      : renderToken(token, theme, width - visibleLength(continuationPrefix));
+  appendWrappedListLines(
+    lines,
+    content,
+    firstPrefix,
+    continuationPrefix,
+    width,
+  );
+}
+
+function appendNestedList(
+  lines: string[],
+  token: Tokens.List,
+  theme: MarkdownTheme,
+  width: number,
+  continuationPrefix: string,
+): void {
+  const nestedWidth = Math.max(width - visibleLength(continuationPrefix), 10);
+  for (const line of renderList(token, theme, nestedWidth).split("\n")) {
+    lines.push(`${continuationPrefix}${line}`);
+  }
 }
 
 function renderTable(
@@ -284,6 +315,15 @@ function renderToken(
   theme: MarkdownTheme,
   width: number,
 ): string {
+  const textBlock = renderTextBlockToken(token, theme, width);
+  return textBlock ?? renderStructuralToken(token, theme, width);
+}
+
+function renderTextBlockToken(
+  token: Token,
+  theme: MarkdownTheme,
+  width: number,
+): string | null {
   switch (token.type) {
     case "heading": {
       const t = token as Tokens.Heading;
@@ -301,25 +341,21 @@ function renderToken(
         .flatMap((line) => wrapTextToWidth(line, width))
         .join("\n");
     }
-    case "code": {
-      const t = token as Tokens.Code;
-      const lines = theme.highlightCode(t.text, t.lang ?? undefined);
-      return lines
-        .map(
-          (line) => `${theme.codeBlockBorder}${theme.codeBlockIndent}${line}`,
-        )
-        .join("\n");
-    }
-    case "blockquote": {
-      const t = token as Tokens.Blockquote;
-      const inner = t.tokens
-        .map((tok) => renderToken(tok, theme, width - 2))
-        .join("\n");
-      return inner
-        .split("\n")
-        .map((line) => `${theme.quoteBorder} ${theme.quote(line)}`)
-        .join("\n");
-    }
+    default:
+      return null;
+  }
+}
+
+function renderStructuralToken(
+  token: Token,
+  theme: MarkdownTheme,
+  width: number,
+): string {
+  switch (token.type) {
+    case "code":
+      return renderCodeBlock(token as Tokens.Code, theme);
+    case "blockquote":
+      return renderBlockquote(token as Tokens.Blockquote, theme, width);
     case "list":
       return renderList(token as Tokens.List, theme, width);
     case "table":
@@ -333,6 +369,27 @@ function renderToken(
       return t.text ?? t.raw ?? "";
     }
   }
+}
+
+function renderCodeBlock(token: Tokens.Code, theme: MarkdownTheme): string {
+  return theme
+    .highlightCode(token.text, token.lang ?? undefined)
+    .map((line) => `${theme.codeBlockBorder}${theme.codeBlockIndent}${line}`)
+    .join("\n");
+}
+
+function renderBlockquote(
+  token: Tokens.Blockquote,
+  theme: MarkdownTheme,
+  width: number,
+): string {
+  const inner = token.tokens
+    .map((nestedToken) => renderToken(nestedToken, theme, width - 2))
+    .join("\n");
+  return inner
+    .split("\n")
+    .map((line) => `${theme.quoteBorder} ${theme.quote(line)}`)
+    .join("\n");
 }
 
 export function renderMarkdown(
@@ -470,15 +527,7 @@ export class MarkdownStreamer implements Streamer {
    * and rewrites from there.
    */
   private render(): void {
-    if (this.disposed || this.buffer.length === 0) {
-      return;
-    }
-
-    this.lastRenderTime = Date.now();
-    this.refreshRenderGeometry();
-
-    const parsed = this.parseBufferSafely(this.buffer);
-    this.writeRenderedOutput(parsed, false);
+    this.renderBuffer(false);
   }
 
   /**
@@ -487,6 +536,10 @@ export class MarkdownStreamer implements Streamer {
    * during streaming renders.
    */
   private renderFinal(): void {
+    this.renderBuffer(true);
+  }
+
+  private renderBuffer(includeTrailing: boolean): void {
     if (this.disposed || this.buffer.length === 0) {
       return;
     }
@@ -495,7 +548,7 @@ export class MarkdownStreamer implements Streamer {
     this.refreshRenderGeometry();
 
     const parsed = this.parseBufferSafely(this.buffer);
-    this.writeRenderedOutput(parsed, true);
+    this.writeRenderedOutput(parsed, includeTrailing);
   }
 
   private writeRenderedOutput(parsed: string, includeTrailing: boolean): void {
