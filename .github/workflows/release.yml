@@ -68,6 +68,20 @@ jobs:
               exit 1
             fi
           fi
+      - name: Verify the published-version baseline tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_baseline_sha="774910d0572531c8cad544dcc1a8ce7fec356293"
+          actual_baseline_sha="$(git rev-parse --verify 'v1.1.4^{commit}' 2>/dev/null || true)"
+          if [[ "$actual_baseline_sha" != "$expected_baseline_sha" ]]; then
+            echo "v1.1.4 must resolve to npm gitHead $expected_baseline_sha before release."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$actual_baseline_sha" "$GITHUB_SHA"; then
+            echo "v1.1.4 is not an ancestor of the selected main commit."
+            exit 1
+          fi
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24.10.0"
@@ -83,6 +97,8 @@ jobs:
       - run: npm run format:check
       - run: npm run build
       - run: npm test
+      - run: npm run fallow:audit
+      - run: npm run fallow:check
       - run: npm pack --dry-run
       - name: Confirm main has not advanced
         shell: bash

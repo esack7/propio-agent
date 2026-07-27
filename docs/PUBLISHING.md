@@ -49,7 +49,8 @@ Release computes the final version.
 1. Verify that npm's `@propio-ai/agent@1.1.4` `gitHead` is
    `774910d0572531c8cad544dcc1a8ce7fec356293`, then create and push `v1.1.4`
    at that exact published commit. Later non-release commits must remain after
-   the baseline tag.
+   the baseline tag. The release workflow verifies that exact tag target and
+   ancestry before every dry run or publication.
 2. Open and validate the workflow pull request. Observe that the aggregate job
    context is literally `required` (the GitHub UI may display `CI / required`).
 3. Configure `main` to require pull requests and the `required` status check,
@@ -78,15 +79,18 @@ Release computes the final version.
 The workflow refuses live publication unless all of these conditions hold:
 
 - it was manually dispatched from `main`;
+- `v1.1.4` resolves to npm's recorded `gitHead` and is an ancestor of the
+  selected commit;
 - the selected commit is the current remote `main` both before and after
   validation;
 - `mode` is `publish`;
 - `expected_sha` exactly matches that current commit; and
 - `NPM_PUBLISH_ENABLED` is exactly `true`.
 
-The release workflow repeats formatting, build, unit tests, and `npm pack
---dry-run` on Node.js 24.10.0 with npm 11.5.1 before Semantic Release can
-publish. Repository-local concurrency prevents overlapping manual releases.
+The release workflow repeats formatting, build, unit tests, both strict Fallow
+checks, and `npm pack --dry-run` on Node.js 24.10.0 with npm 11.5.1 before
+Semantic Release can publish. Repository-local concurrency prevents overlapping
+manual releases.
 
 Semantic Release updates both `package.json` and the root version in
 `npm-shrinkwrap.json` in the runner before publication. The published CLI reads
