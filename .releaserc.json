@@ -5,10 +5,20 @@
     [
       "@semantic-release/commit-analyzer",
       {
-        "releaseRules": [{ "type": "revert", "release": "patch" }]
+        "releaseRules": [{ "type": "revert", "release": "patch" }],
+        "parserOpts": {
+          "breakingHeaderPattern": "^(\\w*)(?:\\((.*)\\))?!: (.*)$"
+        }
       }
     ],
-    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "parserOpts": {
+          "breakingHeaderPattern": "^(\\w*)(?:\\((.*)\\))?!: (.*)$"
+        }
+      }
+    ],
     "@semantic-release/npm",
     [
       "@semantic-release/github",
