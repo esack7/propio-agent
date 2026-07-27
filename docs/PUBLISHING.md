@@ -23,10 +23,10 @@ feat(cli): add a command
 feat!: change the public command contract
 ```
 
-`fix:` triggers a patch release, `feat:` triggers a minor release, and `!` in
-the title or a `BREAKING CHANGE:` footer in the PR body triggers a major
-release. Other valid conventional types, such as `docs:`, `test:`, `chore:`,
-and `ci:`, do not release by default.
+`fix:`, `perf:`, and `revert:` trigger a patch release; `feat:` triggers a minor
+release; and `!` in the title or a `BREAKING CHANGE:` footer in the PR body
+triggers a major release. Other allowed conventional types, such as `docs:`,
+`test:`, `build:`, `chore:`, and `ci:`, do not release by default.
 
 Several merges may be included in one manually authorized release. Semantic
 Release evaluates every commit since the latest `v<version>` tag and chooses the
@@ -98,6 +98,9 @@ release version. These generated version changes are not committed to `main`.
 Use `mode=dry-run` to preview the next version and release notes. A dry run
 neither publishes nor creates tags or a GitHub Release. It still verifies npm
 OIDC and repository push access.
+
+A publish run with no releasable commits exits successfully without creating an
+npm version, tag, or GitHub Release. That green no-op is expected.
 
 To disable live releases, set `NPM_PUBLISH_ENABLED` to anything other than
 `true`; do not delete the workflow or release history. If a dry run fails with
