@@ -1,156 +1,119 @@
-# Publishing `@propio-ai/agent`
+# Manual releases for `@propio-ai/agent`
 
-This document describes the repeatable workflow for publishing the npm package while keeping the installed CLI command as `propio`.
+`main` is the only release branch. Every push to `main` runs the **Main build**
+workflow and uploads an inspectable package candidate. Publication is a separate
+maintainer action: the **Release** workflow runs only when manually dispatched,
+rebuilds the selected current `main` commit, and uses npm Trusted Publishing.
 
-## Package Identity
+No release commit, changelog commit, npm token, or local `npm publish` command is
+used.
 
-- npm package name: `@propio-ai/agent`
-- CLI command: `propio`
-- Published entrypoint: `bin/propio.cjs`
-- Runtime build output: `dist/index.js`
+## Commit and merge policy
 
-## When To Publish
+Pull requests targeting `main` must pass the `required` CI job. The repository
+must allow only squash merges, configured to use the PR title as the squash
+commit title (`PR_TITLE`) and the PR body as its body (`PR_BODY`). CI validates
+the title that becomes the release commit subject.
 
-Publish when you:
+Use Conventional Commit titles, for example:
 
-- Add or change application behavior
-- Change dependencies or dependency versions
-- Update the public CLI/docs
-- Bump the release version
-
-## Version Bump
-
-Use one of the standard npm version commands, but make the version bump on a
-release branch instead of committing directly to `main`:
-
-```bash
-git checkout main
-git pull --ff-only
-git checkout -b release/v<version>
-npm version patch --no-git-tag-version
+```text
+fix: preserve session output
+feat(cli): add a command
+feat!: change the public command contract
 ```
 
-Use `minor` or `major` instead of `patch` when the change warrants it. Replace
-`<version>` in the branch name with the version you are releasing, for example
-`release/v1.0.2`.
+`fix:`, `perf:`, and `revert:` trigger a patch release; `feat:` triggers a minor
+release; and `!` in the title or a `BREAKING CHANGE:` footer in the PR body
+triggers a major release. Other allowed conventional types, such as `docs:`,
+`test:`, `build:`, `chore:`, and `ci:`, do not release by default.
 
-The `--no-git-tag-version` flag keeps npm from creating a local release commit
-and tag before the protected-branch PR has merged. The version bump should update
-both:
+Several merges may be included in one manually authorized release. Semantic
+Release evaluates every commit since the latest `v<version>` tag and chooses the
+highest required version bump.
 
-- `package.json`
-- `npm-shrinkwrap.json`
+## Main-build artifact
 
-Commit those files, push the release branch, and merge it through the normal PR
-flow:
+After every push to `main`, **Main build** repeats the Node.js 24.10.0
+validation, runs the whole-repository Fallow check, builds a tarball, records its
+SHA-256 checksum and npm pack metadata, and uploads
+`npm-package-candidate-<commit>` for 30 days.
 
-```bash
-git status --short
-git add package.json npm-shrinkwrap.json
-git commit -m "chore: release v<version>"
-git push -u origin release/v<version>
-```
+The candidate is for inspection only. Its metadata explicitly sets
+`publishable: false` because its package version is still the source version in
+`main`. Do not publish that tarball. The manual release rebuilds after Semantic
+Release computes the final version.
 
-Do not publish from the release branch. Publish only after the version bump PR is
-merged and your local `main` contains the release commit:
+## Initial rollout
 
-```bash
-git checkout main
-git pull --ff-only
-```
+1. Verify that npm's `@propio-ai/agent@1.1.4` `gitHead` is
+   `774910d0572531c8cad544dcc1a8ce7fec356293`, then create and push `v1.1.4`
+   at that exact published commit. Later non-release commits must remain after
+   the baseline tag. The release workflow verifies that exact tag target and
+   ancestry before every dry run or publication.
+2. Open and validate the workflow pull request. Observe that the aggregate job
+   context is literally `required` (the GitHub UI may display `CI / required`).
+3. Configure `main` to require pull requests and the `required` status check,
+   with zero approvals while this is a solo-maintainer repository. Disable
+   merge commits and rebase merges; retain squash merges with `PR_TITLE` and
+   `PR_BODY`.
+4. Add a `v*` tag ruleset that prevents updating or deleting existing tags but
+   permits creation of new release tags. Do not grant the GitHub Actions app a
+   repository-wide ruleset bypass.
+5. In npm package settings, configure a Trusted Publisher for package
+   `@propio-ai/agent`, owner/repository `esack7/propio-agent`, and workflow file
+   `release.yml`.
+6. Set the repository Actions variable `NPM_PUBLISH_ENABLED` to `true`. This is
+   an emergency kill switch; setting it does not publish anything.
+7. From **Actions → Release → Run workflow**, select `main`, choose
+   `mode=dry-run`, and optionally provide the current full commit SHA. Confirm
+   the expected version and `OIDC token exchange with the npm registry
+   succeeded`. No package, tag, or GitHub Release is created.
+8. Inspect the matching Main-build artifact. When ready, dispatch **Release**
+   from `main` with `mode=publish` and the current 40-character `main` SHA in
+   `expected_sha`. Verify npm provenance, package contents, `propio --version`,
+   the `v<version>` tag, and the GitHub Release.
 
-If this repository uses git tags for releases, create and push the tag after the
-PR has merged:
+## Manual release controls
 
-```bash
-git tag v<version>
-git push origin v<version>
-```
+The workflow refuses live publication unless all of these conditions hold:
 
-## Dependency Updates
+- it was manually dispatched from `main`;
+- `v1.1.4` resolves to npm's recorded `gitHead` and is an ancestor of the
+  selected commit;
+- the selected commit is the current remote `main` both before and after
+  validation;
+- `mode` is `publish`;
+- `expected_sha` exactly matches that current commit; and
+- `NPM_PUBLISH_ENABLED` is exactly `true`.
 
-If you add, remove, or update dependencies:
+The release workflow repeats formatting, build, unit tests, both strict Fallow
+checks, and `npm pack --dry-run` on Node.js 24.10.0 with npm 11.5.1 before
+Semantic Release can publish. Repository-local concurrency prevents overlapping
+manual releases.
 
-```bash
-npm install <package>@<version>
-npm shrinkwrap
-```
+Semantic Release updates both `package.json` and the root version in
+`npm-shrinkwrap.json` in the runner before publication. The published CLI reads
+that package version at runtime, so `propio --version` reports the computed
+release version. These generated version changes are not committed to `main`.
 
-`npm-shrinkwrap.json` is committed so sandbox builds and published installs use the same resolved dependency tree.
+## Dry runs, disabling, and recovery
 
-## Pre-Publish Checklist
+Use `mode=dry-run` to preview the next version and release notes. A dry run
+neither publishes nor creates tags or a GitHub Release. It still verifies npm
+OIDC and repository push access.
 
-Run the release checks from the repository root:
+A publish run with no releasable commits exits successfully without creating an
+npm version, tag, or GitHub Release. That green no-op is expected.
 
-```bash
-npm test
-npm run build
-npm run format:check
-npm pack --dry-run
-```
+To disable live releases, set `NPM_PUBLISH_ENABLED` to anything other than
+`true`; do not delete the workflow or release history. If a dry run fails with
+`ENONPMTOKEN`, do not add a token. Inspect earlier log lines for `OIDC token
+exchange with the npm registry failed` and check the npm Trusted Publisher
+owner, repository, workflow filename, GitHub-hosted runner, and
+`id-token: write` permission.
 
-The `npm pack --dry-run` output should include:
-
-- `dist/`
-- `bin/propio.cjs`
-- `bin/propio-sandbox`
-- `docker-compose.yml`
-- `Dockerfile`
-- `README.md`
-- `LICENSE`
-- `npm-shrinkwrap.json`
-
-## Smoke Test
-
-Create a tarball and install it in a clean temp directory:
-
-```bash
-npm pack
-mkdir -p /tmp/propio-release-test
-cd /tmp/propio-release-test
-npm install /path/to/propio-ai-agent-<version>.tgz
-```
-
-Then verify:
-
-```bash
-./node_modules/.bin/propio --help
-printf 'hello\n' | ./node_modules/.bin/propio --no-interactive
-mkdir -p /tmp/propio-release-test/other-workspace
-cd /tmp/propio-release-test/other-workspace
-../node_modules/.bin/propio --help
-```
-
-The key checks are:
-
-- `propio --help` exits cleanly
-- `propio` runs from the current working directory
-
-If you also want to verify sandbox packaging, run that separately from the installed tarball directory after confirming all sandbox prerequisites:
-
-- `~/.propio/providers.json` exists
-- Docker is installed and running
-- the sandbox image has been built for the installed package layout
-
-Example:
-
-```bash
-cd /tmp/propio-release-test
-docker compose -f node_modules/@propio-ai/agent/docker-compose.yml build
-./node_modules/.bin/propio --sandbox
-```
-
-## Publish
-
-When the version bump PR has merged into `main` and the tarball and smoke test
-look good:
-
-```bash
-npm publish --access public
-```
-
-## After Publish
-
-- Confirm the package page and version on npm
-- Record the published version in the release notes or changelog if the repo uses one
-- If the next release changes dependencies, refresh `npm-shrinkwrap.json` again before publishing
+If publication fails after a tag or package version may have been created,
+inspect npm, GitHub Releases, and tags before rerunning. Do not manually reuse
+or republish an immutable npm version. Semantic Release tags and npm metadata,
+not the version in `main`, are the release source of truth.
