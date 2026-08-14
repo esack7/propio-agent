@@ -2169,7 +2169,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
     });
 
-    it("should store last turn reasoning summary separately from session context", async () => {
+    it("prefers complete provider summaries and keeps them out of session context", async () => {
       class DirectAnswerProvider implements LLMProvider {
         name = "direct-answer";
 
@@ -2182,7 +2182,12 @@ describe("Agent with Multi-Provider Configuration", () => {
         ): AsyncIterable<ChatStreamEvent> {
           yield {
             type: "reasoning_summary",
-            summary: "Provider summary",
+            summary: "Provider ",
+            source: "provider",
+          };
+          yield {
+            type: "reasoning_summary",
+            summary: "summary",
             source: "provider",
           };
           yield { type: "assistant_text", delta: "Final answer." };
@@ -2191,18 +2196,106 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const mockProvider = new DirectAnswerProvider();
       const agent = createTestAgent(mockProvider);
+      const events: AgentVisibilityEvent[] = [];
 
-      await agent.streamChat(userSubmission("Answer directly"), jest.fn());
+      await agent.streamChat(userSubmission("Answer directly"), jest.fn(), {
+        onEvent: (event) => events.push(event),
+      });
       const reasoning = agent.getLastTurnReasoningSummary();
 
-      expect(reasoning).toBeDefined();
-      expect(reasoning?.summary.length).toBeGreaterThan(0);
-      expect(reasoning?.source).toBe("agent");
+      expect(reasoning).toEqual({
+        summary: "Provider summary",
+        source: "provider",
+      });
+      expect(events.filter((event) => event.type === "thinking_delta")).toEqual(
+        [
+          { type: "thinking_delta", delta: "Provider " },
+          { type: "thinking_delta", delta: "summary" },
+        ],
+      );
 
       const context = agent.getContext();
       expect(
         context.some((message) => message.content.includes("Provider summary")),
       ).toBe(false);
+    });
+
+    it("joins provider summaries from tool-loop iterations in chronological order", async () => {
+      class SummaryAcrossToolsProvider implements LLMProvider {
+        name = "summary-across-tools";
+        private callCount = 0;
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(): AsyncIterable<ChatStreamEvent> {
+          this.callCount++;
+          if (this.callCount === 1) {
+            yield {
+              type: "reasoning_summary",
+              summary: "Checking ",
+              source: "provider",
+            };
+            yield {
+              type: "reasoning_summary",
+              summary: "the source.",
+              source: "provider",
+            };
+            yield {
+              type: "tool_calls",
+              toolCalls: [
+                {
+                  id: "lookup-1",
+                  function: { name: "lookup", arguments: {} },
+                },
+              ],
+            };
+            return;
+          }
+
+          yield {
+            type: "reasoning_summary",
+            summary: "Using the ",
+            source: "provider",
+          };
+          yield {
+            type: "reasoning_summary",
+            summary: "result.",
+            source: "provider",
+          };
+          yield { type: "assistant_text", delta: "Final answer." };
+        }
+      }
+
+      const agent = createTestAgent(new SummaryAcrossToolsProvider());
+      agent.addTool(createMockTool({ name: "lookup" }));
+
+      await agent.streamChat(userSubmission("Look this up"), jest.fn());
+
+      expect(agent.getLastTurnReasoningSummary()).toEqual({
+        summary: "Checking the source.\n\nUsing the result.",
+        source: "provider",
+      });
+    });
+
+    it("falls back to the synthesized summary when the provider supplies none", async () => {
+      class NoSummaryProvider implements LLMProvider {
+        name = "no-summary";
+
+        getCapabilities() {
+          return { contextWindowTokens: 128000 };
+        }
+
+        async *streamChat(): AsyncIterable<ChatStreamEvent> {
+          yield { type: "assistant_text", delta: "Final answer." };
+        }
+      }
+
+      const agent = createTestAgent(new NoSummaryProvider());
+      await agent.streamChat(userSubmission("Answer directly"), jest.fn());
+
+      expect(agent.getLastTurnReasoningSummary()?.source).toBe("agent");
     });
   });
 

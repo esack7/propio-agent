@@ -10,7 +10,7 @@
       "license": "MIT",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.29.0",
-        "@propio-ai/providers": "0.1.4",
+        "@propio-ai/providers": "0.2.0",
         "chalk": "5.6.2",
         "cli-highlight": "^2.1.11",
         "fast-glob": "3.3.3",
@@ -2652,9 +2652,9 @@
       }
     },
     "node_modules/@propio-ai/providers": {
-      "version": "0.1.4",
-      "resolved": "https://registry.npmjs.org/@propio-ai/providers/-/providers-0.1.4.tgz",
-      "integrity": "sha512-tjq/8eXsJaCpF1Ol2PxOkIU31RPRbBBP7WIG+/Dbtg811ArvkrigNVTjcAVzvhqz9XbWSGNDaT1MR0Kp+1dklQ==",
+      "version": "0.2.0",
+      "resolved": "https://registry.npmjs.org/@propio-ai/providers/-/providers-0.2.0.tgz",
+      "integrity": "sha512-AAGoOLTZCcDwm5LCSCYb4JAdeuoqLBheIHm89nM4i8ggJTvLXuxvHJqIgooGT/rlL1ocWJHztsztJECP6uJ4uA==",
       "license": "MIT",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.100.1",
