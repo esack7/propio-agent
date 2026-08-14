@@ -1351,6 +1351,13 @@ export class Agent {
       });
     }
 
+    if (normalizedEvent.reasoningSummary?.summary.trim()) {
+      this.emitVisibilityEvent(options, {
+        type: "thinking_delta",
+        delta: normalizedEvent.reasoningSummary.summary,
+      });
+    }
+
     return normalizedEvent;
   }
 
@@ -1497,7 +1504,7 @@ export class Agent {
     const streamState = { fullResponse: "", chunkCount: 0 };
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
-    let providerReasoningSummary: TurnReasoningSummary | null = null;
+    const providerReasoningSummaryChunks: string[] = [];
     let stopReason: string | undefined;
 
     this.emitStatus(options, "Streaming response", "response");
@@ -1519,12 +1526,10 @@ export class Agent {
         options,
         options?.abortSignal,
       );
-      if (
-        normalizedEvent.reasoningSummary &&
-        !providerReasoningSummary &&
-        normalizedEvent.reasoningSummary.summary.trim().length > 0
-      ) {
-        providerReasoningSummary = normalizedEvent.reasoningSummary;
+      if (normalizedEvent.reasoningSummary?.summary.trim()) {
+        providerReasoningSummaryChunks.push(
+          normalizedEvent.reasoningSummary.summary,
+        );
       }
 
       this.recordStreamChunk(normalizedEvent, iteration, streamState, onToken);
@@ -1545,7 +1550,13 @@ export class Agent {
       fullResponse: streamState.fullResponse,
       toolCalls,
       reasoningContent,
-      providerReasoningSummary,
+      providerReasoningSummary:
+        providerReasoningSummaryChunks.length > 0
+          ? {
+              summary: providerReasoningSummaryChunks.join(""),
+              source: "provider",
+            }
+          : null,
       stopReason,
     };
   }
@@ -2268,16 +2279,34 @@ export class Agent {
     agentSummary: string,
     providerReasoningSummary: TurnReasoningSummary | null,
   ): TurnReasoningSummary {
+    if (providerReasoningSummary?.summary.trim()) {
+      return providerReasoningSummary;
+    }
+
     if (agentSummary.trim().length > 0) {
       return { summary: agentSummary, source: "agent" };
     }
 
-    return (
-      providerReasoningSummary ?? {
-        summary: "Completed the request and generated the final response.",
-        source: "agent",
-      }
-    );
+    return {
+      summary: "Completed the request and generated the final response.",
+      source: "agent",
+    };
+  }
+
+  private appendProviderReasoningSummary(
+    accumulatedSummary: TurnReasoningSummary | null,
+    iterationSummary: TurnReasoningSummary | null,
+  ): TurnReasoningSummary | null {
+    if (!iterationSummary?.summary.trim()) {
+      return accumulatedSummary;
+    }
+    if (!accumulatedSummary) {
+      return iterationSummary;
+    }
+    return {
+      summary: `${accumulatedSummary.summary}\n\n${iterationSummary.summary}`,
+      source: "provider",
+    };
   }
 
   private async runOneIteration(
@@ -2407,7 +2436,10 @@ export class Agent {
             options,
             onToken,
           );
-          providerReasoningSummary = iterationResult.providerReasoningSummary;
+          providerReasoningSummary = this.appendProviderReasoningSummary(
+            providerReasoningSummary,
+            iterationResult.providerReasoningSummary,
+          );
           fullResponse = iterationResult.fullResponse;
           toolCalls = iterationResult.toolCalls;
           reasoningContent = iterationResult.reasoningContent;

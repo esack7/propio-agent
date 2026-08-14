@@ -417,6 +417,15 @@ Meta uses the Responses API with streamed, stateless requests. The initial docum
 
 The `apiKey` can also be set via the `META_API_KEY` environment variable. Inline `apiKey` takes precedence when both are present.
 
+When Muse Spark provides a reasoning summary or `commentary`, interactive
+sessions show it in the separate Thinking presentation before or between tool
+calls; final answer text remains separate. `--show-reasoning-summary` (or
+`--show-trace`) retains the complete provider summary for the completed turn
+and labels its source as `provider`. Plain and non-interactive output keeps
+live thinking out of the answer stream, while JSON includes the retained
+summary only when that flag is set. Encrypted reasoning continuation data is
+never displayed.
+
 ## MCP
 
 `propio` loads MCP servers from `~/.propio/mcp.json` and exposes them through `/mcp`. Built-in tools still live under `/tools`.
