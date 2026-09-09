@@ -1,7 +1,10 @@
 export type SkillSource = "project" | "user" | "bundled" | "plugin" | "mcp";
 
-export interface SkillContext {
+export interface SkillRegistryContext {
   readonly cwd: string;
+}
+
+export interface SkillContext extends SkillRegistryContext {
   readonly homeDir: string;
 }
 
@@ -73,7 +76,25 @@ export interface SkillLoadDiagnostic {
   readonly skillName?: string;
 }
 
-export interface LoadLocalSkillsResult {
+export interface LoadSkillsResult {
   readonly registry: import("./registry.js").SkillRegistry;
+  readonly diagnostics: SkillLoadDiagnostic[];
+}
+
+/** Application compatibility alias. */
+export type LoadLocalSkillsResult = LoadSkillsResult;
+
+export interface SkillDiscoveryRoot {
+  readonly source: SkillSource;
+  readonly skillRoot: string;
+}
+
+export interface LoadSkillsOptions {
+  readonly workspaceRoot: string;
+  readonly roots: readonly SkillDiscoveryRoot[];
+}
+
+export interface ParsedSkillEntry {
+  readonly skill?: Skill;
   readonly diagnostics: SkillLoadDiagnostic[];
 }

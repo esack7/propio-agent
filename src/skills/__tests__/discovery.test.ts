@@ -1,5 +1,5 @@
-import { renderSkillDiscoveryBlock } from "../discovery.js";
-import type { Skill } from "../types.js";
+import { renderSkillDiscoveryBlock } from "../index.js";
+import type { Skill } from "../index.js";
 
 describe("skill discovery", () => {
   it("renders metadata only and keeps full bodies out of the prompt block", () => {

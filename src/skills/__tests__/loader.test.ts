@@ -1,13 +1,36 @@
 import * as path from "path";
 import * as os from "os";
 import { createRequire } from "module";
-import { loadLocalSkills } from "../index.js";
+import { loadSkills } from "../index.js";
+import { loadLocalSkills as loadCliSkills } from "../loader.js";
+import type { SkillContext } from "../types.js";
 import { readFrontmatterText } from "../loader.js";
 
 const require = createRequire(import.meta.url);
 const fs = require("fs") as typeof import("fs");
 
-describe("skills loader", () => {
+const loaders = [
+  { name: "CLI adapter", load: loadCliSkills },
+  {
+    name: "public API",
+    load: (options: Partial<SkillContext>) =>
+      loadSkills({
+        workspaceRoot: options.cwd!,
+        roots: [
+          {
+            source: "project",
+            skillRoot: path.join(options.cwd!, ".propio", "skills"),
+          },
+          {
+            source: "user",
+            skillRoot: path.join(options.homeDir!, ".propio", "skills"),
+          },
+        ],
+      }),
+  },
+];
+
+describe.each(loaders)("skills loader: $name", ({ load: loadLocalSkills }) => {
   const tempRoot = path.join(os.tmpdir(), "propio-skills-loader-tests");
   const projectRoot = path.join(tempRoot, "project");
   const homeRoot = path.join(tempRoot, "home");

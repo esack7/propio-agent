@@ -710,6 +710,74 @@ agent package; a separate context package and production consumer are future wor
 The context API assumes sequential mutation. Browser portability, simultaneous
 session writers and cross-process locking are not guaranteed.
 
+### Reusable skills API (provisional)
+
+Node.js consumers can import `@propio-ai/agent/skills` without starting the CLI,
+reading Propio configuration, or scanning directories. This subpath stages the
+skills boundary inside the agent package; it is not yet a separate skills package.
+
+```typescript
+import { loadSkills, parseSkillDocument } from "@propio-ai/agent/skills";
+
+const { registry, diagnostics } = loadSkills({
+  workspaceRoot: "/work/project",
+  roots: [
+    { source: "project", skillRoot: "/work/project/custom-skills" },
+    { source: "user", skillRoot: "/work/shared-skills" },
+  ],
+});
+registry.recordFileTouch(["src/app.ts"]);
+const available = registry.listModelInvocable();
+
+// Parsing supplied text performs no filesystem access.
+const parsed = parseSkillDocument(
+  "---\ndescription: Example\n---\nInstructions",
+  {
+    skillFile: "/work/project/custom-skills/example/SKILL.md",
+    source: "project",
+  },
+);
+```
+
+`workspaceRoot`, discovery `skillRoot` paths and parser `skillFile` paths must be
+absolute. Discovery reads `SKILL.md` inside immediate child directories, including
+symlinked directories, ignoring `dist`, `node_modules`, `.git` and `coverage`.
+Repeated normalized root paths are scanned once, retaining the last source and
+position. Frontmatter and body extraction share the same whitespace-tolerant fences.
+Missing roots are empty; filesystem read errors propagate. Roots are copied when
+loading; `registry.refresh()` rescans those roots and `materialize()` reads the
+current body. There are no watchers or writes. This is a Node filesystem adapter,
+not a browser or sandbox API.
+
+Skills within each root sort by normalized name and file path. Root order controls
+precedence, independently of source labels. Later unscoped
+entries with the same normalized name win; duplicates also produce diagnostics.
+Path-scoped entries activate on matching workspace-relative file touches, retaining
+the deepest-matching-root rule. Equal-depth matching entries retain the first
+match; an unscoped entry later in the list overrides an earlier scoped entry.
+The CLI supplies project then user `.propio/skills` roots, preserving its existing
+behavior. Registry order remains stable across activation and refresh.
+
+Metadata such as `allowedTools`, `context: fork`, `agent`, `model` and `effort`
+describes requests, not granted capabilities. Loading or materializing never
+executes instructions or shell substitutions. Unknown fields produce diagnostics;
+consumers must decide whether to reject or enforce execution requests. The CLI
+continues rejecting fork execution and warning when model/effort requests are not
+applied. `materialize()` substitutes arguments but does not enforce invocation
+eligibility or execution policy. Invocation records and scopes remain available
+as typed metadata for the consuming runtime.
+
+The standalone catalog example exercises the same API:
+
+```bash
+npm run example:skills -- /work/project '[{"source":"project","skillRoot":"/work/project/custom-skills"}]'
+```
+
+The subpath follows the agent package version and remains provisional until a real
+second production consumer validates the boundary. It uses YAML and minimatch,
+imports no agent internals, and retains Node.js 20+ requirements. Future standalone
+extraction and publication require separate repository and release decisions.
+
 ### Tool registry
 
 `src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.

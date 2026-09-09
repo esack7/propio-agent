@@ -679,6 +679,46 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
     });
 
+    it.each([false, true])(
+      "attributes tool reads to their resolved path with an explicit agent cwd (absolute: %s)",
+      async (absolute) => {
+        const { cwdDir, homeDir } = createSkillDirs(
+          "different-cwd",
+          "different-home",
+          tempDir,
+        );
+        const toolCwd = path.join(tempDir, "tool-cwd");
+        for (const root of [cwdDir, toolCwd]) {
+          fs.mkdirSync(path.join(root, "src"), { recursive: true });
+          fs.writeFileSync(path.join(root, "src/app.ts"), "actual content");
+        }
+        writeSkillDocument(
+          cwdDir,
+          "scoped",
+          'name: scoped\ndescription: Scoped\npaths: ["src/**"]',
+          "Scoped body",
+        );
+        await withSpiedDirs(toolCwd, homeDir, async () => {
+          const provider = new ToolCallMockProvider("read", {
+            path: absolute ? path.join(cwdDir, "src/app.ts") : "src/app.ts",
+          });
+          const agent = createTestAgent(provider, { cwd: cwdDir, homeDir });
+          const onToolEnd = jest.fn();
+          await agent.streamChat(userSubmission("Read the file"), () => {}, {
+            onToolEnd,
+          });
+          expect(
+            agent.listUserInvocableSkills().map((skill) => skill.name),
+          ).toEqual(absolute ? ["scoped"] : []);
+          expect(onToolEnd).toHaveBeenCalledWith(
+            "read",
+            expect.stringContaining("actual content"),
+            "success",
+          );
+        });
+      },
+    );
+
     it("should not activate path skills from denied tool calls", async () => {
       const { cwdDir, homeDir } = createSkillDirs(
         "skill-path-cwd",
