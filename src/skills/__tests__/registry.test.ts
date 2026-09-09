@@ -1,5 +1,5 @@
-import { SkillRegistry } from "../registry.js";
-import type { Skill } from "../types.js";
+import { SkillRegistry } from "../index.js";
+import type { Skill } from "../index.js";
 
 describe("skill registry", () => {
   function createRegistry(skills: Skill[]): SkillRegistry {

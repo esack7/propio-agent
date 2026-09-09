@@ -3,7 +3,7 @@ import { minimatch } from "minimatch";
 import type {
   InvokedSkillRecord,
   Skill,
-  SkillContext,
+  SkillRegistryContext,
   SkillInvocation,
   SkillInvocationSource,
   SkillLoadDiagnostic,
@@ -15,20 +15,12 @@ import {
   createMissingSkillError,
 } from "./shared.js";
 
-type SkillReloadFn = (context: SkillContext) => {
+type SkillReloadFn = (context: SkillRegistryContext) => {
   readonly skills: Skill[];
   readonly diagnostics: SkillLoadDiagnostic[];
 };
 type SkillBodyLoader = (skillFile: string) => string;
 type SkillMaterializationWarningSink = (message: string) => void;
-
-const SKILL_SOURCE_ORDER: Record<Skill["source"], number> = {
-  project: 0,
-  user: 1,
-  bundled: 2,
-  plugin: 3,
-  mcp: 4,
-};
 
 function normalizePath(value: string): string {
   return path.resolve(value).replace(/\\/g, "/");
@@ -50,19 +42,6 @@ function isPathIgnored(candidate: string): boolean {
   return parts.some((part) =>
     ["dist", "node_modules", ".git", "coverage"].includes(part),
   );
-}
-
-function compareSkills(a: Skill, b: Skill): number {
-  if (a.source !== b.source) {
-    return SKILL_SOURCE_ORDER[a.source] - SKILL_SOURCE_ORDER[b.source];
-  }
-
-  const byName = a.name.localeCompare(b.name);
-  if (byName !== 0) {
-    return byName;
-  }
-
-  return a.skillFile.localeCompare(b.skillFile);
 }
 
 function hasPathActivation(skill: Skill): boolean {
@@ -220,7 +199,7 @@ export class SkillRegistry {
   private invokedSkills: InvokedSkillRecord[] = [];
 
   private constructor(
-    private readonly context: SkillContext,
+    private readonly context: SkillRegistryContext,
     skills: Skill[],
     diagnostics: SkillLoadDiagnostic[],
     private readonly reloadSkills: SkillReloadFn,
@@ -234,7 +213,7 @@ export class SkillRegistry {
   }
 
   static create(
-    context: SkillContext,
+    context: SkillRegistryContext,
     skills: Skill[],
     diagnostics: SkillLoadDiagnostic[],
     reloadSkills: SkillReloadFn,
@@ -398,7 +377,7 @@ export class SkillRegistry {
     const cwd = path.resolve(this.context.cwd);
     const touched = paths
       .map((entry) =>
-        path.relative(cwd, path.resolve(entry)).replace(/\\/g, "/"),
+        path.relative(cwd, path.resolve(cwd, entry)).replace(/\\/g, "/"),
       )
       .filter(
         (entry) =>
@@ -463,7 +442,6 @@ export class SkillRegistry {
 
     this.activeSkillNames = activeSkillNames;
     this.activeSkillsByName = activatedByName;
-    this.skills.sort(compareSkills);
     return Array.from(activatedByName.values());
   }
 }

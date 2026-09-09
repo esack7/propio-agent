@@ -89,10 +89,10 @@ import type {
   SkillLoadDiagnostic,
   SkillInvocationOptions,
   SkillInvocationScope,
-} from "./skills/types.js";
-import { SkillRegistry } from "./skills/registry.js";
+} from "./skills/index.js";
+import { SkillRegistry } from "./skills/index.js";
 import { createMissingSkillError } from "./skills/shared.js";
-import { renderSkillDiscoveryBlock } from "./skills/discovery.js";
+import { renderSkillDiscoveryBlock } from "./skills/index.js";
 import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
 import { inlineSyntheticMentionPairs } from "./fileSearch/syntheticMention.js";
 import { resolveEffectiveToolAllowlist } from "./modes/policies.js";

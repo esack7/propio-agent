@@ -10,7 +10,11 @@
       "types": "./dist/context/index.d.ts",
       "import": "./dist/context/index.js"
     },
-    "./*": "./*"
+    "./*": "./*",
+    "./skills": {
+      "types": "./dist/skills/index.d.ts",
+      "import": "./dist/skills/index.js"
+    }
   },
   "bin": {
     "propio": "./bin/propio.cjs"
@@ -46,6 +50,7 @@
   "files": [
     "dist",
     "examples/context-consumer.mjs",
+    "examples/skills-consumer.mjs",
     "bin/propio.cjs",
     "bin/propio-sandbox",
     "docker-compose.yml",
@@ -70,7 +75,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "fallow:check": "fallow --fail-on-issues",
-    "fallow:audit": "fallow audit --gate all"
+    "fallow:audit": "fallow audit --gate all",
+    "example:skills": "node examples/skills-consumer.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
