@@ -6,7 +6,6 @@ describe("skill registry", () => {
     return SkillRegistry.create(
       {
         cwd: "/repo",
-        homeDir: "/home/test",
       },
       skills,
       [],

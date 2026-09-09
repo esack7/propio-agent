@@ -15,7 +15,7 @@ import {
   createMissingSkillError,
 } from "./shared.js";
 
-type SkillReloadFn = (context: SkillRegistryContext) => {
+type SkillReloadFn = () => {
   readonly skills: Skill[];
   readonly diagnostics: SkillLoadDiagnostic[];
 };
@@ -400,7 +400,7 @@ export class SkillRegistry {
 
   // fallow-ignore-next-line unused-class-member
   refresh(): SkillLoadDiagnostic[] {
-    const result = this.reloadSkills(this.context);
+    const result = this.reloadSkills();
     this.skills = result.skills.map((skill) => cloneSkill(skill));
     this.diagnostics = result.diagnostics.slice();
     this.recomputeActivationState();

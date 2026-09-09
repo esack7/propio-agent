@@ -90,9 +90,9 @@ import type {
   SkillInvocationOptions,
   SkillInvocationScope,
 } from "./skills/index.js";
-import { SkillRegistry } from "./skills/index.js";
+import { SkillRegistry, renderSkillDiscoveryBlock } from "./skills/index.js";
 import { createMissingSkillError } from "./skills/shared.js";
-import { renderSkillDiscoveryBlock } from "./skills/index.js";
+import { normalizeToolPath } from "./tools/shared.js";
 import { AttachmentResolver } from "./fileSearch/attachmentResolver.js";
 import { inlineSyntheticMentionPairs } from "./fileSearch/syntheticMention.js";
 import { resolveEffectiveToolAllowlist } from "./modes/policies.js";
@@ -816,7 +816,7 @@ export class Agent {
     }
     const touchedPaths = this.extractPathsFromToolArgs(args);
     if (touchedPaths.length > 0) {
-      this.recordSkillFileTouch(touchedPaths);
+      this.recordSkillFileTouch(touchedPaths.map(normalizeToolPath));
     }
   }
 

@@ -2,7 +2,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { loadSkills } from "./index.js";
+import { loadSkills } from "./nodeLoader.js";
 import { extractFrontmatterText } from "./parser.js";
 import type { LoadLocalSkillsResult, SkillContext } from "./types.js";
 

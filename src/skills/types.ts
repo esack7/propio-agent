@@ -2,7 +2,6 @@ export type SkillSource = "project" | "user" | "bundled" | "plugin" | "mcp";
 
 export interface SkillRegistryContext {
   readonly cwd: string;
-  readonly homeDir?: string;
 }
 
 export interface SkillContext extends SkillRegistryContext {

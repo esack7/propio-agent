@@ -441,23 +441,28 @@ function parseSkillFrontmatter(
   return { skill, diagnostics };
 }
 
-export function extractFrontmatterText(text: string): string | null {
+function splitSkillDocument(
+  text: string,
+): { frontmatter: string; body: string } | null {
   const content = text.replace(/^\uFEFF/, "");
   const match = content.match(
     /^[ \t]*---[ \t]*\r?\n(?:(?:[ \t]*(?:---|\.\.\.)[ \t]*(?:\r?\n|$))|([\s\S]*?)\r?\n[ \t]*(?:---|\.\.\.)[ \t]*(?:\r?\n|$))/,
   );
+  return match
+    ? { frontmatter: match[1] ?? "", body: content.slice(match[0].length) }
+    : null;
+}
 
-  return match ? (match[1] ?? "") : null;
+export function extractFrontmatterText(text: string): string | null {
+  return splitSkillDocument(text)?.frontmatter ?? null;
 }
 
 export function extractSkillBody(text: string, skillFile: string): string {
-  const content = text.replace(/^\uFEFF/, "");
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)\r?\n?/);
-  if (!match) {
+  const document = splitSkillDocument(text);
+  if (!document) {
     throw new Error(`Skill file is missing valid frontmatter: ${skillFile}`);
   }
-
-  return content.slice(match[0].length);
+  return document.body;
 }
 
 /** Parse metadata without reading files or executing skill instructions. */

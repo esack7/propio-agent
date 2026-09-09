@@ -10,11 +10,11 @@
       "types": "./dist/context/index.d.ts",
       "import": "./dist/context/index.js"
     },
-    "./*": "./*",
     "./skills": {
       "types": "./dist/skills/index.d.ts",
       "import": "./dist/skills/index.js"
-    }
+    },
+    "./*": "./*"
   },
   "bin": {
     "propio": "./bin/propio.cjs"

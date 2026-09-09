@@ -742,6 +742,8 @@ const parsed = parseSkillDocument(
 `workspaceRoot`, discovery `skillRoot` paths and parser `skillFile` paths must be
 absolute. Discovery reads `SKILL.md` inside immediate child directories, including
 symlinked directories, ignoring `dist`, `node_modules`, `.git` and `coverage`.
+Repeated normalized root paths are scanned once, retaining the last source and
+position. Frontmatter and body extraction share the same whitespace-tolerant fences.
 Missing roots are empty; filesystem read errors propagate. Roots are copied when
 loading; `registry.refresh()` rescans those roots and `materialize()` reads the
 current body. There are no watchers or writes. This is a Node filesystem adapter,

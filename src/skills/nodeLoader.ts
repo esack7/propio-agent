@@ -35,9 +35,7 @@ function isSkillDirectoryEntry(skillRoot: string, entry: fs.Dirent): boolean {
   }
 }
 
-function collectSkillDirectories(
-  skillRoot: string,
-): Array<{ readonly directoryName: string; readonly directoryPath: string }> {
+function collectSkillDirectories(skillRoot: string): string[] {
   if (!fs.existsSync(skillRoot)) {
     return [];
   }
@@ -53,15 +51,11 @@ function collectSkillDirectories(
     .filter((entry) => isSkillDirectoryEntry(skillRoot, entry))
     .sort((left, right) => left.name.localeCompare(right.name));
 
-  return entries.map((entry) => ({
-    directoryName: entry.name,
-    directoryPath: path.join(skillRoot, entry.name),
-  }));
+  return entries.map((entry) => path.join(skillRoot, entry.name));
 }
 
 function scanSkillDirectory(
   directoryPath: string,
-  directoryName: string,
   source: SkillSource,
 ): ParsedSkillEntry {
   const skillFile = path.join(directoryPath, "SKILL.md");
@@ -95,11 +89,7 @@ function scanSkillRoot(
   const directories = collectSkillDirectories(root.skillRoot);
   const rootSkills: Skill[] = [];
   for (const entry of directories) {
-    const parsed = scanSkillDirectory(
-      entry.directoryPath,
-      entry.directoryName,
-      root.source,
-    );
+    const parsed = scanSkillDirectory(entry, root.source);
     diagnostics.push(...parsed.diagnostics);
     if (parsed.skill) {
       rootSkills.push(parsed.skill);
@@ -163,12 +153,17 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
   if (!path.isAbsolute(options.workspaceRoot)) {
     throw new Error("workspaceRoot must be an absolute path.");
   }
-  const roots = options.roots.map((root) => {
+  const rootsByPath = new Map<string, SkillDiscoveryRoot>();
+  for (const root of options.roots) {
     if (!path.isAbsolute(root.skillRoot)) {
       throw new Error("Every skillRoot must be an absolute path.");
     }
-    return { ...root };
-  });
+    const skillRoot = path.resolve(root.skillRoot);
+    // Retain the last occurrence and its position to preserve override order.
+    rootsByPath.delete(skillRoot);
+    rootsByPath.set(skillRoot, { ...root, skillRoot });
+  }
+  const roots = [...rootsByPath.values()];
   const reload = () => scanSkills(roots);
   const result = reload();
   const registry = SkillRegistry.create(

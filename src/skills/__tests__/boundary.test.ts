@@ -36,6 +36,60 @@ describe("public skills boundary", () => {
     return file;
   }
 
+  it.each([
+    ["--- \n", "---\n"],
+    ["  ---\n", "---\n"],
+    ["\uFEFF---\r\n", "... \r\n"],
+    ["---\n", "  --- \n"],
+    ["---\n", "..."],
+  ])("materializes every accepted fence form (%j, %j)", (open, close) => {
+    const file = writeSkill(roots[0]);
+    const body = close.endsWith("\n")
+      ? "Body stays intact\n---\nMore body"
+      : "";
+    fs.writeFileSync(file, `${open}description: Example\n${close}${body}`);
+    const { registry, diagnostics } = loadSkills({
+      workspaceRoot: workspace,
+      roots,
+    });
+    expect(diagnostics).toEqual([]);
+    expect(registry.materialize("example")).toBe(
+      `Base directory for this skill: ${path.dirname(file)}` +
+        (body ? `\n${body}` : ""),
+    );
+  });
+
+  it("scans a repeated normalized root once, retaining its last source and position", () => {
+    roots.forEach((root) => writeSkill(root));
+    const repeated = {
+      source: "plugin" as const,
+      skillRoot: `${roots[0].skillRoot}/../skills`,
+    };
+    const { registry, diagnostics } = loadSkills({
+      workspaceRoot: workspace,
+      roots: [...roots, repeated],
+    });
+    expect(registry.list().map((skill) => skill.source)).toEqual([
+      "user",
+      "plugin",
+    ]);
+    expect(registry.get("example")?.source).toBe("plugin");
+    expect(diagnostics).toHaveLength(1);
+    registry.refresh();
+    expect(registry.list()).toHaveLength(2);
+  });
+
+  it("does not report duplicate skills when the CLI workspace is home", () => {
+    writeSkill(roots[0]);
+    const { registry, diagnostics } = loadLocalSkills({
+      cwd: workspace,
+      homeDir: workspace,
+    });
+    expect(registry.list()).toHaveLength(1);
+    expect(registry.get("example")?.source).toBe("user");
+    expect(diagnostics).toEqual([]);
+  });
+
   it("matches the CLI adapter for identical supplied roots and diagnostics", () => {
     roots.forEach((root) => writeSkill(root));
     const cli = loadLocalSkills({
@@ -43,6 +97,32 @@ describe("public skills boundary", () => {
       homeDir: path.join(workspace, "home"),
     });
     const catalog = loadSkills({ workspaceRoot: workspace, roots });
+    // Fixed legacy expectations, independent of either implementation.
+    expect(catalog.registry.list()).toEqual([
+      {
+        name: "example",
+        description: "project",
+        source: "project",
+        skillRoot: path.join(workspace, ".propio/skills/example"),
+        skillFile: path.join(workspace, ".propio/skills/example/SKILL.md"),
+      },
+      {
+        name: "example",
+        description: "user",
+        source: "user",
+        skillRoot: path.join(workspace, "home/.propio/skills/example"),
+        skillFile: path.join(workspace, "home/.propio/skills/example/SKILL.md"),
+      },
+    ]);
+    expect(catalog.diagnostics).toEqual([
+      {
+        severity: "error",
+        code: "duplicate_skill_name",
+        skillName: "example",
+        skillPath: path.join(workspace, ".propio/skills/example/SKILL.md"),
+        message: `Skill name "example" is defined multiple times:\n- ${path.join(workspace, ".propio/skills/example/SKILL.md")}\n- ${path.join(workspace, "home/.propio/skills/example/SKILL.md")}`,
+      },
+    ]);
     expect(catalog.registry.list()).toEqual(cli.registry.list());
     expect(catalog.diagnostics).toEqual(cli.diagnostics);
     expect(catalog.registry.get("example")?.source).toBe("user");
