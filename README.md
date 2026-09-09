@@ -658,6 +658,58 @@ Structured session state is managed under `src/context/`.
 
 The CLI exposes this state through `/context`, `/context prompt`, `/context memory`, `--show-context-stats`, and `--show-prompt-plan`.
 
+### Reusable context API
+
+The provisional `@propio-ai/agent/context` entry point exposes context management
+without CLI startup, configuration loading, workspace discovery, or filesystem
+writes. It requires Node.js 20+ and uses the common provider message contracts.
+
+```typescript
+import { ConversationManager } from "@propio-ai/agent/context";
+
+const context = new ConversationManager();
+context.beginUserTurn("Explain this text.");
+const plan = context.buildPromptPlan("Be concise.", undefined, {
+  contextWindowTokens: 32000,
+  supplementalContext: ["Text supplied by the application."],
+});
+// Pass plan.messages to your provider.
+```
+
+From the package directory, run `npm run example:context` for a complete in-memory
+consumer, including serialization. Build first when running from a source checkout;
+the published package includes the example and compiled context API.
+This API is an initial boundary inside the
+agent package; a separate context package and production consumer are future work.
+
+- `ConversationManager` owns turns, in-memory artifacts, pinned memory and summaries.
+  The CLI's `ContextManager` adapter owns skill records and synthetic mention cleanup.
+  Rendered supplemental contributions follow pinned memory in caller-supplied order.
+- Pass a `tokenEstimator` to the manager, `PromptBuilder`, or `SummaryManager`.
+  Implement `estimateText`, `estimateMessages`, and `estimateCharacters`.
+  The default retains `ceil(characters / 4)`; image bytes/data-URL lengths and
+  provider-specific framing are only approximations. Estimates are advisory,
+  and required current-turn content can exceed a prompt budget.
+  All estimators measure rendered turn messages and summary blocks. Compared with
+  the previous CLI budgeting, counting tool-result formatting and truncation
+  notices can retain fewer older turns near the limit. The rendered summary
+  replaces the previous fixed wrapper estimate, which can also change selection.
+- Pass an optional synchronous `artifactLookup(id)` to the manager to resolve
+  caller-owned content; returning `undefined` falls back to its in-memory store.
+  Artifact external paths are opaque metadata. The caller owns output-file
+  storage, scratchpad allocation, and any filesystem access.
+- `SummaryManager.generateSummary` accepts either a provider's `streamChat`
+  contract or an async callback receiving the model, messages and abort signal.
+  Consumers choose providers and models and schedule summary refreshes.
+- `serializeContext` / `parseContext` encode and validate a core document at
+  version 1. They perform no file access. Applications keep their own state
+  envelopes; these functions do not encode CLI skills or mode/plan metadata.
+  CLI sessions continue using the application codec: versions 1–4 load and
+  version 4 is written, preserving images and opaque reasoning continuation.
+
+The context API assumes sequential mutation. Browser portability, simultaneous
+session writers and cross-process locking are not guaranteed.
+
 ### Tool registry
 
 `src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.

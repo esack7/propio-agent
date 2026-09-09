@@ -1,9 +1,8 @@
 import { ChatMessage } from "@propio-ai/providers";
 import {
-  estimateTokens,
-  measureMessages,
-  messageChars,
-} from "../diagnostics.js";
+  characterTokenEstimator,
+  type TokenEstimator,
+} from "./tokenEstimator.js";
 import {
   PromptPlan,
   PromptBudgetPolicy,
@@ -14,7 +13,7 @@ import {
   ArtifactRecord,
   RollingSummaryRecord,
   RollingSummarySections,
-} from "./types.js";
+} from "./coreTypes.js";
 import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
 // ---------------------------------------------------------------------------
@@ -27,8 +26,8 @@ export interface PromptBuildRequest {
   readonly runtimeContextOverflowBlock?: string;
   /** Pre-rendered pinned memory block (from memoryManager.renderPinnedMemoryBlock). */
   readonly pinnedMemoryBlock?: string;
-  /** Pre-rendered invoked skill block. */
-  readonly invokedSkillsBlock?: string;
+  /** Rendered application contributions in caller-supplied order. */
+  readonly supplementalContext?: ReadonlyArray<string>;
   readonly conversationState: ConversationState;
   readonly contextWindowTokens: number;
   readonly policy: PromptBudgetPolicy;
@@ -52,9 +51,6 @@ export interface PromptBuildRequest {
 // ---------------------------------------------------------------------------
 
 const REHYDRATION_MAX_CHARS = 12000;
-
-// Approximate overhead of the <session_summary> wrapper tags + newlines (or ## Session Summary block)
-const SESSION_SUMMARY_WRAPPER_OVERHEAD = 100;
 
 function capForRehydration(
   rawContent: string,
@@ -88,6 +84,9 @@ const RETRY_LEVELS: RetryLevelConfig[] = [
 // ---------------------------------------------------------------------------
 
 export class PromptBuilder {
+  constructor(
+    private readonly tokenEstimator: TokenEstimator = characterTokenEstimator,
+  ) {}
   /**
    * Compose the base system prompt with pinned memory appended. The
    * pinned memory block is placed after the system prompt and before
@@ -101,9 +100,7 @@ export class PromptBuilder {
     if (request.pinnedMemoryBlock) {
       blocks.push(request.pinnedMemoryBlock);
     }
-    if (request.invokedSkillsBlock) {
-      blocks.push(request.invokedSkillsBlock);
-    }
+    blocks.push(...(request.supplementalContext ?? []));
     return blocks.join("\n\n");
   }
 
@@ -143,11 +140,12 @@ export class PromptBuilder {
       messages.push({ role: "user", content: request.extraUserInstruction });
     }
 
-    const metrics = measureMessages(messages);
+    const estimatedPromptTokens =
+      this.tokenEstimator.estimateMessages(messages);
 
     return {
       messages,
-      estimatedPromptTokens: metrics.estimatedTokens,
+      estimatedPromptTokens,
       reservedOutputTokens: request.policy.reservedOutputTokens,
       includedTurnIds,
       includedArtifactIds,
@@ -205,8 +203,8 @@ export class PromptBuilder {
 
     let rollingSummaryTokens = 0;
     if (request.rollingSummary) {
-      rollingSummaryTokens = estimateTokens(
-        request.rollingSummary.length + SESSION_SUMMARY_WRAPPER_OVERHEAD,
+      rollingSummaryTokens = this.tokenEstimator.estimateText(
+        this.renderSummaryBlock(request),
       );
     }
 
@@ -215,7 +213,7 @@ export class PromptBuilder {
     // We then check whether the summary actually covers all of them. ---
 
     const systemBase = this.composeSystemBase(request);
-    const baseSystemTokens = estimateTokens(systemBase.length);
+    const baseSystemTokens = this.tokenEstimator.estimateText(systemBase);
 
     // Reserve budget for current turn
     let currentTurnTokens = 0;
@@ -230,14 +228,14 @@ export class PromptBuilder {
 
     let extraInstructionTokens = 0;
     if (request.extraUserInstruction) {
-      extraInstructionTokens = estimateTokens(
-        request.extraUserInstruction.length,
+      extraInstructionTokens = this.tokenEstimator.estimateText(
+        request.extraUserInstruction,
       );
     }
 
     let preambleTokens = 0;
     for (const msg of request.conversationState.preamble) {
-      preambleTokens += estimateTokens(messageChars(msg));
+      preambleTokens += this.tokenEstimator.estimateMessages([msg]);
     }
 
     const fixedOverhead =
@@ -698,50 +696,22 @@ export class PromptBuilder {
   // Token estimation for turns
   // -----------------------------------------------------------------------
 
-  // fallow-ignore-next-line complexity
   private estimateTurnTokens(
     turn: TurnRecord,
     request: PromptBuildRequest,
     isCurrentTurn: boolean,
     artifactCap: number,
   ): number {
-    let chars = messageChars(turn.userMessage);
-
-    let lastAssistantIdx = -1;
-    if (isCurrentTurn) {
-      lastAssistantIdx = findLastAssistantEntryIndex(turn.entries);
-    }
-
-    for (let i = 0; i < turn.entries.length; i++) {
-      const entry = turn.entries[i];
-      const isUnresolved =
-        isCurrentTurn &&
-        i > lastAssistantIdx &&
-        entry.kind === "tool" &&
-        "toolInvocations" in entry;
-
-      if (isUnresolved && entry.kind === "tool" && entry.toolInvocations) {
-        // Estimate using rehydrated content size
-        let entryChars = 0;
-        for (const inv of entry.toolInvocations) {
-          const artifact = request.artifactLookup(inv.artifactId);
-          if (artifact && typeof artifact.content === "string") {
-            const effectiveCap = Math.min(
-              artifactCap,
-              request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS,
-            );
-            entryChars += Math.min(artifact.content.length, effectiveCap);
-          } else {
-            entryChars += inv.resultSummary.length;
-          }
-        }
-        chars += entryChars;
-      } else {
-        chars += messageChars(entry.message);
-      }
-    }
-
-    return estimateTokens(chars);
+    const messages: ChatMessage[] = [];
+    this.appendTurnMessages(
+      messages,
+      turn,
+      request,
+      isCurrentTurn,
+      artifactCap,
+      [],
+    );
+    return this.tokenEstimator.estimateMessages(messages);
   }
 }
 
