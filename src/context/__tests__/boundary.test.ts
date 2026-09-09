@@ -8,6 +8,7 @@ import {
   DEFAULT_SUMMARY_POLICY,
   DEFAULT_BUDGET_POLICY,
   type TokenEstimator,
+  type ConversationState,
 } from "../index.js";
 import { ContextManager } from "../contextManager.js";
 import {
@@ -23,6 +24,20 @@ import {
 import { legacySessionFixture } from "./fixtures/legacySessions.js";
 
 describe("reusable context boundary", () => {
+  it("serializes omitted pinned memory from JavaScript consumers as an empty list", () => {
+    const state = {
+      preamble: [],
+      turns: [],
+      artifacts: [],
+    } as unknown as ConversationState;
+    expect(parseContext(serializeContext(state)).pinnedMemory).toEqual([]);
+    expect(
+      restoreConversationState(
+        parseSession(serializeSession(state, TEST_METADATA)),
+      ).pinnedMemory,
+    ).toEqual([]);
+  });
+
   it.each([0, 1, 2, 3])(
     "preserves prompt plans and tool associations at retry level %i",
     (retryLevel) => {

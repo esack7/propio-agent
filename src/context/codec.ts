@@ -683,7 +683,7 @@ export function encodeConversationState(
     preamble: state.preamble.map(persistMessage),
     turns: state.turns.map(persistTurn),
     artifacts: state.artifacts.map(persistArtifact),
-    pinnedMemory: state.pinnedMemory.map(persistPinnedMemory),
+    pinnedMemory: (state.pinnedMemory ?? []).map(persistPinnedMemory),
     ...(state.rollingSummary
       ? { rollingSummary: structuredClone(state.rollingSummary) }
       : {}),

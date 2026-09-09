@@ -2,7 +2,6 @@ import { ChatMessage } from "@propio-ai/providers";
 import {
   characterTokenEstimator,
   type TokenEstimator,
-  messageChars,
 } from "./tokenEstimator.js";
 import {
   PromptPlan,
@@ -52,9 +51,6 @@ export interface PromptBuildRequest {
 // ---------------------------------------------------------------------------
 
 const REHYDRATION_MAX_CHARS = 12000;
-
-// Approximate overhead of the <session_summary> wrapper tags + newlines (or ## Session Summary block)
-const SESSION_SUMMARY_WRAPPER_OVERHEAD = 100;
 
 function capForRehydration(
   rawContent: string,
@@ -207,12 +203,9 @@ export class PromptBuilder {
 
     let rollingSummaryTokens = 0;
     if (request.rollingSummary) {
-      rollingSummaryTokens =
-        this.tokenEstimator === characterTokenEstimator
-          ? this.tokenEstimator.estimateCharacters(
-              request.rollingSummary.length + SESSION_SUMMARY_WRAPPER_OVERHEAD,
-            )
-          : this.tokenEstimator.estimateText(this.renderSummaryBlock(request));
+      rollingSummaryTokens = this.tokenEstimator.estimateText(
+        this.renderSummaryBlock(request),
+      );
     }
 
     // --- First pass: select turns WITHOUT assuming the summary is used.
@@ -703,62 +696,22 @@ export class PromptBuilder {
   // Token estimation for turns
   // -----------------------------------------------------------------------
 
-  // fallow-ignore-next-line complexity
   private estimateTurnTokens(
     turn: TurnRecord,
     request: PromptBuildRequest,
     isCurrentTurn: boolean,
     artifactCap: number,
   ): number {
-    if (this.tokenEstimator !== characterTokenEstimator) {
-      const messages: ChatMessage[] = [];
-      this.appendTurnMessages(
-        messages,
-        turn,
-        request,
-        isCurrentTurn,
-        artifactCap,
-        [],
-      );
-      return this.tokenEstimator.estimateMessages(messages);
-    }
-    let chars = messageChars(turn.userMessage);
-
-    let lastAssistantIdx = -1;
-    if (isCurrentTurn) {
-      lastAssistantIdx = findLastAssistantEntryIndex(turn.entries);
-    }
-
-    for (let i = 0; i < turn.entries.length; i++) {
-      const entry = turn.entries[i];
-      const isUnresolved =
-        isCurrentTurn &&
-        i > lastAssistantIdx &&
-        entry.kind === "tool" &&
-        "toolInvocations" in entry;
-
-      if (isUnresolved && entry.kind === "tool" && entry.toolInvocations) {
-        // Estimate using rehydrated content size
-        let entryChars = 0;
-        for (const inv of entry.toolInvocations) {
-          const artifact = request.artifactLookup(inv.artifactId);
-          if (artifact && typeof artifact.content === "string") {
-            const effectiveCap = Math.min(
-              artifactCap,
-              request.rehydrationMaxChars ?? REHYDRATION_MAX_CHARS,
-            );
-            entryChars += Math.min(artifact.content.length, effectiveCap);
-          } else {
-            entryChars += inv.resultSummary.length;
-          }
-        }
-        chars += entryChars;
-      } else {
-        chars += messageChars(entry.message);
-      }
-    }
-
-    return this.tokenEstimator.estimateCharacters(chars);
+    const messages: ChatMessage[] = [];
+    this.appendTurnMessages(
+      messages,
+      turn,
+      request,
+      isCurrentTurn,
+      artifactCap,
+      [],
+    );
+    return this.tokenEstimator.estimateMessages(messages);
   }
 }
 

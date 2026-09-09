@@ -45,6 +45,7 @@
   },
   "files": [
     "dist",
+    "examples/context-consumer.mjs",
     "bin/propio.cjs",
     "bin/propio-sandbox",
     "docker-compose.yml",
