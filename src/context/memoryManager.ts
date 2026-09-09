@@ -6,7 +6,7 @@ import {
   MemoryScope,
   MemoryOrigin,
   MemoryLifecycle,
-} from "./types.js";
+} from "./coreTypes.js";
 
 // ---------------------------------------------------------------------------
 // Validation

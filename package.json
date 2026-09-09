@@ -4,6 +4,14 @@
   "description": "Multi-provider AI agent CLI supporting Ollama, Bedrock, OpenRouter, OpenAI, Meta, Gemini, xAI, Cloudflare, and Anthropic",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./context": {
+      "types": "./dist/context/index.d.ts",
+      "import": "./dist/context/index.js"
+    },
+    "./*": "./*"
+  },
   "bin": {
     "propio": "./bin/propio.cjs"
   },
@@ -54,6 +62,7 @@
     "prepack": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "example:context": "node examples/context-consumer.mjs",
     "test": "NODE_OPTIONS=\"--experimental-vm-modules --disable-warning=ExperimentalWarning\" jest",
     "test:watch": "NODE_OPTIONS=\"--experimental-vm-modules --disable-warning=ExperimentalWarning\" jest --watch",
     "test:openrouter": "NODE_OPTIONS=\"--experimental-vm-modules --disable-warning=ExperimentalWarning\" jest openrouter",

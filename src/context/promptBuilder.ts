@@ -1,9 +1,9 @@
 import { ChatMessage } from "@propio-ai/providers";
 import {
-  estimateTokens,
-  measureMessages,
+  characterTokenEstimator,
+  type TokenEstimator,
   messageChars,
-} from "../diagnostics.js";
+} from "./tokenEstimator.js";
 import {
   PromptPlan,
   PromptBudgetPolicy,
@@ -14,7 +14,7 @@ import {
   ArtifactRecord,
   RollingSummaryRecord,
   RollingSummarySections,
-} from "./types.js";
+} from "./coreTypes.js";
 import { findLastAssistantEntryIndex } from "./turnUtils.js";
 
 // ---------------------------------------------------------------------------
@@ -27,8 +27,8 @@ export interface PromptBuildRequest {
   readonly runtimeContextOverflowBlock?: string;
   /** Pre-rendered pinned memory block (from memoryManager.renderPinnedMemoryBlock). */
   readonly pinnedMemoryBlock?: string;
-  /** Pre-rendered invoked skill block. */
-  readonly invokedSkillsBlock?: string;
+  /** Rendered application contributions in caller-supplied order. */
+  readonly supplementalContext?: ReadonlyArray<string>;
   readonly conversationState: ConversationState;
   readonly contextWindowTokens: number;
   readonly policy: PromptBudgetPolicy;
@@ -88,6 +88,9 @@ const RETRY_LEVELS: RetryLevelConfig[] = [
 // ---------------------------------------------------------------------------
 
 export class PromptBuilder {
+  constructor(
+    private readonly tokenEstimator: TokenEstimator = characterTokenEstimator,
+  ) {}
   /**
    * Compose the base system prompt with pinned memory appended. The
    * pinned memory block is placed after the system prompt and before
@@ -101,9 +104,7 @@ export class PromptBuilder {
     if (request.pinnedMemoryBlock) {
       blocks.push(request.pinnedMemoryBlock);
     }
-    if (request.invokedSkillsBlock) {
-      blocks.push(request.invokedSkillsBlock);
-    }
+    blocks.push(...(request.supplementalContext ?? []));
     return blocks.join("\n\n");
   }
 
@@ -143,11 +144,12 @@ export class PromptBuilder {
       messages.push({ role: "user", content: request.extraUserInstruction });
     }
 
-    const metrics = measureMessages(messages);
+    const estimatedPromptTokens =
+      this.tokenEstimator.estimateMessages(messages);
 
     return {
       messages,
-      estimatedPromptTokens: metrics.estimatedTokens,
+      estimatedPromptTokens,
       reservedOutputTokens: request.policy.reservedOutputTokens,
       includedTurnIds,
       includedArtifactIds,
@@ -205,9 +207,12 @@ export class PromptBuilder {
 
     let rollingSummaryTokens = 0;
     if (request.rollingSummary) {
-      rollingSummaryTokens = estimateTokens(
-        request.rollingSummary.length + SESSION_SUMMARY_WRAPPER_OVERHEAD,
-      );
+      rollingSummaryTokens =
+        this.tokenEstimator === characterTokenEstimator
+          ? this.tokenEstimator.estimateCharacters(
+              request.rollingSummary.length + SESSION_SUMMARY_WRAPPER_OVERHEAD,
+            )
+          : this.tokenEstimator.estimateText(this.renderSummaryBlock(request));
     }
 
     // --- First pass: select turns WITHOUT assuming the summary is used.
@@ -215,7 +220,7 @@ export class PromptBuilder {
     // We then check whether the summary actually covers all of them. ---
 
     const systemBase = this.composeSystemBase(request);
-    const baseSystemTokens = estimateTokens(systemBase.length);
+    const baseSystemTokens = this.tokenEstimator.estimateText(systemBase);
 
     // Reserve budget for current turn
     let currentTurnTokens = 0;
@@ -230,14 +235,14 @@ export class PromptBuilder {
 
     let extraInstructionTokens = 0;
     if (request.extraUserInstruction) {
-      extraInstructionTokens = estimateTokens(
-        request.extraUserInstruction.length,
+      extraInstructionTokens = this.tokenEstimator.estimateText(
+        request.extraUserInstruction,
       );
     }
 
     let preambleTokens = 0;
     for (const msg of request.conversationState.preamble) {
-      preambleTokens += estimateTokens(messageChars(msg));
+      preambleTokens += this.tokenEstimator.estimateMessages([msg]);
     }
 
     const fixedOverhead =
@@ -705,6 +710,18 @@ export class PromptBuilder {
     isCurrentTurn: boolean,
     artifactCap: number,
   ): number {
+    if (this.tokenEstimator !== characterTokenEstimator) {
+      const messages: ChatMessage[] = [];
+      this.appendTurnMessages(
+        messages,
+        turn,
+        request,
+        isCurrentTurn,
+        artifactCap,
+        [],
+      );
+      return this.tokenEstimator.estimateMessages(messages);
+    }
     let chars = messageChars(turn.userMessage);
 
     let lastAssistantIdx = -1;
@@ -741,7 +758,7 @@ export class PromptBuilder {
       }
     }
 
-    return estimateTokens(chars);
+    return this.tokenEstimator.estimateCharacters(chars);
   }
 }
 

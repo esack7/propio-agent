@@ -1,5 +1,9 @@
-import { estimateTokens, measureMessages } from "../diagnostics.js";
-import { LLMProvider } from "@propio-ai/providers";
+import {
+  characterTokenEstimator,
+  type TokenEstimator,
+  measureMessages,
+} from "./tokenEstimator.js";
+import type { LLMProvider, ChatRequest } from "@propio-ai/providers";
 import {
   RollingSummaryRecord,
   RollingSummarySections,
@@ -7,7 +11,7 @@ import {
   DEFAULT_SUMMARY_POLICY,
   TurnRecord,
   TurnEntry,
-} from "./types.js";
+} from "./coreTypes.js";
 
 // ---------------------------------------------------------------------------
 // Summarization prompt template
@@ -220,6 +224,9 @@ export interface SummaryRequestMetrics {
   readonly estimatedPromptTokens: number;
 }
 
+/** A consumer may supply its own summarizer instead of a provider adapter. */
+export type SummaryGenerator = (request: ChatRequest) => Promise<string>;
+
 export interface SummaryGenerationHooks {
   readonly onRequestMeasured?: (metrics: SummaryRequestMetrics) => void;
 }
@@ -238,14 +245,28 @@ function parseSummarySections(
 }
 
 async function collectSummaryContent(
-  provider: LLMProvider,
+  provider: Pick<LLMProvider, "streamChat"> | SummaryGenerator,
   model: string,
   messages: Array<{ role: "system" | "user"; content: string }>,
   signal?: AbortSignal,
 ): Promise<string> {
+  if (signal?.aborted) throw new Error("Summary generation cancelled");
+  const content =
+    typeof provider === "function"
+      ? await provider({ model, messages, signal })
+      : await collectProviderSummary(provider, { model, messages, signal });
+  if (signal?.aborted) throw new Error("Summary generation cancelled");
+  return content.trim();
+}
+
+async function collectProviderSummary(
+  provider: Pick<LLMProvider, "streamChat">,
+  request: ChatRequest,
+): Promise<string> {
   let content = "";
-  for await (const event of provider.streamChat({ model, messages, signal })) {
-    if (signal?.aborted) throw new Error("Summary generation cancelled");
+  for await (const event of provider.streamChat(request)) {
+    if (request.signal?.aborted)
+      throw new Error("Summary generation cancelled");
     const delta =
       "type" in event
         ? event.type === "assistant_text"
@@ -261,6 +282,7 @@ function buildSummaryRecord(
   content: string,
   sections: RollingSummarySections | undefined,
   eligibleTurns: ReadonlyArray<TurnRecord>,
+  tokenEstimator: TokenEstimator,
 ): RollingSummaryRecord {
   const renderedContent = sections
     ? renderSectionsToContent(sections)
@@ -269,7 +291,7 @@ function buildSummaryRecord(
     content: renderedContent,
     updatedAt: new Date().toISOString(),
     coveredTurnIds: eligibleTurns.map((turn) => turn.id),
-    estimatedTokens: estimateTokens(renderedContent.length),
+    estimatedTokens: tokenEstimator.estimateText(renderedContent),
     ...(sections ? { sections } : {}),
   };
 }
@@ -283,6 +305,9 @@ function buildSummaryRecord(
  * storage and scheduling live in ContextManager and Agent respectively.
  */
 export class SummaryManager {
+  constructor(
+    private readonly tokenEstimator: TokenEstimator = characterTokenEstimator,
+  ) {}
   /**
    * Generate an incremental rolling summary. Only the *newly eligible*
    * turns (those not already covered by `previousSummary`) are serialized
@@ -290,7 +315,7 @@ export class SummaryManager {
    * resulting coverage set spans all `eligibleTurns`.
    */
   async generateSummary(
-    provider: LLMProvider,
+    provider: Pick<LLMProvider, "streamChat"> | SummaryGenerator,
     model: string,
     eligibleTurns: ReadonlyArray<TurnRecord>,
     previousSummary: RollingSummaryRecord | undefined,
@@ -325,7 +350,7 @@ export class SummaryManager {
     hooks?.onRequestMeasured?.({
       promptMessageCount: requestMetrics.messageCount,
       promptChars: requestMetrics.totalChars,
-      estimatedPromptTokens: requestMetrics.estimatedTokens,
+      estimatedPromptTokens: this.tokenEstimator.estimateMessages(messages),
     });
 
     const content = await collectSummaryContent(
@@ -338,6 +363,7 @@ export class SummaryManager {
       content,
       parseSummarySections(content),
       eligibleTurns,
+      this.tokenEstimator,
     );
 
     return {
