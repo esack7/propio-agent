@@ -1,4 +1,6 @@
-import { ExecutableTool } from "./interface.js";
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
@@ -7,7 +9,7 @@ import {
   readUtf8TextFile,
 } from "./shared.js";
 
-export interface GrepToolConfig {
+export interface GrepToolConfig extends PathToolOptions {
   readonly outputInlineLimit?: number;
 }
 
@@ -49,12 +51,15 @@ async function collectFileMatches(
   }
 }
 
-export class GrepTool implements ExecutableTool {
+export class GrepTool implements PresentedTool {
   readonly name = "grep";
   readonly description = "Search file contents recursively.";
   private readonly outputInlineLimit: number;
 
+  private readonly resolvePath: (rawPath: unknown) => string;
+
   constructor(config?: GrepToolConfig) {
+    this.resolvePath = config?.resolvePath ?? normalizeToolPath;
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
   }
 
@@ -132,7 +137,11 @@ export class GrepTool implements ExecutableTool {
     };
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<string> {
+    context.signal?.throwIfAborted();
     const rawPath = args.path;
     const pattern = args.pattern;
     const useRegex = args.regex === true;
@@ -141,13 +150,14 @@ export class GrepTool implements ExecutableTool {
       throw new Error("pattern must be a non-empty string");
     }
 
-    const rootPath = normalizeToolPath(rawPath);
+    const rootPath = this.resolvePath(rawPath);
 
     const matchesLine = createLineMatcher(pattern, useRegex);
 
     const files = await collectFilesForSearch(rootPath);
     const matches: string[] = [];
     for (const filePath of files) {
+      context.signal?.throwIfAborted();
       matches.push(...(await collectFileMatches(filePath, matchesLine)));
     }
 

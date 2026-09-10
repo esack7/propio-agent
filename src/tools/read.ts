@@ -1,14 +1,17 @@
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
-import { ExecutableTool } from "./interface.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
   normalizeToolPath,
+  throwFileOperationError,
   readUtf8TextFile,
   throwToolPathAccessError,
 } from "./shared.js";
 
-export interface ReadToolConfig {
+export interface ReadToolConfig extends PathToolOptions {
   readonly outputInlineLimit?: number;
 }
 
@@ -33,12 +36,15 @@ function throwReadFileSystemError(
   throwToolPathAccessError(err, rawPath);
 }
 
-export class ReadTool implements ExecutableTool {
+export class ReadTool implements PresentedTool {
   readonly name = "read";
   readonly description = "Read a text file.";
   private readonly outputInlineLimit: number;
 
+  private readonly resolvePath: (rawPath: unknown) => string;
+
   constructor(config?: ReadToolConfig) {
+    this.resolvePath = config?.resolvePath ?? normalizeToolPath;
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
   }
 
@@ -177,14 +183,16 @@ export class ReadTool implements ExecutableTool {
       this.rethrowKnownReadMessageErrors(err);
     }
     throwReadFileSystemError(err, rawPath, path);
-    throw new Error(
-      `Failed to read file: ${(err as Error).message || String(error)}`,
-    );
+    throwFileOperationError(error, "read");
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<string> {
+    context.signal?.throwIfAborted();
     const rawPath = args.path;
-    const path = normalizeToolPath(rawPath);
+    const path = this.resolvePath(rawPath);
     const startLine = args.startLine as number | undefined;
     const lineCount = args.lineCount as number | undefined;
     const offset = args.offset as number | undefined;

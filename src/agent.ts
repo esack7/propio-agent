@@ -26,7 +26,7 @@ import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import type { BashGlobalInstallGateConfig } from "./tools/bash.js";
 import type { GlobalInstallApprovalRequest } from "./tools/globalInstallGuard.js";
-import { ExecutableTool } from "./tools/interface.js";
+import { PresentedTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
 import type {
   ToolExecutionResult,
@@ -519,6 +519,7 @@ export class Agent {
     name: string,
     args: Record<string, unknown>,
     allowedTools?: ReadonlySet<string>,
+    signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
     if (allowedTools && !allowedTools.has(name)) {
       return {
@@ -559,7 +560,7 @@ export class Agent {
     }
 
     if (this.toolRegistry.hasTool(name)) {
-      return await this.toolRegistry.executeWithStatus(name, args);
+      return await this.toolRegistry.executeWithStatus(name, args, { signal });
     }
 
     if (this.mcpManager.hasTool(name)) {
@@ -1685,9 +1686,14 @@ export class Agent {
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    // Escape abort stops awaiting the tool; the subprocess/MCP call may still run.
+    // Local tools receive cooperative cancellation; integrations may still run.
     const execResult = await this.awaitWithAbortSignal(
-      this.executeToolWithStatus(toolName, args ?? {}, allowedTools),
+      this.executeToolWithStatus(
+        toolName,
+        args ?? {},
+        allowedTools,
+        abortSignal,
+      ),
       abortSignal,
     );
     this.throwIfAbortCancelled(abortSignal);
@@ -2943,7 +2949,7 @@ export class Agent {
     return this.toolRegistry.getToolSummaries();
   }
 
-  addTool(tool: ExecutableTool): void {
+  addTool(tool: PresentedTool): void {
     this.toolRegistry.register(tool, true);
   }
 

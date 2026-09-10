@@ -1,5 +1,5 @@
 import { ChatTool } from "@propio-ai/providers";
-import { ExecutableTool } from "./interface.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 
 export interface SkillToolInvoker {
@@ -12,7 +12,7 @@ export interface SkillToolInvoker {
   ): Promise<string>;
 }
 
-export class SkillTool implements ExecutableTool {
+export class SkillTool implements PresentedTool {
   readonly name = "skill";
   readonly description = "Activate a loaded inline skill.";
 

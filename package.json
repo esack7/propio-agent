@@ -18,7 +18,11 @@
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js"
     },
-    "./*": "./*"
+    "./*": "./*",
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    }
   },
   "bin": {
     "propio": "./bin/propio.cjs"
@@ -62,7 +66,8 @@
     "Dockerfile",
     "LICENSE",
     "README.md",
-    "npm-shrinkwrap.json"
+    "npm-shrinkwrap.json",
+    "examples/tools-consumer.mjs"
   ],
   "engines": {
     "node": ">=20"
@@ -82,7 +87,8 @@
     "fallow:check": "fallow --fail-on-issues",
     "fallow:audit": "fallow audit --gate all",
     "example:skills": "node examples/skills-consumer.mjs",
-    "example:mcp": "node examples/mcp-consumer.mjs"
+    "example:mcp": "node examples/mcp-consumer.mjs",
+    "example:tools": "node examples/tools-consumer.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

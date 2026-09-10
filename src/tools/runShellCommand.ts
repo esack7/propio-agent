@@ -333,6 +333,9 @@ async function runWithSpawn(
 export async function runShellCommand(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
+  if (options.abortSignal?.aborted) {
+    return { stdout: "", stderr: CANCEL_MESSAGE, exitCode: -1, aborted: true };
+  }
   if (options.abortSignal) {
     return runWithSpawn(options);
   }

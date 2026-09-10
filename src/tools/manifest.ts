@@ -1,16 +1,12 @@
-import { BashTool, type BashGlobalInstallGateConfig } from "./bash.js";
-import { EditTool } from "./edit.js";
-import { FindTool } from "./find.js";
-import { GrepTool } from "./grep.js";
-import { LsTool } from "./ls.js";
-import { ReadTool } from "./read.js";
+import { createLocalToolDefinitions } from "./localTools.js";
+import { executeNodeShell } from "./nodeShell.js";
+import type { BashGlobalInstallGateConfig } from "./bash.js";
 import { SkillTool, type SkillToolInvoker } from "./skill.js";
-import { WriteTool } from "./write.js";
-import { ExecutableTool } from "./interface.js";
+import type { PresentedTool } from "./interface.js";
 import type { RuntimeConfig } from "../config/runtimeConfig.js";
 
 export interface BuiltinToolDefinition {
-  tool: ExecutableTool;
+  tool: PresentedTool;
   enabledByDefault: boolean;
 }
 
@@ -27,27 +23,16 @@ export function createBuiltinToolManifest(
   const toolOutputInlineLimit = config?.toolOutputInlineLimit ?? 50 * 1024;
 
   return [
-    {
-      tool: new ReadTool({ outputInlineLimit: toolOutputInlineLimit }),
-      enabledByDefault: true,
-    },
-    { tool: new WriteTool(), enabledByDefault: true },
-    { tool: new EditTool(), enabledByDefault: true },
-    {
-      tool: new BashTool({
+    ...createLocalToolDefinitions({
+      workspaceRoot: process.cwd(),
+      shellExecutor: executeNodeShell,
+      outputInlineLimit: toolOutputInlineLimit,
+      shell: {
         defaultTimeoutMs: config?.bashDefaultTimeoutMs,
         maxTimeoutMs: config?.bashMaxTimeoutMs,
-        outputInlineLimit: toolOutputInlineLimit,
         globalInstallGate: options.bashGlobalInstallGate,
-      }),
-      enabledByDefault: true,
-    },
-    {
-      tool: new GrepTool({ outputInlineLimit: toolOutputInlineLimit }),
-      enabledByDefault: false,
-    },
-    { tool: new FindTool(), enabledByDefault: false },
-    { tool: new LsTool(), enabledByDefault: false },
+      },
+    }),
     { tool: new SkillTool(options.skillToolInvoker), enabledByDefault: true },
   ];
 }

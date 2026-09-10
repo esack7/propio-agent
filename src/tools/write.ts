@@ -1,5 +1,6 @@
-import { ExecutableTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
+import { PresentedTool } from "./interface.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
   createPathToolDisplayAdapter,
@@ -10,13 +11,17 @@ import {
   writeFileAtomically,
 } from "./shared.js";
 
-export class WriteTool implements ExecutableTool {
+export class WriteTool implements PresentedTool {
   readonly name = "write";
   readonly description = "Write a file atomically.";
 
-  getDisplayAdapter(): ToolDisplayAdapter {
-    return createPathToolDisplayAdapter();
+  private readonly resolvePath: (rawPath: unknown) => string;
+
+  constructor(options?: PathToolOptions) {
+    this.resolvePath = options?.resolvePath ?? normalizeToolPath;
   }
+
+  readonly getDisplayAdapter = createPathToolDisplayAdapter;
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     return getPathToolInvocationLabel(args, "Writing", "Writing file");
@@ -47,12 +52,17 @@ export class WriteTool implements ExecutableTool {
     };
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<string> {
+    context.signal?.throwIfAborted();
     const rawPath = args.path;
     const content = toStringArg(args.content, "content");
-    const path = normalizeToolPath(rawPath);
+    const path = this.resolvePath(rawPath);
 
     try {
+      context.signal?.throwIfAborted();
       await writeFileAtomically(path, content);
       return `Wrote file: ${rawPath}`;
     } catch (error) {

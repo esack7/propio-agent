@@ -1,6 +1,8 @@
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
 import fg from "fast-glob";
 import * as fsPromises from "fs/promises";
-import { ExecutableTool } from "./interface.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
 import { normalizeToolPath, throwDirectoryOperationError } from "./shared.js";
@@ -13,9 +15,15 @@ function recursivePattern(pattern: string): string {
   return `**/${pattern}`;
 }
 
-export class FindTool implements ExecutableTool {
+export class FindTool implements PresentedTool {
   readonly name = "find";
   readonly description = "Find files by name or glob.";
+
+  private readonly resolvePath: (rawPath: unknown) => string;
+
+  constructor(options?: PathToolOptions) {
+    this.resolvePath = options?.resolvePath ?? normalizeToolPath;
+  }
 
   getDisplayAdapter(): ToolDisplayAdapter {
     return {
@@ -82,7 +90,11 @@ export class FindTool implements ExecutableTool {
     };
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<string> {
+    context.signal?.throwIfAborted();
     const rawPath = args.path;
     const rawPattern = args.pattern;
 
@@ -90,7 +102,7 @@ export class FindTool implements ExecutableTool {
       throw new Error("pattern must be a non-empty string");
     }
 
-    const path = normalizeToolPath(rawPath);
+    const path = this.resolvePath(rawPath);
 
     try {
       const stats = await fsPromises.stat(path);

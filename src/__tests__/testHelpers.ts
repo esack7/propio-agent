@@ -7,7 +7,7 @@ import type { LLMProvider } from "@propio-ai/providers";
 import type { ChatRequest, ChatChunk, ChatMessage } from "@propio-ai/providers";
 import type { PromptImage } from "../ui/input/promptSubmission.js";
 import type { ProvidersConfig } from "@propio-ai/providers";
-import type { ExecutableTool } from "../tools/interface.js";
+import type { PresentedTool } from "../tools/interface.js";
 import type { ChatTool } from "@propio-ai/providers";
 
 export const testProvidersConfig: ProvidersConfig = {
@@ -147,7 +147,7 @@ export function createMockTool(options: {
   name: string;
   description?: string;
   execute?: (args: Record<string, unknown>) => Promise<string>;
-}): ExecutableTool {
+}): PresentedTool {
   const schema: ChatTool = {
     type: "function",
     function: {
