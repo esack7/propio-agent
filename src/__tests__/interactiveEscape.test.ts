@@ -2,7 +2,7 @@ import { PassThrough } from "stream";
 import type { Agent } from "../agent.js";
 import {
   createPlainSubmission,
-  type PromptSubmission,
+  type UiPromptSubmission,
 } from "../ui/input/promptSubmission.js";
 import { runInteractiveTurn } from "../index.js";
 import {
@@ -48,7 +48,7 @@ function createGatedAgent(streamChat: Agent["streamChat"]): {
 
   const agent = {
     async streamChat(
-      submission: PromptSubmission,
+      submission: UiPromptSubmission,
       onToken: (token: string) => void,
       options?: { abortSignal?: AbortSignal },
     ): Promise<string> {

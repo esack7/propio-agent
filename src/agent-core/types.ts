@@ -1,5 +1,13 @@
-import type { ChatMessage, ChatTool, LLMProvider } from "@propio-ai/providers";
-import type { ConversationManager } from "../context/conversationManager.js";
+import type {
+  ChatMessage,
+  ChatTool,
+  ChatToolCall,
+  LLMProvider,
+} from "@propio-ai/providers";
+import type {
+  BuildPromptPlanOptions,
+  ConversationState,
+} from "../context/index.js";
 import type {
   ArtifactToolResult,
   PromptBudgetPolicy,
@@ -35,6 +43,7 @@ export interface AgentIntegrations {
   prepareTurn?(submission: PromptSubmission): void | Promise<void>;
   startTurn?(): void | Promise<void>;
   completeTurn?(): void | Promise<void>;
+  /** Called only after startTurn is entered, including partially failed startup. */
   failTurn?(error: unknown): void | Promise<void>;
   instructions?(extraUserInstruction?: string): string | undefined;
   prepareMessages?(messages: ChatMessage[]): ChatMessage[];
@@ -51,21 +60,34 @@ export interface AgentIntegrations {
   processToolResult?(result: ArtifactToolResult): ArtifactToolResult;
 }
 
+/** Explicit conversation operations required by the runtime. */
+export interface AgentContextStore {
+  beginUserTurn(
+    text: string,
+    images?: ReadonlyArray<Uint8Array | string>,
+  ): void;
+  getConversationState(): ConversationState;
+  getSnapshot(): ChatMessage[];
+  readonly messageCount: number;
+  buildPromptPlan(
+    systemPrompt: string,
+    extraUserInstruction?: string,
+    options?: BuildPromptPlanOptions,
+  ): PromptPlan;
+  commitAssistantResponse(
+    content: string,
+    toolCalls?: ChatToolCall[],
+    options?: { reasoningContent?: string },
+  ): void;
+  recordToolResults(results: ArtifactToolResult[]): void;
+  removeLastUnresolvedAssistantMessage(): void;
+  abandonIncompleteTurn(): void;
+}
+
 export interface AgentRuntimeOptions {
   readonly provider: LLMProvider;
   readonly model: string;
-  readonly context: Pick<
-    ConversationManager,
-    | "beginUserTurn"
-    | "getConversationState"
-    | "getSnapshot"
-    | "messageCount"
-    | "buildPromptPlan"
-    | "commitAssistantResponse"
-    | "recordToolResults"
-    | "removeLastUnresolvedAssistantMessage"
-    | "abandonIncompleteTurn"
-  >;
+  readonly context: AgentContextStore;
   readonly tools: AgentToolExecutor;
   readonly policy: AgentExecutionPolicy;
   readonly systemPrompt: string;

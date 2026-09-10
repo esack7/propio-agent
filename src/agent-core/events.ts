@@ -63,18 +63,6 @@ export type AgentEventOptions = {
 };
 
 export type AgentToolOptions = AgentEventOptions & {
-  /**
-   * @deprecated Use onEvent with the tool_started event instead.
-   */
-  readonly onToolStart?: (toolName: string) => void;
-  /**
-   * @deprecated Use onEvent with tool_finished/tool_failed events instead.
-   */
-  readonly onToolEnd?: (
-    toolName: string,
-    result: string,
-    status: ToolExecutionStatus,
-  ) => void;
   readonly abortSignal?: AbortSignal;
 };
 
@@ -85,8 +73,8 @@ export type AgentStreamOptions = AgentToolOptions & {
 
 /**
  * Snapshot of a prompt plan plus the provider/model metadata that was
- * active when the plan was built. Surfaced via Agent.getLastPromptPlan()
- * for the /context prompt introspection command.
+ * active when the plan was built. Emitted with prompt_plan_built for consumers
+ * to inspect or record.
  */
 export interface PromptPlanSnapshot {
   readonly provider: string;

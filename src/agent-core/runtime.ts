@@ -6,7 +6,7 @@ import {
   type ProviderReasoningSummarySource,
   ProviderContextLengthError,
 } from "@propio-ai/providers";
-import { measureMessages } from "../context/tokenEstimator.js";
+import { measureMessages } from "../diagnostics.js";
 import type {
   ArtifactToolResult,
   PromptPlan,
@@ -56,7 +56,7 @@ export class AgentRuntime {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
-  private lastPromptPlanSnapshot: PromptPlanSnapshot | null = null;
+  private turnStarted = false;
   private running = false;
   constructor(private readonly dependencies: AgentRuntimeOptions) {}
   private get provider() {
@@ -139,14 +139,6 @@ export class AgentRuntime {
           policy: this.dependencies.promptBudgetPolicy,
         },
       );
-    this.lastPromptPlanSnapshot = {
-      provider: this.provider.name,
-      model: this.model,
-      iteration: iteration ?? 0,
-      contextWindowTokens,
-      availableInputBudget: contextWindowTokens - plan.reservedOutputTokens,
-      plan,
-    };
     return plan;
   }
   async streamChat(
@@ -157,6 +149,7 @@ export class AgentRuntime {
     if (this.running) throw new Error("An agent turn is already running");
     this.throwIfAbortCancelled(options?.abortSignal);
     this.running = true;
+    this.turnStarted = false;
     try {
       this.emitVisibilityEvent(options, { type: "turn_started" });
       const result = await this.runTurn(
@@ -173,8 +166,12 @@ export class AgentRuntime {
       this.emitVisibilityEvent(options, { type: "turn_completed", result });
       return result;
     } catch (error) {
-      this.emitTurnFailure(error, options);
-      await this.dependencies.integrations?.failTurn?.(error);
+      try {
+        this.emitTurnFailure(error, options);
+      } finally {
+        if (this.turnStarted)
+          await this.dependencies.integrations?.failTurn?.(error);
+      }
       throw error;
     } finally {
       this.running = false;
@@ -418,10 +415,21 @@ export class AgentRuntime {
     options: AgentEventOptions | undefined,
   ): void {
     this.emitPromptPlanDiagnostic(plan, iteration);
-    this.emitVisibilityEvent(options, {
-      type: "prompt_plan_built",
-      snapshot: structuredClone(this.lastPromptPlanSnapshot!),
-    });
+    if (options?.onEvent) {
+      const contextWindowTokens = this.resolveContextWindowTokens();
+      const snapshot: PromptPlanSnapshot = {
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        contextWindowTokens,
+        availableInputBudget: contextWindowTokens - plan.reservedOutputTokens,
+        plan,
+      };
+      this.emitVisibilityEvent(options, {
+        type: "prompt_plan_built",
+        snapshot: structuredClone(snapshot),
+      });
+    }
     const contextSnapshot = this.contextManager.getSnapshot();
     const contextMetrics = measureMessages(contextSnapshot);
     this.emitDiagnostic({
@@ -700,7 +708,7 @@ export class AgentRuntime {
   ): AsyncIterable<ChatStreamEvent> {
     const timeoutMs = this.runtimeConfig.streamIdleTimeoutMs;
     const iter = source[Symbol.asyncIterator]();
-    let interrupted = false;
+    let completed = false;
     try {
       while (true) {
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -725,18 +733,20 @@ export class AgentRuntime {
         try {
           const result = await Promise.race(pending);
           clearTimeout(timeoutHandle);
-          if (result.done) return;
+          if (result.done) {
+            completed = true;
+            return;
+          }
           yield result.value;
         } catch (err) {
-          interrupted = true;
           clearTimeout(timeoutHandle);
           throw err;
         }
       }
     } finally {
-      const closeResult = iter.return?.();
-      if (interrupted || abortSignal?.aborted) {
-        void Promise.resolve(closeResult).catch(() => {});
+      const closeResult = Promise.resolve().then(() => iter.return?.());
+      if (!completed || abortSignal?.aborted) {
+        void closeResult.catch(() => {});
       } else {
         await closeResult;
       }
@@ -818,7 +828,6 @@ export class AgentRuntime {
       iteration,
       options,
     );
-    options?.onToolStart?.(toolName);
 
     const execResult = await this.runToolWithAbort(
       toolName,
@@ -916,7 +925,6 @@ export class AgentRuntime {
       args,
       status: execResult.status,
     });
-    options?.onToolEnd?.(toolName, result, execResult.status);
     return failed;
   }
 
@@ -1421,15 +1429,16 @@ export class AgentRuntime {
     let synchronousShrinkCount = 0;
     const toolExecutionEvents: Array<{ name: string; failed: boolean }> = [];
     let providerReasoningSummary: TurnReasoningSummary | null = null;
-    const extraUserInstruction =
-      this.dependencies.integrations?.instructions?.(
-        options?.extraUserInstruction,
-      ) ?? options?.extraUserInstruction;
+    const integrations = this.dependencies.integrations;
+    const extraUserInstruction = integrations?.instructions
+      ? integrations.instructions(options?.extraUserInstruction)
+      : options?.extraUserInstruction;
     let fullResponse = "";
     let toolCalls: ChatToolCall[] | undefined;
     let reasoningContent: string | undefined;
 
     try {
+      this.turnStarted = true;
       await this.dependencies.integrations?.startTurn?.();
 
       let finalResponse = "";

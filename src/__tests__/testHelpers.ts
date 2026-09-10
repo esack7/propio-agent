@@ -1,7 +1,7 @@
 import { Agent } from "../agent.js";
 import {
   createPlainSubmission,
-  type PromptSubmission,
+  type UiPromptSubmission,
 } from "../ui/input/promptSubmission.js";
 import type { LLMProvider } from "@propio-ai/providers";
 import type { ChatRequest, ChatChunk, ChatMessage } from "@propio-ai/providers";
@@ -51,7 +51,7 @@ export const testProvidersConfig: ProvidersConfig = {
 export const TEST_PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-export function userSubmission(text: string): PromptSubmission {
+export function userSubmission(text: string): UiPromptSubmission {
   return createPlainSubmission(text, "prompt");
 }
 
@@ -59,7 +59,7 @@ export function userSubmissionWithImages(
   text: string,
   images: PromptImage[],
   displayText?: string,
-): PromptSubmission {
+): UiPromptSubmission {
   return {
     text,
     displayText: displayText ?? text,
@@ -72,7 +72,7 @@ export function imagePillSubmission(opts: {
   text: string;
   displayText: string;
   images: PromptImage[];
-}): PromptSubmission {
+}): UiPromptSubmission {
   return { ...opts, inputMode: "prompt" };
 }
 

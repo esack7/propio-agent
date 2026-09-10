@@ -4,7 +4,7 @@ import type { PromptMode } from "../promptState.js";
 
 import type { PromptSubmission as RuntimeSubmission } from "../../agent-core/input.js";
 export type { PromptImage } from "../../agent-core/input.js";
-export interface PromptSubmission extends RuntimeSubmission {
+export interface UiPromptSubmission extends RuntimeSubmission {
   displayText: string;
   inputMode: InputMode;
 }
@@ -19,7 +19,7 @@ export function stripAttachedImageMarkers(text: string): string {
 }
 
 /** True when attachments are present and expanded text is only attachment markers. */
-export function isImageOnlySubmission(submission: PromptSubmission): boolean {
+export function isImageOnlySubmission(submission: UiPromptSubmission): boolean {
   if ((submission.images?.length ?? 0) === 0) {
     return false;
   }
@@ -28,7 +28,7 @@ export function isImageOnlySubmission(submission: PromptSubmission): boolean {
 }
 
 export function shouldPersistPromptHistory(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   promptMode: PromptMode,
 ): boolean {
   if (isImageOnlySubmission(submission)) {
@@ -40,7 +40,7 @@ export function shouldPersistPromptHistory(
   );
 }
 
-export function isSubmissionEmpty(submission: PromptSubmission): boolean {
+export function isSubmissionEmpty(submission: UiPromptSubmission): boolean {
   if (submission.text.trim().length > 0) {
     return false;
   }
@@ -50,7 +50,7 @@ export function isSubmissionEmpty(submission: PromptSubmission): boolean {
 export function createPlainSubmission(
   text: string,
   inputMode: InputMode,
-): PromptSubmission {
+): UiPromptSubmission {
   return {
     text,
     displayText: text,

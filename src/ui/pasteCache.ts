@@ -10,7 +10,7 @@ import {
 } from "./inputModes.js";
 import {
   HISTORY_INLINE_MAX,
-  type PromptSubmission,
+  type UiPromptSubmission,
 } from "./input/promptSubmission.js";
 
 const PASTE_REF_PATTERN = /^(?<bash>!)?paste:(?<hash>[a-f0-9]{64})$/;
@@ -83,7 +83,7 @@ export function applyHistoryEntryToPrompt(
 }
 
 export function buildPromptHistoryEntry(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   pasteCache: PasteCache,
 ): string {
   if (submission.inputMode === "bash") {

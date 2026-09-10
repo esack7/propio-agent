@@ -26,7 +26,7 @@ import type { InputMode } from "./inputModes.js";
 import {
   createPlainSubmission,
   shouldPersistPromptHistory,
-  type PromptSubmission,
+  type UiPromptSubmission,
 } from "./input/promptSubmission.js";
 import type { PromptEditorRunner } from "./promptEditor.js";
 
@@ -36,7 +36,7 @@ export type PromptCloseReason = "closed" | "interrupted";
 
 export interface PromptResultSubmitted {
   status: "submitted";
-  submission: PromptSubmission;
+  submission: UiPromptSubmission;
 }
 
 export interface PromptResultClosed {
@@ -202,7 +202,7 @@ export function createPromptComposer(
     options.renderState?.(clonePromptState(currentState));
   };
 
-  const persistSubmittedPrompt = (submission: PromptSubmission): void => {
+  const persistSubmittedPrompt = (submission: UiPromptSubmission): void => {
     if (!currentState || !activePrompt) {
       return;
     }

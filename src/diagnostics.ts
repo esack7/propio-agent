@@ -2,6 +2,7 @@ export {
   RESERVED_OUTPUT_TOKENS,
   estimateTokens,
   messageChars,
+  measureMessages,
 } from "./context/tokenEstimator.js";
 
 export type AgentDiagnosticEvent =

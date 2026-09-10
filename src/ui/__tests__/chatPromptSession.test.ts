@@ -52,7 +52,7 @@ interface TestSessionOptions {
   terminalControlStream?: NodeJS.WriteStream & { chunks?: string[] };
   inputStream?: PassThrough;
   submit?: (
-    submission: import("../input/promptSubmission.js").PromptSubmission,
+    submission: import("../input/promptSubmission.js").UiPromptSubmission,
   ) => void;
   interrupt?: () => void;
   close?: () => void;

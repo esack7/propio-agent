@@ -1,7 +1,7 @@
 import * as path from "path";
 import type { InputMode } from "../inputModes.js";
 import type { PastedContent } from "./pastedContent.js";
-import type { PromptImage, PromptSubmission } from "./promptSubmission.js";
+import type { PromptImage, UiPromptSubmission } from "./promptSubmission.js";
 
 const TEXT_PILL_PATTERN = /\[(?:Pasted text) #(\d+)(?: \+(\d+) lines)?\]/g;
 const IMAGE_PILL_PATTERN = /\[Image #(\d+)\]/g;
@@ -56,7 +56,7 @@ export function expandPastedRefs(
   displayText: string,
   pastedContents: ReadonlyMap<number, PastedContent>,
   inputMode: InputMode,
-): PromptSubmission {
+): UiPromptSubmission {
   const tokens = collectTokenMatches(displayText);
   if (tokens.length === 0) {
     return {

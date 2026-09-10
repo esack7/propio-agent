@@ -293,3 +293,196 @@ describe("public headless runtime", () => {
     },
   );
 });
+
+async function withDeadline<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Turn did not settle")),
+          1000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function callbackFailureProvider(
+  close: () => Promise<IteratorResult<ChatStreamEvent>>,
+): LLMProvider {
+  let firstRequest = true;
+  return {
+    name: "consumer-failure",
+    getCapabilities: () => ({ contextWindowTokens: 32000 }),
+    streamChat() {
+      if (!firstRequest)
+        return (async function* () {
+          yield answer;
+        })();
+      firstRequest = false;
+      let firstEvent = true;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            if (firstEvent) {
+              firstEvent = false;
+              return { done: false, value: answer };
+            }
+            return await new Promise<IteratorResult<ChatStreamEvent>>(() => {});
+          },
+          return: close,
+        }),
+      };
+    },
+  };
+}
+
+describe("runtime integration boundaries", () => {
+  it.each(["onToken", "onEvent"])(
+    "fails promptly and remains reusable when %s throws with stalled iterator cleanup",
+    async (callback) => {
+      const close = jest.fn(
+        async () =>
+          await new Promise<IteratorResult<ChatStreamEvent>>(() => {}),
+      );
+      const failTurn = jest.fn(async () => {});
+      const fixture = setup([], {
+        provider: callbackFailureProvider(close),
+        integrations: { failTurn },
+      });
+      const error = new Error("Consumer blew up");
+      const events: AgentVisibilityEvent[] = [];
+      await expect(
+        withDeadline(
+          fixture.runtime.streamChat(
+            { text: "Fail" },
+            () => {
+              if (callback === "onToken") throw error;
+            },
+            {
+              onEvent: (event) => {
+                events.push(event);
+                if (callback === "onEvent" && event.type === "assistant_text")
+                  throw error;
+              },
+            },
+          ),
+        ),
+      ).rejects.toBe(error);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(events.at(-1)).toEqual({ type: "turn_failed", error });
+      expect(failTurn).toHaveBeenCalledWith(error);
+      await expect(withDeadline(fixture.run())).resolves.toBe("Finished.");
+    },
+  );
+
+  it("does not replace a consumer exception when iterator return throws synchronously", async () => {
+    const close = () => {
+      throw new Error("Close failed");
+    };
+    const fixture = setup([], { provider: callbackFailureProvider(close) });
+    const error = new Error("Consumer failed");
+    await expect(
+      withDeadline(
+        fixture.runtime.streamChat({ text: "Fail" }, () => {
+          throw error;
+        }),
+      ),
+    ).rejects.toBe(error);
+    await expect(fixture.run()).resolves.toBe("Finished.");
+  });
+
+  it.each([true, false])(
+    "honors an instruction adapter returning undefined (adapter present: %s)",
+    async (present) => {
+      const fixture = setup([[answer]], {
+        integrations: present ? { instructions: () => undefined } : undefined,
+      });
+      const build = jest.spyOn(fixture.context, "buildPromptPlan");
+      await fixture.runtime.streamChat({ text: "Hello" }, () => {}, {
+        extraUserInstruction: "   ",
+      });
+      expect(build.mock.calls[0][1]).toBe(present ? undefined : "   ");
+    },
+  );
+
+  it("does not clean up an earlier turn when input preparation fails", async () => {
+    const prepareTurn = jest.fn(async () => {});
+    const startTurn = jest.fn(async () => {});
+    const completeTurn = jest.fn(async () => {});
+    const failTurn = jest.fn(async () => {});
+    const fixture = setup([[answer]], {
+      integrations: { prepareTurn, startTurn, completeTurn, failTurn },
+    });
+    await fixture.run();
+    const error = new Error("Preparation failed");
+    prepareTurn.mockRejectedValueOnce(error);
+    await expect(fixture.run()).rejects.toBe(error);
+    expect(startTurn).toHaveBeenCalledTimes(1);
+    expect(completeTurn).toHaveBeenCalledTimes(1);
+    expect(failTurn).not.toHaveBeenCalled();
+  });
+
+  it("cleans up partially failed startup even if the failure event callback throws", async () => {
+    const startupError = new Error("Startup partially failed");
+    const callbackError = new Error("Failure observer failed");
+    const failTurn = jest.fn(async () => {});
+    const fixture = setup([], {
+      integrations: {
+        startTurn: () => {
+          throw startupError;
+        },
+        failTurn,
+      },
+    });
+    await expect(
+      fixture.runtime.streamChat({ text: "Hello" }, () => {}, {
+        onEvent: (event) => {
+          if (event.type === "turn_failed") throw callbackError;
+        },
+      }),
+    ).rejects.toBe(callbackError);
+    expect(failTurn).toHaveBeenCalledWith(startupError);
+  });
+
+  it("does not clone prompt-plan snapshots without an event consumer", async () => {
+    const fixture = setup([[answer]], {
+      tools: {
+        getEnabledSchemas: () => [],
+        executeWithStatus: async () => ({
+          status: "error",
+          content: "Not used",
+        }),
+      },
+    });
+    const clone = jest.spyOn(globalThis, "structuredClone");
+    try {
+      await fixture.runtime.streamChat({ text: "Hello" }, () => {});
+      expect(clone).not.toHaveBeenCalled();
+    } finally {
+      clone.mockRestore();
+    }
+  });
+
+  it("converts exceptions from a caller-owned executor to failed tool results", async () => {
+    const fixture = setup([[toolCall], [answer]], {
+      tools: {
+        getEnabledSchemas: () => [],
+        executeWithStatus: async () => {
+          throw new Error("Executor crashed");
+        },
+      },
+    });
+    await expect(fixture.run()).resolves.toBe("Finished.");
+    expect(fixture.events).toContainEqual(
+      expect.objectContaining({
+        type: "tool_failed",
+        result: "Executor crashed",
+      }),
+    );
+  });
+});

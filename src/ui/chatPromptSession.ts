@@ -48,7 +48,7 @@ import {
   type PasteCache,
 } from "./pasteCache.js";
 import type { PastedContent } from "./input/pastedContent.js";
-import type { PromptSubmission } from "./input/promptSubmission.js";
+import type { UiPromptSubmission } from "./input/promptSubmission.js";
 
 export interface ChatPromptSessionState {
   buffer: string;
@@ -68,7 +68,7 @@ export interface PromptFooters {
 
 export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
-  submit(submission: PromptSubmission): void;
+  submit(submission: UiPromptSubmission): void;
   interrupt(): void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;

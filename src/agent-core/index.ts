@@ -2,6 +2,7 @@
 export { AgentRuntime } from "./runtime.js";
 export type {
   AgentRuntimeOptions,
+  AgentContextStore,
   AgentExecutionPolicy,
   AgentToolExecutor,
   AgentIntegrations,

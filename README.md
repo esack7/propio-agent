@@ -1171,7 +1171,9 @@ milestones. This API follows the agent package's version and remains provisional
 incompatible changes require explicit migration notes.
 
 - Input is `{ text, images? }`. Images are provider-ready strings or byte arrays.
-  Prompt-buffer text and input mode remain in the UI's extended submission type.
+  Prompt-buffer text and input mode remain in the UI's `UiPromptSubmission` type.
+  Internal UI type consumers must update the old `PromptSubmission` import name;
+  runtime consumers use `PromptSubmission` from the public agent-core entry point.
 - `streamChat` resolves to the final assistant response, preserving the existing
   CLI return contract. The token callback includes intermediate assistant text
   and existing tool-round separators. Typed events include `turn_started`,
@@ -1185,7 +1187,8 @@ incompatible changes require explicit migration notes.
   consumers can choose their own rendering. Compatibility preview fields are plain
   text; `useLabel` is null. The CLI adds its existing tool labels and formatting,
   excludes runtime-only lifecycle events, and preserves its original event shapes.
-- Supply a `ToolRegistry` or another `AgentToolExecutor`. The runtime filters
+- Supply a `ToolRegistry` or another `AgentToolExecutor`. The context implements
+  the explicit `AgentContextStore` contract; `ConversationManager` satisfies it. The runtime filters
   schemas and denies execution outside `policy.allowedTools()` on each iteration.
   Execution/approval callbacks, workspace access and process isolation belong to
   the supplied executor. Thrown executor errors become failed tool results;
@@ -1199,24 +1202,42 @@ incompatible changes require explicit migration notes.
   provider messages, observe assistant/tool results, process artifacts, and manage
   application lifecycle work. The CLI supplies attachments, skills, mode prompts,
   summary scheduling, session markers, scratchpads and output persistence through
-  these adapters. Session serialization and plan-file UX remain in `Agent`.
+  these adapters. An instruction adapter returning `undefined` explicitly removes
+  supplemental instructions; the raw option is used only when no adapter exists.
+  Failure cleanup runs only once the start phase is entered, including partial
+  startup failure, and never cleans up a previous turn after preparation fails.
+  Session serialization and plan-file UX remain in `Agent`. Deprecated
+  `onToolStart`/`onToolEnd` callbacks remain CLI-only; public runtime consumers use
+  `onEvent`. Prompt snapshots are cloned only when an event listener is present.
   With no adapters, the supplied context keeps artifacts in memory; executor
   external-storage metadata is preserved. No files are allocated automatically.
 - One turn may run per runtime instance. Applications must also avoid concurrent
-  mutation of a shared context across instances. Cancellation races provider/tool
+  mutation of a shared context across instances. A runtime can handle sequential
+  turns and guards against overlapping calls. The CLI creates one per turn to
+  capture its current provider/model and owns a separate Agent-level overlap guard. Cancellation races provider/tool
   waits, forwards the signal to both, and ignores late results. Cleanup of a
-  stalled provider iterator is best-effort, so cancellation or idle timeout cannot
-  wait indefinitely for `return()`. This does not terminate uncooperative external
+  provider iterator on any early exit is best-effort: cancellation, idle timeout,
+  and throwing consumer callbacks cannot wait indefinitely for `return()`.
+  Normal stream exhaustion still awaits provider cleanup. This does not terminate uncooperative external
   work or roll back side effects. Integration callbacks must complete promptly;
   they own any external cleanup and must not mutate context after cancellation.
   Event and integration callbacks are trusted application code; exceptions fail
   the turn and may replace the original error during cleanup.
-- By default, cancellation removes incomplete current-turn history. Set
+- By default, cancellation discards an empty incomplete current turn. Set
   `policy.discardInterruptedTurn` to customize this choice. The CLI keeps its
-  existing Escape-only discard policy. Completed assistant turns are retained.
+  existing Escape-only discard policy. Turns with committed entries are retained.
 
 Compatibility fixes accompanying the boundary: cancellation in a tool-start
 callback prevents dispatch, idle-timeout cleanup no longer blocks on a stalled
 iterator, overlapping turns are rejected, and external artifact metadata from
-public executors survives recording. Existing CLI session formats, product
+public executors survives recording. An executor exception now becomes a failed
+tool result and the model can continue, instead of failing the CLI turn immediately.
+Existing CLI session formats, product
 prompts, provider selection, and reasoning-continuation behavior are unchanged.
+
+Quality gates use the repository-pinned Fallow 3.3.0 (`npm ci`), including
+`npm run fallow:audit -- --base origin/main` and `npm run fallow:check` from an
+unbuilt checkout. Newer Fallow releases can report additional inherited findings;
+upgrading the auditor is a separate maintenance change. The `src/agent-core`
+directory matches its export subpath so the pinned auditor resolves the source
+without generated build files.

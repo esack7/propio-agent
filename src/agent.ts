@@ -29,7 +29,6 @@ import type {
   ToolExecutionStatus,
 } from "./tools/types.js";
 import { persistToolOutput } from "./tools/outputPersistence.js";
-import { RESERVED_OUTPUT_TOKENS } from "./diagnostics.js";
 import type { AgentDiagnosticEvent } from "./diagnostics.js";
 import {
   compileSystemPrompt,
@@ -139,7 +138,16 @@ type AgentEventOptions = {
   readonly requestReasoning?: boolean;
 };
 type AgentStreamOptions = Omit<RuntimeStreamOptions, "onEvent"> &
-  AgentEventOptions;
+  AgentEventOptions & {
+    /** @deprecated Use onEvent with tool_started instead. */
+    readonly onToolStart?: (toolName: string) => void;
+    /** @deprecated Use onEvent with tool_finished/tool_failed instead. */
+    readonly onToolEnd?: (
+      toolName: string,
+      result: string,
+      status: ToolExecutionStatus,
+    ) => void;
+  };
 export type {
   TurnReasoningSummary,
   PromptPlanSnapshot,
@@ -1090,10 +1098,13 @@ export class Agent {
     if (this.activeTurn) throw new Error("An agent turn is already running");
     this.activeTurn = true;
     this.lastTurnReasoningSummary = null;
-    const runtime = this.createRuntime();
+    this.sessionsDir = null;
+    this.turnScratchpadDir = undefined;
+    const { onToolStart, onToolEnd, ...runtimeOptions } = options ?? {};
+    const runtime = this.createRuntime(onToolStart);
     try {
       return await runtime.streamChat(submission, onToken, {
-        ...options,
+        ...runtimeOptions,
         onEvent: (event) => {
           if (event.type === "reasoning_summary")
             this.lastTurnReasoningSummary = {
@@ -1102,6 +1113,8 @@ export class Agent {
             };
           const formatted = this.formatRuntimeEvent(event);
           if (formatted) options?.onEvent?.(formatted);
+          if (event.type === "tool_finished" || event.type === "tool_failed")
+            onToolEnd?.(event.toolName, event.result, event.status);
         },
       });
     } catch (error) {
@@ -1111,14 +1124,17 @@ export class Agent {
     }
   }
 
-  private createRuntime(): AgentRuntime {
+  private createRuntime(onToolStart?: (name: string) => void): AgentRuntime {
     return new AgentRuntime({
       provider: this.provider,
       model: this.model,
       context: this.contextManager,
       systemPrompt: this.baseRules,
       policy: {
-        ...this.runtimeConfig,
+        maxIterations: this.runtimeConfig.maxIterations,
+        useNoProgressDetector: this.runtimeConfig.useNoProgressDetector,
+        streamIdleTimeoutMs: this.runtimeConfig.streamIdleTimeoutMs,
+        outputTokenRecoveryLimit: this.runtimeConfig.outputTokenRecoveryLimit,
         discardInterruptedTurn: (signal) => signal.reason === "escape",
         allowedTools: () =>
           this.resolveAllowedTools(this.getActiveSkillScopes()),
@@ -1128,7 +1144,11 @@ export class Agent {
         executeWithStatus: (name, args, context) =>
           this.executeToolWithStatus(name, args, undefined, context?.signal),
       },
-      onDiagnosticEvent: (event) => this.emitDiagnostic(event),
+      onDiagnosticEvent: (event) => {
+        this.emitDiagnostic(event);
+        if (event.type === "tool_execution_started")
+          onToolStart?.(event.toolName);
+      },
       integrations: {
         prepareTurn: (submission) => this.attachFileMentions(submission.text),
         startTurn: () => this.startLocalTurn(),

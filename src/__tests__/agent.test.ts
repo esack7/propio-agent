@@ -3012,7 +3012,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
   });
 
-  describe("PromptSubmission images → provider", () => {
+  describe("UiPromptSubmission images → provider", () => {
     function expectUserMessageWithTestImage(
       messages: ChatMessage[],
       expectedContentFragment: string,
