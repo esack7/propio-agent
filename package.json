@@ -24,8 +24,8 @@
     },
     "./*": "./*",
     "./agent-core": {
-      "types": "./dist/agentCore/index.d.ts",
-      "import": "./dist/agentCore/index.js"
+      "types": "./dist/agent-core/index.d.ts",
+      "import": "./dist/agent-core/index.js"
     }
   },
   "bin": {

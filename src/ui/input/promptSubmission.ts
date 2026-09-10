@@ -2,8 +2,8 @@ import type { InputMode } from "../inputModes.js";
 import { shouldRecordPromptHistoryEntry } from "../promptHistory.js";
 import type { PromptMode } from "../promptState.js";
 
-import type { PromptSubmission as RuntimeSubmission } from "../../agentCore/input.js";
-export type { PromptImage } from "../../agentCore/input.js";
+import type { PromptSubmission as RuntimeSubmission } from "../../agent-core/input.js";
+export type { PromptImage } from "../../agent-core/input.js";
 export interface PromptSubmission extends RuntimeSubmission {
   displayText: string;
   inputMode: InputMode;

@@ -45,7 +45,7 @@ import {
   type TurnReasoningSummary,
   type PromptPlanSnapshot,
   type PromptSubmission,
-} from "./agentCore/index.js";
+} from "./agent-core/index.js";
 import { buildSystemPromptContext } from "./prompt/systemPromptContext.js";
 import { ContextManager } from "./context/contextManager.js";
 import {
@@ -143,7 +143,7 @@ type AgentStreamOptions = Omit<RuntimeStreamOptions, "onEvent"> &
 export type {
   TurnReasoningSummary,
   PromptPlanSnapshot,
-} from "./agentCore/index.js";
+} from "./agent-core/index.js";
 
 function isRuntimeOnlyEvent(event: RuntimeEvent): event is AgentLifecycleEvent {
   return [
