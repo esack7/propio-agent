@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 
@@ -204,6 +205,31 @@ async function runWithExecFile(
   }
 }
 
+function createOutputCollector(maxBytes: number, exceeded: () => void) {
+  const decoder = new StringDecoder("utf8");
+  let bytes = 0;
+  let text = "";
+  let truncated = false;
+  return {
+    append(chunk: Buffer) {
+      if (truncated) return;
+      const remaining = Math.max(0, maxBytes - bytes);
+      text += decoder.write(chunk.subarray(0, remaining));
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        truncated = true;
+        exceeded();
+      }
+    },
+    finish() {
+      // A cap can cut a UTF-8 sequence. Discard that incomplete suffix rather
+      // than manufacturing replacement characters for bytes we did not retain.
+      if (!truncated) text += decoder.end();
+      return text;
+    },
+  };
+}
+
 async function runWithSpawn(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
@@ -220,8 +246,6 @@ async function runWithSpawn(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    let stdout = "";
-    let stderr = "";
     let settled = false;
     let timedOut = false;
     let aborted = false;
@@ -246,38 +270,14 @@ async function runWithSpawn(
       resolve(result);
     };
 
-    const appendStdout = (chunk: Buffer): void => {
-      if (maxBufferExceeded) {
-        return;
-      }
-
-      const next = stdout + chunk.toString("utf8");
-      if (next.length > maxBuffer) {
-        stdout = next.slice(0, maxBuffer);
-        killForMaxBuffer();
-        return;
-      }
-
-      stdout = next;
-    };
-
-    const appendStderr = (chunk: Buffer): void => {
-      if (maxBufferExceeded) {
-        return;
-      }
-
-      const next = stderr + chunk.toString("utf8");
-      if (next.length > maxBuffer) {
-        stderr = next.slice(0, maxBuffer);
-        killForMaxBuffer();
-        return;
-      }
-
-      stderr = next;
-    };
-
-    child.stdout?.on("data", appendStdout);
-    child.stderr?.on("data", appendStderr);
+    const stdoutOutput = createOutputCollector(maxBuffer, killForMaxBuffer);
+    const stderrOutput = createOutputCollector(maxBuffer, killForMaxBuffer);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (!maxBufferExceeded) stdoutOutput.append(chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      if (!maxBufferExceeded) stderrOutput.append(chunk);
+    });
 
     let timeoutHandle: NodeJS.Timeout | undefined;
     if (timeoutMs !== undefined && timeoutMs > 0) {
@@ -304,8 +304,8 @@ async function runWithSpawn(
       finish(
         resultWithMaxBufferFlag(
           {
-            stdout,
-            stderr: stderr || String(error.message),
+            stdout: stdoutOutput.finish(),
+            stderr: stderrOutput.finish() || String(error.message),
             exitCode: -1,
             aborted,
           },
@@ -315,10 +315,16 @@ async function runWithSpawn(
     });
 
     child.on("close", (code) => {
+      const stdout = stdoutOutput.finish();
+      const stderr = stderrOutput.finish();
       finish(
         spawnCloseStateToResult({
           stdout,
-          stderr,
+          stderr:
+            stderr ||
+            (code && !aborted && !timedOut && !maxBufferExceeded
+              ? `Command failed: /bin/sh -c ${options.command}\n`
+              : ""),
           code,
           aborted,
           signalAborted: signal?.aborted ?? false,
@@ -333,6 +339,9 @@ async function runWithSpawn(
 export async function runShellCommand(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
+  if (options.abortSignal?.aborted) {
+    return { stdout: "", stderr: CANCEL_MESSAGE, exitCode: -1, aborted: true };
+  }
   if (options.abortSignal) {
     return runWithSpawn(options);
   }

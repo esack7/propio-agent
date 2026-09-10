@@ -9,6 +9,13 @@ const CONTROL_CHARACTERS = /[\x00-\x1f]/;
 const BINARY_BYTE = 0x00;
 
 export function normalizeToolPath(rawPath: unknown): string {
+  return resolveToolPath(rawPath, process.cwd());
+}
+
+export function resolveToolPath(
+  rawPath: unknown,
+  workspaceRoot: string,
+): string {
   if (typeof rawPath !== "string" || rawPath.length === 0) {
     throw new Error("path must be a non-empty string");
   }
@@ -20,7 +27,7 @@ export function normalizeToolPath(rawPath: unknown): string {
   const normalized = path.normalize(rawPath);
   return path.isAbsolute(normalized)
     ? normalized
-    : path.resolve(process.cwd(), normalized);
+    : path.resolve(workspaceRoot, normalized);
 }
 
 export function truncateText(
@@ -182,4 +189,12 @@ export function formatFileType(
   }
 
   return `other: ${name}`;
+}
+
+export function throwFileOperationError(
+  error: unknown,
+  operation: string,
+): never {
+  const detail = error instanceof Error ? error.message : String(error);
+  throw new Error(`Failed to ${operation} file: ${detail}`);
 }

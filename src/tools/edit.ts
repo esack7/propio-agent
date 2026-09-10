@@ -1,11 +1,14 @@
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
-import { ExecutableTool } from "./interface.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
   createPathToolDisplayAdapter,
   getPathToolInvocationLabel,
   normalizeToolPath,
+  throwFileOperationError,
   readUtf8TextFile,
   throwToolPathAccessError,
   toStringArg,
@@ -27,9 +30,15 @@ function throwEditFileSystemError(
   throwToolPathAccessError(err, rawPath);
 }
 
-export class EditTool implements ExecutableTool {
+export class EditTool implements PresentedTool {
   readonly name = "edit";
   readonly description = "Edit a file - replace text.";
+
+  private readonly resolvePath: (rawPath: unknown) => string;
+
+  constructor(options?: PathToolOptions) {
+    this.resolvePath = options?.resolvePath ?? normalizeToolPath;
+  }
 
   getDisplayAdapter(): ToolDisplayAdapter {
     return createPathToolDisplayAdapter();
@@ -87,17 +96,19 @@ export class EditTool implements ExecutableTool {
       this.rethrowKnownEditMessageErrors(err);
     }
     throwEditFileSystemError(err, rawPath);
-    throw new Error(
-      `Failed to edit file: ${(err as Error).message || String(error)}`,
-    );
+    throwFileOperationError(error, "edit");
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<string> {
+    context.signal?.throwIfAborted();
     const rawPath = args.path;
     const oldString = toStringArg(args.old_string, "old_string");
     const newString = toStringArg(args.new_string, "new_string");
     const replaceAll = args.replace_all === true;
-    const path = normalizeToolPath(rawPath);
+    const path = this.resolvePath(rawPath);
 
     try {
       const stats = await fsPromises.stat(path);
@@ -121,6 +132,7 @@ export class EditTool implements ExecutableTool {
         ? original.split(oldString).join(newString)
         : original.replace(oldString, newString);
 
+      context.signal?.throwIfAborted();
       await writeFileAtomically(path, updated);
       return replaceAll
         ? `Edited file: ${rawPath} (${occurrences} replacements)`

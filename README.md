@@ -853,6 +853,110 @@ agent package's versioning; incompatible API changes require explicit migration
 notes. A separate MCP repository, production second consumer, and publication
 remain future release milestones.
 
+### Reusable tools API (provisional)
+
+`@propio-ai/agent/tools` exposes an execution-only contract, registry, seven local
+tools and an explicit Node shell adapter. Import and construction do not load CLI
+configuration, scan the workspace, start a shell or create output files. Node.js
+20+ is required. This stages phase 4 inside the agent package; standalone package
+publication and a second production consumer remain separate milestones.
+
+```typescript
+import {
+  createLocalTools,
+  executeNodeShell,
+  ToolRegistry,
+} from "@propio-ai/agent/tools";
+
+const registry = new ToolRegistry({
+  approve: ({ name }) => name !== "bash", // caller-owned execution policy
+});
+for (const { tool, enabledByDefault } of createLocalTools({
+  workspaceRoot: "/work/project",
+  shellExecutor: executeNodeShell,
+})) {
+  registry.register(tool, enabledByDefault);
+}
+const result = await registry.executeWithStatus(
+  "read",
+  { path: "README.md" },
+  {
+    signal: new AbortController().signal,
+  },
+);
+```
+
+The factory requires an absolute `workspaceRoot` and a `shellExecutor`. Relative
+filesystem paths and shell working directories resolve against that root. A
+custom `resolvePath` can validate or map paths and must return absolute paths.
+Local implementations retain the existing read/write/edit/search/list semantics:
+atomic replacement writes, exact-match edits, text/binary checks and search
+ordering. `read`, `write`, `edit` and `bash` start enabled; `grep`, `find` and `ls`
+start disabled. Skill invocation, mode policy, scratchpad guidance, display
+adapters and session-output storage remain runtime integrations. The CLI uses the
+same implementations and execution registry with its existing settings. The CLI
+workspace is captured at registry construction; later process-directory changes
+do not retarget these tools.
+
+`ExecutableTool` requires a provider-compatible schema and string execution result;
+an optional `executeWithStatus` preserves structured integration errors. There is
+no renderer in this contract. `createExecutableTool({ schema, invoke })` adapts a
+caller-owned integration to it. For example, a consumer of the public MCP API can
+build a schema from a `McpToolDescriptor` and delegate `invoke` to
+`manager.executeToolWithStatus(descriptor.name, args)`. Neither reusable API needs
+agent internals or imports the other. MCP cancellation remains governed by the
+MCP manager's deadlines and shutdown; the adapter does not add remote cancellation.
+
+Registry approval runs before execution, fails closed on exceptions and receives
+a detached copy of arguments. Execution uses the reviewed snapshot, even if the
+caller or approval callback mutates its copy. When approval is configured, arguments
+must be structured-cloneable; non-cloneable values fail closed with a clear error.
+There is no fallback to mutable references. Availability and cancellation are
+checked again after approval. The four existing statuses remain unchanged:
+`success`, `tool_not_found`, `tool_disabled` (including policy denial), and `error`
+(including cancellation). Shell nonzero exit codes remain in the JSON content,
+matching CLI behavior; they do not by themselves change the registry status.
+
+Cancellation is cooperative. Pre-cancelled calls do not execute. Shell calls pass
+the signal to the executor; the Node adapter terminates the direct shell process.
+Filesystem tools check before starting, writes/edits also check before atomic
+replacement begins, and grep checks between files. In-flight I/O, glob traversal,
+completed writes, and an approval callback that ignores its signal cannot be
+forcibly cancelled. Cancellation cannot roll back changes. The CLI now forwards
+its cancellation signal to local tools as well as stopping its wait.
+
+`processOutput({ name, result })` is an optional registry callback returning
+`{ content, externalStorage? }`. Consumers choose storage, size thresholds and
+preview formatting; the library never discovers session paths. The callback receives completed error
+results too: inspect `result.status` before replacing failure text. Omitted
+`externalStorage` preserves tool-supplied metadata. Full read/search
+results are retained unless a consumer processes them. If this callback throws,
+the original result is retained with `outputPersistenceError`, so a completed
+write is not mistaken for a failed execution to retry. Shell output is already
+bounded by the executor's buffer limit; persistence cannot recover discarded
+bytes. `outputInlineLimit` retains the existing read byte-range cap and shell
+buffer sizing; it does not cap full-file reads or grep results.
+
+The default Node executor uses `/bin/sh`, inherits `process.env` with supplied
+overrides. Forwarding the CLI turn signal selects the cancellable spawn backend.
+Both backends enforce per-stream byte limits; the spawn backend now decodes UTF-8
+across chunk boundaries and preserves the execFile empty-stderr failure message.
+At a byte cap, an incomplete UTF-8 suffix is discarded rather than corrupted. Consumers can inject
+a different executor for stronger lifecycle or isolation guarantees. The built-in
+global-install classifier continues to deny matched commands unless the supplied
+`shell.globalInstallGate` approves them or explicitly allows them without a prompt.
+It is a heuristic, not comprehensive shell policy or process isolation. Workspace
+resolution is not a sandbox: absolute paths, traversal and symlinks can access
+outside the workspace; shell commands can access whatever the host permits.
+Process-tree termination and cross-process filesystem coordination are not
+provided. Use application/OS isolation where required.
+
+Run `npm run example:tools` after building for a standalone consumer that performs
+local read/write and adapts an integration without terminal rendering. Public
+schemas use the shared providers contracts; implementation dependencies include
+Node filesystem/process APIs and fast-glob. The subpath follows the agent package
+version and remains provisional until a real second consumer validates it.
+
 ### Tool registry
 
 `src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.

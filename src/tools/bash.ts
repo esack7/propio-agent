@@ -1,4 +1,9 @@
-import { ExecutableTool } from "./interface.js";
+import type { ToolExecutionResult } from "./types.js";
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
+import type { ShellExecutor } from "./nodeShell.js";
+import { normalizeToolPath } from "./shared.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
@@ -17,7 +22,9 @@ export interface BashGlobalInstallGateConfig {
   allowGlobalInstallsWithoutPrompt: boolean;
 }
 
-export interface BashToolConfig {
+export interface BashToolConfig extends PathToolOptions {
+  readonly workspaceRoot?: string;
+  readonly shellExecutor?: ShellExecutor;
   readonly defaultTimeoutMs?: number;
   readonly maxTimeoutMs?: number;
   readonly outputInlineLimit?: number;
@@ -60,7 +67,7 @@ function formatBashToolResult(parsed: BashToolResult): string {
     : formatZeroExit(parsed);
 }
 
-export class BashTool implements ExecutableTool {
+export class BashTool implements PresentedTool {
   readonly name = "bash";
   readonly description = "Run a shell command.";
   private readonly defaultTimeoutMs: number;
@@ -68,7 +75,7 @@ export class BashTool implements ExecutableTool {
   private readonly outputInlineLimit: number;
   private readonly globalInstallGate?: BashGlobalInstallGateConfig;
 
-  constructor(config?: BashToolConfig) {
+  constructor(private readonly config?: BashToolConfig) {
     this.defaultTimeoutMs = config?.defaultTimeoutMs ?? 120000;
     this.maxTimeoutMs = config?.maxTimeoutMs ?? 600000;
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
@@ -135,9 +142,39 @@ export class BashTool implements ExecutableTool {
     };
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async executeWithStatus(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<ToolExecutionResult> {
+    context.signal?.throwIfAborted();
     const command = args.command as string;
-    const cwd = args.cwd !== undefined ? (args.cwd as string) : process.cwd();
+    const executionOptions = this.resolveExecutionOptions(args);
+    await this.assertGlobalInstallAllowed(command);
+
+    context.signal?.throwIfAborted();
+    const result = await (this.config?.shellExecutor ?? runShellCommand)({
+      command,
+      ...executionOptions,
+      abortSignal: context.signal,
+      maxBuffer: this.outputInlineLimit * 2,
+    });
+
+    const content = JSON.stringify(
+      {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exit_code: result.exitCode,
+      },
+      null,
+      2,
+    );
+    return { status: result.aborted ? "error" : "success", content };
+  }
+
+  private resolveExecutionOptions(args: Record<string, unknown>) {
+    const cwd = (this.config?.resolvePath ?? normalizeToolPath)(
+      args.cwd ?? this.config?.workspaceRoot ?? process.cwd(),
+    );
     const envOverrides =
       args.env !== undefined ? (args.env as Record<string, string>) : {};
     let timeout =
@@ -148,25 +185,14 @@ export class BashTool implements ExecutableTool {
       timeout = this.maxTimeoutMs;
     }
 
-    await this.assertGlobalInstallAllowed(command);
+    return { cwd, env: envOverrides, timeoutMs: timeout };
+  }
 
-    const result = await runShellCommand({
-      command,
-      cwd,
-      env: envOverrides,
-      timeoutMs: timeout,
-      maxBuffer: this.outputInlineLimit * 2,
-    });
-
-    return JSON.stringify(
-      {
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exit_code: result.exitCode,
-      },
-      null,
-      2,
-    );
+  async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    return (await this.executeWithStatus(args, context)).content;
   }
 
   private async assertGlobalInstallAllowed(command: string): Promise<void> {

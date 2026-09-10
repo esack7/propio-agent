@@ -1,5 +1,5 @@
 import { ToolRegistry } from "../registry.js";
-import { ExecutableTool } from "../interface.js";
+import { PresentedTool } from "../interface.js";
 import { ChatTool } from "@propio-ai/providers";
 
 describe("ToolRegistry", () => {
@@ -228,7 +228,7 @@ describe("ToolRegistry", () => {
 function createMockTool(
   name: string,
   result: string = "success",
-): ExecutableTool {
+): PresentedTool {
   return {
     name,
     description: `Mock tool ${name}`,

@@ -1,5 +1,7 @@
+import type { PathToolOptions } from "./localOptions.js";
+import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
-import { ExecutableTool } from "./interface.js";
+import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
@@ -8,9 +10,15 @@ import {
   throwDirectoryOperationError,
 } from "./shared.js";
 
-export class LsTool implements ExecutableTool {
+export class LsTool implements PresentedTool {
   readonly name = "ls";
   readonly description = "List directory contents.";
+
+  private readonly resolvePath: (rawPath: unknown) => string;
+
+  constructor(options?: PathToolOptions) {
+    this.resolvePath = options?.resolvePath ?? normalizeToolPath;
+  }
 
   getDisplayAdapter(): ToolDisplayAdapter {
     return {
@@ -59,9 +67,13 @@ export class LsTool implements ExecutableTool {
     };
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
+  async execute(
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<string> {
+    context.signal?.throwIfAborted();
     const rawPath = args.path;
-    const path = normalizeToolPath(rawPath);
+    const path = this.resolvePath(rawPath);
 
     try {
       const stats = await fsPromises.stat(path);

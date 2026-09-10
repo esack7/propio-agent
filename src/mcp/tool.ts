@@ -1,5 +1,7 @@
 import type { McpToolDescriptor } from "./types.js";
-import type { ExecutableTool } from "../tools/interface.js";
+import type { PresentedTool } from "../tools/interface.js";
+import { createExecutableTool } from "../tools/adaptTool.js";
+import type { ToolExecutionContext } from "../tools/execution.js";
 import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "../tools/types.js";
 import { buildMcpToolName } from "./toolName.js";
@@ -10,16 +12,13 @@ function toToolParameters(
   return { ...inputSchema } as ChatTool["function"]["parameters"];
 }
 
-export class McpExecutableTool implements ExecutableTool {
+export class McpExecutableTool implements PresentedTool {
   readonly name: string;
   readonly description: string;
   readonly serverName: string;
   readonly remoteToolName: string;
   readonly title?: string;
-  private readonly schema: ChatTool;
-  private readonly invoke: (
-    args: Record<string, unknown>,
-  ) => Promise<ToolExecutionResult>;
+  private readonly execution: ReturnType<typeof createExecutableTool>;
 
   constructor(options: {
     serverName: string;
@@ -39,7 +38,7 @@ export class McpExecutableTool implements ExecutableTool {
       options.remoteTool.description?.trim() ||
       options.remoteTool.title?.trim() ||
       `MCP tool ${options.remoteTool.name}`;
-    this.schema = {
+    const schema: ChatTool = {
       type: "function",
       function: {
         name: this.name,
@@ -47,11 +46,14 @@ export class McpExecutableTool implements ExecutableTool {
         parameters: toToolParameters(options.remoteTool.inputSchema),
       },
     };
-    this.invoke = options.invoke;
+    this.execution = createExecutableTool({
+      schema,
+      invoke: options.invoke,
+    });
   }
 
   getSchema(): ChatTool {
-    return this.schema;
+    return this.execution.getSchema();
   }
 
   getInvocationLabel(): string {
@@ -60,16 +62,15 @@ export class McpExecutableTool implements ExecutableTool {
 
   async executeWithStatus(
     args: Record<string, unknown>,
+    context?: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    return await this.invoke(args);
+    return await this.execution.executeWithStatus(args, context);
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
-    const result = await this.executeWithStatus(args);
-    if (result.status === "success") {
-      return result.content;
-    }
-
-    throw new Error(result.content);
+  async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    return this.execution.execute(args, context);
   }
 }

@@ -13,7 +13,7 @@ import {
   ProviderContextLengthError,
 } from "@propio-ai/providers";
 import { ProvidersConfig } from "@propio-ai/providers";
-import { ExecutableTool } from "../tools/interface.js";
+import { PresentedTool } from "../tools/interface.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
 import {
@@ -1306,7 +1306,7 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("Tool result context limits", () => {
-    class LargeResultTool implements ExecutableTool {
+    class LargeResultTool implements PresentedTool {
       readonly name = "large_result_tool";
       readonly description = "Return a very large output.";
 
@@ -1448,7 +1448,7 @@ describe("Agent with Multi-Provider Configuration", () => {
           event.type === "max_iterations_reached",
       );
 
-    class VaryingTool implements ExecutableTool {
+    class VaryingTool implements PresentedTool {
       readonly name = "varying_tool";
       readonly description = "No-op tool with changing arguments.";
 
@@ -1527,7 +1527,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     function createDiagnosticAgentWithTool(
       provider: LLMProvider,
-      tool: ExecutableTool,
+      tool: PresentedTool,
     ): { agent: Agent; events: AgentDiagnosticEvent[] } {
       const events: AgentDiagnosticEvent[] = [];
       const agent = new Agent({
@@ -1804,7 +1804,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should emit enriched request_started for no-tools fallback request", async () => {
-      class LoopTool implements ExecutableTool {
+      class LoopTool implements PresentedTool {
         readonly name = "loop_tool";
         readonly description = "No-op.";
         getSchema() {
@@ -2137,7 +2137,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should fall back to a generic activity label for custom tools", async () => {
-      class CustomTool implements ExecutableTool {
+      class CustomTool implements PresentedTool {
         readonly name = "custom_tool";
         readonly description = "Custom tool for testing.";
 

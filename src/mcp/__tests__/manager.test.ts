@@ -69,7 +69,11 @@ describe("McpManager", () => {
 
     const listing = jest.spyOn(manager, "listTools");
     const schemas = manager.getConnectedToolSchemas();
-    expect(manager.getConnectedToolSchemas()[0]).toBe(schemas[0]);
+    expect(manager.getConnectedToolSchemas()[0]).toEqual(schemas[0]);
+    schemas[0].function.description = "caller mutation";
+    expect(manager.getConnectedToolSchemas()[0].function.description).toBe(
+      "Echo tool",
+    );
     manager.describeToolInvocation("mcp__fake__echo", {});
     expect(listing).toHaveBeenCalledTimes(1);
     await manager.reconnectServer("fake");

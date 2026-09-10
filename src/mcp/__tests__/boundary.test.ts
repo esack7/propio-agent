@@ -425,3 +425,54 @@ it("resolves a successful persistence write when shutdown occurs during it", asy
   expect(persisted[0]?.mcpServers?.fixture.enabled).toBe(true);
   expect(manager.listTools()).toEqual([]);
 });
+
+it("adapts live MCP calls and local tools through the public tools registry", async () => {
+  const {
+    ToolRegistry,
+    createExecutableTool,
+    createLocalTools,
+    executeNodeShell,
+  } = await import("../../tools/index.js");
+  const { manager } = fixture();
+  await manager.initialize();
+  const registry = new ToolRegistry();
+  for (const definition of createLocalTools({
+    workspaceRoot: tempDir,
+    shellExecutor: executeNodeShell,
+  })) {
+    registry.register(definition.tool, definition.enabledByDefault);
+  }
+  for (const descriptor of manager.listTools()) {
+    registry.register(
+      createExecutableTool({
+        schema: {
+          type: "function",
+          function: {
+            name: descriptor.name,
+            description: descriptor.description,
+            parameters: { properties: {}, ...descriptor.inputSchema },
+          },
+        },
+        invoke: (args) => manager.executeToolWithStatus(descriptor.name, args),
+      }),
+      true,
+    );
+  }
+  expect(
+    (await registry.executeWithStatus("read", { path: "server.mjs" })).status,
+  ).toBe("success");
+  const echoed = await registry.executeWithStatus("mcp__fixture__echo", {
+    message: "shared contract",
+  });
+  expect(JSON.parse(echoed.content).args.message).toBe("shared contract");
+  const failure = await registry.executeWithStatus("mcp__fixture__result", {
+    result: {
+      isError: true,
+      content: [{ type: "text", text: "remote failure" }],
+    },
+  });
+  expect(failure).toEqual({
+    status: "error",
+    content: "Error executing mcp__fixture__result: remote failure",
+  });
+});
