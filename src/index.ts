@@ -47,7 +47,7 @@ import type { InputMode } from "./ui/inputModes.js";
 import {
   createPlainSubmission,
   isSubmissionEmpty,
-  type PromptSubmission,
+  type UiPromptSubmission,
 } from "./ui/input/promptSubmission.js";
 import { createSessionVisibilityState } from "./ui/sessionVisibility.js";
 import {
@@ -322,7 +322,7 @@ interface InteractiveSubmissionContext {
 }
 
 export async function runInteractiveTurn(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   context: InteractiveSubmissionContext,
   options: {
     beforeTurn?: () => Promise<void>;
@@ -822,7 +822,7 @@ async function handlePlanSubmission(
 }
 
 async function handleChatSubmission(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   context: InteractiveSubmissionContext,
 ): Promise<number | null | undefined> {
   context.ui.persistSubmittedInput(submission.displayText);
@@ -832,7 +832,7 @@ async function handleChatSubmission(
 }
 
 export async function handleInteractiveSubmission(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   context: InteractiveSubmissionContext,
 ): Promise<number | null> {
   if (context.shouldExit()) {

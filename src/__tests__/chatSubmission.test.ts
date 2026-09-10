@@ -7,7 +7,7 @@ import type { PastedContent } from "../ui/input/pastedContent.js";
 import {
   isImageOnlySubmission,
   isSubmissionEmpty,
-  type PromptSubmission,
+  type UiPromptSubmission,
 } from "../ui/input/promptSubmission.js";
 import type { PromptComposer } from "../ui/promptComposer.js";
 import { TerminalUi } from "../ui/terminal.js";
@@ -31,12 +31,12 @@ function emptyConversationState(): ConversationState {
 
 function createCapturingAgent(): {
   agent: Agent;
-  getSubmission: () => PromptSubmission | undefined;
+  getSubmission: () => UiPromptSubmission | undefined;
 } {
-  let agentSubmission: PromptSubmission | undefined;
+  let agentSubmission: UiPromptSubmission | undefined;
   const agent = {
     async streamChat(
-      nextSubmission: PromptSubmission,
+      nextSubmission: UiPromptSubmission,
       _onToken: (token: string) => void,
     ): Promise<string> {
       agentSubmission = nextSubmission;
@@ -60,7 +60,7 @@ function createInteractiveUi(): TerminalUi {
 }
 
 async function runInteractiveSubmission(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   agent: Agent,
   ui: TerminalUi,
 ): Promise<number | null> {
@@ -112,7 +112,7 @@ describe("handleInteractiveSubmission chat path", () => {
   });
 
   it("rejects slash commands when images are attached", async () => {
-    const submission: PromptSubmission = {
+    const submission: UiPromptSubmission = {
       text: "/help",
       displayText: "[Image #1]",
       inputMode: "prompt",

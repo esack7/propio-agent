@@ -22,7 +22,11 @@
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js"
     },
-    "./*": "./*"
+    "./*": "./*",
+    "./agent-core": {
+      "types": "./dist/agent-core/index.d.ts",
+      "import": "./dist/agent-core/index.js"
+    }
   },
   "bin": {
     "propio": "./bin/propio.cjs"
@@ -67,7 +71,8 @@
     "LICENSE",
     "README.md",
     "npm-shrinkwrap.json",
-    "examples/tools-consumer.mjs"
+    "examples/tools-consumer.mjs",
+    "examples/agent-core-consumer.mjs"
   ],
   "engines": {
     "node": ">=20"
@@ -88,7 +93,8 @@
     "fallow:audit": "fallow audit --gate all",
     "example:skills": "node examples/skills-consumer.mjs",
     "example:mcp": "node examples/mcp-consumer.mjs",
-    "example:tools": "node examples/tools-consumer.mjs"
+    "example:tools": "node examples/tools-consumer.mjs",
+    "example:agent-core": "node examples/agent-core-consumer.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

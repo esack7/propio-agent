@@ -1125,3 +1125,119 @@ bin/propio-sandbox
 ```
 
 Or run `aws configure` and export `AWS_PROFILE`.
+
+### Reusable agent core API (provisional)
+
+`@propio-ai/agent/agent-core` exposes `AgentRuntime`, a headless model/tool loop.
+The CLI's `Agent` uses this same runtime. Importing or constructing it performs no
+configuration discovery, session access, directory scans, process startup, or
+terminal rendering. It requires Node.js 20+ and uses the public provider,
+context, and executable-tool contracts.
+
+```typescript
+import { AgentRuntime } from "@propio-ai/agent/agent-core";
+import { ConversationManager } from "@propio-ai/agent/context";
+import { ToolRegistry } from "@propio-ai/agent/tools";
+
+// provider is an LLMProvider explicitly supplied by your application.
+const runtime = new AgentRuntime({
+  provider,
+  model: "your-model-key",
+  context: new ConversationManager(),
+  tools: new ToolRegistry(),
+  systemPrompt: "Answer questions about the supplied records.",
+  policy: {
+    maxIterations: 50,
+    useNoProgressDetector: true,
+    streamIdleTimeoutMs: 90000,
+    outputTokenRecoveryLimit: 3,
+  },
+});
+const controller = new AbortController();
+const result = await runtime.streamChat(
+  { text: "Explain these records." },
+  (text) => process.stdout.write(text),
+  { abortSignal: controller.signal, onEvent: (event) => recordEvent(event) },
+);
+// Call controller.abort() while a turn is running to cancel it.
+```
+
+Run `npm run example:agent-core` after building for a complete in-memory record
+lookup application. It uses all three public entry points, executes a tool,
+returns an answer, and demonstrates cancellation without provider credentials.
+The example validates standalone consumption; a second production application,
+a separate `@propio-ai/agent-core` repository, and publication remain separate
+milestones. This API follows the agent package's version and remains provisional;
+incompatible changes require explicit migration notes.
+
+- Input is `{ text, images? }`. Images are provider-ready strings or byte arrays.
+  Prompt-buffer text and input mode remain in the UI's `UiPromptSubmission` type.
+  Internal UI type consumers must update the old `PromptSubmission` import name;
+  runtime consumers use `PromptSubmission` from the public agent-core entry point.
+- `streamChat` resolves to the final assistant response, preserving the existing
+  CLI return contract. The token callback includes intermediate assistant text
+  and existing tool-round separators. Typed events include `turn_started`,
+  `assistant_text`, status/thinking updates, prompt plans, tool start/results,
+  reasoning summaries, and exactly one normal completion or failure event.
+  Pre-cancelled and overlapping calls reject before emitting events or changing
+  context. `turn_failed` retains the original error; the CLI formats errors locally.
+  Opaque provider continuation is retained in context, never included in thinking
+  or token events. Consumers should treat context and prompt snapshots as private.
+- Tool result events carry raw result text, arguments and execution status so
+  consumers can choose their own rendering. Compatibility preview fields are plain
+  text; `useLabel` is null. The CLI adds its existing tool labels and formatting,
+  excludes runtime-only lifecycle events, and preserves its original event shapes.
+- Supply a `ToolRegistry` or another `AgentToolExecutor`. The context implements
+  the explicit `AgentContextStore` contract; `ConversationManager` satisfies it. The runtime filters
+  schemas and denies execution outside `policy.allowedTools()` on each iteration.
+  Execution/approval callbacks, workspace access and process isolation belong to
+  the supplied executor. Thrown executor errors become failed tool results;
+  cancellation interrupts the turn. The runtime itself provides no sandbox.
+- Context-length recovery retains the existing levels 0–3 and bounded synchronous
+  shrink attempts. `integrations.shrinkContext` can provide summarization; no
+  summarizer or provider configuration is loaded implicitly. Repeated tool loops
+  retain the existing final request without tools. Output-token recovery uses the
+  supplied limit. Provider-owned retries and retry-without-tools policy are unchanged.
+- Optional integrations prepare input, supply instructions and prompt plans, adapt
+  provider messages, observe assistant/tool results, process artifacts, and manage
+  application lifecycle work. The CLI supplies attachments, skills, mode prompts,
+  summary scheduling, session markers, scratchpads and output persistence through
+  these adapters. An instruction adapter returning `undefined` explicitly removes
+  supplemental instructions; the raw option is used only when no adapter exists.
+  Failure cleanup runs only once the start phase is entered, including partial
+  startup failure, and never cleans up a previous turn after preparation fails.
+  Session serialization and plan-file UX remain in `Agent`. Deprecated
+  `onToolStart`/`onToolEnd` callbacks remain CLI-only; public runtime consumers use
+  `onEvent`. Prompt snapshots are cloned only when an event listener is present.
+  With no adapters, the supplied context keeps artifacts in memory; executor
+  external-storage metadata is preserved. No files are allocated automatically.
+- One turn may run per runtime instance. Applications must also avoid concurrent
+  mutation of a shared context across instances. A runtime can handle sequential
+  turns and guards against overlapping calls. The CLI creates one per turn to
+  capture its current provider/model and owns a separate Agent-level overlap guard. Cancellation races provider/tool
+  waits, forwards the signal to both, and ignores late results. Cleanup of a
+  provider iterator on any early exit is best-effort: cancellation, idle timeout,
+  and throwing consumer callbacks cannot wait indefinitely for `return()`.
+  Normal stream exhaustion still awaits provider cleanup. This does not terminate uncooperative external
+  work or roll back side effects. Integration callbacks must complete promptly;
+  they own any external cleanup and must not mutate context after cancellation.
+  Event and integration callbacks are trusted application code; exceptions fail
+  the turn and may replace the original error during cleanup.
+- By default, cancellation discards an empty incomplete current turn. Set
+  `policy.discardInterruptedTurn` to customize this choice. The CLI keeps its
+  existing Escape-only discard policy. Turns with committed entries are retained.
+
+Compatibility fixes accompanying the boundary: cancellation in a tool-start
+callback prevents dispatch, idle-timeout cleanup no longer blocks on a stalled
+iterator, overlapping turns are rejected, and external artifact metadata from
+public executors survives recording. An executor exception now becomes a failed
+tool result and the model can continue, instead of failing the CLI turn immediately.
+Existing CLI session formats, product
+prompts, provider selection, and reasoning-continuation behavior are unchanged.
+
+Quality gates use the repository-pinned Fallow 3.3.0 (`npm ci`), including
+`npm run fallow:audit -- --base origin/main` and `npm run fallow:check` from an
+unbuilt checkout. Newer Fallow releases can report additional inherited findings;
+upgrading the auditor is a separate maintenance change. The `src/agent-core`
+directory matches its export subpath so the pinned auditor resolves the source
+without generated build files.

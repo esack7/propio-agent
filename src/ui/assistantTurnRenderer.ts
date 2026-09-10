@@ -9,7 +9,7 @@ import {
 } from "./contextInspector.js";
 import { TerminalUi } from "./terminal.js";
 import type { ToolCallView } from "./toolCallView.js";
-import type { PromptSubmission } from "./input/promptSubmission.js";
+import type { UiPromptSubmission } from "./input/promptSubmission.js";
 
 export interface AssistantTurnVisibilityOptions {
   showToolCalls: boolean;
@@ -35,7 +35,7 @@ export interface AssistantTurnResult {
 
 export async function streamAssistantTurn(
   agent: AssistantTurnAgent,
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   ui: TerminalUi,
   abortSignal: AbortSignal,
   visibility: AssistantTurnVisibilitySource,

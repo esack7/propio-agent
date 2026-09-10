@@ -2,17 +2,11 @@ import type { InputMode } from "../inputModes.js";
 import { shouldRecordPromptHistoryEntry } from "../promptHistory.js";
 import type { PromptMode } from "../promptState.js";
 
-/** Runtime image bytes for providers — NOT PersistedImage (session JSON only). */
-export type PromptImage = Uint8Array | string;
-
-export interface PromptSubmission {
-  /** Expanded text sent to the agent (placeholders resolved). */
-  text: string;
-  /** What the user saw in the prompt buffer (may contain pills). */
+import type { PromptSubmission as RuntimeSubmission } from "../../agent-core/input.js";
+export type { PromptImage } from "../../agent-core/input.js";
+export interface UiPromptSubmission extends RuntimeSubmission {
   displayText: string;
   inputMode: InputMode;
-  /** Provider-ready attachments; omitted when none. */
-  images?: PromptImage[];
 }
 
 export const HISTORY_INLINE_MAX = 1024;
@@ -25,7 +19,7 @@ export function stripAttachedImageMarkers(text: string): string {
 }
 
 /** True when attachments are present and expanded text is only attachment markers. */
-export function isImageOnlySubmission(submission: PromptSubmission): boolean {
+export function isImageOnlySubmission(submission: UiPromptSubmission): boolean {
   if ((submission.images?.length ?? 0) === 0) {
     return false;
   }
@@ -34,7 +28,7 @@ export function isImageOnlySubmission(submission: PromptSubmission): boolean {
 }
 
 export function shouldPersistPromptHistory(
-  submission: PromptSubmission,
+  submission: UiPromptSubmission,
   promptMode: PromptMode,
 ): boolean {
   if (isImageOnlySubmission(submission)) {
@@ -46,7 +40,7 @@ export function shouldPersistPromptHistory(
   );
 }
 
-export function isSubmissionEmpty(submission: PromptSubmission): boolean {
+export function isSubmissionEmpty(submission: UiPromptSubmission): boolean {
   if (submission.text.trim().length > 0) {
     return false;
   }
@@ -56,7 +50,7 @@ export function isSubmissionEmpty(submission: PromptSubmission): boolean {
 export function createPlainSubmission(
   text: string,
   inputMode: InputMode,
-): PromptSubmission {
+): UiPromptSubmission {
   return {
     text,
     displayText: text,
