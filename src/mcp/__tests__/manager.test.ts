@@ -1,3 +1,4 @@
+import { jest } from "@jest/globals";
 import * as fs from "fs";
 import * as path from "path";
 import { McpManager } from "../manager.js";
@@ -65,6 +66,16 @@ describe("McpManager", () => {
     managers.push(manager);
 
     await manager.initialize();
+
+    const listing = jest.spyOn(manager, "listTools");
+    const schemas = manager.getConnectedToolSchemas();
+    expect(manager.getConnectedToolSchemas()[0]).toBe(schemas[0]);
+    manager.describeToolInvocation("mcp__fake__echo", {});
+    expect(listing).toHaveBeenCalledTimes(1);
+    await manager.reconnectServer("fake");
+    expect(manager.getConnectedToolSchemas()[0]).not.toBe(schemas[0]);
+    expect(listing).toHaveBeenCalledTimes(2);
+    listing.mockRestore();
 
     const summaries = manager.getServerSummaries();
     expect(summaries[0]?.status).toBe("connected");

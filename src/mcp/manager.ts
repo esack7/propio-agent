@@ -18,6 +18,8 @@ interface McpManagerOptions {
 
 /** Propio configuration and executable-tool adapter. */
 export class McpManager extends McpConnectionManager {
+  private catalogVersion?: string;
+  private adapters = new Map<string, McpExecutableTool>();
   constructor(options: McpManagerOptions = {}) {
     const configPath = options.configPath ?? getMcpConfigPath();
     const config = options.config ?? loadMcpConfig(configPath);
@@ -38,8 +40,10 @@ export class McpManager extends McpConnectionManager {
     });
   }
 
-  private getExecutableTools(): McpExecutableTool[] {
-    return this.getServerSummaries()
+  private getExecutableTools(): Map<string, McpExecutableTool> {
+    const version = this.getToolCatalogVersion();
+    if (version === this.catalogVersion) return this.adapters;
+    const tools = this.getServerSummaries()
       .filter((server) => server.enabled && server.status === "connected")
       .flatMap((server) => this.listTools(server.name))
       .map(
@@ -55,18 +59,21 @@ export class McpManager extends McpConnectionManager {
             invoke: (args) => this.executeToolWithStatus(tool.name, args),
           }),
       );
+    this.adapters = new Map(tools.map((tool) => [tool.name, tool]));
+    this.catalogVersion = version;
+    return this.adapters;
   }
 
   getConnectedToolSchemas(): ChatTool[] {
-    return this.getExecutableTools().map((tool) => tool.getSchema());
+    return Array.from(this.getExecutableTools().values(), (tool) =>
+      tool.getSchema(),
+    );
   }
 
   describeToolInvocation(
     name: string,
     _args: Record<string, unknown>,
   ): string | undefined {
-    return this.getExecutableTools()
-      .find((tool) => tool.name === name)
-      ?.getInvocationLabel();
+    return this.getExecutableTools().get(name)?.getInvocationLabel();
   }
 }

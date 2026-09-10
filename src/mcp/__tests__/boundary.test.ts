@@ -33,7 +33,10 @@ if (mode === "connect-hang") {
     fs.writeFileSync(readyFile, "listing");
     if (mode === "list-hang") return await new Promise(() => {});
     if (mode === "collision") return { tools: [tool("a-b"), tool("a_b")] };
-    if (mode === "duplicate") return { tools: [tool("same"), tool("same")] };
+    if (mode === "duplicate") {
+      if (!request.params?.cursor) return { tools: [tool("same"), tool("same")], nextCursor: "overlap" };
+      return { tools: [{ ...tool("same"), description: "Later duplicate" }] };
+    }
     if (!request.params?.cursor) return { tools: [tool("echo")], nextCursor: "second" };
     return { tools: [tool("result")] };
   });
@@ -203,7 +206,7 @@ it.each(["connect-hang", "list-hang"])(
   },
 );
 
-it.each(["collision", "duplicate"])(
+it.each(["collision"])(
   "rejects %s tool names and cleans up the server",
   async (mode) => {
     const { manager, pidFile } = fixture(mode);
@@ -383,4 +386,42 @@ it("handles prototype-like server identifiers as ordinary own keys", async () =>
   await expect(manager.reconnectServer("constructor")).rejects.toThrow(
     "Unknown MCP server",
   );
+});
+
+it("deduplicates identical remote names within and across discovery pages", async () => {
+  const { manager } = fixture("duplicate");
+  await manager.initialize();
+  expect(manager.getServerSummaries()[0]?.status).toBe("connected");
+  expect(manager.listTools().map((tool) => tool.remoteToolName)).toEqual([
+    "same",
+  ]);
+  expect(manager.listTools()[0]?.description).toBe("Fixture tool");
+});
+
+it("resolves a successful persistence write when shutdown occurs during it", async () => {
+  let finish!: () => void;
+  let entered!: () => void;
+  const writing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const persisted: McpConfigFile[] = [];
+  const { manager } = fixture("normal", {
+    persistConfig: async (config) => {
+      entered();
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      persisted.push(config);
+    },
+  });
+  const changing = manager.setServerEnabled("fixture", true);
+  await writing;
+  await manager.close();
+  finish();
+  await expect(changing).resolves.toMatchObject({
+    status: "disabled",
+    enabled: false,
+  });
+  expect(persisted[0]?.mcpServers?.fixture.enabled).toBe(true);
+  expect(manager.listTools()).toEqual([]);
 });

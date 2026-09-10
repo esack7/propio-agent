@@ -1,3 +1,4 @@
+import { closeClientBestEffort } from "./cleanup.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
@@ -66,60 +67,6 @@ function withTimeout<T>(
       },
     );
   });
-}
-
-async function waitBestEffort(
-  promise: Promise<unknown>,
-  timeoutMs: number,
-): Promise<boolean> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  let completed = false;
-
-  await new Promise<void>((resolve) => {
-    timeout = setTimeout(resolve, timeoutMs);
-    promise.then(
-      () => {
-        completed = true;
-        resolve();
-      },
-      () => {
-        completed = true;
-        resolve();
-      },
-    );
-  });
-
-  if (timeout) {
-    clearTimeout(timeout);
-  }
-
-  return completed;
-}
-
-async function closeClientBestEffort(
-  client: Client,
-  transport: StdioClientTransport | undefined,
-  timeoutMs: number,
-): Promise<void> {
-  // Capture the public PID before close() clears the transport's process handle.
-  const pid = transport?.pid;
-  let exited = false;
-  const onclose = transport?.onclose;
-  if (transport)
-    transport.onclose = () => {
-      exited = true;
-      onclose?.();
-    };
-  const closing = Promise.resolve().then(() => client.close());
-  const completed = await waitBestEffort(closing, timeoutMs);
-  if (!completed && pid && !exited) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* Already exited. */
-    }
-    await waitBestEffort(closing, timeoutMs);
-  }
 }
 
 type McpContentItem =
@@ -325,7 +272,7 @@ export class McpConnectionManager {
   ): McpToolDescriptor[] {
     const seen = new Map<string, string>();
 
-    return remoteTools.map((remoteTool) => {
+    return remoteTools.flatMap((remoteTool) => {
       const tool: McpToolDescriptor = {
         name: buildMcpToolName(serverName, remoteTool.name),
         serverName,
@@ -339,6 +286,7 @@ export class McpConnectionManager {
       };
 
       const previous = seen.get(tool.name);
+      if (previous === remoteTool.name) return [];
       if (previous !== undefined) {
         throw new Error(
           `MCP server "${serverName}" exposed tools "${previous}" and "${remoteTool.name}" that normalize to the same name "${tool.name}"`,
@@ -346,7 +294,7 @@ export class McpConnectionManager {
       }
       seen.set(tool.name, remoteTool.name);
 
-      return tool;
+      return [tool];
     });
   }
 
@@ -508,6 +456,18 @@ export class McpConnectionManager {
     }
 
     return undefined;
+  }
+
+  /** Cheap invalidation key for application adapters; contains no SDK objects. */
+  protected getToolCatalogVersion(): string {
+    return JSON.stringify(
+      Array.from(this.runtimes.values(), (runtime) => [
+        runtime.name,
+        runtime.connectionId,
+        runtime.enabled,
+        runtime.status,
+      ]),
+    );
   }
 
   private getAllTools(): McpToolDescriptor[] {
@@ -688,8 +648,12 @@ export class McpConnectionManager {
       serverName: name,
       enabled,
     });
-    this.assertOpen();
     this.config = config;
+    // A successful durable write remains successful even if shutdown won the race.
+    if (this.closed)
+      return this.getServerSummaries().find(
+        (summary) => summary.name === name,
+      )!;
 
     const updatedConfig = this.getServerConfig(name);
     const runtime = this.getRuntime(name);

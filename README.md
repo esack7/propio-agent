@@ -812,8 +812,11 @@ try {
   copied. No library operation reads or writes `~/.propio/mcp.json`; omitting
   `persistConfig` makes enable/disable changes in memory only. Persistence receives
   a detached configuration snapshot and a `{ serverName, enabled }` change record,
-  and completes before runtime changes. Failure
-  leaves the current configuration and connection intact. Enable/disable writes
+  and completes before runtime changes. A persistence callback
+  rejection leaves runtime configuration and connections unchanged; the callback
+  owns storage atomicity. If shutdown occurs during a successful write, the toggle
+  resolves with the disabled shutdown state; the saved preference is retained and
+  no connection is restarted. Enable/disable writes
   are serialized; applications own cross-process coordination.
 - Only **stdio connections and tool listing/calling** are supported. HTTP, SSE,
   resources APIs, prompts APIs, and automatic tool-list updates are not supported.
@@ -824,8 +827,8 @@ try {
   `mcp__server__tool` normalization and 64-character hash-bounded format. Conflicting
   normalized server names fail validation; conflicting tool names fail discovery.
   Supplied configurations now receive the same validation as file-loaded ones;
-  omitted `mcpServers` means an empty catalog, and repeated identical remote tool
-  names are rejected along with normalization collisions.
+  omitted `mcpServers` means an empty catalog. Repeated identical remote names
+  (including overlapping discovery pages) retain the first descriptor.
 - Results are `{ status, content }`, with `status` equal to `success`, `error`,
   `tool_not_found`, or `tool_disabled`, and **content always a string**. Text and
   embedded resource text are retained; images/audio become MIME/size descriptions,
@@ -835,9 +838,11 @@ try {
   transport errors retain its error text format.
 - The connection deadline covers handshake and all discovery pages. The tool-call
   deadline defaults to the SDK's existing 60 seconds. Cleanup allows 500 ms before
-  forcefully terminating the direct child using the transport's public PID and
-  then waits up to another cleanup interval. Descendant process trees are not
-  managed. `close()` is terminal; create a new manager to restart after shutdown.
+  forcefully terminating the original direct child and then waits up to another
+  cleanup interval. An isolated, tested compatibility shim captures the pinned
+  SDK's child-process handle because its public PID/close API cannot distinguish
+  process exit from closure of pipes inherited by helpers. Descendant process
+  trees are not managed. `close()` is terminal; create a new manager to restart after shutdown.
   Individual failures remain visible in server summaries without aborting other
   servers' startup.
 
