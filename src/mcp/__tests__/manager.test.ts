@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { McpManager } from "../manager.js";
-import { writeMcpConfig } from "../config.js";
+import { writeMcpConfig, loadMcpConfig } from "../config.js";
 
 describe("McpManager", () => {
   const tempDir = fs.mkdtempSync(
@@ -77,6 +77,12 @@ describe("McpManager", () => {
     });
     expect(execResult.status).toBe("success");
     expect(execResult.content).toContain("echo:hello");
+    expect(manager.getConnectedToolSchemas()[0]?.function.name).toBe(
+      "mcp__fake__echo",
+    );
+    expect(manager.describeToolInvocation("mcp__fake__echo", {})).toBe(
+      "fake:echo",
+    );
   });
 
   it("connects using preloaded config", async () => {
@@ -238,9 +244,25 @@ describe("McpManager", () => {
     expect(enabled.enabled).toBe(true);
     expect(enabled.status).toBe("connected");
 
+    // A repeated request must still update a file changed by another client.
+    const diskConfig = loadMcpConfig(configPath);
+    writeMcpConfig(configPath, {
+      mcpServers: {
+        ...diskConfig.mcpServers,
+        fake: { ...diskConfig.mcpServers!.fake, enabled: false },
+        unrelated: { command: "unrelated-command", enabled: false },
+      },
+    });
+    await manager.setServerEnabled("fake", true);
+    expect(loadMcpConfig(configPath).mcpServers?.fake.enabled).toBe(true);
+    expect(loadMcpConfig(configPath).mcpServers?.unrelated.command).toBe(
+      "unrelated-command",
+    );
+
     const disabled = await manager.setServerEnabled("fake", false);
     expect(disabled.enabled).toBe(false);
     expect(disabled.status).toBe("disabled");
+    expect(manager.getConnectedToolSchemas()).toEqual([]);
   });
 
   it("throws when listing tools for an unknown server", async () => {

@@ -778,6 +778,76 @@ second production consumer validates the boundary. It uses YAML and minimatch,
 imports no agent internals, and retains Node.js 20+ requirements. Future standalone
 extraction and publication require separate repository and release decisions.
 
+### Reusable MCP API (provisional)
+
+`@propio-ai/agent/mcp` exposes `McpConnectionManager`, configuration validation,
+stable tool naming, and public connection/tool/result types. It requires Node.js
+20+. Importing the entry point does not start the CLI, read configuration, scan
+folders, or launch servers. The CLI uses this same manager through its local
+configuration and executable-tool adapter.
+
+```typescript
+import { McpConnectionManager } from "@propio-ai/agent/mcp";
+
+const mcp = new McpConnectionManager({
+  config: { mcpServers: { example: { command: "my-mcp-server", args: [] } } },
+  clientIdentity: { name: "my-application", version: "1.0.0" },
+  connectTimeoutMs: 10_000,
+  callTimeoutMs: 60_000,
+  cleanupTimeoutMs: 500,
+  // Optional: persistConfig: async (config) => applicationStore.save(config),
+});
+try {
+  await mcp.initialize();
+  for (const tool of mcp.listTools()) {
+    console.log(tool.name, tool.inputSchema);
+  }
+  // await mcp.executeToolWithStatus("mcp__example__tool", { ... });
+} finally {
+  await mcp.close();
+}
+```
+
+- Configuration and client identity are required. Configuration is validated and
+  copied. No library operation reads or writes `~/.propio/mcp.json`; omitting
+  `persistConfig` makes enable/disable changes in memory only. Persistence receives
+  a detached configuration snapshot and a `{ serverName, enabled }` change record,
+  and completes before runtime changes. Failure
+  leaves the current configuration and connection intact. Enable/disable writes
+  are serialized; applications own cross-process coordination.
+- Only **stdio connections and tool listing/calling** are supported. HTTP, SSE,
+  resources APIs, prompts APIs, and automatic tool-list updates are not supported.
+  Reconnect explicitly to refresh tools. Commands inherit the SDK's default
+  environment and process working directory; callers should supply absolute
+  commands/arguments when location matters. This API provides no sandbox.
+- Tool descriptors include the complete input JSON schema. Names retain the
+  `mcp__server__tool` normalization and 64-character hash-bounded format. Conflicting
+  normalized server names fail validation; conflicting tool names fail discovery.
+  Supplied configurations now receive the same validation as file-loaded ones;
+  omitted `mcpServers` means an empty catalog, and repeated identical remote tool
+  names are rejected along with normalization collisions.
+- Results are `{ status, content }`, with `status` equal to `success`, `error`,
+  `tool_not_found`, or `tool_disabled`, and **content always a string**. Text and
+  embedded resource text are retained; images/audio become MIME/size descriptions,
+  resource links and binary resources become URI descriptions, and structured
+  content is appended as formatted JSON. Raw media/SDK response objects are not
+  exposed. Empty successful results retain the CLI success message; remote and
+  transport errors retain its error text format.
+- The connection deadline covers handshake and all discovery pages. The tool-call
+  deadline defaults to the SDK's existing 60 seconds. Cleanup allows 500 ms before
+  forcefully terminating the direct child using the transport's public PID and
+  then waits up to another cleanup interval. Descendant process trees are not
+  managed. `close()` is terminal; create a new manager to restart after shutdown.
+  Individual failures remain visible in server summaries without aborting other
+  servers' startup.
+
+Run `npm run example:mcp` for an empty in-memory catalog, or pass a stdio command
+and its arguments to discover real tools. The example is a standalone API consumer,
+not a second production application. This provisional entry point follows the
+agent package's versioning; incompatible API changes require explicit migration
+notes. A separate MCP repository, production second consumer, and publication
+remain future release milestones.
+
 ### Tool registry
 
 `src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.

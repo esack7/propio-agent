@@ -1,16 +1,16 @@
-import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
+import type { McpToolDescriptor } from "./types.js";
+import type { ExecutableTool } from "../tools/interface.js";
 import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "../tools/types.js";
 import { buildMcpToolName } from "./toolName.js";
-import type { ManagedMcpTool } from "./types.js";
 
 function toToolParameters(
-  inputSchema: McpSdkTool["inputSchema"],
+  inputSchema: McpToolDescriptor["inputSchema"],
 ): ChatTool["function"]["parameters"] {
   return { ...inputSchema } as ChatTool["function"]["parameters"];
 }
 
-export class McpExecutableTool implements ManagedMcpTool {
+export class McpExecutableTool implements ExecutableTool {
   readonly name: string;
   readonly description: string;
   readonly serverName: string;
@@ -23,7 +23,12 @@ export class McpExecutableTool implements ManagedMcpTool {
 
   constructor(options: {
     serverName: string;
-    remoteTool: McpSdkTool;
+    remoteTool: {
+      name: string;
+      description?: string;
+      title?: string;
+      inputSchema: McpToolDescriptor["inputSchema"];
+    };
     invoke: (args: Record<string, unknown>) => Promise<ToolExecutionResult>;
   }) {
     this.serverName = options.serverName;
@@ -59,7 +64,6 @@ export class McpExecutableTool implements ManagedMcpTool {
     return await this.invoke(args);
   }
 
-  // fallow-ignore-next-line unused-class-member
   async execute(args: Record<string, unknown>): Promise<string> {
     const result = await this.executeWithStatus(args);
     if (result.status === "success") {
