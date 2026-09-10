@@ -124,6 +124,19 @@ describe("runShellCommand", () => {
     expect(child.kill).toHaveBeenCalled();
   });
 
+  it("decodes UTF-8 sequences split across pipe chunks", async () => {
+    const child = createMockChildProcess();
+    jest.mocked(spawn).mockReturnValue(child as never);
+    const pending = runShellCommand({
+      command: "unicode",
+      abortSignal: new AbortController().signal,
+    });
+    const bytes = Buffer.from("€😀");
+    for (const byte of bytes) child.stdout.emit("data", Buffer.from([byte]));
+    child.emit("close", 0);
+    expect((await pending).stdout).toBe("€😀");
+  });
+
   it("kills spawned commands when aborted", async () => {
     const child = createMockChildProcess();
     jest.mocked(spawn).mockReturnValue(child as never);

@@ -15,13 +15,11 @@ export class WriteTool implements PresentedTool {
   readonly name = "write";
   readonly description = "Write a file atomically.";
 
-  private readonly resolvePath: (rawPath: unknown) => string;
+  constructor(private readonly options: PathToolOptions = {}) {}
 
-  constructor(options?: PathToolOptions) {
-    this.resolvePath = options?.resolvePath ?? normalizeToolPath;
+  getDisplayAdapter() {
+    return createPathToolDisplayAdapter();
   }
-
-  readonly getDisplayAdapter = createPathToolDisplayAdapter;
 
   getInvocationLabel(args: Record<string, unknown>): string | undefined {
     return getPathToolInvocationLabel(args, "Writing", "Writing file");
@@ -59,7 +57,7 @@ export class WriteTool implements PresentedTool {
     context.signal?.throwIfAborted();
     const rawPath = args.path;
     const content = toStringArg(args.content, "content");
-    const path = this.resolvePath(rawPath);
+    const path = (this.options.resolvePath ?? normalizeToolPath)(rawPath);
 
     try {
       context.signal?.throwIfAborted();

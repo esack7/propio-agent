@@ -18,8 +18,7 @@ export class McpExecutableTool implements PresentedTool {
   readonly serverName: string;
   readonly remoteToolName: string;
   readonly title?: string;
-  private readonly schema: ChatTool;
-  private readonly execution: PresentedTool;
+  private readonly execution: ReturnType<typeof createExecutableTool>;
 
   constructor(options: {
     serverName: string;
@@ -39,7 +38,7 @@ export class McpExecutableTool implements PresentedTool {
       options.remoteTool.description?.trim() ||
       options.remoteTool.title?.trim() ||
       `MCP tool ${options.remoteTool.name}`;
-    this.schema = {
+    const schema: ChatTool = {
       type: "function",
       function: {
         name: this.name,
@@ -48,13 +47,13 @@ export class McpExecutableTool implements PresentedTool {
       },
     };
     this.execution = createExecutableTool({
-      schema: this.schema,
+      schema,
       invoke: options.invoke,
     });
   }
 
   getSchema(): ChatTool {
-    return this.schema;
+    return this.execution.getSchema();
   }
 
   getInvocationLabel(): string {
@@ -65,15 +64,13 @@ export class McpExecutableTool implements PresentedTool {
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    return await this.execution.executeWithStatus!(args, context);
+    return await this.execution.executeWithStatus(args, context);
   }
 
-  async execute(args: Record<string, unknown>): Promise<string> {
-    const result = await this.executeWithStatus(args);
-    if (result.status === "success") {
-      return result.content;
-    }
-
-    throw new Error(result.content);
+  async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    return this.execution.execute(args, context);
   }
 }

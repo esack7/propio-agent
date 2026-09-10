@@ -18,11 +18,11 @@
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js"
     },
-    "./*": "./*",
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools/index.js"
-    }
+    },
+    "./*": "./*"
   },
   "bin": {
     "propio": "./bin/propio.cjs"

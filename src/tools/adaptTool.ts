@@ -9,7 +9,7 @@ export function createExecutableTool(options: {
     args: Record<string, unknown>,
     context: ToolExecutionContext,
   ) => Promise<ToolExecutionResult>;
-}): ExecutableTool {
+}): ExecutableTool & Required<Pick<ExecutableTool, "executeWithStatus">> {
   const schema = structuredClone(options.schema);
   const invoke = options.invoke;
   const executeWithStatus = async (

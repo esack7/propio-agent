@@ -23,7 +23,8 @@ export interface ExecutableTool {
 }
 
 export interface ToolRegistryOptions {
-  /** No callback means no additional policy. Exceptions fail closed. */
+  /** No callback means no additional policy. Exceptions fail closed.
+   * With approval configured, arguments must be structured-cloneable. */
   readonly approve?: (
     invocation: {
       readonly name: string;
@@ -31,7 +32,9 @@ export interface ToolRegistryOptions {
     },
     context: ToolExecutionContext,
   ) => boolean | Promise<boolean>;
-  /** Called after execution. The consumer owns thresholds, storage and preview formatting. */
+  /** Called for completed results, including non-success statuses. Inspect result.status
+   * before replacing failure text. Omitted externalStorage preserves existing metadata.
+   * The consumer owns thresholds, storage and preview formatting. */
   readonly processOutput?: (output: {
     readonly name: string;
     readonly result: Readonly<ToolExecutionResult>;

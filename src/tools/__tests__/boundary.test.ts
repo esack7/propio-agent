@@ -443,3 +443,62 @@ describe("shell execution dependencies", () => {
     }
   });
 });
+
+it("preserves tool storage metadata when output processing only changes content", async () => {
+  const externalStorage = {
+    externalPath: "memory:original",
+    externalSizeBytes: 5,
+  };
+  const registry = new ToolRegistry({
+    processOutput: () => ({ content: "preview" }),
+  });
+  registry.register(
+    integrationTool(async () => ({
+      status: "success",
+      content: "hello",
+      externalStorage,
+    })),
+    true,
+  );
+  expect(await registry.executeWithStatus("mcp_demo_read", {})).toEqual({
+    status: "success",
+    content: "preview",
+    externalStorage,
+  });
+});
+
+it("allows output processing to preserve failure details based on status", async () => {
+  const registry = new ToolRegistry({
+    processOutput: ({ result }) => ({
+      content: result.status === "success" ? "preview" : result.content,
+    }),
+  });
+  registry.register(
+    integrationTool(async () => ({
+      status: "error",
+      content: "failure detail",
+    })),
+    true,
+  );
+  expect(await registry.executeWithStatus("mcp_demo_read", {})).toMatchObject({
+    status: "error",
+    content: "failure detail",
+  });
+});
+
+it("fails closed with a clear message for non-cloneable approval arguments", async () => {
+  const invoke = jest.fn(async () => ({
+    status: "success" as const,
+    content: "ran",
+  }));
+  const registry = new ToolRegistry({ approve: () => true });
+  registry.register(integrationTool(invoke), true);
+  const result = await registry.executeWithStatus("mcp_demo_read", {
+    callback: () => 1,
+  });
+  expect(result.status).toBe("error");
+  expect(result.content).toContain(
+    "arguments must be structured-cloneable when approval is configured",
+  );
+  expect(invoke).not.toHaveBeenCalled();
+});

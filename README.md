@@ -894,7 +894,9 @@ atomic replacement writes, exact-match edits, text/binary checks and search
 ordering. `read`, `write`, `edit` and `bash` start enabled; `grep`, `find` and `ls`
 start disabled. Skill invocation, mode policy, scratchpad guidance, display
 adapters and session-output storage remain runtime integrations. The CLI uses the
-same implementations and execution registry with its existing settings.
+same implementations and execution registry with its existing settings. The CLI
+workspace is captured at registry construction; later process-directory changes
+do not retarget these tools.
 
 `ExecutableTool` requires a provider-compatible schema and string execution result;
 an optional `executeWithStatus` preserves structured integration errors. There is
@@ -907,7 +909,9 @@ MCP manager's deadlines and shutdown; the adapter does not add remote cancellati
 
 Registry approval runs before execution, fails closed on exceptions and receives
 a detached copy of arguments. Execution uses the reviewed snapshot, even if the
-caller or approval callback mutates its copy. Availability and cancellation are
+caller or approval callback mutates its copy. When approval is configured, arguments
+must be structured-cloneable; non-cloneable values fail closed with a clear error.
+There is no fallback to mutable references. Availability and cancellation are
 checked again after approval. The four existing statuses remain unchanged:
 `success`, `tool_not_found`, `tool_disabled` (including policy denial), and `error`
 (including cancellation). Shell nonzero exit codes remain in the JSON content,
@@ -923,7 +927,9 @@ its cancellation signal to local tools as well as stopping its wait.
 
 `processOutput({ name, result })` is an optional registry callback returning
 `{ content, externalStorage? }`. Consumers choose storage, size thresholds and
-preview formatting; the library never discovers session paths. Full read/search
+preview formatting; the library never discovers session paths. The callback receives completed error
+results too: inspect `result.status` before replacing failure text. Omitted
+`externalStorage` preserves tool-supplied metadata. Full read/search
 results are retained unless a consumer processes them. If this callback throws,
 the original result is retained with `outputPersistenceError`, so a completed
 write is not mistaken for a failed execution to retry. Shell output is already
@@ -932,7 +938,10 @@ bytes. `outputInlineLimit` retains the existing read byte-range cap and shell
 buffer sizing; it does not cap full-file reads or grep results.
 
 The default Node executor uses `/bin/sh`, inherits `process.env` with supplied
-overrides, and retains existing timeout/max-buffer behavior. Consumers can inject
+overrides. Forwarding the CLI turn signal selects the cancellable spawn backend.
+Both backends enforce per-stream byte limits; the spawn backend now decodes UTF-8
+across chunk boundaries and preserves the execFile empty-stderr failure message.
+At a byte cap, an incomplete UTF-8 suffix is discarded rather than corrupted. Consumers can inject
 a different executor for stronger lifecycle or isolation guarantees. The built-in
 global-install classifier continues to deny matched commands unless the supplied
 `shell.globalInstallGate` approves them or explicitly allows them without a prompt.

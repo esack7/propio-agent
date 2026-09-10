@@ -206,7 +206,9 @@ export class ToolRegistry {
 
     try {
       context.signal?.throwIfAborted();
-      const executionArgs = this.options.approve ? structuredClone(args) : args;
+      const executionArgs = this.options.approve
+        ? cloneApprovalArgs(args)
+        : args;
       const blocked = await this.checkExecutionPolicy(
         tool,
         executionArgs,
@@ -273,7 +275,7 @@ export class ToolRegistry {
       return {
         ...result,
         content: output.content,
-        externalStorage: output.externalStorage,
+        externalStorage: output.externalStorage ?? result.externalStorage,
       };
     } catch (error) {
       // Execution has already completed. Retain its result so callers do not retry a write.
@@ -307,4 +309,16 @@ function executionError(
       ? `Tool execution cancelled: ${name}`
       : `Error executing ${name}: ${detail}`,
   };
+}
+
+function cloneApprovalArgs(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  try {
+    return structuredClone(args);
+  } catch {
+    throw new Error(
+      "Tool arguments must be structured-cloneable when approval is configured",
+    );
+  }
 }
