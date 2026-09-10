@@ -14,6 +14,10 @@
       "types": "./dist/skills/index.d.ts",
       "import": "./dist/skills/index.js"
     },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js"
+    },
     "./*": "./*"
   },
   "bin": {
@@ -51,6 +55,7 @@
     "dist",
     "examples/context-consumer.mjs",
     "examples/skills-consumer.mjs",
+    "examples/mcp-consumer.mjs",
     "bin/propio.cjs",
     "bin/propio-sandbox",
     "docker-compose.yml",
@@ -76,7 +81,8 @@
     "format:check": "prettier --check .",
     "fallow:check": "fallow --fail-on-issues",
     "fallow:audit": "fallow audit --gate all",
-    "example:skills": "node examples/skills-consumer.mjs"
+    "example:skills": "node examples/skills-consumer.mjs",
+    "example:mcp": "node examples/mcp-consumer.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
