@@ -2,17 +2,11 @@ import type { InputMode } from "../inputModes.js";
 import { shouldRecordPromptHistoryEntry } from "../promptHistory.js";
 import type { PromptMode } from "../promptState.js";
 
-/** Runtime image bytes for providers — NOT PersistedImage (session JSON only). */
-export type PromptImage = Uint8Array | string;
-
-export interface PromptSubmission {
-  /** Expanded text sent to the agent (placeholders resolved). */
-  text: string;
-  /** What the user saw in the prompt buffer (may contain pills). */
+import type { PromptSubmission as RuntimeSubmission } from "../../agentCore/input.js";
+export type { PromptImage } from "../../agentCore/input.js";
+export interface PromptSubmission extends RuntimeSubmission {
   displayText: string;
   inputMode: InputMode;
-  /** Provider-ready attachments; omitted when none. */
-  images?: PromptImage[];
 }
 
 export const HISTORY_INLINE_MAX = 1024;
