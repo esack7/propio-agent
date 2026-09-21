@@ -63,11 +63,8 @@ export class WriteTool implements PresentedTool {
     const path = (this.options.resolvePath ?? normalizeToolPath)(rawPath);
 
     try {
-      const before = await fsPromises.readFile(path).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT")
-          return undefined;
-        throw error;
-      });
+      const existed = await fileExists(path);
+      const beforeHash = existed ? await hashFileContents(path) : undefined;
       context.signal?.throwIfAborted();
       await writeFileAtomically(path, content);
       return {
@@ -77,9 +74,8 @@ export class WriteTool implements PresentedTool {
           kind: "file_write",
           classification: "succeeded",
           resolvedPath: path,
-          operation: before === undefined ? "create" : "replace",
-          beforeHash:
-            before === undefined ? undefined : createContentHash(before),
+          operation: existed ? "replace" : "create",
+          beforeHash,
           afterHash: createContentHash(content),
           sideEffect: "completed",
         },
@@ -96,6 +92,41 @@ export class WriteTool implements PresentedTool {
     context?: ToolExecutionContext,
   ): Promise<string> {
     return (await this.executeWithStatus(args, context)).content;
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await fsPromises.stat(path);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+async function hashFileContents(path: string): Promise<string | undefined> {
+  let handle: Awaited<ReturnType<typeof fsPromises.open>> | undefined;
+  try {
+    handle = await fsPromises.open(path, "r");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        buffer.length,
+        position,
+      );
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    return `sha256:${hash.digest("hex")}`;
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 

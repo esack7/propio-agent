@@ -424,6 +424,7 @@ export class ConversationManager {
    * compact summary. During prompt assembly, the current turn's tool
    * messages are rehydrated from artifacts for the provider.
    */
+  // fallow-ignore-next-line complexity
   recordToolResults(results: ArtifactToolResult[]): void {
     const turn = this.currentTurn();
     const turnId = turn?.id;
@@ -489,6 +490,22 @@ export class ConversationManager {
 
     if (!turn) {
       this.preTurnMessages.push(message);
+      return;
+    }
+
+    const previousEntry = turn.entries[turn.entries.length - 1];
+    if (previousEntry?.kind === "tool") {
+      previousEntry.message.toolResults = [
+        ...(previousEntry.message.toolResults ?? []),
+        ...toolResults,
+      ];
+      previousEntry.toolInvocations = [
+        ...(previousEntry.toolInvocations ?? []),
+        ...invocations,
+      ];
+      previousEntry.estimatedTokens = this.tokenEstimator.estimateMessages([
+        previousEntry.message,
+      ]);
       return;
     }
 

@@ -16,6 +16,7 @@ jest.unstable_mockModule("fs/promises", () => ({
   rm: jest.fn(),
   rename: jest.fn(),
   stat: jest.fn(),
+  open: jest.fn(),
 }));
 
 jest.unstable_mockModule("fast-glob", () => ({
@@ -51,6 +52,26 @@ function mockFileStat(isDirectory: boolean): void {
 
 function mockFileContents(contents: string): void {
   jest.mocked(mockFsPromises.readFile).mockResolvedValue(Buffer.from(contents));
+}
+
+function mockOpenFileContents(contents: string): void {
+  const content = Buffer.from(contents);
+  jest.mocked(mockFsPromises.open).mockResolvedValue({
+    read: jest.fn(
+      async (
+        buffer: Buffer,
+        offset: number,
+        length: number,
+        position: number,
+      ) => {
+        if (position >= content.length) return { bytesRead: 0 };
+        const bytesRead = Math.min(length, content.length - position);
+        content.copy(buffer, offset, position, position + bytesRead);
+        return { bytesRead };
+      },
+    ),
+    close: jest.fn(async () => {}),
+  });
 }
 
 function mockDirectoryEntries(entries: unknown[]): void {
@@ -190,7 +211,8 @@ describe("Tool Implementations", () => {
 
     it("reports resolved path and content hashes for a completed replacement", async () => {
       const tool = new WriteTool();
-      mockFileContents("old content");
+      mockFileStat(false);
+      mockOpenFileContents("old content");
       jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
       jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
 
@@ -416,6 +438,39 @@ describe("Tool Implementations", () => {
           }),
         }),
       );
+    });
+
+    it("treats a null env override as empty after the command completes", async () => {
+      const tool = new BashTool();
+      mockExecFileAsync.mockResolvedValue({ stdout: "done", stderr: "" });
+
+      const result = await tool.executeWithStatus({
+        command: "echo done",
+        env: null,
+      });
+
+      expect(result.status).toBe("success");
+      expect(result.outcome).toMatchObject({
+        classification: "succeeded",
+        environmentKeys: [],
+      });
+      expect(JSON.parse(result.content).stdout).toBe("done");
+    });
+
+    it("classifies maxBuffer termination as an output limit", async () => {
+      const tool = new BashTool();
+      const error: any = new Error("stdout maxBuffer length exceeded");
+      error.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      error.killed = true;
+      error.stdout = "partial";
+      mockExecFileAsync.mockRejectedValue(error);
+
+      const result = await tool.executeWithStatus({ command: "yes" });
+
+      expect(result.outcome).toMatchObject({
+        classification: "output_limit",
+        outputDiscarded: true,
+      });
     });
 
     it("returns full output for large results (agent layer handles persistence)", async () => {

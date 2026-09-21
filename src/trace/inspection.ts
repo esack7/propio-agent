@@ -36,8 +36,8 @@ function isOperationStart(type: string): boolean {
 }
 
 function isOperationTerminal(type: string): boolean {
-  return ["completed", "failed", "cancelled", "connected"].some((suffix) =>
-    type.includes(suffix),
+  return ["completed", "failed", "cancelled", "interrupted"].some((suffix) =>
+    type.endsWith(`_${suffix}`),
   );
 }
 
@@ -45,6 +45,7 @@ function applyOperationEvent(
   operations: Map<string, TraceOperationSummary>,
   event: TraceEventEnvelope,
 ): void {
+  if (event.identity.attemptId) return;
   const operationId = event.identity.operationId;
   if (!operationId) return;
   if (isOperationStart(event.type)) {

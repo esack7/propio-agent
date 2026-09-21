@@ -85,6 +85,7 @@ describe("runShellCommand", () => {
   it("maps string execFile error codes to -1 with a useful stderr message", async () => {
     mockExecFileAsync.mockRejectedValue({
       code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      killed: true,
       stdout: "partial",
       stderr: "",
       message: "stdout maxBuffer length exceeded",
@@ -97,6 +98,7 @@ describe("runShellCommand", () => {
 
     expect(result.exitCode).toBe(-1);
     expect(result.maxBufferExceeded).toBe(true);
+    expect(result.timedOut).toBeUndefined();
     expect(result.stdout).toBe("partial");
     expect(result.stderr).toContain(MAXBUFFER_TRUNCATION_MESSAGE);
     expect(normalizeExecErrorCode("ERR_CHILD_PROCESS_STDIO_MAXBUFFER")).toBe(

@@ -135,7 +135,9 @@ function execErrorToResult(
       stderr,
       exitCode,
       durationMs,
-      ...(execError.killed === true ? { timedOut: true } : {}),
+      ...(execError.killed === true && !maxBufferExceeded
+        ? { timedOut: true }
+        : {}),
     },
     maxBufferExceeded,
   );

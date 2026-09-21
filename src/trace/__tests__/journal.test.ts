@@ -104,6 +104,12 @@ describe("JSONL trace journal", () => {
       type: "provider_request_failed",
       payload: {
         apiKey: "synthetic-secret",
+        accessToken: "access-secret",
+        refreshToken: "refresh-secret",
+        clientSecret: "client-secret",
+        provider: {
+          apiKey: { present: true, source: "settings_file" },
+        },
         message: "Authorization: Bearer token-value and sk-example123456",
       },
     });
@@ -111,9 +117,58 @@ describe("JSONL trace journal", () => {
 
     const persisted = fs.readFileSync(journalPath, "utf8");
     expect(persisted).not.toContain("synthetic-secret");
+    expect(persisted).not.toContain("access-secret");
+    expect(persisted).not.toContain("refresh-secret");
+    expect(persisted).not.toContain("client-secret");
     expect(persisted).not.toContain("token-value");
     expect(persisted).not.toContain("sk-example123456");
     expect(persisted).toContain("[REDACTED]");
+    expect(readTraceJournal(journalPath).events[0].payload).toMatchObject({
+      provider: {
+        apiKey: { present: true, source: "settings_file" },
+      },
+    });
+  });
+
+  it("does not treat connected provider attempts as completed requests", () => {
+    const journalPath = path.join(tempDir, "provider-midstream.jsonl");
+    const journal = new JsonlTraceJournal(journalPath);
+    const recorder = new RunTraceRecorder(
+      { sessionId: "session-1", runId: "run-1" },
+      journal,
+    );
+    const operationId = "provider-operation";
+    recorder.record({
+      component: "provider",
+      type: "provider_request_started",
+      identity: { operationId },
+      payload: {},
+    });
+    recorder.record({
+      component: "provider",
+      type: "provider_attempt_started",
+      identity: { operationId, attemptId: "attempt-1" },
+      payload: {},
+    });
+    recorder.record({
+      component: "provider",
+      type: "provider_attempt_connected",
+      identity: { operationId, attemptId: "attempt-1" },
+      payload: {},
+    });
+    journal.close();
+
+    expect(inspectTraceJournal(journalPath)).toMatchObject({
+      captureComplete: false,
+      operations: [
+        {
+          operationId,
+          component: "provider",
+          startedType: "provider_request_started",
+          outcome: "unknown",
+        },
+      ],
+    });
   });
 
   it("inspects, exports, and verifies a run without executing recorded work", () => {

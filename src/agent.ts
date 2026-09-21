@@ -131,6 +131,17 @@ export interface AgentTraceRun {
 
 export type AgentTraceRunFactory = (identity: TraceIdentity) => AgentTraceRun;
 
+interface PendingConfigurationChange {
+  readonly revisionId: string;
+  readonly previousRevisionId: string;
+  readonly changedAt: string;
+  readonly cause: string;
+  readonly mode: AgentMode;
+  readonly provider: string;
+  readonly model: string;
+  readonly enabledTools: ReadonlyArray<string>;
+}
+
 type RuntimeToolResultEvent = Extract<
   RuntimeEvent,
   { type: "tool_finished" | "tool_failed" }
@@ -214,6 +225,8 @@ export class Agent {
   private readonly createTraceRun?: AgentTraceRunFactory;
   private activeTraceRun?: AgentTraceRun;
   private configurationRevisionId = randomUUID();
+  private readonly pendingConfigurationChanges: PendingConfigurationChange[] =
+    [];
   private lastTraceRunId?: string;
 
   constructor(
@@ -496,19 +509,74 @@ export class Agent {
   private recordConfigurationChange(cause: string): void {
     const previousRevisionId = this.configurationRevisionId;
     this.configurationRevisionId = randomUUID();
+    const change: PendingConfigurationChange = {
+      revisionId: this.configurationRevisionId,
+      previousRevisionId,
+      changedAt: new Date().toISOString(),
+      cause,
+      mode: this.modeState.mode,
+      provider: this.provider.name,
+      model: this.model,
+      enabledTools: this.getTools().map((tool) => tool.function.name),
+    };
+    if (!this.activeTraceRun) {
+      if (this.createTraceRun) this.pendingConfigurationChanges.push(change);
+      return;
+    }
+    this.recordConfigurationChangeEvent(change);
+  }
+
+  private recordConfigurationChangeEvent(
+    change: PendingConfigurationChange,
+  ): void {
     this.activeTraceRun?.recorder.record({
       component: "configuration",
       type: "configuration_revision_changed",
-      identity: { configurationRevisionId: this.configurationRevisionId },
+      identity: { configurationRevisionId: change.revisionId },
       payload: {
-        previousRevisionId,
-        cause,
-        mode: this.modeState.mode,
-        provider: this.provider.name,
-        model: this.model,
-        enabledTools: this.getTools().map((tool) => tool.function.name),
+        previousRevisionId: change.previousRevisionId,
+        changedAt: change.changedAt,
+        cause: change.cause,
+        mode: change.mode,
+        provider: change.provider,
+        model: change.model,
+        enabledTools: change.enabledTools,
       },
     });
+  }
+
+  private flushPendingConfigurationChanges(): void {
+    while (this.activeTraceRun && this.pendingConfigurationChanges.length > 0) {
+      const change = this.pendingConfigurationChanges[0];
+      this.recordConfigurationChangeEvent(change);
+      this.pendingConfigurationChanges.shift();
+    }
+  }
+
+  private createRuntimeTraceRecorder(): AgentTraceRecorder | undefined {
+    const recorder = this.activeTraceRun?.recorder;
+    if (!recorder) return undefined;
+    const agent = this;
+    return {
+      get identity() {
+        return {
+          ...recorder.identity,
+          configurationRevisionId: agent.configurationRevisionId,
+        };
+      },
+      record(event, options) {
+        recorder.record(
+          {
+            ...event,
+            identity: {
+              configurationRevisionId: agent.configurationRevisionId,
+              ...event.identity,
+            },
+          },
+          options,
+        );
+      },
+    };
   }
 
   private buildRedactedConfigurationSnapshot() {
@@ -1159,6 +1227,7 @@ export class Agent {
 
   private activeTurn = false;
 
+  // fallow-ignore-next-line complexity
   async streamChat(
     submission: PromptSubmission,
     onToken: (token: string) => void,
@@ -1171,27 +1240,30 @@ export class Agent {
     this.turnScratchpadDir = undefined;
     const { onToolStart, onToolEnd, ...runtimeOptions } = options ?? {};
     const runId = randomUUID();
-    this.activeTraceRun = this.createTraceRun?.({
-      sessionId: this.sessionId,
-      runId,
-      configurationRevisionId: this.configurationRevisionId,
-      previousRunId: this.lastTraceRunId,
-    });
-    this.activeTraceRun?.recorder.record(
-      {
-        component: "cli",
-        type: "run_started",
-        payload: {
-          provider: this.provider.name,
-          model: this.model,
-          previousRunId: this.lastTraceRunId,
-          configuration: this.buildRedactedConfigurationSnapshot(),
-        },
-      },
-      { durable: true },
-    );
-    const runtime = this.createRuntime(onToolStart);
+    let traceRun: AgentTraceRun | undefined;
     try {
+      traceRun = this.createTraceRun?.({
+        sessionId: this.sessionId,
+        runId,
+        configurationRevisionId: this.configurationRevisionId,
+        previousRunId: this.lastTraceRunId,
+      });
+      this.activeTraceRun = traceRun;
+      traceRun?.recorder.record(
+        {
+          component: "cli",
+          type: "run_started",
+          payload: {
+            provider: this.provider.name,
+            model: this.model,
+            previousRunId: this.lastTraceRunId,
+            configuration: this.buildRedactedConfigurationSnapshot(),
+          },
+        },
+        { durable: true },
+      );
+      this.flushPendingConfigurationChanges();
+      const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
         onEvent: (event) => {
@@ -1209,14 +1281,24 @@ export class Agent {
     } catch (error) {
       throw this.handleProviderError(error);
     } finally {
-      this.activeTraceRun?.recorder.record(
-        { component: "cli", type: "run_closed", payload: {} },
-        { durable: true },
-      );
-      this.activeTraceRun?.close?.();
-      this.activeTraceRun = undefined;
-      this.lastTraceRunId = runId;
-      this.activeTurn = false;
+      try {
+        traceRun?.recorder.record(
+          { component: "cli", type: "run_closed", payload: {} },
+          { durable: true },
+        );
+      } catch {
+        // Trace capture is observational and must not wedge the agent.
+      } finally {
+        try {
+          traceRun?.close?.();
+        } catch {
+          // Closing a trace sink must not prevent turn cleanup.
+        } finally {
+          if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
+          if (traceRun) this.lastTraceRunId = runId;
+          this.activeTurn = false;
+        }
+      }
     }
   }
 
@@ -1245,7 +1327,7 @@ export class Agent {
         if (event.type === "tool_execution_started")
           onToolStart?.(event.toolName);
       },
-      trace: this.activeTraceRun?.recorder,
+      trace: this.createRuntimeTraceRecorder(),
       integrations: {
         prepareTurn: (submission) => this.attachFileMentions(submission.text),
         startTurn: () => this.startLocalTurn(),

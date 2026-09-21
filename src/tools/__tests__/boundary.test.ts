@@ -6,7 +6,7 @@ import {
   it,
   jest,
 } from "@jest/globals";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -105,6 +105,26 @@ describe("headless local tools", () => {
       workspace.replace(/^\/private/, ""),
     );
     expect(cwd).toHaveBeenCalled(); // fast-glob eagerly evaluates its unused cwd fallback.
+  });
+
+  it("replaces a writable file even when its previous content cannot be read", async () => {
+    const filePath = join(workspace, "write-only.txt");
+    await writeFile(filePath, "old content", { mode: 0o200 });
+    await chmod(filePath, 0o200);
+
+    const result = await localRegistry().executeWithStatus("write", {
+      path: "write-only.txt",
+      content: "replacement",
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.outcome).toMatchObject({
+      kind: "file_write",
+      operation: "replace",
+      beforeHash: undefined,
+      afterHash: expect.stringMatching(/^sha256:/),
+    });
+    expect(await readFile(filePath, "utf8")).toBe("replacement");
   });
 
   it("requires explicit workspace and shell dependencies", () => {

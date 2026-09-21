@@ -111,7 +111,44 @@ function pruneSessionStorageTree(
   }
 }
 
-/** Prune stale per-session artifact and scratchpad directories under sessionsDir. */
+function pruneTraceJournalTree(
+  rootDir: string,
+  retentionMs: number,
+  activeSessionIds: Set<string>,
+): void {
+  if (!fs.existsSync(rootDir)) return;
+
+  for (const sessionId of fs.readdirSync(rootDir)) {
+    if (activeSessionIds.has(sessionId)) continue;
+    try {
+      pruneTraceJournalSession(path.join(rootDir, sessionId), retentionMs);
+    } catch {
+      continue;
+    }
+  }
+}
+
+function pruneTraceJournalSession(
+  sessionDir: string,
+  retentionMs: number,
+): void {
+  if (!fs.statSync(sessionDir).isDirectory()) return;
+
+  for (const fileName of fs.readdirSync(sessionDir)) {
+    if (!fileName.endsWith(".jsonl")) continue;
+    const journalPath = path.join(sessionDir, fileName);
+    const stat = fs.statSync(journalPath);
+    if (stat.isFile() && Date.now() - stat.mtimeMs > retentionMs) {
+      fs.rmSync(journalPath, { force: true });
+    }
+  }
+
+  if (isEmptyDirectory(sessionDir)) {
+    fs.rmSync(sessionDir, { recursive: true, force: true });
+  }
+}
+
+/** Prune stale per-session artifacts, scratchpads, and trace journals. */
 export function pruneStaleSessionStorage(
   sessionsDir: string,
   retentionDays: number,
@@ -130,5 +167,10 @@ export function pruneStaleSessionStorage(
     anchoredIds,
     retentionMs,
     { skipSessionIds: activeInProgress, removeEmptyDirs: true },
+  );
+  pruneTraceJournalTree(
+    path.join(sessionsDir, "traces"),
+    retentionMs,
+    activeInProgress,
   );
 }

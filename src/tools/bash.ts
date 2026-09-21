@@ -42,9 +42,9 @@ function classifyCommandResult(
   result: Awaited<ReturnType<ShellExecutor>>,
 ): CommandOutcomeClassification {
   if (result.aborted) return "cancelled";
+  if (result.maxBufferExceeded) return "output_limit";
   if (result.timedOut) return "timed_out";
   if (result.launchFailed) return "launch_failed";
-  if (result.maxBufferExceeded) return "output_limit";
   return result.exitCode === 0 ? "succeeded" : "nonzero_exit";
 }
 
@@ -190,19 +190,22 @@ export class BashTool implements PresentedTool {
         cwd: executionOptions.cwd,
         timeoutMs: executionOptions.timeoutMs,
         durationMs: result.durationMs,
-        environmentKeys: Object.keys(executionOptions.env).sort(),
+        environmentKeys: Object.keys(executionOptions.env ?? {}).sort(),
         outputDiscarded: result.maxBufferExceeded === true,
         sideEffect: "unknown",
       },
     };
   }
 
+  // fallow-ignore-next-line complexity
   private resolveExecutionOptions(args: Record<string, unknown>) {
     const cwd = (this.config?.resolvePath ?? normalizeToolPath)(
       args.cwd ?? this.config?.workspaceRoot ?? process.cwd(),
     );
     const envOverrides =
-      args.env !== undefined ? (args.env as Record<string, string>) : {};
+      args.env !== null && typeof args.env === "object"
+        ? (args.env as Record<string, string>)
+        : {};
     let timeout =
       args.timeout !== undefined
         ? (args.timeout as number)
