@@ -412,7 +412,7 @@ describe("shell execution dependencies", () => {
         command: "printf failure >&2; exit 7",
         cwd: workspace,
       }),
-    ).toEqual({ stdout: "", stderr: "failure", exitCode: 7 });
+    ).toMatchObject({ stdout: "", stderr: "failure", exitCode: 7 });
     const result = await executeNodeShell({
       command: "printf '%010000d' 1",
       cwd: workspace,

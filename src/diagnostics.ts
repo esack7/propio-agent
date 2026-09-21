@@ -241,4 +241,11 @@ export type AgentDiagnosticEvent =
       type: "legacy_session_no_id";
       provider: string;
       model: string;
+    }
+  | {
+      type: "trace_capture_failed";
+      journalPath: string;
+      operation: "open" | "write" | "flush" | "close";
+      errorName: string;
+      message: string;
     };

@@ -17,6 +17,7 @@ import type { ToolExecutionContext } from "../tools/execution.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { PromptSubmission } from "./input.js";
+import type { AgentTraceRecorder } from "../trace/types.js";
 
 export interface AgentExecutionPolicy {
   readonly maxIterations: number;
@@ -94,4 +95,6 @@ export interface AgentRuntimeOptions {
   readonly promptBudgetPolicy?: PromptBudgetPolicy;
   readonly integrations?: AgentIntegrations;
   readonly onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
+  /** Optional caller-owned trace recorder. The runtime performs no storage discovery. */
+  readonly trace?: AgentTraceRecorder;
 }

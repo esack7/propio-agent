@@ -88,6 +88,12 @@ import {
   type AbortStateController,
 } from "./ui/abortState.js";
 import { createTurnCancelListener } from "./ui/turnCancelListener.js";
+import {
+  JsonlTraceJournal,
+  RunTraceRecorder,
+  type TraceCaptureFailure,
+  type TraceIdentity,
+} from "./trace/index.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -1161,6 +1167,8 @@ async function createInitializedAgent(
   runtimeConfig: RuntimeConfig,
   diagnosticsEnabled: boolean,
   diagnosticLogger: { onEvent: (event: AgentDiagnosticEvent) => void },
+  sessionsDir: string,
+  onTraceCaptureFailure: (failure: TraceCaptureFailure) => void,
 ): Promise<{ agent: AgentType; configPath: string }> {
   const configPath = getConfigPath();
   const mcpConfigPath = getMcpConfigPath();
@@ -1182,6 +1190,21 @@ async function createInitializedAgent(
     diagnosticsEnabled,
     onDiagnosticEvent: diagnosticLogger.onEvent,
     runtimeConfig,
+    createTraceRun: (identity: TraceIdentity) => {
+      const journal = new JsonlTraceJournal(
+        path.join(
+          sessionsDir,
+          "traces",
+          identity.sessionId,
+          `${identity.runId}.jsonl`,
+        ),
+        { onCaptureFailure: onTraceCaptureFailure },
+      );
+      return {
+        recorder: new RunTraceRecorder(identity, journal),
+        close: () => journal.close(),
+      };
+    },
   });
   await agent.initialize();
 
@@ -1254,6 +1277,16 @@ async function runConfiguredSession(options: {
     runtimeConfig,
     options.runtime.diagnosticsEnabled,
     options.diagnosticLogger,
+    sessionsDir,
+    (failure) => {
+      options.ui.warn(
+        `Trace capture degraded (${failure.operation}): ${failure.message}`,
+      );
+      options.diagnosticLogger.onEvent({
+        type: "trace_capture_failed",
+        ...failure,
+      });
+    },
   );
 
   try {

@@ -82,6 +82,49 @@ function setup(
 }
 
 describe("public headless runtime", () => {
+  it("commits each completed tool result before dispatching the next call", async () => {
+    const controller = new AbortController();
+    const calls = ["first", "second", "third"].map((name, index) => ({
+      id: `call-${index + 1}`,
+      function: { name: "lookup", arguments: { key: name } },
+    }));
+    let executionCount = 0;
+    const fixture = setup([[{ type: "tool_calls", toolCalls: calls }]], {
+      tools: {
+        getEnabledSchemas: () => [],
+        executeWithStatus: async () => {
+          executionCount++;
+          if (executionCount === 1) {
+            return { status: "success", content: "first completed" };
+          }
+          controller.abort("interrupt batch");
+          return await new Promise(() => {});
+        },
+      },
+    });
+
+    await expect(fixture.run(controller.signal)).rejects.toThrow("cancelled");
+
+    expect(executionCount).toBe(2);
+    const state = fixture.context.getConversationState();
+    expect(state.artifacts).toHaveLength(1);
+    expect(state.artifacts[0].content).toBe("first completed");
+    expect(state.turns[0].entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "tool",
+          toolInvocations: [expect.objectContaining({ toolCallId: "call-1" })],
+        }),
+      ]),
+    );
+    const recordedToolCallIds = state.turns[0].entries.flatMap((entry) =>
+      entry.kind === "tool"
+        ? entry.toolInvocations.map((invocation) => invocation.toolCallId)
+        : [],
+    );
+    expect(recordedToolCallIds).toEqual(["call-1"]);
+  });
+
   it("orders lifecycle and tool events and replays opaque continuation through the public context", async () => {
     const fixture = setup([
       [{ type: "thinking_delta", delta: "Looking" }, toolCall],

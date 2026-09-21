@@ -60,7 +60,8 @@ describe("runShellCommand", () => {
 
     const result = await runShellCommand({ command: "echo ok" });
 
-    expect(result).toEqual({ stdout: "ok", stderr: "", exitCode: 0 });
+    expect(result).toMatchObject({ stdout: "ok", stderr: "", exitCode: 0 });
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -77,6 +78,7 @@ describe("runShellCommand", () => {
       stdout: "partial",
       stderr: "Command timed out and was killed",
       exitCode: -1,
+      timedOut: true,
     });
   });
 
@@ -115,7 +117,7 @@ describe("runShellCommand", () => {
     child.stdout.emit("data", Buffer.from("abcdefgh"));
     child.emit("close", null);
 
-    await expect(resultPromise).resolves.toEqual({
+    await expect(resultPromise).resolves.toMatchObject({
       stdout: "abcd",
       stderr: MAXBUFFER_TRUNCATION_MESSAGE,
       exitCode: -1,

@@ -16,3 +16,4 @@ export type {
   PromptPlanSnapshot,
 } from "./events.js";
 export type { AgentDiagnosticEvent } from "../diagnostics.js";
+export type { AgentTraceRecorder } from "../trace/types.js";

@@ -188,6 +188,29 @@ describe("Tool Implementations", () => {
       );
     });
 
+    it("reports resolved path and content hashes for a completed replacement", async () => {
+      const tool = new WriteTool();
+      mockFileContents("old content");
+      jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
+      jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
+
+      const result = await tool.executeWithStatus({
+        path: "/test/file.txt",
+        content: "new content",
+      });
+
+      expect(result.status).toBe("success");
+      expect(result.outcome).toMatchObject({
+        kind: "file_write",
+        classification: "succeeded",
+        operation: "replace",
+        resolvedPath: "/test/file.txt",
+        sideEffect: "completed",
+        beforeHash: expect.stringMatching(/^sha256:/),
+        afterHash: expect.stringMatching(/^sha256:/),
+      });
+    });
+
     it("propagates permission errors", async () => {
       const tool = new WriteTool();
       const error = new Error("EPERM") as NodeJS.ErrnoException;
@@ -232,6 +255,30 @@ describe("Tool Implementations", () => {
       });
 
       expect(result).toBe("Edited file: /test/file.txt (1 replacement)");
+    });
+
+    it("reports before and after hashes for a completed edit", async () => {
+      const tool = new EditTool();
+      mockFileStat(false);
+      mockFileContents("hello world");
+      jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
+      jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
+
+      const result = await tool.executeWithStatus({
+        path: "/test/file.txt",
+        old_string: "world",
+        new_string: "agent",
+      });
+
+      expect(result.outcome).toMatchObject({
+        kind: "file_edit",
+        classification: "succeeded",
+        operation: "replace",
+        resolvedPath: "/test/file.txt",
+        sideEffect: "completed",
+        beforeHash: expect.stringMatching(/^sha256:/),
+        afterHash: expect.stringMatching(/^sha256:/),
+      });
     });
 
     it("fails when the match is missing", async () => {
@@ -310,6 +357,27 @@ describe("Tool Implementations", () => {
       expect(parsed.exit_code).toBe(1);
       expect(parsed.stdout).toBe("partial");
       expect(parsed.stderr).toBe("problem");
+    });
+
+    it("keeps legacy success status while classifying a nonzero command exit", async () => {
+      const tool = new BashTool();
+      const error: any = new Error("failed");
+      error.code = 7;
+      error.stderr = "problem";
+      mockExecFileAsync.mockRejectedValue(error);
+
+      const result = await tool.executeWithStatus({ command: "exit 7" });
+
+      expect(result.status).toBe("success");
+      expect(result.outcome).toMatchObject({
+        kind: "command",
+        classification: "nonzero_exit",
+        exitCode: 7,
+        cwd: "/test",
+        environmentKeys: [],
+        outputDiscarded: false,
+        sideEffect: "unknown",
+      });
     });
 
     it("handles timeouts", async () => {

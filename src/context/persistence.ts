@@ -37,6 +37,7 @@ export interface SessionMetadata {
   readonly summaryPolicy: SummaryPolicy;
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
+  readonly lastTraceRunId?: string;
   readonly agentMode?: AgentMode;
   readonly planFilePath?: string;
   readonly planSaveApproved?: boolean;
@@ -276,6 +277,9 @@ function validateMetadata(metadata: unknown): void {
   assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
   if (meta.sessionId !== undefined) {
     assertString(meta.sessionId, "metadata.sessionId");
+  }
+  if (meta.lastTraceRunId !== undefined) {
+    assertString(meta.lastTraceRunId, "metadata.lastTraceRunId");
   }
   validateAgentModeMetadata(meta);
   validatePlanMetadata(meta);
