@@ -476,6 +476,9 @@ function validateArtifact(artifact: unknown, label: string): void {
 
 function validateRollingSummary(summary: unknown, label: string): void {
   assertObject(summary, label);
+  if (summary.revisionId !== undefined) {
+    assertString(summary.revisionId, `${label}.revisionId`);
+  }
   assertString(summary.content, `${label}.content`);
   assertString(summary.updatedAt, `${label}.updatedAt`);
   assertArray(summary.coveredTurnIds, `${label}.coveredTurnIds`);

@@ -2702,6 +2702,37 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("prompt_plan diagnostic event", () => {
+    it("does not credit omitted turns to a summary excluded from the plan", () => {
+      const agent = createTestAgent(new MockProvider());
+      (agent as any).contextManager.setRollingSummary({
+        revisionId: "sha256:summary",
+        content: "Covered earlier context",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        coveredTurnIds: ["turn-covered"],
+        estimatedTokens: 10,
+      });
+
+      const metadata = (agent as any).describePromptPlan({
+        messages: [],
+        estimatedPromptTokens: 0,
+        reservedOutputTokens: 0,
+        includedTurnIds: [],
+        includedArtifactIds: [],
+        omittedTurnIds: ["turn-covered"],
+        usedRollingSummary: false,
+        retryLevel: 0,
+      });
+
+      expect(metadata.summaryRevisionId).toBeUndefined();
+      expect(metadata.omissions).toEqual([
+        {
+          kind: "turn",
+          id: "turn-covered",
+          reason: "prompt_budget",
+        },
+      ]);
+    });
+
     it("should emit prompt_plan event with plan metadata on each request", async () => {
       const { diagnosticEvents, agent } = createDiagnosticsAgent();
 
@@ -2729,6 +2760,82 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("summary refresh diagnostics", () => {
+    it("traces summary generation as a linked run with a durable revision", async () => {
+      const provider = new MockProvider();
+      const traceEvents: Array<{
+        type: string;
+        identity: Record<string, unknown>;
+        payload: unknown;
+      }> = [];
+      const closedRuns: string[] = [];
+      const agent = createTestAgent(provider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({
+                type: event.type,
+                identity: { ...identity, ...event.identity },
+                payload: event.payload,
+              }),
+          },
+          close: () => closedRuns.push(identity.runId),
+        }),
+      });
+      (agent as any).summaryPolicy = {
+        rawRecentTurns: 0,
+        refreshIntervalTurns: 999,
+        summaryTargetTokens: 256,
+        contextPressureThreshold: 2,
+      };
+
+      await agent.streamChat(userSubmission("First"), () => {});
+      await agent.streamChat(userSubmission("Second"), () => {});
+      await (agent as any).runSummaryRefresh("turn_cadence");
+
+      const summaryRunStarted = traceEvents.find(
+        (event) =>
+          event.type === "run_started" &&
+          (event.payload as { kind?: string }).kind === "summary_refresh",
+      );
+      const dispatched = traceEvents.find(
+        (event) =>
+          event.type === "provider_request_dispatched" &&
+          (event.payload as { purpose?: string }).purpose === "summarize",
+      );
+      const revision = traceEvents.find(
+        (event) => event.type === "summary_revision_created",
+      );
+
+      expect(summaryRunStarted).toMatchObject({
+        identity: {
+          runId: expect.any(String),
+          previousRunId: expect.any(String),
+        },
+      });
+      expect(dispatched).toMatchObject({
+        identity: {
+          runId: summaryRunStarted?.identity.runId,
+          promptRevisionId: expect.stringMatching(/^sha256:/),
+        },
+        payload: {
+          captureLevel: "standard",
+          outboundPayloadFingerprint: expect.stringMatching(/^sha256:/),
+        },
+      });
+      expect(revision).toMatchObject({
+        identity: {
+          runId: summaryRunStarted?.identity.runId,
+          summaryRevisionId: expect.stringMatching(/^sha256:/),
+        },
+      });
+      expect(agent.getConversationState().rollingSummary?.revisionId).toBe(
+        revision?.identity.summaryRevisionId,
+      );
+      expect(provider.streamChatCalls.at(-1)?.trace?.purpose).toBe("summarize");
+      expect(closedRuns).toContain(summaryRunStarted?.identity.runId);
+    });
+
     it("should measure summary prompt size before the summary provider call", async () => {
       const { diagnosticEvents, agent } = createDiagnosticsAgent();
       (agent as any).summaryPolicy = {

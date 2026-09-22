@@ -3,6 +3,8 @@ import {
   type ChatMessage,
   type ChatTool,
   type ProviderDiagnosticEvent,
+  type ProviderTraceEvent,
+  type ChatRequest,
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
@@ -63,7 +65,11 @@ import {
   PinFactInput,
   UpdateMemoryInput,
 } from "./context/types.js";
-import { SummaryManager } from "./context/summaryManager.js";
+import {
+  SummaryManager,
+  type SummaryGenerationHooks,
+  type SummaryRefreshResult,
+} from "./context/summaryManager.js";
 import {
   serializeSession,
   parseSession,
@@ -82,6 +88,7 @@ import {
 } from "./scratchpad/scratchpad.js";
 import { isSafeSessionId } from "./sessions/sessionId.js";
 import type { AgentTraceRecorder, TraceIdentity } from "./trace/index.js";
+import { createTraceRevisionId } from "./trace/revisions.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -142,6 +149,14 @@ interface PendingConfigurationChange {
   readonly provider: string;
   readonly model: string;
   readonly enabledTools: ReadonlyArray<string>;
+}
+
+interface SummaryTraceContext {
+  readonly traceRun: AgentTraceRun;
+  readonly operationId: string;
+  readonly reason: "turn_cadence" | "context_pressure" | "synchronous_shrink";
+  readonly previousSummaryRevisionId?: string;
+  promptRevisionId?: string;
 }
 
 type RuntimeToolResultEvent = Extract<
@@ -689,6 +704,174 @@ export class Agent {
     }
   }
 
+  private tryStartSummaryTrace(
+    reason: SummaryTraceContext["reason"],
+    eligibleTurnCount: number,
+    newEligibleCount: number,
+    previousSummaryRevisionId?: string,
+  ): SummaryTraceContext | undefined {
+    if (!this.createTraceRun) return undefined;
+    const parentRunId =
+      this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId;
+    let traceRun: AgentTraceRun | undefined;
+    try {
+      traceRun = this.createTraceRun({
+        sessionId: this.sessionId,
+        runId: randomUUID(),
+        configurationRevisionId: this.configurationRevisionId,
+        previousRunId: parentRunId,
+      });
+      const context: SummaryTraceContext = {
+        traceRun,
+        operationId: randomUUID(),
+        reason,
+        previousSummaryRevisionId,
+      };
+      traceRun.recorder.record(
+        {
+          component: "cli",
+          type: "run_started",
+          identity: { operationId: context.operationId },
+          payload: {
+            kind: "summary_refresh",
+            reason,
+            parentRunId,
+            configuration: this.buildRedactedConfigurationSnapshot(),
+          },
+        },
+        { durable: true },
+      );
+      traceRun.recorder.record({
+        component: "context",
+        type: "summary_refresh_started",
+        identity: {
+          operationId: context.operationId,
+          summaryRevisionId: previousSummaryRevisionId,
+        },
+        payload: {
+          reason,
+          eligibleTurnCount,
+          newEligibleCount,
+          previousSummaryRevisionId,
+        },
+      });
+      return context;
+    } catch {
+      this.closeTraceRun(traceRun);
+      return undefined;
+    }
+  }
+
+  private recordSummaryTrace(
+    context: SummaryTraceContext | undefined,
+    event: Parameters<AgentTraceRecorder["record"]>[0],
+    options?: Parameters<AgentTraceRecorder["record"]>[1],
+  ): void {
+    try {
+      context?.traceRun.recorder.record(event, options);
+    } catch {
+      // Trace capture is observational and must not affect summarization.
+    }
+  }
+
+  private prepareSummaryTraceRequest(
+    context: SummaryTraceContext,
+    request: ChatRequest,
+  ): ChatRequest {
+    const recorder = context.traceRun.recorder;
+    const requestId = randomUUID();
+    const operationId = randomUUID();
+    context.promptRevisionId = createTraceRevisionId({
+      model: request.model,
+      messages: request.messages,
+    });
+    const identity = {
+      requestId,
+      operationId,
+      parentOperationId: context.operationId,
+      promptRevisionId: context.promptRevisionId,
+      summaryRevisionId: context.previousSummaryRevisionId,
+    };
+    this.recordSummaryTrace(context, {
+      component: "agent",
+      type: "provider_request_dispatched",
+      identity,
+      payload: {
+        purpose: "summarize",
+        provider: this.provider.name,
+        model: request.model,
+        messageCount: request.messages.length,
+        toolCount: 0,
+        captureLevel: "standard",
+        outboundPayloadFingerprint: createTraceRevisionId({
+          model: request.model,
+          messages: request.messages,
+        }),
+      },
+    });
+    const previousObserver = request.onTraceEvent;
+    return {
+      ...request,
+      trace: {
+        sessionId: recorder.identity.sessionId,
+        runId: recorder.identity.runId,
+        requestId,
+        operationId,
+        parentOperationId: context.operationId,
+        purpose: "summarize",
+        configurationRevisionId: recorder.identity.configurationRevisionId,
+        promptRevisionId: context.promptRevisionId,
+      },
+      onTraceEvent: (event) => {
+        previousObserver?.(event);
+        this.recordSummaryProviderTraceEvent(context, event);
+      },
+    };
+  }
+
+  private recordSummaryProviderTraceEvent(
+    context: SummaryTraceContext,
+    event: ProviderTraceEvent,
+  ): void {
+    this.recordSummaryTrace(
+      context,
+      {
+        component: "provider",
+        type: event.type,
+        identity: {
+          requestId: event.trace.requestId,
+          operationId: event.trace.operationId,
+          parentOperationId: event.trace.parentOperationId,
+          configurationRevisionId: event.trace.configurationRevisionId,
+          promptRevisionId: event.trace.promptRevisionId,
+          summaryRevisionId: context.previousSummaryRevisionId,
+          attemptId: "attemptId" in event ? event.attemptId : undefined,
+        },
+        payload: event,
+      },
+      {
+        durable:
+          event.type === "provider_request_completed" ||
+          event.type === "provider_request_failed",
+      },
+    );
+  }
+
+  private closeSummaryTrace(context: SummaryTraceContext | undefined): void {
+    if (!context) return;
+    this.recordSummaryTrace(
+      context,
+      {
+        component: "cli",
+        type: "run_closed",
+        identity: { operationId: context.operationId },
+        payload: { kind: "summary_refresh" },
+      },
+      { durable: true },
+    );
+    this.closeTraceRun(context.traceRun);
+  }
+
   private buildRedactedConfigurationSnapshot() {
     const provider = this.resolvedProviderConfig as ProviderConfig & {
       apiKey?: string;
@@ -1071,6 +1254,124 @@ export class Agent {
     });
   }
 
+  private resolveSummaryRevisionId(
+    summary: ReturnType<ContextManager["getRollingSummary"]>,
+  ): string | undefined {
+    if (!summary) return undefined;
+    return (
+      summary.revisionId ??
+      createTraceRevisionId({
+        content: summary.content,
+        coveredTurnIds: summary.coveredTurnIds,
+      })
+    );
+  }
+
+  private buildSummaryGenerationHooks(
+    reason: SummaryTraceContext["reason"],
+    eligibleTurnCount: number,
+    newEligibleCount: number,
+    summaryTrace: SummaryTraceContext | undefined,
+  ): SummaryGenerationHooks {
+    const hooks: SummaryGenerationHooks = {
+      onRequestMeasured: (metrics) => {
+        this.emitDiagnostic({
+          type: "summary_refresh_started",
+          provider: this.provider.name,
+          model: this.model,
+          eligibleTurnCount,
+          newEligibleCount,
+          reason,
+          promptMessageCount: metrics.promptMessageCount,
+          promptChars: metrics.promptChars,
+          estimatedPromptTokens: metrics.estimatedPromptTokens,
+        });
+      },
+    };
+    if (!summaryTrace) return hooks;
+    return {
+      ...hooks,
+      prepareRequest: (request) =>
+        this.prepareSummaryTraceRequest(summaryTrace, request),
+    };
+  }
+
+  private recordDiscardedSummaryTrace(
+    summaryTrace: SummaryTraceContext | undefined,
+  ): void {
+    this.recordSummaryTrace(
+      summaryTrace,
+      {
+        component: "context",
+        type: "summary_refresh_discarded",
+        identity: {
+          operationId: summaryTrace?.operationId,
+          promptRevisionId: summaryTrace?.promptRevisionId,
+        },
+        payload: { reason: "superseded_generation" },
+      },
+      { durable: true },
+    );
+  }
+
+  private recordCreatedSummaryTrace(
+    summaryTrace: SummaryTraceContext | undefined,
+    reason: SummaryTraceContext["reason"],
+    previousSummaryRevisionId: string | undefined,
+    result: SummaryRefreshResult,
+  ): void {
+    this.recordSummaryTrace(
+      summaryTrace,
+      {
+        component: "context",
+        type: "summary_revision_created",
+        identity: {
+          operationId: summaryTrace?.operationId,
+          promptRevisionId: summaryTrace?.promptRevisionId,
+          summaryRevisionId: this.resolveSummaryRevisionId(result.summary),
+        },
+        payload: {
+          reason,
+          previousSummaryRevisionId,
+          coveredTurnIds: result.summary.coveredTurnIds,
+          refreshedTurnCount: result.refreshedTurnCount,
+          estimatedTokens: result.summary.estimatedTokens,
+        },
+      },
+      { durable: true },
+    );
+  }
+
+  private recordFailedSummaryTrace(
+    summaryTrace: SummaryTraceContext | undefined,
+    reason: SummaryTraceContext["reason"],
+    error: unknown,
+  ): void {
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    const message = error instanceof Error ? error.message : String(error);
+    this.recordSummaryTrace(
+      summaryTrace,
+      {
+        component: "context",
+        type: "summary_refresh_failed",
+        identity: {
+          operationId: summaryTrace?.operationId,
+          promptRevisionId: summaryTrace?.promptRevisionId,
+          summaryRevisionId: summaryTrace?.previousSummaryRevisionId,
+        },
+        payload: { reason, errorName, message },
+      },
+      { durable: true },
+    );
+    this.emitDiagnostic({
+      type: "summary_refresh_failed",
+      provider: this.provider.name,
+      model: this.model,
+      errorName,
+      message,
+    });
+  }
+
   private async runSummaryRefresh(
     reason: "turn_cadence" | "context_pressure" | "synchronous_shrink",
   ): Promise<void> {
@@ -1091,6 +1392,7 @@ export class Agent {
     this.summaryRefreshRunning = true;
     this.summaryDirty = false;
     const generation = this.summaryGeneration;
+    let summaryTrace: SummaryTraceContext | undefined;
 
     try {
       const eligibility = this.contextManager.getSummaryEligibility(
@@ -1100,37 +1402,45 @@ export class Agent {
         return;
       }
 
+      const previousSummary = this.contextManager.getRollingSummary();
+      const previousSummaryRevisionId =
+        this.resolveSummaryRevisionId(previousSummary);
+      summaryTrace = this.tryStartSummaryTrace(
+        reason,
+        eligibility.eligibleTurns.length,
+        eligibility.newEligibleCount,
+        previousSummaryRevisionId,
+      );
+
       const startTime = Date.now();
       const result = await this.summaryManager.generateSummary(
         this.provider,
         this.model,
         eligibility.eligibleTurns,
-        this.contextManager.getRollingSummary(),
+        previousSummary,
         this.summaryPolicy,
         undefined,
-        {
-          onRequestMeasured: (metrics) => {
-            this.emitDiagnostic({
-              type: "summary_refresh_started",
-              provider: this.provider.name,
-              model: this.model,
-              eligibleTurnCount: eligibility.eligibleTurns.length,
-              newEligibleCount: eligibility.newEligibleCount,
-              reason,
-              promptMessageCount: metrics.promptMessageCount,
-              promptChars: metrics.promptChars,
-              estimatedPromptTokens: metrics.estimatedPromptTokens,
-            });
-          },
-        },
+        this.buildSummaryGenerationHooks(
+          reason,
+          eligibility.eligibleTurns.length,
+          eligibility.newEligibleCount,
+          summaryTrace,
+        ),
       );
 
       if (this.summaryGeneration !== generation) {
+        this.recordDiscardedSummaryTrace(summaryTrace);
         return;
       }
 
       this.contextManager.setRollingSummary(result.summary);
       this.contextManager.resetCompactionFailures();
+      this.recordCreatedSummaryTrace(
+        summaryTrace,
+        reason,
+        previousSummaryRevisionId,
+        result,
+      );
 
       this.emitDiagnostic({
         type: "summary_refresh_completed",
@@ -1141,15 +1451,10 @@ export class Agent {
         durationMs: Date.now() - startTime,
       });
     } catch (error) {
-      this.emitDiagnostic({
-        type: "summary_refresh_failed",
-        provider: this.provider.name,
-        model: this.model,
-        errorName: error instanceof Error ? error.name : "UnknownError",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      this.recordFailedSummaryTrace(summaryTrace, reason, error);
       this.contextManager.incrementCompactionFailures();
     } finally {
+      this.closeSummaryTrace(summaryTrace);
       this.summaryRefreshRunning = false;
 
       if (this.summaryDirty && this.summaryGeneration === generation) {
@@ -1252,6 +1557,54 @@ export class Agent {
       };
     }
     return plan;
+  }
+
+  private describePromptPlan(plan: PromptPlan) {
+    const summary = this.contextManager.getRollingSummary();
+    const coveredTurnIds = new Set(summary?.coveredTurnIds ?? []);
+    const invokedSkills =
+      this.contextManager.getConversationState().invokedSkills ?? [];
+    return {
+      summaryRevisionId:
+        plan.usedRollingSummary && summary
+          ? (summary.revisionId ??
+            createTraceRevisionId({
+              content: summary.content,
+              coveredTurnIds: summary.coveredTurnIds,
+            }))
+          : undefined,
+      instructionRevisions: [
+        {
+          source: "base_system_prompt",
+          scope: "session",
+          revisionId: createTraceRevisionId(this.baseRules),
+        },
+        ...(this.agentsMdContent
+          ? [
+              {
+                source: "agents_md",
+                scope: "workspace",
+                revisionId: createTraceRevisionId(this.agentsMdContent),
+              },
+            ]
+          : []),
+        ...invokedSkills.map((skill) => ({
+          source: `skill:${skill.name}`,
+          scope: skill.source,
+          revisionId: createTraceRevisionId(skill.content),
+        })),
+      ],
+      omissions: plan.omittedTurnIds.map((id) => ({
+        kind: "turn" as const,
+        id,
+        reason:
+          plan.usedRollingSummary && coveredTurnIds.has(id)
+            ? "covered_by_rolling_summary"
+            : plan.retryLevel > 0
+              ? "context_retry_budget"
+              : "prompt_budget",
+      })),
+    };
   }
 
   /**
@@ -1448,6 +1801,7 @@ export class Agent {
           this.prepareMessagesForProvider(messages),
         buildPlan: (instruction, retry, iteration, allowed) =>
           this.buildPlan(instruction, retry, iteration, allowed),
+        describePromptPlan: (plan) => this.describePromptPlan(plan),
         authorizeTool: ({ name, args, scope }) =>
           this.authorizeToolExecution(name, args, scope),
         shrinkContext: (plan) => this.attemptSynchronousShrink(plan),
