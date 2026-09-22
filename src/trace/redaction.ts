@@ -21,6 +21,15 @@ const TOKEN_METRIC_SEGMENTS = new Set([
   "usage",
 ]);
 
+const DECIMAL_RATE_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+
+function isPricingValue(value: unknown): boolean {
+  return (
+    typeof value === "number" ||
+    (typeof value === "string" && DECIMAL_RATE_PATTERN.test(value))
+  );
+}
+
 function isTokenMetricKey(
   segments: ReadonlyArray<string>,
   value: unknown,
@@ -31,7 +40,7 @@ function isTokenMetricKey(
     (segments
       .slice(tokenIndex + 1)
       .some((segment) => TOKEN_METRIC_SEGMENTS.has(segment)) ||
-      (typeof value === "number" &&
+      (isPricingValue(value) &&
         segments.some((segment) =>
           ["rate", "price", "cost"].includes(segment),
         )))
