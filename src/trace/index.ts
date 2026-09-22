@@ -10,6 +10,8 @@ export type {
   TraceExportManifest,
   TraceExportManifestV1,
   TraceExportManifestV2,
+  TraceExportManifestV3,
+  TraceExportMaterial,
   TraceInspection,
   TraceInspectionOptions,
   TraceOperationSummary,

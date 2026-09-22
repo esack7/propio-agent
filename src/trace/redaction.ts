@@ -2,6 +2,8 @@ const SENSITIVE_VALUE_PATTERNS: ReadonlyArray<RegExp> = [
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
   /\bAIza[A-Za-z0-9_-]{12,}\b/g,
+  /(?<![A-Za-z0-9/])\/(?:[^/\s"'`]+\/)+[^/\s"'`]+/g,
+  /\b[A-Za-z]:\\Users\\[^\s"'`]+/g,
 ];
 
 function keySegments(key: string): string[] {
