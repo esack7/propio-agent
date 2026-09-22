@@ -579,6 +579,46 @@ export class Agent {
     };
   }
 
+  private tryStartTraceRun(runId: string): AgentTraceRun | undefined {
+    let traceRun: AgentTraceRun | undefined;
+    try {
+      traceRun = this.createTraceRun?.({
+        sessionId: this.sessionId,
+        runId,
+        configurationRevisionId: this.configurationRevisionId,
+        previousRunId: this.lastTraceRunId,
+      });
+      this.activeTraceRun = traceRun;
+      traceRun?.recorder.record(
+        {
+          component: "cli",
+          type: "run_started",
+          payload: {
+            provider: this.provider.name,
+            model: this.model,
+            previousRunId: this.lastTraceRunId,
+            configuration: this.buildRedactedConfigurationSnapshot(),
+          },
+        },
+        { durable: true },
+      );
+      this.flushPendingConfigurationChanges();
+      return traceRun;
+    } catch {
+      if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
+      this.closeTraceRun(traceRun);
+      return undefined;
+    }
+  }
+
+  private closeTraceRun(traceRun: AgentTraceRun | undefined): void {
+    try {
+      traceRun?.close?.();
+    } catch {
+      // Trace capture is observational and must not affect the agent turn.
+    }
+  }
+
   private buildRedactedConfigurationSnapshot() {
     const provider = this.resolvedProviderConfig as ProviderConfig & {
       apiKey?: string;
@@ -1242,27 +1282,7 @@ export class Agent {
     const runId = randomUUID();
     let traceRun: AgentTraceRun | undefined;
     try {
-      traceRun = this.createTraceRun?.({
-        sessionId: this.sessionId,
-        runId,
-        configurationRevisionId: this.configurationRevisionId,
-        previousRunId: this.lastTraceRunId,
-      });
-      this.activeTraceRun = traceRun;
-      traceRun?.recorder.record(
-        {
-          component: "cli",
-          type: "run_started",
-          payload: {
-            provider: this.provider.name,
-            model: this.model,
-            previousRunId: this.lastTraceRunId,
-            configuration: this.buildRedactedConfigurationSnapshot(),
-          },
-        },
-        { durable: true },
-      );
-      this.flushPendingConfigurationChanges();
+      traceRun = this.tryStartTraceRun(runId);
       const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
@@ -1288,17 +1308,11 @@ export class Agent {
         );
       } catch {
         // Trace capture is observational and must not wedge the agent.
-      } finally {
-        try {
-          traceRun?.close?.();
-        } catch {
-          // Closing a trace sink must not prevent turn cleanup.
-        } finally {
-          if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
-          if (traceRun) this.lastTraceRunId = runId;
-          this.activeTurn = false;
-        }
       }
+      this.closeTraceRun(traceRun);
+      if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
+      if (traceRun) this.lastTraceRunId = runId;
+      this.activeTurn = false;
     }
   }
 

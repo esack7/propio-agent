@@ -990,7 +990,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(tokens.length).toBeGreaterThan(0);
     });
 
-    it("cleans up turn state when trace setup fails", async () => {
+    it("continues without tracing when trace creation fails", async () => {
       const mockProvider = new MockProvider();
       const createTraceRun = jest
         .fn()
@@ -1005,10 +1005,33 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       await expect(
         agent.streamChat(userSubmission("First"), () => {}),
-      ).rejects.toThrow("trace setup failed");
+      ).resolves.toBe("Mock response");
       await expect(
         agent.streamChat(userSubmission("Second"), () => {}),
       ).resolves.toBe("Mock response");
+      expect(mockProvider.streamChatCalls).toHaveLength(2);
+    });
+
+    it("closes a partial trace and continues when its initial record fails", async () => {
+      const mockProvider = new MockProvider();
+      const close = jest.fn();
+      const agent = createTestAgent(mockProvider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: () => {
+              throw new Error("trace record failed");
+            },
+          },
+          close,
+        }),
+      });
+
+      await expect(
+        agent.streamChat(userSubmission("Keep going"), () => {}),
+      ).resolves.toBe("Mock response");
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(mockProvider.streamChatCalls[0].trace).toBeUndefined();
     });
 
     it("records between-turn configuration changes in the next trace run", async () => {

@@ -107,6 +107,9 @@ describe("JSONL trace journal", () => {
         accessToken: "access-secret",
         refreshToken: "refresh-secret",
         clientSecret: "client-secret",
+        inputTokenCount: 42,
+        outputTokenRecoveryLimit: 3,
+        tokenEstimate: { input: 40, output: 2 },
         provider: {
           apiKey: { present: true, source: "settings_file" },
         },
@@ -127,6 +130,9 @@ describe("JSONL trace journal", () => {
       provider: {
         apiKey: { present: true, source: "settings_file" },
       },
+      inputTokenCount: 42,
+      outputTokenRecoveryLimit: 3,
+      tokenEstimate: { input: 40, output: 2 },
     });
   });
 

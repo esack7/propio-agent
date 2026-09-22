@@ -12,6 +12,25 @@ function keySegments(key: string): string[] {
     .filter(Boolean);
 }
 
+const TOKEN_METRIC_SEGMENTS = new Set([
+  "budget",
+  "count",
+  "estimate",
+  "estimated",
+  "limit",
+  "usage",
+]);
+
+function isTokenMetricKey(segments: ReadonlyArray<string>): boolean {
+  const tokenIndex = segments.indexOf("token");
+  return (
+    tokenIndex >= 0 &&
+    segments
+      .slice(tokenIndex + 1)
+      .some((segment) => TOKEN_METRIC_SEGMENTS.has(segment))
+  );
+}
+
 function isSensitiveKey(key: string): boolean {
   const segments = keySegments(key);
   if (
@@ -23,12 +42,12 @@ function isSensitiveKey(key: string): boolean {
         "credentials",
         "password",
         "secret",
-        "token",
       ].includes(segment),
     )
   ) {
     return true;
   }
+  if (segments.includes("token") && !isTokenMetricKey(segments)) return true;
   return segments.some(
     (segment, index) => segment === "api" && segments[index + 1] === "key",
   );
