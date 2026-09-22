@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { readTraceJournal } from "./journal.js";
+import {
+  summarizeProviderMeasurements,
+  type ProviderMeasurementSummary,
+  type ProviderPricingResolver,
+} from "./measurements.js";
 import type { TraceEventEnvelope, TraceReadWarning } from "./types.js";
 
 export interface TraceOperationSummary {
@@ -22,6 +27,11 @@ export interface TraceInspection {
   readonly captureComplete: boolean;
   readonly warnings: ReadonlyArray<TraceReadWarning>;
   readonly operations: ReadonlyArray<TraceOperationSummary>;
+  readonly providerMeasurements: ProviderMeasurementSummary;
+}
+
+export interface TraceInspectionOptions {
+  readonly pricingResolver?: ProviderPricingResolver;
 }
 
 function terminalOutcome(type: string): TraceOperationSummary["outcome"] {
@@ -76,11 +86,17 @@ function summarizeOperations(
   return [...operations.values()];
 }
 
-export function inspectTraceJournal(journalPath: string): TraceInspection {
+export function inspectTraceJournal(
+  journalPath: string,
+  options: TraceInspectionOptions = {},
+): TraceInspection {
   const { events, warnings } = readTraceJournal(journalPath);
   const first = events[0];
   const last = events[events.length - 1];
   const operations = summarizeOperations(events);
+  const captureComplete =
+    warnings.length === 0 &&
+    operations.every((operation) => operation.outcome !== "unknown");
   return {
     eventCount: events.length,
     firstObservedAt: first?.observedAt,
@@ -88,16 +104,17 @@ export function inspectTraceJournal(journalPath: string): TraceInspection {
     sessionId: first?.identity.sessionId,
     runId: first?.identity.runId,
     previousRunId: first?.identity.previousRunId,
-    captureComplete:
-      warnings.length === 0 &&
-      operations.every((operation) => operation.outcome !== "unknown"),
+    captureComplete,
     warnings,
     operations,
+    providerMeasurements: summarizeProviderMeasurements(events, {
+      pricingResolver: options.pricingResolver,
+      captureComplete,
+    }),
   };
 }
 
-export interface TraceExportManifest {
-  readonly version: 1;
+interface TraceExportManifestBase {
   readonly exportedAt: string;
   readonly captureLevel: "standard";
   readonly sessionId?: string;
@@ -112,11 +129,23 @@ export interface TraceExportManifest {
   }>;
 }
 
+export interface TraceExportManifestV1 extends TraceExportManifestBase {
+  readonly version: 1;
+}
+
+export interface TraceExportManifestV2 extends TraceExportManifestBase {
+  readonly version: 2;
+  readonly providerMeasurements: ProviderMeasurementSummary;
+}
+
+export type TraceExportManifest = TraceExportManifestV1 | TraceExportManifestV2;
+
 export function exportTraceJournal(
   journalPath: string,
   destinationDirectory: string,
-): TraceExportManifest {
-  const inspection = inspectTraceJournal(journalPath);
+  options: TraceInspectionOptions = {},
+): TraceExportManifestV2 {
+  const inspection = inspectTraceJournal(journalPath, options);
   const events = fs.readFileSync(journalPath);
   fs.mkdirSync(destinationDirectory, { recursive: true, mode: 0o700 });
   const relativeEventsPath = "events.jsonl";
@@ -127,8 +156,8 @@ export function exportTraceJournal(
       mode: 0o600,
     },
   );
-  const manifest: TraceExportManifest = {
-    version: 1,
+  const manifest: TraceExportManifestV2 = {
+    version: 2,
     exportedAt: new Date().toISOString(),
     captureLevel: "standard",
     sessionId: inspection.sessionId,
@@ -136,6 +165,7 @@ export function exportTraceJournal(
     previousRunId: inspection.previousRunId,
     captureComplete: inspection.captureComplete,
     warnings: inspection.warnings,
+    providerMeasurements: inspection.providerMeasurements,
     files: [
       {
         path: relativeEventsPath,
@@ -157,6 +187,14 @@ export function verifyTraceExport(destinationDirectory: string): string[] {
     fs.readFileSync(path.join(destinationDirectory, "manifest.json"), "utf8"),
   ) as TraceExportManifest;
   const failures: string[] = [];
+  if (manifest.version !== 1 && manifest.version !== 2) {
+    return [
+      `Unsupported export manifest version: ${String((manifest as { version: unknown }).version)}`,
+    ];
+  }
+  if (manifest.version === 2 && !manifest.providerMeasurements) {
+    failures.push("Missing provider measurements in version 2 manifest");
+  }
   for (const entry of manifest.files) {
     const absolutePath = path.resolve(destinationDirectory, entry.path);
     const root = `${path.resolve(destinationDirectory)}${path.sep}`;

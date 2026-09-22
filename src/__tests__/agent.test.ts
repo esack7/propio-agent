@@ -1122,7 +1122,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         fingerprint: expect.stringMatching(/^sha256:/),
         packages: {
           agent: expect.any(String),
-          providers: "0.3.0",
+          providers: "0.4.0",
         },
         provider: {
           name: "remote",

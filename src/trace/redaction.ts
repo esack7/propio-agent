@@ -21,17 +21,33 @@ const TOKEN_METRIC_SEGMENTS = new Set([
   "usage",
 ]);
 
-function isTokenMetricKey(segments: ReadonlyArray<string>): boolean {
-  const tokenIndex = segments.indexOf("token");
+const DECIMAL_RATE_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+
+function isPricingValue(value: unknown): boolean {
   return (
-    tokenIndex >= 0 &&
-    segments
-      .slice(tokenIndex + 1)
-      .some((segment) => TOKEN_METRIC_SEGMENTS.has(segment))
+    typeof value === "number" ||
+    (typeof value === "string" && DECIMAL_RATE_PATTERN.test(value))
   );
 }
 
-function isSensitiveKey(key: string): boolean {
+function isTokenMetricKey(
+  segments: ReadonlyArray<string>,
+  value: unknown,
+): boolean {
+  const tokenIndex = segments.indexOf("token");
+  return (
+    tokenIndex >= 0 &&
+    (segments
+      .slice(tokenIndex + 1)
+      .some((segment) => TOKEN_METRIC_SEGMENTS.has(segment)) ||
+      (isPricingValue(value) &&
+        segments.some((segment) =>
+          ["rate", "price", "cost"].includes(segment),
+        )))
+  );
+}
+
+function isSensitiveKey(key: string, value: unknown): boolean {
   const segments = keySegments(key);
   if (
     segments.some((segment) =>
@@ -47,7 +63,8 @@ function isSensitiveKey(key: string): boolean {
   ) {
     return true;
   }
-  if (segments.includes("token") && !isTokenMetricKey(segments)) return true;
+  if (segments.includes("token") && !isTokenMetricKey(segments, value))
+    return true;
   return segments.some(
     (segment, index) => segment === "api" && segments[index + 1] === "key",
   );
@@ -83,7 +100,7 @@ export function redactTraceValue(value: unknown): unknown {
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
     redacted[key] =
-      isSensitiveKey(key) && !isCredentialPresenceMetadata(entry)
+      isSensitiveKey(key, entry) && !isCredentialPresenceMetadata(entry)
         ? entry === undefined
           ? undefined
           : "[REDACTED]"
