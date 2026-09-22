@@ -839,9 +839,10 @@ try {
   tool names, deadline, duration, and one of `succeeded`, `remote_error`,
   `timed_out`, or `transport_error`. A normal response, including an MCP
   `isError` response, has confirmed completion. SDK protocol rejections retain
-  their numeric error code; validation and routing rejections are marked
-  `not_started` with no side effect, while server failures that may occur during
-  execution remain unknown. Timeout and transport failures also retain unknown
+  their numeric error code. Parse and unknown-method rejections are marked
+  `not_started` with no side effect. Invalid-request, invalid-parameter, and
+  server failures remain unknown because SDK output validation can raise those
+  codes after execution. Timeout and transport failures also retain unknown
   completion and must not be interpreted as proof that the remote side effect did
   not happen. Text and
   embedded resource text are retained; images/audio become MIME/size descriptions,

@@ -76,9 +76,7 @@ function classifyMcpCallError(error: unknown): McpFailureOutcome {
   }
   const rejectedBeforeExecution = [
     ErrorCode.ParseError,
-    ErrorCode.InvalidRequest,
     ErrorCode.MethodNotFound,
-    ErrorCode.InvalidParams,
   ].includes(error.code);
   return {
     classification: "remote_error",

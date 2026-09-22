@@ -38,13 +38,17 @@ if (mode === "connect-hang") {
       return { tools: [{ ...tool("same"), description: "Later duplicate" }] };
     }
     if (!request.params?.cursor) return { tools: [tool("echo")], nextCursor: "second" };
-    return { tools: [tool("result")] };
+    return { tools: [tool("result"), { ...tool("invalid-output"), outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } }] };
   });
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     if (args.hang) return await new Promise(() => {});
     if (args.invalidTimeout) throw new McpError(ErrorCode.InvalidParams, "invalid timeout argument");
     if (args.throw) throw new Error("fixture failure");
+    if (request.params.name === "invalid-output") {
+      fs.appendFileSync(pidFile + ".effect", "ran\\n");
+      return { content: [{ type: "text", text: "wrote side effect" }], structuredContent: { ok: "not-a-boolean" } };
+    }
     if (args.result) return args.result;
     return { content: [{ type: "text", text: JSON.stringify({ args, identity: server.getClientVersion() }) }] };
   });
@@ -108,6 +112,7 @@ it("discovers all pages, preserves schemas and sends the supplied identity", asy
   expect(manager.listTools().map((tool) => tool.name)).toEqual([
     "mcp__fixture__echo",
     "mcp__fixture__result",
+    "mcp__fixture__invalid_output",
   ]);
   expect(manager.listTools()[0]?.inputSchema.additionalProperties).toBe(false);
   expect(manager.getServerDetail("fixture")?.instructions).toBe(
@@ -337,7 +342,7 @@ it("reports remote request errors", async () => {
   });
 });
 
-it("distinguishes a protocol rejection from a timeout-like error message", async () => {
+it("keeps InvalidParams uncertainty despite a timeout-like error message", async () => {
   const { manager } = fixture();
   await manager.initialize();
   expect(
@@ -354,11 +359,36 @@ it("distinguishes a protocol rejection from a timeout-like error message", async
       remoteToolName: "echo",
       timeoutMs: 60_000,
       durationMs: expect.any(Number),
-      completion: "not_started",
-      sideEffect: "none",
+      completion: "unknown",
+      sideEffect: "unknown",
       protocolErrorCode: -32602,
     },
   });
+});
+
+it("does not erase a side effect when local output validation fails", async () => {
+  const { manager, pidFile } = fixture();
+  await manager.initialize();
+  expect(
+    await manager.executeToolWithStatus("mcp__fixture__invalid_output", {}),
+  ).toMatchObject({
+    status: "error",
+    content: expect.stringContaining(
+      "Structured content does not match the tool's output schema",
+    ),
+    outcome: {
+      kind: "mcp_call",
+      classification: "remote_error",
+      serverName: "fixture",
+      remoteToolName: "invalid-output",
+      timeoutMs: 60_000,
+      durationMs: expect.any(Number),
+      completion: "unknown",
+      sideEffect: "unknown",
+      protocolErrorCode: -32602,
+    },
+  });
+  expect(fs.readFileSync(`${pidFile}.effect`, "utf8")).toBe("ran\n");
 });
 
 it("validates supplied configuration and stable names without scanning", () => {
