@@ -65,6 +65,8 @@ export interface AgentPromptOmission {
   readonly kind: "turn" | "artifact";
   readonly id: string;
   readonly reason: string;
+  /** Stable classification for artifact omissions; free-text reason is descriptive only. */
+  readonly reasonCode?: "artifact_pruned" | "artifact_omitted";
 }
 
 /** Optional application-owned lineage for a prompt plan. */

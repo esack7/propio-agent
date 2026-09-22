@@ -3,6 +3,7 @@ export type { JsonlTraceJournalOptions } from "./journal.js";
 export { RunTraceRecorder } from "./recorder.js";
 export {
   exportTraceJournal,
+  inspectTraceExport,
   inspectTraceJournal,
   verifyTraceExport,
 } from "./inspection.js";
@@ -10,6 +11,9 @@ export type {
   TraceExportManifest,
   TraceExportManifestV1,
   TraceExportManifestV2,
+  TraceExportManifestV3,
+  TraceExportMaterial,
+  TraceExportInspection,
   TraceInspection,
   TraceInspectionOptions,
   TraceOperationSummary,

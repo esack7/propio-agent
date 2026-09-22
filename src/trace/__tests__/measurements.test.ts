@@ -569,7 +569,7 @@ describe("provider measurement aggregation", () => {
         journalPath,
         path.join(tempDir, "export"),
       );
-      expect(manifest.version).toBe(2);
+      expect(manifest.version).toBe(3);
       expect(manifest.providerMeasurements.usage.completeness).toBe("partial");
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
