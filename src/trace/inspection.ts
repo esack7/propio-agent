@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { readTraceJournal } from "./journal.js";
+import {
+  summarizeProviderMeasurements,
+  type ProviderMeasurementSummary,
+  type ProviderPricingResolver,
+} from "./measurements.js";
 import type { TraceEventEnvelope, TraceReadWarning } from "./types.js";
 
 export interface TraceOperationSummary {
@@ -22,6 +27,11 @@ export interface TraceInspection {
   readonly captureComplete: boolean;
   readonly warnings: ReadonlyArray<TraceReadWarning>;
   readonly operations: ReadonlyArray<TraceOperationSummary>;
+  readonly providerMeasurements: ProviderMeasurementSummary;
+}
+
+export interface TraceInspectionOptions {
+  readonly pricingResolver?: ProviderPricingResolver;
 }
 
 function terminalOutcome(type: string): TraceOperationSummary["outcome"] {
@@ -76,7 +86,10 @@ function summarizeOperations(
   return [...operations.values()];
 }
 
-export function inspectTraceJournal(journalPath: string): TraceInspection {
+export function inspectTraceJournal(
+  journalPath: string,
+  options: TraceInspectionOptions = {},
+): TraceInspection {
   const { events, warnings } = readTraceJournal(journalPath);
   const first = events[0];
   const last = events[events.length - 1];
@@ -93,6 +106,10 @@ export function inspectTraceJournal(journalPath: string): TraceInspection {
       operations.every((operation) => operation.outcome !== "unknown"),
     warnings,
     operations,
+    providerMeasurements: summarizeProviderMeasurements(
+      events,
+      options.pricingResolver,
+    ),
   };
 }
 
@@ -105,6 +122,7 @@ export interface TraceExportManifest {
   readonly previousRunId?: string;
   readonly captureComplete: boolean;
   readonly warnings: ReadonlyArray<TraceReadWarning>;
+  readonly providerMeasurements: ProviderMeasurementSummary;
   readonly files: ReadonlyArray<{
     readonly path: string;
     readonly sha256: string;
@@ -115,8 +133,9 @@ export interface TraceExportManifest {
 export function exportTraceJournal(
   journalPath: string,
   destinationDirectory: string,
+  options: TraceInspectionOptions = {},
 ): TraceExportManifest {
-  const inspection = inspectTraceJournal(journalPath);
+  const inspection = inspectTraceJournal(journalPath, options);
   const events = fs.readFileSync(journalPath);
   fs.mkdirSync(destinationDirectory, { recursive: true, mode: 0o700 });
   const relativeEventsPath = "events.jsonl";
@@ -136,6 +155,7 @@ export function exportTraceJournal(
     previousRunId: inspection.previousRunId,
     captureComplete: inspection.captureComplete,
     warnings: inspection.warnings,
+    providerMeasurements: inspection.providerMeasurements,
     files: [
       {
         path: relativeEventsPath,

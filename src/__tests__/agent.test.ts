@@ -16,6 +16,7 @@ import { ProvidersConfig } from "@propio-ai/providers";
 import { PresentedTool } from "../tools/interface.js";
 import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
+import { getInstalledPackageVersion } from "../packageVersion.js";
 import {
   testProvidersConfig as sharedTestProvidersConfig,
   createTestAgent,
@@ -1122,7 +1123,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         fingerprint: expect.stringMatching(/^sha256:/),
         packages: {
           agent: expect.any(String),
-          providers: "0.3.0",
+          providers: getInstalledPackageVersion(
+            "@propio-ai/providers",
+            import.meta.url,
+          ),
         },
         provider: {
           name: "remote",

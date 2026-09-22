@@ -531,6 +531,8 @@ Each CLI run also writes a standard-capture JSONL trace under the workspace-scop
 
 The provisional `@propio-ai/agent/trace` entry point exposes explicit-path `JsonlTraceJournal`, `RunTraceRecorder`, tolerant journal reading, offline inspection, portable export, and bundle hash verification. Importing it performs no discovery or provider/tool execution. `inspectTraceJournal` retains valid records when the final JSONL line is truncated and marks unresolved operations unknown. `exportTraceJournal` writes a versioned manifest plus relative `events.jsonl`; `verifyTraceExport` rejects unsafe paths and reports missing files or hash mismatches.
 
+Inspection also deduplicates cumulative provider reports and aggregates usage across the run, request purpose, and retry attempts. Completeness is reported as `complete`, `partial`, or `unavailable`; missing usage and pricing are never converted to zero. Provider-reported charges remain separate from local estimates. Applications may pass a `ProviderPricingResolver` to `inspectTraceJournal` or `exportTraceJournal`; every persisted estimate includes the resolver source, version, effective date, requested and actual model context, endpoint class, usage, and redacted calculation inputs. No default resolver is installed, and locally hosted inference is not assumed to be free.
+
 Meta continuation state stored in session snapshots may include plaintext assistant commentary. Protect saved sessions as conversation content.
 
 ### Pasting image file paths (chat)
