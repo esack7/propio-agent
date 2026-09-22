@@ -2358,6 +2358,12 @@ export class Agent {
     return this.contextManager.getConversationState();
   }
 
+  // Called through SessionAgent by the session command handler.
+  // fallow-ignore-next-line unused-class-member
+  getRuntimeSessionId(): string {
+    return this.sessionId;
+  }
+
   getActiveModelSelection(): ProviderModelSelection {
     return {
       providerName: this.resolvedProviderConfig.name,

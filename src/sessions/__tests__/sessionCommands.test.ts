@@ -147,10 +147,16 @@ function makeTurn(id: string): Record<string, unknown> {
   };
 }
 
-function createMockAgent(state: ConversationState): SessionAgent {
+function createMockAgent(
+  state: ConversationState,
+  runtimeSessionId?: string,
+): SessionAgent {
   let currentState = state;
   return {
     getConversationState: () => currentState,
+    ...(runtimeSessionId
+      ? { getRuntimeSessionId: () => runtimeSessionId }
+      : {}),
     exportSession: () =>
       minimalSessionJson({
         turns: currentState.turns.map((t) => makeTurn(t.id)),
@@ -173,11 +179,14 @@ function createMockAgent(state: ConversationState): SessionAgent {
 function createMockIO(confirmResult: boolean = false): SessionCommandIO & {
   messages: Array<{ type: string; message: string }>;
   confirmCalled: boolean;
+  prompts: string[];
 } {
   const messages: Array<{ type: string; message: string }> = [];
+  const prompts: string[] = [];
   let confirmCalled = false;
   return {
     messages,
+    prompts,
     get confirmCalled() {
       return confirmCalled;
     },
@@ -185,8 +194,9 @@ function createMockIO(confirmResult: boolean = false): SessionCommandIO & {
     error: (msg) => messages.push({ type: "error", message: msg }),
     success: (msg) => messages.push({ type: "success", message: msg }),
     command: (msg) => messages.push({ type: "command", message: msg }),
-    promptConfirm: async () => {
+    promptConfirm: async (message) => {
       confirmCalled = true;
+      prompts.push(message);
       return confirmResult;
     },
   };
@@ -478,6 +488,58 @@ describe("handleSessionCommand — /session load", () => {
         }),
       ]),
     );
+  });
+
+  it("identifies a live session's own checkpoint before reloading it", async () => {
+    const dir = freshDir();
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    writeRecoveryCheckpoint(
+      dir,
+      minimalSessionJson({
+        metadata: { sessionId },
+        turns: [makeTurn("checkpoint")],
+      }),
+    );
+    const io = createMockIO(false);
+
+    await handleSessionCommand(
+      "/session recover",
+      createMockAgent(stateWithTurns(1), sessionId),
+      dir,
+      io,
+    );
+
+    expect(io.prompts).toHaveLength(1);
+    expect(io.prompts[0]).toContain("this session's recovery checkpoint");
+    expect(io.prompts[0]).toContain("Changes made since it was saved");
+    expect(io.prompts[0]).not.toContain("discard its recovery checkpoint");
+    expect(io.messages.some((message) => message.type === "success")).toBe(
+      false,
+    );
+  });
+
+  it("retains the outgoing-checkpoint warning for another session", async () => {
+    const dir = freshDir();
+    writeRecoveryCheckpoint(
+      dir,
+      minimalSessionJson({
+        metadata: { sessionId: "11111111-1111-4111-8111-111111111111" },
+        turns: [makeTurn("checkpoint")],
+      }),
+    );
+    const io = createMockIO(false);
+
+    await handleSessionCommand(
+      "/session recover",
+      createMockAgent(
+        stateWithTurns(1),
+        "22222222-2222-4222-8222-222222222222",
+      ),
+      dir,
+      io,
+    );
+
+    expect(io.prompts[0]).toContain("discard its recovery checkpoint");
   });
   it("should load the latest session when no ID given", async () => {
     const dir = freshDir();

@@ -24,6 +24,7 @@ export interface SessionCommandIO {
 
 export interface SessionAgent {
   getConversationState(): ConversationState;
+  getRuntimeSessionId?(): string;
   exportSession(): string;
   importSession(json: string): void;
 }
@@ -104,9 +105,18 @@ function listSavedSessions(sessionsDir: string, io: SessionCommandIO): void {
 
 async function confirmSessionReplacement(
   agent: SessionAgent,
+  entry: SessionIndexEntry,
   io: SessionCommandIO,
 ): Promise<boolean> {
   if (!hasSessionContent(agent.getConversationState())) return true;
+  if (
+    entry.recoveryCheckpoint &&
+    entry.runtimeSessionId === agent.getRuntimeSessionId?.()
+  ) {
+    return io.promptConfirm(
+      "Reload this session's recovery checkpoint? Changes made since it was saved will be lost. [y/N] ",
+    );
+  }
   return io.promptConfirm(
     "This will replace current session context and discard its recovery checkpoint. Continue? [y/N] ",
   );
@@ -126,7 +136,7 @@ async function loadSavedSession(
     finishSessionCommand(io);
     return;
   }
-  if (!(await confirmSessionReplacement(agent, io))) {
+  if (!(await confirmSessionReplacement(agent, entry, io))) {
     io.info("Load cancelled.");
     finishSessionCommand(io);
     return;
