@@ -20,9 +20,38 @@ export function readPackageVersionFromPath(packageJsonPath: string): string {
   return parsed.version;
 }
 
+/** Reads a declared dependency version without loading dependency code. */
+export function readPackageDependencyVersionFromPath(
+  packageJsonPath: string,
+  dependencyName: string,
+): string {
+  const raw = fs.readFileSync(packageJsonPath, "utf8");
+  const parsed = JSON.parse(raw) as {
+    dependencies?: Record<string, unknown>;
+  };
+  const version = parsed.dependencies?.[dependencyName];
+  if (typeof version !== "string" || version.length === 0) {
+    throw new Error(
+      `Invalid or missing dependency ${dependencyName} in ${packageJsonPath}`,
+    );
+  }
+  return version;
+}
+
 /** Returns the CLI package version from the repo-root `package.json`. */
 export function getPackageVersion(
   entryModuleUrl: string = import.meta.url,
 ): string {
   return readPackageVersionFromPath(resolvePackageJsonPath(entryModuleUrl));
+}
+
+/** Returns a dependency version declared by the CLI package. */
+export function getPackageDependencyVersion(
+  dependencyName: string,
+  entryModuleUrl: string = import.meta.url,
+): string {
+  return readPackageDependencyVersionFromPath(
+    resolvePackageJsonPath(entryModuleUrl),
+    dependencyName,
+  );
 }

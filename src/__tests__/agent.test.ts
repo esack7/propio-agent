@@ -1072,6 +1072,124 @@ describe("Agent with Multi-Provider Configuration", () => {
       ).toBe(change?.identity.configurationRevisionId);
     });
 
+    it("captures complete configuration lineage without credential values", async () => {
+      const syntheticSecret = "sk-synthetic-configuration-secret";
+      const urlSecret = "synthetic-url-secret";
+      const providersConfig: ProvidersConfig = {
+        default: "remote",
+        providers: [
+          {
+            name: "remote",
+            type: "openrouter",
+            apiKey: syntheticSecret,
+            httpReferer: `https://user:${urlSecret}@example.com/?token=${urlSecret}`,
+            models: [
+              {
+                name: "Test model",
+                key: "test/model",
+                contextWindowTokens: 64000,
+              },
+            ],
+            defaultModel: "test/model",
+          },
+        ],
+      };
+      const mockProvider = new MockProvider();
+      const traceEvents: Array<{ type: string; payload: unknown }> = [];
+      const agent = new Agent({
+        providersConfig,
+        configurationOrigins: {
+          providersConfig: "settings",
+          provider: "settings",
+          model: "settings",
+        },
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({ type: event.type, payload: event.payload }),
+          },
+        }),
+      });
+      (agent as any).provider = mockProvider;
+
+      await agent.streamChat(userSubmission("Trace configuration"), () => {});
+
+      const started = traceEvents.find((event) => event.type === "run_started");
+      const configuration = (started?.payload as any).configuration;
+      expect(configuration).toMatchObject({
+        fingerprint: expect.stringMatching(/^sha256:/),
+        packages: {
+          agent: expect.any(String),
+          providers: "0.3.0",
+        },
+        provider: {
+          name: "remote",
+          model: "test/model",
+          capabilities: { contextWindowTokens: 128000 },
+          credential: { present: true, source: "settings" },
+        },
+        runtimeSources: {
+          maxIterations: "default",
+          maxRetries: "default",
+        },
+        sources: {
+          provider: "settings",
+          model: "settings",
+          packages: "package_metadata",
+        },
+        workspace: { revisionId: expect.stringMatching(/^sha256:/) },
+      });
+      expect(configuration.tools[0].schemaRevisionId).toMatch(/^sha256:/);
+      expect(JSON.stringify(configuration)).not.toContain(syntheticSecret);
+      expect(JSON.stringify(configuration)).not.toContain(urlSecret);
+      expect(JSON.stringify(configuration)).not.toContain(process.cwd());
+    });
+
+    it("revises configuration when the system prompt changes", async () => {
+      const mockProvider = new MockProvider();
+      const traceEvents: Array<{
+        type: string;
+        identity: Record<string, unknown>;
+        payload: unknown;
+      }> = [];
+      const agent = createTestAgent(mockProvider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({
+                type: event.type,
+                identity: { ...identity, ...event.identity },
+                payload: event.payload,
+              }),
+          },
+        }),
+      });
+      agent.setSystemPrompt("Custom traced prompt");
+
+      await agent.streamChat(userSubmission("Use it"), () => {});
+
+      const change = traceEvents.find(
+        (event) => event.type === "configuration_revision_changed",
+      );
+      expect(change).toMatchObject({
+        payload: {
+          cause: "system_prompt_changed",
+          scope: "system_prompt",
+          configuration: {
+            prompt: {
+              coreIdentityRevisionId: expect.stringMatching(/^sha256:/),
+            },
+            sources: { systemPrompt: "runtime_change" },
+          },
+        },
+      });
+      expect(
+        mockProvider.streamChatCalls[0].trace?.configurationRevisionId,
+      ).toBe(change?.identity.configurationRevisionId);
+    });
+
     it("links CLI tool policy decisions to the selected request scope", async () => {
       const provider = new ToolCallMockProvider("lookup", { key: "example" });
       const traceEvents: Array<{

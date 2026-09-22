@@ -45,6 +45,23 @@ export interface RuntimeConfig {
   readonly allowGlobalInstallsWithoutPrompt: boolean;
 }
 
+export type RuntimeConfigSource =
+  | "default"
+  | "settings"
+  | "environment"
+  | "cli"
+  | "application"
+  | "runtime_change";
+
+export type RuntimeConfigOrigins = {
+  readonly [K in keyof RuntimeConfig]: RuntimeConfigSource;
+};
+
+export interface ResolvedRuntimeConfig {
+  readonly config: RuntimeConfig;
+  readonly origins: RuntimeConfigOrigins;
+}
+
 /**
  * Default configuration values.
  */
@@ -78,6 +95,30 @@ const DEFAULTS: RuntimeConfig = {
   allowGlobalInstallsWithoutPrompt: false,
 };
 
+const RUNTIME_CONFIG_KEYS = [
+  "maxIterations",
+  "maxRetries",
+  "useNoProgressDetector",
+  "emptyToolOnlyStreakLimit",
+  "bashDefaultTimeoutMs",
+  "bashMaxTimeoutMs",
+  "streamIdleTimeoutMs",
+  "maxRecentTurns",
+  "artifactInlineCharCap",
+  "rehydrationMaxChars",
+  "pinnedMemoryMaxContentLength",
+  "toolOutputInlineLimit",
+  "toolOutputPersistThreshold",
+  "aggregateToolResultsLimit",
+  "toolResultSummaryMaxChars",
+  "artifactRetentionDays",
+  "compactionFailureLimit",
+  "outputTokenRecoveryLimit",
+  "consecutive529FallbackLimit",
+  "rollingSummaryTargetTokens",
+  "allowGlobalInstallsWithoutPrompt",
+] as const satisfies ReadonlyArray<keyof RuntimeConfig>;
+
 /**
  * CLI flag overrides (passed in by the index.ts).
  */
@@ -90,155 +131,70 @@ export interface CLIOverrides {
 
 type ConfigSourceValues = Partial<Record<keyof RuntimeConfig, unknown>>;
 
-function pickConfigValue<K extends keyof RuntimeConfig>(
+function resolveConfigValue<K extends keyof RuntimeConfig>(
   key: K,
+  cliValues: ConfigSourceValues,
   envValues: ConfigSourceValues,
   settingsValues: ConfigSourceValues,
-): RuntimeConfig[K] {
+): { readonly value: RuntimeConfig[K]; readonly source: RuntimeConfigSource } {
+  const cliValue = cliValues[key];
+  if (cliValue !== undefined) {
+    return { value: cliValue as RuntimeConfig[K], source: "cli" };
+  }
+
   const envValue = envValues[key];
   if (envValue !== undefined) {
-    return envValue as RuntimeConfig[K];
+    return { value: envValue as RuntimeConfig[K], source: "environment" };
   }
 
   const settingsValue = settingsValues[key];
   if (settingsValue !== undefined) {
-    return settingsValue as RuntimeConfig[K];
+    return { value: settingsValue as RuntimeConfig[K], source: "settings" };
   }
 
-  return DEFAULTS[key];
+  return { value: DEFAULTS[key], source: "default" };
 }
 
-function pickCliFirstConfigValue<K extends keyof RuntimeConfig>(
-  key: K,
-  cliValue: RuntimeConfig[K] | undefined,
-  envValues: ConfigSourceValues,
-  settingsValues: ConfigSourceValues,
-): RuntimeConfig[K] {
-  if (cliValue !== undefined) {
-    return cliValue;
-  }
-
-  return pickConfigValue(key, envValues, settingsValues);
+export function createRuntimeConfigOrigins(
+  source: RuntimeConfigSource,
+  overrides: Partial<RuntimeConfigOrigins> = {},
+): RuntimeConfigOrigins {
+  return Object.fromEntries(
+    RUNTIME_CONFIG_KEYS.map((key) => [key, overrides[key] ?? source]),
+  ) as RuntimeConfigOrigins;
 }
 
 /**
  * Load RuntimeConfig from all sources: CLI > env > settings file > defaults.
  */
+export function loadRuntimeConfigWithOrigins(overrides?: {
+  cliOverrides?: CLIOverrides;
+  settingsPath?: string;
+}): ResolvedRuntimeConfig {
+  const envVars = parseEnvVars();
+  const settingsFile = loadSettingsFile(overrides?.settingsPath);
+  const cliValues = overrides?.cliOverrides ?? {};
+  const resolved = RUNTIME_CONFIG_KEYS.map(
+    (key) =>
+      [key, resolveConfigValue(key, cliValues, envVars, settingsFile)] as const,
+  );
+
+  return {
+    config: Object.fromEntries(
+      resolved.map(([key, entry]) => [key, entry.value]),
+    ) as unknown as RuntimeConfig,
+    origins: Object.fromEntries(
+      resolved.map(([key, entry]) => [key, entry.source]),
+    ) as RuntimeConfigOrigins,
+  };
+}
+
+/** Load only the effective RuntimeConfig values for backward compatibility. */
 export function loadRuntimeConfig(overrides?: {
   cliOverrides?: CLIOverrides;
   settingsPath?: string;
 }): RuntimeConfig {
-  const envVars = parseEnvVars();
-  const settingsFile = loadSettingsFile(overrides?.settingsPath);
-  const cli = overrides?.cliOverrides;
-
-  return {
-    maxIterations: pickCliFirstConfigValue(
-      "maxIterations",
-      cli?.maxIterations,
-      envVars,
-      settingsFile,
-    ),
-    maxRetries: pickCliFirstConfigValue(
-      "maxRetries",
-      cli?.maxRetries,
-      envVars,
-      settingsFile,
-    ),
-    useNoProgressDetector: pickConfigValue(
-      "useNoProgressDetector",
-      envVars,
-      settingsFile,
-    ),
-    emptyToolOnlyStreakLimit: pickConfigValue(
-      "emptyToolOnlyStreakLimit",
-      envVars,
-      settingsFile,
-    ),
-    bashDefaultTimeoutMs: pickCliFirstConfigValue(
-      "bashDefaultTimeoutMs",
-      cli?.bashDefaultTimeoutMs,
-      envVars,
-      settingsFile,
-    ),
-    bashMaxTimeoutMs: pickConfigValue(
-      "bashMaxTimeoutMs",
-      envVars,
-      settingsFile,
-    ),
-    streamIdleTimeoutMs: pickCliFirstConfigValue(
-      "streamIdleTimeoutMs",
-      cli?.streamIdleTimeoutMs,
-      envVars,
-      settingsFile,
-    ),
-    maxRecentTurns: pickConfigValue("maxRecentTurns", envVars, settingsFile),
-    artifactInlineCharCap: pickConfigValue(
-      "artifactInlineCharCap",
-      envVars,
-      settingsFile,
-    ),
-    rehydrationMaxChars: pickConfigValue(
-      "rehydrationMaxChars",
-      envVars,
-      settingsFile,
-    ),
-    pinnedMemoryMaxContentLength: pickConfigValue(
-      "pinnedMemoryMaxContentLength",
-      envVars,
-      settingsFile,
-    ),
-    toolOutputInlineLimit: pickConfigValue(
-      "toolOutputInlineLimit",
-      envVars,
-      settingsFile,
-    ),
-    toolOutputPersistThreshold: pickConfigValue(
-      "toolOutputPersistThreshold",
-      envVars,
-      settingsFile,
-    ),
-    aggregateToolResultsLimit: pickConfigValue(
-      "aggregateToolResultsLimit",
-      envVars,
-      settingsFile,
-    ),
-    toolResultSummaryMaxChars: pickConfigValue(
-      "toolResultSummaryMaxChars",
-      envVars,
-      settingsFile,
-    ),
-    artifactRetentionDays: pickConfigValue(
-      "artifactRetentionDays",
-      envVars,
-      settingsFile,
-    ),
-    compactionFailureLimit: pickConfigValue(
-      "compactionFailureLimit",
-      envVars,
-      settingsFile,
-    ),
-    outputTokenRecoveryLimit: pickConfigValue(
-      "outputTokenRecoveryLimit",
-      envVars,
-      settingsFile,
-    ),
-    consecutive529FallbackLimit: pickConfigValue(
-      "consecutive529FallbackLimit",
-      envVars,
-      settingsFile,
-    ),
-    rollingSummaryTargetTokens: pickConfigValue(
-      "rollingSummaryTargetTokens",
-      envVars,
-      settingsFile,
-    ),
-    allowGlobalInstallsWithoutPrompt: pickConfigValue(
-      "allowGlobalInstallsWithoutPrompt",
-      envVars,
-      settingsFile,
-    ),
-  };
+  return loadRuntimeConfigWithOrigins(overrides).config;
 }
 
 /**

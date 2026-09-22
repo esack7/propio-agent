@@ -7,8 +7,9 @@ import { parseCliArgs } from "./cli/args.js";
 import { getPackageVersion } from "./packageVersion.js";
 import { maybeRunSandboxDelegation } from "./sandboxDelegation.js";
 import {
-  loadRuntimeConfig,
+  loadRuntimeConfigWithOrigins,
   type RuntimeConfig,
+  type RuntimeConfigOrigins,
 } from "./config/runtimeConfig.js";
 import {
   getConfigPath,
@@ -960,7 +961,7 @@ export async function runInteractiveSession(
       ),
       defaultValue: false,
     });
-  });
+  }, "application");
 
   try {
     ui.command("Type /help or ? to view available commands.");
@@ -1165,6 +1166,7 @@ function reportParseErrors(
 async function createInitializedAgent(
   parsedArgs: ParsedCliArgs,
   runtimeConfig: RuntimeConfig,
+  runtimeConfigOrigins: RuntimeConfigOrigins,
   diagnosticsEnabled: boolean,
   diagnosticLogger: { onEvent: (event: AgentDiagnosticEvent) => void },
   sessionsDir: string,
@@ -1190,6 +1192,15 @@ async function createInitializedAgent(
     diagnosticsEnabled,
     onDiagnosticEvent: diagnosticLogger.onEvent,
     runtimeConfig,
+    runtimeConfigOrigins,
+    configurationOrigins: {
+      providersConfig: "settings",
+      provider: "settings",
+      model: "settings",
+      agentsMd: "workspace",
+      mcp: "settings",
+      workspace: "workspace",
+    },
     createTraceRun: (identity: TraceIdentity) => {
       const journal = new JsonlTraceJournal(
         path.join(
@@ -1209,7 +1220,7 @@ async function createInitializedAgent(
   await agent.initialize();
 
   if (parsedArgs.flags.mode) {
-    agent.setAgentMode(parsedArgs.flags.mode);
+    agent.setAgentMode(parsedArgs.flags.mode, { source: "cli" });
   }
 
   return { agent, configPath };
@@ -1262,7 +1273,7 @@ async function runConfiguredSession(options: {
 
   const sessionsDir = getDefaultSessionsDir();
   handleStaleMarkers(sessionsDir, options.ui, options.diagnosticLogger);
-  const runtimeConfig = loadRuntimeConfig({
+  const resolvedRuntimeConfig = loadRuntimeConfigWithOrigins({
     cliOverrides: {
       maxIterations: options.parsedArgs.flags.maxIterations,
       maxRetries: options.parsedArgs.flags.maxRetries,
@@ -1270,11 +1281,14 @@ async function runConfiguredSession(options: {
       streamIdleTimeoutMs: options.parsedArgs.flags.streamIdleTimeoutMs,
     },
   });
+  const { config: runtimeConfig, origins: runtimeConfigOrigins } =
+    resolvedRuntimeConfig;
   pruneStaleSessionStorage(sessionsDir, runtimeConfig.artifactRetentionDays);
 
   const { agent, configPath } = await createInitializedAgent(
     options.parsedArgs,
     runtimeConfig,
+    runtimeConfigOrigins,
     options.runtime.diagnosticsEnabled,
     options.diagnosticLogger,
     sessionsDir,
