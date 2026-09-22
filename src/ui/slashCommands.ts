@@ -81,14 +81,21 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
   {
     name: "Sessions",
     commands: [
-      { command: "/session list", description: "list saved session snapshots" },
+      {
+        command: "/session list",
+        description: "list saved sessions and recovery checkpoints",
+      },
       {
         command: "/session load",
         description: "load the latest saved session",
       },
       {
         command: "/session load <id>",
-        description: "load a specific saved session",
+        description: "load a specific saved session or recovery checkpoint",
+      },
+      {
+        command: "/session recover",
+        description: "load the latest recovery checkpoint",
       },
       { command: "/exit", description: "save session snapshot and exit" },
     ],

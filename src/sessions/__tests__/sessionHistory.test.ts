@@ -12,6 +12,7 @@ import {
   rebuildIndex,
   listSessions,
   resolveLatestSession,
+  resolveLatestRecoveryCheckpoint,
   resolveSessionById,
   resolveWorkspaceRoot,
   hashWorkspace,
@@ -115,7 +116,8 @@ describe("sessionHistory", () => {
       });
       writeRecoveryCheckpoint(dir, first);
       expect(readIndex(dir)).toBeNull();
-      expect(resolveLatestSession(dir)).toMatchObject({
+      expect(resolveLatestSession(dir)).toBeNull();
+      expect(resolveLatestRecoveryCheckpoint(dir)).toMatchObject({
         snapshotFile: `recovery-${sessionId}.json`,
         recoveryCheckpoint: true,
         runtimeSessionId: sessionId,
@@ -140,6 +142,30 @@ describe("sessionHistory", () => {
       });
       clearRecoveryCheckpoint(dir, sessionId);
       expect(listSessions(dir)).toEqual([]);
+    });
+
+    it("keeps the latest saved snapshot distinct from a newer checkpoint", () => {
+      const dir = freshDir();
+      const saved = writeSnapshot(
+        dir,
+        minimalSessionJson({
+          savedAt: "2026-03-29T08:00:00.000Z",
+          turns: [makeTurn("saved", "saved")],
+        }),
+      );
+      writeRecoveryCheckpoint(
+        dir,
+        minimalSessionJson({
+          savedAt: "2026-03-29T12:00:00.000Z",
+          metadata: { sessionId },
+          turns: [makeTurn("recovery", "recovery")],
+        }),
+      );
+
+      expect(resolveLatestSession(dir)?.snapshotFile).toBe(saved.snapshotFile);
+      expect(resolveLatestRecoveryCheckpoint(dir)?.recoveryCheckpoint).toBe(
+        true,
+      );
     });
 
     it("rejects an unsafe ID and reports a blocked checkpoint directory", () => {

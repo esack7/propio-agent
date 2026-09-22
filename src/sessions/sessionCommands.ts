@@ -5,6 +5,7 @@ import {
   readSnapshot,
   listSessions,
   resolveLatestSession,
+  resolveLatestRecoveryCheckpoint,
   resolveSessionById,
   SessionIndexEntry,
 } from "./sessionHistory.js";
@@ -107,7 +108,7 @@ async function confirmSessionReplacement(
 ): Promise<boolean> {
   if (!hasSessionContent(agent.getConversationState())) return true;
   return io.promptConfirm(
-    "This will replace current session context. Continue? [y/N] ",
+    "This will replace current session context and discard its recovery checkpoint. Continue? [y/N] ",
   );
 }
 
@@ -116,17 +117,12 @@ async function loadSavedSession(
   agent: SessionAgent,
   sessionsDir: string,
   io: SessionCommandIO,
+  recoveryOnly = false,
 ): Promise<void> {
-  const entry = sessionId
-    ? resolveSessionById(sessionsDir, sessionId)
-    : resolveLatestSession(sessionsDir);
+  const entry = resolveLoadEntry(sessionId, sessionsDir, recoveryOnly);
 
   if (!entry) {
-    io.error(
-      sessionId
-        ? `Session not found: ${sessionId}`
-        : "No saved sessions to load.",
-    );
+    io.error(missingLoadMessage(sessionId, recoveryOnly));
     finishSessionCommand(io);
     return;
   }
@@ -149,6 +145,24 @@ async function loadSavedSession(
   finishSessionCommand(io);
 }
 
+function resolveLoadEntry(
+  sessionId: string,
+  sessionsDir: string,
+  recoveryOnly: boolean,
+): SessionIndexEntry | null {
+  if (sessionId) return resolveSessionById(sessionsDir, sessionId);
+  return recoveryOnly
+    ? resolveLatestRecoveryCheckpoint(sessionsDir)
+    : resolveLatestSession(sessionsDir);
+}
+
+function missingLoadMessage(sessionId: string, recoveryOnly: boolean): string {
+  if (sessionId) return `Session not found: ${sessionId}`;
+  return recoveryOnly
+    ? "No recovery checkpoints to load."
+    : "No saved sessions to load.";
+}
+
 export async function handleSessionCommand(
   input: string,
   agent: SessionAgent,
@@ -168,7 +182,12 @@ export async function handleSessionCommand(
     return;
   }
 
+  if (args === "recover") {
+    await loadSavedSession("", agent, sessionsDir, io, true);
+    return;
+  }
+
   io.error(`Unknown /session subcommand: "${args}"`);
-  io.command("Usage: /session list | /session load [<id>]");
+  io.command("Usage: /session list | /session load [<id>] | /session recover");
   io.command("");
 }

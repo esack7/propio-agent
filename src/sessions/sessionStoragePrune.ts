@@ -6,6 +6,7 @@ import {
   readInProgressMarkerFile,
   listSessions,
 } from "./sessionHistory.js";
+import { isSafeSessionId } from "./sessionId.js";
 
 export function listActiveInProgressSessionIds(
   sessionsDir: string,
@@ -43,6 +44,41 @@ function buildAnchoredSessionIds(sessionsDir: string): Set<string> {
     }
   }
   return anchored;
+}
+
+/** Retire inactive, age-expired recovery material before it can anchor data. */
+function pruneRecoveryFiles(
+  sessionsDir: string,
+  retentionMs: number,
+  activeSessionIds: ReadonlySet<string>,
+): void {
+  if (!fs.existsSync(sessionsDir)) return;
+  for (const file of fs.readdirSync(sessionsDir)) {
+    pruneOneRecoveryFile(sessionsDir, file, retentionMs, activeSessionIds);
+  }
+}
+
+function pruneOneRecoveryFile(
+  sessionsDir: string,
+  file: string,
+  retentionMs: number,
+  activeSessionIds: ReadonlySet<string>,
+): void {
+  const match =
+    /^recovery-(.+)\.json$/.exec(file) ??
+    /^recovery-(.+)\.json\.[0-9a-f]{12}\.tmp$/.exec(file);
+  const sessionId = match?.[1];
+  if (!sessionId || !isSafeSessionId(sessionId)) return;
+  if (activeSessionIds.has(sessionId)) return;
+  const filePath = path.join(sessionsDir, file);
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isFile() && Date.now() - stat.mtimeMs > retentionMs) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // Retention cleanup is best effort; never prevent session startup.
+  }
 }
 
 interface PruneSessionStorageOptions {
@@ -151,9 +187,10 @@ export function pruneStaleSessionStorage(
   sessionsDir: string,
   retentionDays: number,
 ): void {
-  const anchoredIds = buildAnchoredSessionIds(sessionsDir);
   const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
   const activeInProgress = listActiveInProgressSessionIds(sessionsDir);
+  pruneRecoveryFiles(sessionsDir, retentionMs, activeInProgress);
+  const anchoredIds = buildAnchoredSessionIds(sessionsDir);
 
   pruneSessionStorageTree(
     path.join(sessionsDir, "artifacts"),

@@ -447,8 +447,18 @@ export function listSessions(sessionsDir: string): SessionIndexEntry[] {
 export function resolveLatestSession(
   sessionsDir: string,
 ): SessionIndexEntry | null {
-  const sessions = listSessions(sessionsDir);
+  const sessions = listSessions(sessionsDir).filter(
+    (entry) => !entry.recoveryCheckpoint,
+  );
   return sessions.length > 0 ? sessions[0] : null;
+}
+
+export function resolveLatestRecoveryCheckpoint(
+  sessionsDir: string,
+): SessionIndexEntry | null {
+  return (
+    listSessions(sessionsDir).find((entry) => entry.recoveryCheckpoint) ?? null
+  );
 }
 
 export function resolveSessionById(

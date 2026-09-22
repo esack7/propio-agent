@@ -4,7 +4,7 @@ import { Agent } from "../../agent.ts";
 import { JsonlTraceJournal, RunTraceRecorder } from "../../trace/index.ts";
 import {
   readSnapshot,
-  resolveLatestSession,
+  resolveLatestRecoveryCheckpoint,
 } from "../../sessions/sessionHistory.ts";
 
 const [mode, sessionsDir] = process.argv.slice(2);
@@ -98,7 +98,7 @@ if (mode === "failure") {
 }
 
 if (mode === "resume") {
-  const entry = resolveLatestSession(sessionsDir);
+  const entry = resolveLatestRecoveryCheckpoint(sessionsDir);
   if (!entry?.recoveryCheckpoint)
     throw new Error("Recovery checkpoint missing");
   agent.importSession(readSnapshot(sessionsDir, entry.snapshotFile));

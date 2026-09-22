@@ -43,6 +43,7 @@ describe("slashCommands", () => {
     expect(text).toContain("/context");
     expect(text).toContain("/session list");
     expect(text).toContain("/session load <id>");
+    expect(text).toContain("/session recover");
     expect(text).toContain("/plan save [content]");
     expect(text).toContain("/plan approve");
     expect(text).toContain("/plan show");

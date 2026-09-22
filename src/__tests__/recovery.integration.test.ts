@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   readSnapshot,
   resolveLatestSession,
+  resolveLatestRecoveryCheckpoint,
 } from "../sessions/sessionHistory.js";
 import {
   exportTraceJournal,
@@ -79,7 +80,7 @@ describe("failed-run recovery across process restart", () => {
       fs.readFileSync(path.join(sessionsDir, "tool-calls.txt"), "utf8"),
     ).toBe("first\nsecond\n");
 
-    const checkpoint = resolveLatestSession(sessionsDir);
+    const checkpoint = resolveLatestRecoveryCheckpoint(sessionsDir);
     expect(checkpoint?.recoveryCheckpoint).toBe(true);
     const persisted = JSON.parse(
       readSnapshot(sessionsDir, checkpoint!.snapshotFile),

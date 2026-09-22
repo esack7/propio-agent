@@ -924,6 +924,29 @@ export class Agent {
     }
   }
 
+  private reportRecoveryCheckpointFailure(
+    error: unknown,
+    sessionId = this.sessionId,
+  ): void {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    try {
+      this.emitDiagnostic({
+        type: "recovery_checkpoint_failed",
+        sessionId,
+        runId: this.activeTraceRun?.recorder.identity.runId,
+        errorName: failure.name,
+        message: failure.message,
+      });
+    } catch {
+      // Diagnostic sinks must not change tool or session behavior.
+    }
+    try {
+      this.onRecoveryCheckpointFailure?.(failure);
+    } catch {
+      // The independent warning channel is also observational.
+    }
+  }
+
   private tryStartSummaryTrace(
     reason: SummaryTraceContext["reason"],
     eligibleTurnCount: number,
@@ -2161,6 +2184,7 @@ export class Agent {
         },
         processToolResult: (result) => this.maybePersistedResult(result),
         onToolResultCommitted: () => {
+          if (!this.createTraceRun && !this.recoveryCheckpointRequested) return;
           this.recoveryCheckpointRequested = true;
           this.writeSessionRecoveryCheckpoint();
         },
@@ -2170,20 +2194,18 @@ export class Agent {
 
   private writeSessionRecoveryCheckpoint(): void {
     const traceRun = this.activeTraceRun;
-    if (!traceRun || !this.sessionsDir) return;
+    if (!this.sessionsDir) {
+      this.reportRecoveryCheckpointFailure(
+        new Error("Session directory unavailable for recovery checkpoint"),
+      );
+      return;
+    }
     try {
       writeRecoveryCheckpoint(this.sessionsDir, this.exportSession());
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
-      this.emitDiagnostic({
-        type: "recovery_checkpoint_failed",
-        sessionId: this.sessionId,
-        runId: traceRun.recorder.identity.runId,
-        errorName: failure.name,
-        message: failure.message,
-      });
       try {
-        traceRun.recorder.record(
+        traceRun?.recorder.record(
           {
             component: "context",
             type: "recovery_checkpoint_failed",
@@ -2194,15 +2216,11 @@ export class Agent {
       } catch {
         // The warning callback is independent of the trace sink.
       }
-      try {
-        this.onRecoveryCheckpointFailure?.(failure);
-      } catch {
-        // Recovery capture is observational and must not change tool behavior.
-      }
+      this.reportRecoveryCheckpointFailure(failure);
       return;
     }
     try {
-      traceRun.recorder.record({
+      traceRun?.recorder.record({
         component: "context",
         type: "recovery_checkpoint_written",
         payload: { sessionId: this.sessionId },
@@ -2284,6 +2302,7 @@ export class Agent {
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
     this.contextManager.clear();
+    this.pendingRecoveredToolCallIds = [];
     if (this.recoveryCheckpointRequested) {
       try {
         clearRecoveryCheckpoint(
@@ -2292,13 +2311,7 @@ export class Agent {
         );
         this.recoveryCheckpointRequested = false;
       } catch (error) {
-        const failure =
-          error instanceof Error ? error : new Error(String(error));
-        try {
-          this.onRecoveryCheckpointFailure?.(failure);
-        } catch {
-          // Clearing context must remain available when warning delivery fails.
-        }
+        this.reportRecoveryCheckpointFailure(error);
       }
     }
   }
@@ -2666,6 +2679,45 @@ export class Agent {
     );
   }
 
+  private retireOutgoingRecoveryCheckpoint(
+    sessionId: string,
+    wasRequested: boolean,
+    incomingIsRecovery: boolean,
+  ): void {
+    if (!wasRequested || (sessionId === this.sessionId && incomingIsRecovery)) {
+      return;
+    }
+    try {
+      clearRecoveryCheckpoint(
+        this.configuredSessionsDir ?? getDefaultSessionsDir(),
+        sessionId,
+      );
+    } catch (error) {
+      this.reportRecoveryCheckpointFailure(error, sessionId);
+    }
+  }
+
+  private adoptImportedSessionId(sessionId: string | undefined): void {
+    if (sessionId && isSafeSessionId(sessionId)) {
+      (this as any).sessionId = sessionId;
+      return;
+    }
+    this.emitDiagnostic(
+      sessionId
+        ? {
+            type: "invalid_session_id",
+            sessionId,
+            provider: this.provider.name,
+            model: this.model,
+          }
+        : {
+            type: "legacy_session_no_id",
+            provider: this.provider.name,
+            model: this.model,
+          },
+    );
+  }
+
   /**
    * Import a validated snapshot into the current agent instance,
    * replacing all in-memory context state. Persisted metadata
@@ -2680,37 +2732,23 @@ export class Agent {
   importSession(json: string): void {
     const persisted = parseSession(json);
     const state = restoreConversationState(persisted);
+    const outgoingSessionId = this.sessionId;
+    const outgoingRecoveryRequested = this.recoveryCheckpointRequested;
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
 
-    if (persisted.metadata.sessionId) {
-      if (isSafeSessionId(persisted.metadata.sessionId)) {
-        (this as any).sessionId = persisted.metadata.sessionId;
-      } else {
-        this.emitDiagnostic({
-          type: "invalid_session_id",
-          sessionId: persisted.metadata.sessionId,
-          provider: this.provider.name,
-          model: this.model,
-        });
-      }
-    } else {
-      this.emitDiagnostic({
-        type: "legacy_session_no_id",
-        provider: this.provider.name,
-        model: this.model,
-      });
-    }
+    this.adoptImportedSessionId(persisted.metadata.sessionId);
 
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
 
     this.contextManager.importState(state);
     this.recoveryCheckpointRequested =
       persisted.metadata.recoveryCheckpoint === true;
-    this.pendingRecoveredToolCallIds = persisted.metadata.recoveryCheckpoint
+    const unresolved = persisted.metadata.recoveryCheckpoint
       ? this.reconcileRecoveredToolCalls()
       : [];
+    this.pendingRecoveredToolCallIds = this.createTraceRun ? unresolved : [];
 
     const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
@@ -2738,6 +2776,11 @@ export class Agent {
     this.pendingExecuteSwitchReminder = false;
     this.restorePlanModeDraftTrackingFromImport(
       persisted.metadata.planDraftSearchStartTurnIndex,
+    );
+    this.retireOutgoingRecoveryCheckpoint(
+      outgoingSessionId,
+      outgoingRecoveryRequested,
+      persisted.metadata.recoveryCheckpoint === true,
     );
   }
 

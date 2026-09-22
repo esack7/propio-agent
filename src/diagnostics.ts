@@ -252,7 +252,7 @@ export type AgentDiagnosticEvent =
   | {
       type: "recovery_checkpoint_failed";
       sessionId: string;
-      runId: string;
+      runId?: string;
       errorName: string;
       message: string;
     };

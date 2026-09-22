@@ -115,6 +115,7 @@ function minimalSessionJson(overrides: Record<string, unknown> = {}): string {
         contextPressureThreshold: 0.6,
       },
       contextWindowTokens: 128000,
+      ...(overrides.metadata as Record<string, unknown> | undefined),
     },
     context: {
       preamble: [],
@@ -410,6 +411,74 @@ describe("handleSessionCommand — /session list", () => {
 });
 
 describe("handleSessionCommand — /session load", () => {
+  it("loads the latest saved snapshot even when a checkpoint is newer", async () => {
+    const dir = freshDir();
+    const saved = writeSnapshot(
+      dir,
+      minimalSessionJson({
+        savedAt: "2026-03-29T08:00:00.000Z",
+        turns: [makeTurn("saved")],
+      }),
+    );
+    writeRecoveryCheckpoint(
+      dir,
+      minimalSessionJson({
+        savedAt: "2026-03-29T12:00:00.000Z",
+        metadata: { sessionId: "11111111-1111-4111-8111-111111111111" },
+        turns: [makeTurn("recovery")],
+      }),
+    );
+    const io = createMockIO();
+
+    await handleSessionCommand(
+      "/session load",
+      createMockAgent(EMPTY_STATE),
+      dir,
+      io,
+    );
+
+    expect(io.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "success",
+          message: expect.stringContaining(
+            `Loaded session: ${saved.sessionId}`,
+          ),
+        }),
+      ]),
+    );
+  });
+
+  it("loads the latest checkpoint only when recovery is requested", async () => {
+    const dir = freshDir();
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    writeRecoveryCheckpoint(
+      dir,
+      minimalSessionJson({
+        metadata: { sessionId },
+        turns: [makeTurn("recovery")],
+      }),
+    );
+    const io = createMockIO();
+
+    await handleSessionCommand(
+      "/session recover",
+      createMockAgent(EMPTY_STATE),
+      dir,
+      io,
+    );
+
+    expect(io.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "success",
+          message: expect.stringContaining(
+            `Loaded recovery checkpoint: recovery-${sessionId}`,
+          ),
+        }),
+      ]),
+    );
+  });
   it("should load the latest session when no ID given", async () => {
     const dir = freshDir();
     writeSnapshot(
