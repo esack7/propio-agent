@@ -19,8 +19,17 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import { createHash, randomUUID } from "crypto";
-import { getPackageVersion } from "./packageVersion.js";
-import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
+import {
+  getInstalledPackageVersion,
+  getPackageVersion,
+} from "./packageVersion.js";
+import {
+  createRuntimeConfigOrigins,
+  loadRuntimeConfigWithOrigins,
+  type RuntimeConfig,
+  type RuntimeConfigOrigins,
+  type RuntimeConfigSource,
+} from "./config/runtimeConfig.js";
 import { loadProvidersConfig } from "./config/providersConfig.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
@@ -140,11 +149,44 @@ export interface AgentTraceRun {
 
 export type AgentTraceRunFactory = (identity: TraceIdentity) => AgentTraceRun;
 
+export type AgentConfigurationValueSource =
+  | RuntimeConfigSource
+  | "workspace"
+  | "package_metadata"
+  | "provider"
+  | "mcp"
+  | "session";
+
+export interface AgentConfigurationOrigins {
+  readonly providersConfig: AgentConfigurationValueSource;
+  readonly provider: AgentConfigurationValueSource;
+  readonly model: AgentConfigurationValueSource;
+  readonly mode: AgentConfigurationValueSource;
+  readonly systemPrompt: AgentConfigurationValueSource;
+  readonly agentsMd: AgentConfigurationValueSource;
+  readonly tools: AgentConfigurationValueSource;
+  readonly mcp: AgentConfigurationValueSource;
+  readonly workspace: AgentConfigurationValueSource;
+  readonly planApproval: AgentConfigurationValueSource;
+  readonly globalInstallApproval: AgentConfigurationValueSource;
+}
+
+type ConfigurationChangeScope =
+  | "provider_model"
+  | "mode"
+  | "system_prompt"
+  | "tool_scope"
+  | "mcp"
+  | "approval"
+  | "session";
+
 interface PendingConfigurationChange {
   readonly revisionId: string;
   readonly previousRevisionId: string;
   readonly changedAt: string;
   readonly cause: string;
+  readonly scope: ConfigurationChangeScope;
+  readonly configuration: Record<string, unknown>;
   readonly mode: AgentMode;
   readonly provider: string;
   readonly model: string;
@@ -284,6 +326,122 @@ function authorizeBashTool(
   };
 }
 
+type MutableAgentConfigurationOrigins = {
+  -readonly [
+    K in keyof AgentConfigurationOrigins
+  ]: AgentConfigurationOrigins[K];
+};
+
+function resolveInitialConfigurationOrigins(
+  options: {
+    providersConfig: ProvidersConfig | string;
+    providerName?: string;
+    modelKey?: string;
+    mcpConfig?: McpConfigFile;
+    mcpConfigPath?: string;
+    systemPrompt?: string;
+    agentsMdContent?: string;
+    cwd?: string;
+  },
+  overrides: Partial<AgentConfigurationOrigins> = {},
+): MutableAgentConfigurationOrigins {
+  const providersConfigSource =
+    typeof options.providersConfig === "string" ? "settings" : "application";
+  const origins: MutableAgentConfigurationOrigins = {
+    providersConfig: providersConfigSource,
+    provider: options.providerName ? "application" : providersConfigSource,
+    model: options.modelKey ? "application" : providersConfigSource,
+    mode: "default",
+    systemPrompt:
+      options.systemPrompt === undefined ? "default" : "application",
+    agentsMd: options.agentsMdContent === undefined ? "default" : "application",
+    tools: "default",
+    mcp: options.mcpConfig || options.mcpConfigPath ? "application" : "default",
+    workspace: options.cwd === undefined ? "workspace" : "application",
+    planApproval: "default",
+    globalInstallApproval: "default",
+  };
+  return applyConfigurationOriginOverrides(origins, overrides);
+}
+
+function applyConfigurationOriginOverrides(
+  origins: MutableAgentConfigurationOrigins,
+  overrides: Partial<AgentConfigurationOrigins>,
+): MutableAgentConfigurationOrigins {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== undefined) {
+      origins[key as keyof AgentConfigurationOrigins] = value;
+    }
+  }
+  return origins;
+}
+
+function redactUrlCredentials(value: string | undefined): string | undefined {
+  if (!value) return value;
+  try {
+    const parsed = new URL(value);
+    if (parsed.username) parsed.username = "[REDACTED]";
+    if (parsed.password) parsed.password = "[REDACTED]";
+    for (const key of parsed.searchParams.keys()) {
+      if (/key|password|secret|token/i.test(key)) {
+        parsed.searchParams.set(key, "[REDACTED]");
+      }
+    }
+    return parsed.toString();
+  } catch {
+    return createTraceRevisionId(value);
+  }
+}
+
+function buildRedactedProviderConfig(
+  provider: ProviderConfig,
+): Record<string, unknown> {
+  const common = {
+    name: provider.name,
+    type: provider.type,
+    defaultModel: provider.defaultModel,
+    models: provider.models.map((model) => ({ ...model })),
+  };
+  switch (provider.type) {
+    case "ollama":
+      return { ...common, host: redactUrlCredentials(provider.host) };
+    case "bedrock":
+      return { ...common, region: provider.region };
+    case "openrouter":
+      return {
+        ...common,
+        httpReferer: redactUrlCredentials(provider.httpReferer),
+        xTitle: provider.xTitle,
+        provider: provider.provider,
+        fallbackModels: provider.fallbackModels,
+        debugEchoUpstreamBody: provider.debugEchoUpstreamBody,
+      };
+    case "cloudflare":
+      return { ...common, accountId: provider.accountId };
+    default:
+      return common;
+  }
+}
+
+function modeConfigurationChanged(
+  previous: AgentModeState,
+  next: AgentModeState,
+): boolean {
+  return (
+    previous.mode !== next.mode ||
+    previous.planSaveApproved !== next.planSaveApproved ||
+    previous.planFilePath !== next.planFilePath
+  );
+}
+
+function capturePackageVersion(readVersion: () => string): string {
+  try {
+    return readVersion();
+  } catch {
+    return "unavailable";
+  }
+}
+
 export class Agent {
   private provider!: LLMProvider;
   private model!: string;
@@ -293,6 +451,10 @@ export class Agent {
   private agentsMdContent: string;
   private systemPromptRegistry: SystemPromptSectionRegistry;
   private toolRegistry: ToolRegistry;
+  private readonly toolConfigurationOrigins = new Map<
+    string,
+    AgentConfigurationValueSource
+  >();
   private mcpManager: McpManager;
   private providersConfig: ProvidersConfig;
   private diagnosticsEnabled: boolean;
@@ -313,6 +475,8 @@ export class Agent {
   };
   private readonly sessionId: string;
   private readonly runtimeConfig: RuntimeConfig;
+  private readonly runtimeConfigOrigins: RuntimeConfigOrigins;
+  private readonly configurationOrigins: MutableAgentConfigurationOrigins;
   private readonly bashGlobalInstallGate: BashGlobalInstallGateConfig;
   private sessionsDir: string | null = null;
   private readonly configuredSessionsDir?: string;
@@ -345,6 +509,8 @@ export class Agent {
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
       runtimeConfig?: RuntimeConfig;
+      runtimeConfigOrigins?: Partial<RuntimeConfigOrigins>;
+      configurationOrigins?: Partial<AgentConfigurationOrigins>;
       /** Application-owned trace storage. Omit to keep the Agent free of trace I/O. */
       createTraceRun?: AgentTraceRunFactory;
     } = {} as any,
@@ -372,7 +538,21 @@ export class Agent {
     this.createTraceRun = options.createTraceRun;
 
     this.sessionId = randomUUID();
-    this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
+    const resolvedRuntimeConfig = options.runtimeConfig
+      ? {
+          config: options.runtimeConfig,
+          origins: createRuntimeConfigOrigins(
+            "application",
+            options.runtimeConfigOrigins,
+          ),
+        }
+      : loadRuntimeConfigWithOrigins();
+    this.runtimeConfig = resolvedRuntimeConfig.config;
+    this.runtimeConfigOrigins = resolvedRuntimeConfig.origins;
+    this.configurationOrigins = resolveInitialConfigurationOrigins(
+      options,
+      options.configurationOrigins,
+    );
     this.bashGlobalInstallGate = {
       allowGlobalInstallsWithoutPrompt:
         this.runtimeConfig.allowGlobalInstallsWithoutPrompt,
@@ -588,24 +768,35 @@ export class Agent {
     this.resolvedProviderConfig = resolvedProvider;
     this.provider = newProvider;
     this.model = resolvedModelKey;
-    this.recordConfigurationChange("provider_or_model_changed");
+    this.configurationOrigins.provider = "runtime_change";
+    this.configurationOrigins.model = "runtime_change";
+    this.recordConfigurationChange(
+      "provider_or_model_changed",
+      "provider_model",
+    );
   }
 
-  private recordConfigurationChange(cause: string): void {
+  private recordConfigurationChange(
+    cause: string,
+    scope: ConfigurationChangeScope,
+  ): void {
     const previousRevisionId = this.configurationRevisionId;
     this.configurationRevisionId = randomUUID();
+    if (!this.createTraceRun) return;
     const change: PendingConfigurationChange = {
       revisionId: this.configurationRevisionId,
       previousRevisionId,
       changedAt: new Date().toISOString(),
       cause,
+      scope,
+      configuration: this.captureRedactedConfigurationSnapshot(),
       mode: this.modeState.mode,
       provider: this.provider.name,
       model: this.model,
-      enabledTools: this.getTools().map((tool) => tool.function.name),
+      enabledTools: this.captureEnabledToolNames(),
     };
     if (!this.activeTraceRun) {
-      if (this.createTraceRun) this.pendingConfigurationChanges.push(change);
+      this.pendingConfigurationChanges.push(change);
       return;
     }
     this.recordConfigurationChangeEvent(change);
@@ -614,20 +805,26 @@ export class Agent {
   private recordConfigurationChangeEvent(
     change: PendingConfigurationChange,
   ): void {
-    this.activeTraceRun?.recorder.record({
-      component: "configuration",
-      type: "configuration_revision_changed",
-      identity: { configurationRevisionId: change.revisionId },
-      payload: {
-        previousRevisionId: change.previousRevisionId,
-        changedAt: change.changedAt,
-        cause: change.cause,
-        mode: change.mode,
-        provider: change.provider,
-        model: change.model,
-        enabledTools: change.enabledTools,
-      },
-    });
+    try {
+      this.activeTraceRun?.recorder.record({
+        component: "configuration",
+        type: "configuration_revision_changed",
+        identity: { configurationRevisionId: change.revisionId },
+        payload: {
+          previousRevisionId: change.previousRevisionId,
+          changedAt: change.changedAt,
+          cause: change.cause,
+          scope: change.scope,
+          configuration: change.configuration,
+          mode: change.mode,
+          provider: change.provider,
+          model: change.model,
+          enabledTools: change.enabledTools,
+        },
+      });
+    } catch {
+      // Trace capture is observational and must not affect configuration changes.
+    }
   }
 
   private flushPendingConfigurationChanges(): void {
@@ -872,30 +1069,154 @@ export class Agent {
     this.closeTraceRun(context.traceRun);
   }
 
-  private buildRedactedConfigurationSnapshot() {
+  private resolveProviderCredentialMetadata(): {
+    readonly present: boolean;
+    readonly source: string;
+  } {
     const provider = this.resolvedProviderConfig as ProviderConfig & {
       apiKey?: string;
     };
-    return {
-      revisionId: this.configurationRevisionId,
-      packageVersion: getPackageVersion(),
+    if (Boolean(provider.apiKey)) {
+      return {
+        present: true,
+        source: this.configurationOrigins.providersConfig,
+      };
+    }
+
+    const environmentVariables: Partial<
+      Record<ProviderConfig["type"], ReadonlyArray<string>>
+    > = {
+      anthropic: ["ANTHROPIC_API_KEY"],
+      bedrock: [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_PROFILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+      ],
+      cloudflare: [
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_AUTH_TOKEN",
+        "CLOUDFLARE_API_KEY",
+      ],
+      gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+      meta: ["META_API_KEY"],
+      openai: ["OPENAI_API_KEY"],
+      openrouter: ["OPENROUTER_API_KEY"],
+      xai: ["XAI_API_KEY"],
+    };
+    const present = (environmentVariables[provider.type] ?? []).some((name) =>
+      Boolean(process.env[name]),
+    );
+    if (present) return { present: true, source: "environment" };
+    if (provider.type === "bedrock") {
+      return { present: false, source: "provider_chain_or_absent" };
+    }
+    return { present: false, source: "absent" };
+  }
+
+  private captureEnabledToolNames(): ReadonlyArray<string> {
+    try {
+      return this.getTools().map((tool) => tool.function.name);
+    } catch {
+      return [];
+    }
+  }
+
+  private captureRedactedConfigurationSnapshot(): Record<string, unknown> {
+    try {
+      return this.buildRedactedConfigurationSnapshot();
+    } catch {
+      return {
+        revisionId: this.configurationRevisionId,
+        capture: { status: "unavailable", reason: "snapshot_failed" },
+      };
+    }
+  }
+
+  private buildRedactedConfigurationSnapshot(): Record<string, unknown> {
+    const provider = this.resolvedProviderConfig;
+    const tools = this.getMergedToolSchemas()
+      .map((tool) => ({
+        name: tool.function.name,
+        schemaRevisionId: createTraceRevisionId(tool),
+        source: this.toolRegistry.hasTool(tool.function.name)
+          ? (this.toolConfigurationOrigins.get(tool.function.name) ?? "default")
+          : "mcp",
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const mcpServerSummaries =
+      typeof this.mcpManager.getServerSummaries === "function"
+        ? this.mcpManager.getServerSummaries()
+        : [];
+    const mcpServers = mcpServerSummaries
+      .map((server) => ({
+        name: server.name,
+        enabled: server.enabled,
+        status: server.status,
+        toolCount: server.toolCount,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const configuration = {
+      packages: {
+        agent: capturePackageVersion(() => getPackageVersion()),
+        providers: capturePackageVersion(() =>
+          getInstalledPackageVersion("@propio-ai/providers"),
+        ),
+      },
       provider: {
         name: provider.name,
         type: provider.type,
+        implementationName: this.provider.name,
         model: this.model,
-        apiKey: {
-          present: Boolean(provider.apiKey),
-          source: provider.apiKey ? "settings_file" : "environment_or_absent",
-        },
+        capabilities: this.provider.getCapabilities(),
+        credential: this.resolveProviderCredentialMetadata(),
+        config: buildRedactedProviderConfig(provider),
       },
+      runtime: { ...this.runtimeConfig },
+      runtimeSources: { ...this.runtimeConfigOrigins },
       mode: this.modeState.mode,
-      enabledTools: this.getTools().map((tool) => tool.function.name),
-      limits: {
-        maxIterations: this.runtimeConfig.maxIterations,
-        maxRetries: this.runtimeConfig.maxRetries,
-        streamIdleTimeoutMs: this.runtimeConfig.streamIdleTimeoutMs,
-        bashDefaultTimeoutMs: this.runtimeConfig.bashDefaultTimeoutMs,
+      approvals: {
+        planSaveApproved: this.modeState.planSaveApproved ?? false,
+        planFileRevisionId: this.modeState.planFilePath
+          ? createTraceRevisionId(this.modeState.planFilePath)
+          : undefined,
+        globalInstallApprovalCallbackConfigured: Boolean(
+          this.bashGlobalInstallGate.requestGlobalInstallApproval,
+        ),
+        allowGlobalInstallsWithoutPrompt:
+          this.runtimeConfig.allowGlobalInstallsWithoutPrompt,
       },
+      prompt: {
+        coreIdentityRevisionId: createTraceRevisionId(this.baseRules),
+        agentsMdRevisionId: this.agentsMdContent
+          ? createTraceRevisionId(this.agentsMdContent)
+          : undefined,
+      },
+      tools,
+      mcpServers,
+      workspace: {
+        revisionId: createTraceRevisionId({ cwd: this.skillContext.cwd }),
+      },
+      sources: {
+        packages: "package_metadata",
+        providersConfig: this.configurationOrigins.providersConfig,
+        provider: this.configurationOrigins.provider,
+        providerCapabilities: "provider",
+        model: this.configurationOrigins.model,
+        mode: this.configurationOrigins.mode,
+        planApproval: this.configurationOrigins.planApproval,
+        globalInstallApproval: this.configurationOrigins.globalInstallApproval,
+        systemPrompt: this.configurationOrigins.systemPrompt,
+        agentsMd: this.configurationOrigins.agentsMd,
+        tools: this.configurationOrigins.tools,
+        mcp: this.configurationOrigins.mcp,
+        workspace: this.configurationOrigins.workspace,
+      },
+    };
+    return {
+      revisionId: this.configurationRevisionId,
+      fingerprint: createTraceRevisionId(configuration),
+      ...configuration,
     };
   }
 
@@ -2079,7 +2400,8 @@ export class Agent {
       planFilePath,
       planSaveApproved: true,
     };
-    this.recordConfigurationChange("plan_save_approved");
+    this.configurationOrigins.planApproval = "runtime_change";
+    this.recordConfigurationChange("plan_save_approved", "approval");
     this.consumePendingPlanDraft();
 
     const event: AgentVisibilityEvent = {
@@ -2120,10 +2442,12 @@ export class Agent {
     options?: {
       slugHint?: string;
       onEvent?: (event: AgentVisibilityEvent) => void;
+      source?: AgentConfigurationValueSource;
     },
   ): void {
     const previousMode = this.modeState.mode;
     if (previousMode === mode) {
+      this.recordModeSourceChange(options?.source);
       return;
     }
 
@@ -2134,7 +2458,8 @@ export class Agent {
       ...(approvedPlan ?? {}),
       previousMode,
     };
-    this.recordConfigurationChange("mode_changed");
+    this.configurationOrigins.mode = options?.source ?? "runtime_change";
+    this.recordConfigurationChange("mode_changed", "mode");
 
     this.updatePlanDraftTrackingForModeChange(previousMode, mode);
 
@@ -2142,13 +2467,29 @@ export class Agent {
       this.pendingExecuteSwitchReminder = true;
     }
 
+    this.emitModeChangedEvent(mode, approvedPlan, options?.onEvent);
+  }
+
+  private emitModeChangedEvent(
+    mode: AgentMode,
+    approvedPlan: ReturnType<typeof getApprovedPlanPersistenceFields>,
+    onEvent: ((event: AgentVisibilityEvent) => void) | undefined,
+  ): void {
     const event: AgentVisibilityEvent = {
       type: "mode_changed",
       mode,
       ...(approvedPlan ? { planFilePath: approvedPlan.planFilePath } : {}),
     };
-    options?.onEvent?.(event);
-    this.emitVisibilityEvent({ onEvent: options?.onEvent }, event);
+    onEvent?.(event);
+    this.emitVisibilityEvent({ onEvent }, event);
+  }
+
+  private recordModeSourceChange(
+    source: AgentConfigurationValueSource | undefined,
+  ): void {
+    if (!source || source === this.configurationOrigins.mode) return;
+    this.configurationOrigins.mode = source;
+    this.recordConfigurationChange("mode_source_changed", "mode");
   }
 
   cycleAgentMode(options?: {
@@ -2226,11 +2567,29 @@ export class Agent {
 
     this.contextManager.importState(state);
 
+    const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
-    this.modeState = {
+    const importedModeState: AgentModeState = {
       mode: importedMode,
       ...resolveImportedPlanState(persisted.metadata),
     };
+    this.modeState = importedModeState;
+    if (modeConfigurationChanged(previousModeState, importedModeState)) {
+      if (previousModeState.mode !== importedModeState.mode) {
+        this.configurationOrigins.mode = "session";
+      }
+      if (
+        previousModeState.planSaveApproved !==
+          importedModeState.planSaveApproved ||
+        previousModeState.planFilePath !== importedModeState.planFilePath
+      ) {
+        this.configurationOrigins.planApproval = "session";
+      }
+      this.recordConfigurationChange(
+        "session_configuration_imported",
+        "session",
+      );
+    }
     this.pendingExecuteSwitchReminder = false;
     this.restorePlanModeDraftTrackingFromImport(
       persisted.metadata.planDraftSearchStartTurnIndex,
@@ -2274,18 +2633,34 @@ export class Agent {
   }
 
   setSystemPrompt(prompt: string): void {
+    if (
+      this.baseRules === prompt &&
+      this.configurationOrigins.systemPrompt === "runtime_change"
+    ) {
+      return;
+    }
     this.baseRules = prompt;
     this.systemPromptRegistry.invalidateCoreIdentity();
+    this.configurationOrigins.systemPrompt = "runtime_change";
+    this.recordConfigurationChange("system_prompt_changed", "system_prompt");
   }
 
   setGlobalInstallApprovalCallback(
     callback?: (request: GlobalInstallApprovalRequest) => Promise<boolean>,
+    source: AgentConfigurationValueSource = "runtime_change",
   ): void {
     if (callback) {
       this.bashGlobalInstallGate.requestGlobalInstallApproval = callback;
-      return;
+    } else {
+      delete this.bashGlobalInstallGate.requestGlobalInstallApproval;
     }
-    delete this.bashGlobalInstallGate.requestGlobalInstallApproval;
+    this.configurationOrigins.globalInstallApproval = source;
+    this.recordConfigurationChange(
+      callback
+        ? "global_install_approval_callback_configured"
+        : "global_install_approval_callback_removed",
+      "approval",
+    );
   }
 
   getTools(): ChatTool[] {
@@ -2298,31 +2673,43 @@ export class Agent {
 
   addTool(tool: PresentedTool): void {
     this.toolRegistry.register(tool, true);
+    this.toolConfigurationOrigins.set(tool.name, "runtime_change");
+    this.configurationOrigins.tools = "runtime_change";
+    if (!this.activeTraceRun && !this.lastTraceRunId) return;
+    this.recordConfigurationChange(
+      `tool_registered:${tool.name}`,
+      "tool_scope",
+    );
   }
 
   enableTool(name: string): void {
     this.toolRegistry.enable(name);
-    this.recordConfigurationChange(`tool_enabled:${name}`);
+    this.configurationOrigins.tools = "runtime_change";
+    this.recordConfigurationChange(`tool_enabled:${name}`, "tool_scope");
   }
 
   disableTool(name: string): void {
     this.toolRegistry.disable(name);
-    this.recordConfigurationChange(`tool_disabled:${name}`);
+    this.configurationOrigins.tools = "runtime_change";
+    this.recordConfigurationChange(`tool_disabled:${name}`, "tool_scope");
   }
 
   enableAllTools(): void {
     this.toolRegistry.enableAll();
-    this.recordConfigurationChange("all_tools_enabled");
+    this.configurationOrigins.tools = "runtime_change";
+    this.recordConfigurationChange("all_tools_enabled", "tool_scope");
   }
 
   disableAllTools(): void {
     this.toolRegistry.disableAll();
-    this.recordConfigurationChange("all_tools_disabled");
+    this.configurationOrigins.tools = "runtime_change";
+    this.recordConfigurationChange("all_tools_disabled", "tool_scope");
   }
 
   resetToolsToManifestDefaults(): void {
     this.toolRegistry.resetToManifestDefaults();
-    this.recordConfigurationChange("tool_defaults_restored");
+    this.configurationOrigins.tools = "runtime_change";
+    this.recordConfigurationChange("tool_defaults_restored", "tool_scope");
   }
 
   getToolNames(): string[] {
@@ -2350,7 +2737,10 @@ export class Agent {
 
   // fallow-ignore-next-line unused-class-member
   async reconnectMcpServer(name: string): Promise<McpServerSummary> {
-    return await this.mcpManager.reconnectServer(name);
+    const summary = await this.mcpManager.reconnectServer(name);
+    this.configurationOrigins.mcp = "runtime_change";
+    this.recordConfigurationChange(`mcp_server_reconnected:${name}`, "mcp");
+    return summary;
   }
 
   // fallow-ignore-next-line unused-class-member
@@ -2358,7 +2748,13 @@ export class Agent {
     name: string,
     enabled: boolean,
   ): Promise<McpServerSummary> {
-    return await this.mcpManager.setServerEnabled(name, enabled);
+    const summary = await this.mcpManager.setServerEnabled(name, enabled);
+    this.configurationOrigins.mcp = "runtime_change";
+    this.recordConfigurationChange(
+      `mcp_server_${enabled ? "enabled" : "disabled"}:${name}`,
+      "mcp",
+    );
+    return summary;
   }
 
   private handleProviderError(error: any): Error {

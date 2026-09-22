@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { loadRuntimeConfig, CLIOverrides } from "../runtimeConfig.js";
+import {
+  createRuntimeConfigOrigins,
+  loadRuntimeConfig,
+  loadRuntimeConfigWithOrigins,
+} from "../runtimeConfig.js";
 
 describe("RuntimeConfig", () => {
   const originalEnv = process.env;
@@ -32,6 +36,45 @@ describe("RuntimeConfig", () => {
       cliOverrides: { maxIterations: 75 },
     });
     expect(config.maxIterations).toBe(75);
+  });
+
+  it("reports the source of every effective setting", () => {
+    const settingsPath = path.join(testSettingsDir, "settings.json");
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        runtime: {
+          maxIterations: 60,
+          maxRetries: 12,
+          maxRecentTurns: 40,
+        },
+      }),
+    );
+    process.env.PROPIO_MAX_ITERATIONS = "70";
+    process.env.PROPIO_MAX_RETRIES = "14";
+
+    const resolved = loadRuntimeConfigWithOrigins({
+      settingsPath,
+      cliOverrides: { maxIterations: 80 },
+    });
+
+    expect(resolved.config.maxIterations).toBe(80);
+    expect(resolved.origins.maxIterations).toBe("cli");
+    expect(resolved.origins.maxRetries).toBe("environment");
+    expect(resolved.origins.maxRecentTurns).toBe("settings");
+    expect(resolved.origins.artifactRetentionDays).toBe("default");
+  });
+
+  it("creates complete origins for application-provided configuration", () => {
+    expect(
+      createRuntimeConfigOrigins("application", {
+        maxIterations: "runtime_change",
+      }),
+    ).toMatchObject({
+      maxIterations: "runtime_change",
+      maxRetries: "application",
+      allowGlobalInstallsWithoutPrompt: "application",
+    });
   });
 
   it("environment variables override defaults", () => {
