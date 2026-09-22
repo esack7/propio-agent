@@ -219,7 +219,21 @@ describe("JSONL trace journal", () => {
 
     const exportDirectory = path.join(tempDir, "export");
     const manifest = exportTraceJournal(journalPath, exportDirectory);
+    expect(manifest.version).toBe(2);
     expect(manifest.files[0].path).toBe("events.jsonl");
+    expect(verifyTraceExport(exportDirectory)).toEqual([]);
+    const { providerMeasurements: _measurements, ...legacyManifest } = manifest;
+    fs.writeFileSync(
+      path.join(exportDirectory, "manifest.json"),
+      JSON.stringify({ ...legacyManifest, version: 2 }),
+    );
+    expect(verifyTraceExport(exportDirectory)).toEqual([
+      "Missing provider measurements in version 2 manifest",
+    ]);
+    fs.writeFileSync(
+      path.join(exportDirectory, "manifest.json"),
+      JSON.stringify({ ...legacyManifest, version: 1 }),
+    );
     expect(verifyTraceExport(exportDirectory)).toEqual([]);
     fs.appendFileSync(path.join(exportDirectory, "events.jsonl"), "tampered");
     expect(verifyTraceExport(exportDirectory)).toEqual([

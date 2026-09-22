@@ -8,6 +8,8 @@ export {
 } from "./inspection.js";
 export type {
   TraceExportManifest,
+  TraceExportManifestV1,
+  TraceExportManifestV2,
   TraceInspection,
   TraceInspectionOptions,
   TraceOperationSummary,
@@ -19,6 +21,7 @@ export type {
   ProviderCostCurrencyTotal,
   ProviderCostEstimate,
   ProviderMeasurementCompleteness,
+  ProviderMeasurementOptions,
   ProviderMeasurementSummary,
   ProviderPriceCalculation,
   ProviderPricingInput,

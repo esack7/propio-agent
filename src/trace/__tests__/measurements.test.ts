@@ -7,6 +7,7 @@ import type {
 } from "@propio-ai/providers";
 import {
   exportTraceJournal,
+  inspectTraceJournal,
   JsonlTraceJournal,
   RunTraceRecorder,
   summarizeProviderMeasurements,
@@ -234,7 +235,7 @@ describe("provider measurement aggregation", () => {
         purpose: "summarize",
         requestCount: 1,
         attemptCount: 1,
-        usage: { completeness: "unavailable" },
+        usage: expect.objectContaining({ completeness: "unavailable" }),
         cost: expect.objectContaining({ completeness: "unavailable" }),
       }),
     ]);
@@ -317,13 +318,17 @@ describe("provider measurement aggregation", () => {
         resolve(input) {
           expect(input.actualModel).toBe("routed-model");
           return {
+            kind: "provider_reported",
             amount: 0.012,
             currency: "USD",
             calculationInputs: {
               inputTokens: input.usage.inputTokens,
               outputTokens: input.usage.outputTokens,
-              inputRatePerMillion: 900,
-              outputRatePerMillion: 1000,
+              inputTokenRate: 0.0009,
+              outputTokenCostUsd: 0.001,
+              tokenPrice: 0.0009,
+              pricePerToken: 0.001,
+              stringTokenPrice: "sk-example123456",
               apiKey: "pricing-secret",
             },
           };
@@ -363,8 +368,11 @@ describe("provider measurement aggregation", () => {
             calculationInputs: {
               inputTokens: 10,
               outputTokens: 3,
-              inputRatePerMillion: 900,
-              outputRatePerMillion: 1000,
+              inputTokenRate: 0.0009,
+              outputTokenCostUsd: 0.001,
+              tokenPrice: 0.0009,
+              pricePerToken: 0.001,
+              stringTokenPrice: "[REDACTED]",
               apiKey: "[REDACTED]",
             },
           },
@@ -400,14 +408,16 @@ describe("provider measurement aggregation", () => {
     };
 
     const partial = summarizeProviderMeasurements(events, {
-      metadata: resolverMetadata,
-      resolve(input) {
-        expect(input.usageAvailability).toBe("partial");
-        return {
-          amount: 0.01,
-          currency: "USD",
-          calculationInputs: { inputTokens: input.usage.inputTokens },
-        };
+      pricingResolver: {
+        metadata: resolverMetadata,
+        resolve(input) {
+          expect(input.usageAvailability).toBe("partial");
+          return {
+            amount: 0.01,
+            currency: "USD",
+            calculationInputs: { inputTokens: input.usage.inputTokens },
+          };
+        },
       },
     });
     expect(partial.usage.completeness).toBe("partial");
@@ -415,9 +425,11 @@ describe("provider measurement aggregation", () => {
     expect(partial.cost.unpricedAttempts).toEqual([]);
 
     const failed = summarizeProviderMeasurements(events, {
-      metadata: resolverMetadata,
-      resolve() {
-        throw new TypeError("rate card unavailable");
+      pricingResolver: {
+        metadata: resolverMetadata,
+        resolve() {
+          throw new TypeError("rate card unavailable");
+        },
       },
     });
     expect(failed.cost.completeness).toBe("unavailable");
@@ -428,5 +440,137 @@ describe("provider measurement aggregation", () => {
         errorName: "TypeError",
       },
     ]);
+  });
+
+  it("marks a metric partial when only some attempts report it", () => {
+    const events = [
+      attemptStarted("answer-1", "answer", "attempt-1", 1),
+      usageReported({
+        requestId: "answer-1",
+        purpose: "answer",
+        attemptId: "attempt-1",
+        attemptNumber: 1,
+        availability: "reported",
+        usage: { inputTokens: 20, outputTokens: 10 },
+      }),
+      attemptTerminal({
+        requestId: "answer-1",
+        purpose: "answer",
+        attemptId: "attempt-1",
+        attemptNumber: 1,
+        outcome: "completed",
+      }),
+      attemptStarted("answer-2", "answer", "attempt-2", 1),
+      usageReported({
+        requestId: "answer-2",
+        purpose: "answer",
+        attemptId: "attempt-2",
+        attemptNumber: 1,
+        availability: "reported",
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      }),
+      attemptTerminal({
+        requestId: "answer-2",
+        purpose: "answer",
+        attemptId: "attempt-2",
+        attemptNumber: 1,
+        outcome: "completed",
+      }),
+    ].map(envelope);
+
+    const summary = summarizeProviderMeasurements(events);
+    expect(summary.usage).toMatchObject({
+      completeness: "partial",
+      usage: { inputTokens: 30, outputTokens: 15, totalTokens: 15 },
+      metricCompleteness: {
+        inputTokens: "complete",
+        outputTokens: "complete",
+        totalTokens: "partial",
+        reasoningTokens: "unavailable",
+      },
+    });
+  });
+
+  it("includes every observed purpose and caps incomplete attempts", () => {
+    const futurePurpose = "embedding" as ProviderRequestPurpose;
+    const events = [
+      attemptStarted("future-1", futurePurpose, "attempt-1", 1),
+      usageReported({
+        requestId: "future-1",
+        purpose: futurePurpose,
+        attemptId: "attempt-1",
+        attemptNumber: 1,
+        availability: "reported",
+        usage: { inputTokens: 10, outputTokens: 0 },
+        cost: { amount: 0.01, currency: "USD" },
+      }),
+    ].map(envelope);
+
+    const summary = summarizeProviderMeasurements(events);
+    expect(summary.byPurpose).toEqual([
+      expect.objectContaining({ purpose: futurePurpose, requestCount: 1 }),
+    ]);
+    expect(summary.usage.completeness).toBe("partial");
+    expect(summary.cost.completeness).toBe("partial");
+  });
+
+  it("caps exported measurements when a journal has a truncated tail", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-truncated-"));
+    try {
+      const journalPath = path.join(tempDir, "run.jsonl");
+      const journal = new JsonlTraceJournal(journalPath);
+      const recorder = new RunTraceRecorder(
+        { sessionId: "session-1", runId: "run-1" },
+        journal,
+      );
+      const events = [
+        attemptStarted("answer-1", "answer", "attempt-1", 1),
+        usageReported({
+          requestId: "answer-1",
+          purpose: "answer",
+          attemptId: "attempt-1",
+          attemptNumber: 1,
+          availability: "reported",
+          usage: { inputTokens: 10, outputTokens: 5 },
+          cost: { amount: 0.01, currency: "USD" },
+        }),
+        attemptTerminal({
+          requestId: "answer-1",
+          purpose: "answer",
+          attemptId: "attempt-1",
+          attemptNumber: 1,
+          outcome: "completed",
+        }),
+      ];
+      for (const event of events) {
+        recorder.record({
+          component: "provider",
+          type: event.type,
+          identity: {
+            requestId: event.trace.requestId,
+            operationId: event.trace.operationId,
+            attemptId: "attemptId" in event ? event.attemptId : undefined,
+          },
+          payload: event,
+        });
+      }
+      journal.close();
+      fs.appendFileSync(journalPath, '{"version":');
+
+      const inspection = inspectTraceJournal(journalPath);
+      expect(inspection.captureComplete).toBe(false);
+      expect(inspection.providerMeasurements.usage.completeness).toBe(
+        "partial",
+      );
+      expect(inspection.providerMeasurements.cost.completeness).toBe("partial");
+      const manifest = exportTraceJournal(
+        journalPath,
+        path.join(tempDir, "export"),
+      );
+      expect(manifest.version).toBe(2);
+      expect(manifest.providerMeasurements.usage.completeness).toBe("partial");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

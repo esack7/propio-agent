@@ -64,6 +64,9 @@ export interface ProviderCostCurrencyTotal {
 export interface ProviderUsageAggregate {
   readonly completeness: ProviderMeasurementCompleteness;
   readonly usage?: ProviderTokenUsage;
+  readonly metricCompleteness: Readonly<
+    Record<keyof ProviderTokenUsage, ProviderMeasurementCompleteness>
+  >;
 }
 
 export interface ProviderCostAggregate {
@@ -120,6 +123,11 @@ export interface ProviderMeasurementSummary {
     readonly attemptId?: string;
     readonly errorName: string;
   }>;
+}
+
+export interface ProviderMeasurementOptions {
+  readonly pricingResolver?: ProviderPricingResolver;
+  readonly captureComplete?: boolean;
 }
 
 type UsageMetric = keyof ProviderTokenUsage;
@@ -456,8 +464,8 @@ function createCostEstimate(
   input: ProviderPricingInput,
 ): ProviderCostEstimate {
   return {
-    kind: "locally_estimated",
     ...calculation,
+    kind: "locally_estimated",
     currency: calculation.currency.trim(),
     calculationInputs: redactTraceValue(
       calculation.calculationInputs,
@@ -507,6 +515,7 @@ function materializeAttempts(
 
 function sumUsage(
   attempts: ReadonlyArray<ProviderAttemptMeasurement>,
+  captureComplete: boolean,
 ): ProviderUsageAggregate {
   const totals: Record<string, number> = {};
   let availableAttempts = 0;
@@ -515,10 +524,37 @@ function sumUsage(
     availableAttempts += 1;
     addUsageTotals(totals, attempt.usage);
   }
+  const metricCompleteness = Object.fromEntries(
+    USAGE_METRICS.map((metric) => [
+      metric,
+      usageMetricCompleteness(attempts, metric, captureComplete),
+    ]),
+  ) as Record<UsageMetric, ProviderMeasurementCompleteness>;
   return {
-    completeness: usageCompleteness(attempts, availableAttempts),
+    completeness: usageCompleteness(
+      attempts,
+      availableAttempts,
+      metricCompleteness,
+      captureComplete,
+    ),
     ...(availableAttempts > 0 ? { usage: totals } : {}),
+    metricCompleteness,
   };
+}
+
+function usageMetricCompleteness(
+  attempts: ReadonlyArray<ProviderAttemptMeasurement>,
+  metric: UsageMetric,
+  captureComplete: boolean,
+): ProviderMeasurementCompleteness {
+  const observed = attempts.filter(
+    (attempt) => attempt.usage?.[metric] !== undefined,
+  );
+  if (observed.length === 0) return "unavailable";
+  if (!captureComplete || observed.length !== attempts.length) return "partial";
+  return observed.every((attempt) => attempt.usageAvailability === "reported")
+    ? "complete"
+    : "partial";
 }
 
 function addUsageTotals(
@@ -534,12 +570,16 @@ function addUsageTotals(
 function usageCompleteness(
   attempts: ReadonlyArray<ProviderAttemptMeasurement>,
   availableAttempts: number,
+  metricCompleteness: Readonly<
+    Record<UsageMetric, ProviderMeasurementCompleteness>
+  >,
+  captureComplete: boolean,
 ): ProviderMeasurementCompleteness {
   if (availableAttempts === 0) return "unavailable";
-  if (availableAttempts !== attempts.length) return "partial";
-  return attempts.every((attempt) => attempt.usageAvailability === "reported")
-    ? "complete"
-    : "partial";
+  if (!captureComplete || availableAttempts !== attempts.length)
+    return "partial";
+  if (Object.values(metricCompleteness).includes("partial")) return "partial";
+  return "complete";
 }
 
 interface MutableCostTotal {
@@ -589,13 +629,17 @@ function hasCompleteCost(attempt: ProviderAttemptMeasurement): boolean {
 
 function costCompleteness(
   attempts: ReadonlyArray<ProviderAttemptMeasurement>,
+  captureComplete: boolean,
 ): ProviderMeasurementCompleteness {
   if (!attempts.some(hasKnownCost)) return "unavailable";
-  return attempts.every(hasCompleteCost) ? "complete" : "partial";
+  return captureComplete && attempts.every(hasCompleteCost)
+    ? "complete"
+    : "partial";
 }
 
 function sumCosts(
   attempts: ReadonlyArray<ProviderAttemptMeasurement>,
+  captureComplete: boolean,
 ): ProviderCostAggregate {
   const totals = new Map<string, MutableCostTotal>();
   const unpricedAttempts: Array<{ requestId: string; attemptId?: string }> = [];
@@ -610,7 +654,7 @@ function sumCosts(
     addLocalEstimate(totals, attempt.localEstimate);
   }
   return {
-    completeness: costCompleteness(attempts),
+    completeness: costCompleteness(attempts, captureComplete),
     currencies: [...totals.values()].sort((left, right) =>
       (left.currency ?? "").localeCompare(right.currency ?? ""),
     ),
@@ -629,49 +673,47 @@ function requestCount(
 
 function summarizeRetries(
   attempts: ReadonlyArray<ProviderAttemptMeasurement>,
+  captureComplete: boolean,
 ): ProviderRetryMeasurementSummary {
   const retries = attempts.filter(
     (attempt) => (attempt.attemptNumber ?? 1) > 1,
   );
   return {
     attemptCount: retries.length,
-    usage: sumUsage(retries),
-    cost: sumCosts(retries),
+    usage: sumUsage(retries, captureComplete),
+    cost: sumCosts(retries, captureComplete),
   };
 }
 
 export function summarizeProviderMeasurements(
   events: ReadonlyArray<TraceEventEnvelope>,
-  pricingResolver?: ProviderPricingResolver,
+  options: ProviderMeasurementOptions = {},
 ): ProviderMeasurementSummary {
   const collection = collectMeasurements(events);
-  const materialized = materializeAttempts(collection, pricingResolver);
-  const purposes: ReadonlyArray<ProviderRequestPurpose> = [
-    "answer",
-    "summarize",
-    "recovery",
-  ];
-  const byPurpose = purposes
-    .map((purpose) => {
-      const attempts = materialized.attempts.filter(
-        (attempt) => attempt.purpose === purpose,
-      );
-      return {
-        purpose,
-        requestCount: requestCount(collection.requests, purpose),
-        attemptCount: attempts.length,
-        usage: sumUsage(attempts),
-        cost: sumCosts(attempts),
-        retries: summarizeRetries(attempts),
-      } satisfies ProviderPurposeMeasurementSummary;
-    })
-    .filter((summary) => summary.requestCount > 0 || summary.attemptCount > 0);
+  const materialized = materializeAttempts(collection, options.pricingResolver);
+  const captureComplete =
+    options.captureComplete !== false &&
+    materialized.attempts.every((attempt) => attempt.outcome !== "unknown");
+  const purposes = [...new Set(collection.requests.values())].sort();
+  const byPurpose = purposes.map((purpose) => {
+    const attempts = materialized.attempts.filter(
+      (attempt) => attempt.purpose === purpose,
+    );
+    return {
+      purpose,
+      requestCount: requestCount(collection.requests, purpose),
+      attemptCount: attempts.length,
+      usage: sumUsage(attempts, captureComplete),
+      cost: sumCosts(attempts, captureComplete),
+      retries: summarizeRetries(attempts, captureComplete),
+    } satisfies ProviderPurposeMeasurementSummary;
+  });
   return {
     requestCount: collection.requests.size,
     attemptCount: materialized.attempts.length,
-    usage: sumUsage(materialized.attempts),
-    cost: sumCosts(materialized.attempts),
-    retries: summarizeRetries(materialized.attempts),
+    usage: sumUsage(materialized.attempts, captureComplete),
+    cost: sumCosts(materialized.attempts, captureComplete),
+    retries: summarizeRetries(materialized.attempts, captureComplete),
     byPurpose,
     attempts: materialized.attempts,
     estimates: materialized.attempts.flatMap((attempt) =>
