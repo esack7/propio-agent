@@ -24,6 +24,7 @@ import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { PromptSubmission } from "./input.js";
 import type {
   AgentRuntimeOptions,
+  AgentPromptOmission,
   AgentToolPolicyDecision,
   AgentToolScope,
 } from "./types.js";
@@ -82,9 +83,7 @@ function buildDefaultPromptOmissions(plan: PromptPlan) {
 
 function resolvePromptOmissions(
   plan: PromptPlan,
-  omissions:
-    | ReadonlyArray<{ kind: "turn" | "artifact"; id: string; reason: string }>
-    | undefined,
+  omissions: ReadonlyArray<AgentPromptOmission> | undefined,
 ) {
   return omissions ?? buildDefaultPromptOmissions(plan);
 }

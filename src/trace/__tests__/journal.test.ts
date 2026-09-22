@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -110,6 +111,8 @@ describe("JSONL trace journal", () => {
         inputTokenCount: 42,
         outputTokenRecoveryLimit: 3,
         tokenEstimate: { input: 40, output: 2 },
+        homePath: "/home/example/private/config.json",
+        endpointPath: "/v1/messages",
         provider: {
           apiKey: { present: true, source: "settings_file" },
         },
@@ -125,6 +128,8 @@ describe("JSONL trace journal", () => {
     expect(persisted).not.toContain("client-secret");
     expect(persisted).not.toContain("token-value");
     expect(persisted).not.toContain("sk-example123456");
+    expect(persisted).not.toContain("/home/example/private/config.json");
+    expect(persisted).toContain("/v1/messages");
     expect(persisted).toContain("[REDACTED]");
     expect(readTraceJournal(journalPath).events[0].payload).toMatchObject({
       provider: {
@@ -223,6 +228,7 @@ describe("JSONL trace journal", () => {
     expect(manifest.files[0].path).toBe("events.jsonl");
     expect(verifyTraceExport(exportDirectory)).toEqual([]);
     const { providerMeasurements: _measurements, ...legacyManifest } = manifest;
+    fs.rmSync(path.join(exportDirectory, "manifest.sha256"));
     fs.writeFileSync(
       path.join(exportDirectory, "manifest.json"),
       JSON.stringify({ ...legacyManifest, version: 2 }),
@@ -273,7 +279,12 @@ describe("JSONL trace journal", () => {
       payload: {
         includedArtifactIds: ["artifact-1"],
         omissions: [
-          { kind: "artifact", id: "artifact-pruned", reason: "pruned" },
+          {
+            kind: "artifact",
+            id: "artifact-pruned",
+            reason: "previously evicted",
+            reasonCode: "artifact_pruned",
+          },
           { kind: "artifact", id: "artifact-budget", reason: "context_budget" },
         ],
       },
@@ -362,5 +373,108 @@ describe("JSONL trace journal", () => {
     expect(verifyTraceExport(bundle)).toEqual([
       "Unsafe export path: events.jsonl",
     ]);
+    fs.rmSync(path.join(bundle, "manifest.json"));
+    fs.symlinkSync(journalPath, path.join(bundle, "manifest.json"));
+    expect(verifyTraceExport(bundle)).toEqual(["Unsafe manifest path"]);
+  });
+
+  it("detects changed manifest claims even when its checksum is rewritten", () => {
+    const journalPath = path.join(tempDir, "source.jsonl");
+    const journal = new JsonlTraceJournal(journalPath);
+    const recorder = new RunTraceRecorder(
+      {
+        sessionId: "session-1",
+        runId: "run-1",
+        configurationRevisionId: "config-1",
+      },
+      journal,
+    );
+    recorder.record({
+      component: "cli",
+      type: "run_started",
+      payload: { configuration: { packages: { agent: "1.1.4" } } },
+    });
+    recorder.record({
+      component: "agent",
+      type: "provider_request_dispatched",
+      identity: { operationId: "request-1" },
+      payload: {},
+    });
+    recorder.record({
+      component: "tool",
+      type: "tool_execution_completed",
+      identity: { operationId: "tool-1" },
+      payload: { status: "success" },
+    });
+    journal.close();
+    const bundle = path.join(tempDir, "bundle");
+    exportTraceJournal(journalPath, bundle);
+    expect(verifyTraceExport(bundle)).toEqual([]);
+
+    const manifestPath = path.join(bundle, "manifest.json");
+    const checksumPath = path.join(bundle, "manifest.sha256");
+    const original = fs.readFileSync(manifestPath);
+    const cases: ReadonlyArray<{
+      field: string;
+      change: (manifest: Record<string, unknown>) => void;
+    }> = [
+      {
+        field: "eventCount",
+        change: (manifest) => {
+          manifest.eventCount = 999;
+        },
+      },
+      {
+        field: "captureComplete",
+        change: (manifest) => {
+          manifest.captureComplete = true;
+        },
+      },
+      {
+        field: "operations",
+        change: (manifest) => {
+          manifest.operations = [];
+        },
+      },
+      {
+        field: "material",
+        change: (manifest) => {
+          manifest.material = [];
+        },
+      },
+      {
+        field: "revisions",
+        change: (manifest) => {
+          manifest.revisions = {
+            ...(manifest.revisions as object),
+            packages: { agent: "9.9.9" },
+          };
+        },
+      },
+    ];
+    for (const testCase of cases) {
+      const modified = JSON.parse(original.toString("utf8")) as Record<
+        string,
+        unknown
+      >;
+      testCase.change(modified);
+      const bytes = Buffer.from(`${JSON.stringify(modified, null, 2)}\n`);
+      fs.writeFileSync(manifestPath, bytes);
+      expect(verifyTraceExport(bundle)).toContain("Manifest checksum mismatch");
+      fs.writeFileSync(
+        checksumPath,
+        `${createHash("sha256").update(bytes).digest("hex")}\n`,
+      );
+      expect(verifyTraceExport(bundle)).toContain(
+        `Manifest ${testCase.field} mismatch`,
+      );
+      fs.writeFileSync(
+        checksumPath,
+        `${createHash("sha256").update(original).digest("hex")}\n`,
+      );
+    }
+    fs.writeFileSync(manifestPath, original);
+    fs.rmSync(checksumPath);
+    expect(verifyTraceExport(bundle)).toContain("Missing manifest checksum");
   });
 });

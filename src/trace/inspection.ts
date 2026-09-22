@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { readTraceJournal } from "./journal.js";
 import { redactTraceValue } from "./redaction.js";
 import {
@@ -193,7 +194,7 @@ function packageMetadata(
     return undefined;
   const packages = (configuration as Record<string, unknown>).packages;
   if (packages === null || typeof packages !== "object") return undefined;
-  return redactTraceValue(packages) as Record<string, unknown>;
+  return packages as Record<string, unknown>;
 }
 
 function uniqueIdentityValues(
@@ -230,7 +231,9 @@ function eventMaterial(event: TraceEventEnvelope): TraceExportMaterial[] {
         kind: "tool_result",
         status: "omitted",
         eventId: event.eventId,
-        referenceId: event.identity.toolCallId,
+        ...(event.identity.toolCallId === undefined
+          ? {}
+          : { referenceId: event.identity.toolCallId }),
         reason: "raw_tool_output_excluded_by_standard_capture",
       },
     ];
@@ -287,8 +290,7 @@ function omittedArtifactMaterial(
     )
       return [];
     seenArtifacts.add(omission.id);
-    const pruned =
-      isString(omission.reason) && omission.reason.includes("prun");
+    const pruned = omission.reasonCode === "artifact_pruned";
     return [
       {
         kind: "prompt_artifact" as const,
@@ -328,6 +330,17 @@ function exportMaterial(
     },
   );
   return material;
+}
+
+function completenessWarnings(captureComplete: boolean): string[] {
+  return [
+    ...(captureComplete ? [] : ["journal_or_operations_incomplete"]),
+    "workspace_baseline_and_diff_not_recorded",
+  ];
+}
+
+function sha256(content: Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 export function exportTraceJournal(
@@ -372,24 +385,27 @@ export function exportTraceJournal(
     providerMeasurements: inspection.providerMeasurements,
     revisions: exportRevisions(safeEvents),
     material,
-    completenessWarnings: [
-      ...(inspection.captureComplete
-        ? []
-        : ["journal_or_operations_incomplete"]),
-      "workspace_baseline_and_diff_not_recorded",
-    ],
+    completenessWarnings: completenessWarnings(inspection.captureComplete),
     files: [
       {
         path: relativeEventsPath,
-        sha256: createHash("sha256").update(events).digest("hex"),
+        sha256: sha256(events),
         sizeBytes: events.byteLength,
       },
     ],
   };
   const safeManifest = redactTraceValue(manifest) as TraceExportManifestV3;
+  const manifestBytes = Buffer.from(
+    `${JSON.stringify(safeManifest, null, 2)}\n`,
+  );
   fs.writeFileSync(
     path.join(destinationDirectory, "manifest.json"),
-    `${JSON.stringify(safeManifest, null, 2)}\n`,
+    manifestBytes,
+    { mode: 0o600 },
+  );
+  fs.writeFileSync(
+    path.join(destinationDirectory, "manifest.sha256"),
+    `${sha256(manifestBytes)}\n`,
     { mode: 0o600 },
   );
   return safeManifest;
@@ -475,17 +491,81 @@ function verifyExportFile(
   const failures: string[] = [];
   if (content.byteLength !== entry.sizeBytes)
     failures.push(`Size mismatch: ${entry.path}`);
-  const actualHash = createHash("sha256").update(content).digest("hex");
+  const actualHash = sha256(content);
   if (actualHash !== entry.sha256)
     failures.push(`Hash mismatch: ${entry.path}`);
   return failures;
 }
 
+function verifyManifestChecksum(
+  root: string,
+  manifestBytes: Uint8Array,
+  required: boolean,
+): string[] {
+  const checksumPath = path.join(root, "manifest.sha256");
+  if (!fs.existsSync(checksumPath))
+    return required ? ["Missing manifest checksum"] : [];
+  const checksumStat = fs.lstatSync(checksumPath);
+  if (checksumStat.isSymbolicLink()) return ["Unsafe manifest checksum path"];
+  if (!checksumStat.isFile()) return ["Invalid manifest checksum"];
+  const expected = fs.readFileSync(checksumPath, "utf8").trim();
+  if (!/^[a-f0-9]{64}$/.test(expected)) return ["Invalid manifest checksum"];
+  return expected === sha256(manifestBytes)
+    ? []
+    : ["Manifest checksum mismatch"];
+}
+
+function verifyDerivedClaims(
+  root: string,
+  manifest: TraceExportManifestV3,
+): string[] {
+  if (!Array.isArray(manifest.warnings)) return ["Invalid manifest warnings"];
+  if (unsafeFilePath(root, "events.jsonl"))
+    return ["Unsafe export path: events.jsonl"];
+  let events: ReadonlyArray<TraceEventEnvelope>;
+  try {
+    const journal = readTraceJournal(path.join(root, "events.jsonl"));
+    if (journal.warnings.length > 0) return ["Malformed exported journal"];
+    events = journal.events;
+  } catch {
+    return ["Unreadable exported journal"];
+  }
+  try {
+    const inspection = inspectEvents(events, manifest.warnings, {});
+    const claims: ReadonlyArray<[string, unknown, unknown]> = [
+      ["captureLevel", manifest.captureLevel, "standard"],
+      ["eventCount", manifest.eventCount, inspection.eventCount],
+      ["sessionId", manifest.sessionId, inspection.sessionId],
+      ["runId", manifest.runId, inspection.runId],
+      ["previousRunId", manifest.previousRunId, inspection.previousRunId],
+      ["captureComplete", manifest.captureComplete, inspection.captureComplete],
+      ["operations", manifest.operations, inspection.operations],
+      ["revisions", manifest.revisions, exportRevisions(events)],
+      ["material", manifest.material, exportMaterial(events)],
+      [
+        "completenessWarnings",
+        manifest.completenessWarnings,
+        completenessWarnings(inspection.captureComplete),
+      ],
+    ];
+    return claims.flatMap(([name, actual, expected]) =>
+      isDeepStrictEqual(actual, expected) ? [] : [`Manifest ${name} mismatch`],
+    );
+  } catch {
+    return ["Invalid exported journal events"];
+  }
+}
+
 export function verifyTraceExport(destinationDirectory: string): string[] {
   let manifest: TraceExportManifest;
+  let manifestBytes: Buffer;
   try {
+    const manifestPath = path.join(destinationDirectory, "manifest.json");
+    if (fs.lstatSync(manifestPath).isSymbolicLink())
+      return ["Unsafe manifest path"];
+    manifestBytes = fs.readFileSync(manifestPath);
     manifest = JSON.parse(
-      fs.readFileSync(path.join(destinationDirectory, "manifest.json"), "utf8"),
+      manifestBytes.toString("utf8"),
     ) as TraceExportManifest;
   } catch {
     return ["Unreadable export manifest"];
@@ -493,8 +573,20 @@ export function verifyTraceExport(destinationDirectory: string): string[] {
   const failures = manifestFailures(manifest);
   if (!manifest || !Array.isArray(manifest.files)) return failures;
   const root = fs.realpathSync(destinationDirectory);
+  const checksumFailures = verifyManifestChecksum(
+    root,
+    manifestBytes,
+    manifest.version === 3,
+  );
+  const fileFailures = manifest.files.flatMap((entry) =>
+    verifyExportFile(root, entry),
+  );
   return [
     ...failures,
-    ...manifest.files.flatMap((entry) => verifyExportFile(root, entry)),
+    ...checksumFailures,
+    ...fileFailures,
+    ...(manifest.version === 3 && fileFailures.length === 0
+      ? verifyDerivedClaims(root, manifest)
+      : []),
   ];
 }
