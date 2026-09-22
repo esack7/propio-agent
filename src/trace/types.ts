@@ -9,6 +9,8 @@ export interface TraceIdentity {
   readonly toolCallId?: string;
   readonly configurationRevisionId?: string;
   readonly promptRevisionId?: string;
+  readonly policyRevisionId?: string;
+  readonly toolScopeRevisionId?: string;
   readonly previousRunId?: string;
 }
 

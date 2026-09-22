@@ -12,6 +12,7 @@ import {
 } from "../index.js";
 import { ConversationManager } from "../../context/index.js";
 import { ToolRegistry, createExecutableTool } from "../../tools/index.js";
+import type { TraceEventInput } from "../../trace/index.js";
 
 const toolCall: ChatStreamEvent = {
   type: "tool_calls",
@@ -82,6 +83,185 @@ function setup(
 }
 
 describe("public headless runtime", () => {
+  it("links tool scope and policy decisions to the dispatched operation", async () => {
+    const traceEvents: TraceEventInput[] = [];
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "approved result",
+    }));
+    const authorizeTool = jest.fn(async () => ({
+      allowed: true,
+      actor: "application" as const,
+      rule: "fixture_approval",
+      reason: "Approved by fixture policy",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: {
+        getEnabledSchemas: () => [],
+        executeWithStatus,
+      },
+      policy: {
+        maxIterations: 5,
+        useNoProgressDetector: true,
+        streamIdleTimeoutMs: 0,
+        outputTokenRecoveryLimit: 1,
+        resolveToolScope: () => ({
+          allowedTools: new Set(["lookup"]),
+          policyRevisionId: "policy-1",
+          toolScopeRevisionId: "scope-1",
+          metadata: { mode: "execute", activeSkills: ["records"] },
+        }),
+      },
+      trace: {
+        identity: {
+          sessionId: "session-1",
+          runId: "run-1",
+          configurationRevisionId: "config-1",
+        },
+        record: (event) => traceEvents.push(event),
+      },
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    const scope = traceEvents.find(
+      (event) => event.type === "tool_scope_selected",
+    );
+    expect(scope).toMatchObject({
+      identity: {
+        policyRevisionId: "policy-1",
+        toolScopeRevisionId: "scope-1",
+      },
+      payload: {
+        allowedTools: ["lookup"],
+        metadata: { mode: "execute", activeSkills: ["records"] },
+      },
+    });
+    const decisions = traceEvents.filter(
+      (event) => event.type === "tool_policy_decision",
+    );
+    expect(
+      decisions.map((event) => (event.payload as { rule?: string }).rule),
+    ).toEqual(["tool_scope", "fixture_approval"]);
+    expect(decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          identity: expect.objectContaining({
+            policyRevisionId: "policy-1",
+            toolScopeRevisionId: "scope-1",
+          }),
+          payload: expect.objectContaining({
+            decision: "allowed",
+            reviewedArgumentKeys: ["key"],
+          }),
+        }),
+      ]),
+    );
+    const completedIndex = traceEvents.findIndex(
+      (event) => event.type === "tool_execution_completed",
+    );
+    expect(
+      traceEvents.findIndex(
+        (event) =>
+          event.type === "tool_policy_decision" &&
+          (event.payload as { rule?: string }).rule === "fixture_approval",
+      ),
+    ).toBeLessThan(completedIndex);
+    expect(executeWithStatus).toHaveBeenCalledTimes(1);
+    expect(authorizeTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "lookup",
+        args: { key: "example" },
+        scope: expect.objectContaining({
+          policyRevisionId: "policy-1",
+          toolScopeRevisionId: "scope-1",
+        }),
+      }),
+    );
+  });
+
+  it("records a scope denial without dispatching the tool", async () => {
+    const traceEvents: TraceEventInput[] = [];
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "should not run",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: { getEnabledSchemas: () => [], executeWithStatus },
+      policy: {
+        maxIterations: 5,
+        useNoProgressDetector: true,
+        streamIdleTimeoutMs: 0,
+        outputTokenRecoveryLimit: 1,
+        resolveToolScope: () => ({
+          allowedTools: new Set(),
+          policyRevisionId: "policy-denied",
+          toolScopeRevisionId: "scope-denied",
+        }),
+      },
+      trace: {
+        identity: { sessionId: "session-1", runId: "run-1" },
+        record: (event) => traceEvents.push(event),
+      },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(
+      traceEvents.find(
+        (event) =>
+          event.type === "tool_policy_decision" &&
+          (event.payload as { rule?: string }).rule === "tool_scope",
+      ),
+    ).toMatchObject({
+      identity: {
+        policyRevisionId: "policy-denied",
+        toolScopeRevisionId: "scope-denied",
+      },
+      payload: { decision: "denied", reviewedArgumentKeys: ["key"] },
+    });
+  });
+
+  it("records authorization callback failures and fails closed", async () => {
+    const traceEvents: TraceEventInput[] = [];
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "should not run",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: { getEnabledSchemas: () => [], executeWithStatus },
+      trace: {
+        identity: { sessionId: "session-1", runId: "run-1" },
+        record: (event) => traceEvents.push(event),
+      },
+      integrations: {
+        authorizeTool: () => {
+          throw new Error("approval unavailable");
+        },
+      },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(
+      traceEvents.find(
+        (event) =>
+          event.type === "tool_policy_decision" &&
+          (event.payload as { rule?: string }).rule ===
+            "authorization_callback",
+      ),
+    ).toMatchObject({
+      payload: {
+        decision: "error",
+        reason: "approval unavailable",
+        reviewedArgumentKeys: ["key"],
+      },
+    });
+  });
+
   it("commits each completed tool result before dispatching the next call", async () => {
     const controller = new AbortController();
     const calls = ["first", "second", "third"].map((name, index) => ({

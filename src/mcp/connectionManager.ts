@@ -40,6 +40,14 @@ function createTimeoutError(message: string): Error {
   return error;
 }
 
+function isTimeoutError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === "TimeoutError" ||
+    /(?:timed?\s*out|timeout)/i.test(error.message)
+  );
+}
+
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -490,6 +498,7 @@ export class McpConnectionManager {
       };
     }
 
+    const startedAt = performance.now();
     try {
       const result = await runtime.client.callTool(
         {
@@ -500,11 +509,28 @@ export class McpConnectionManager {
         { timeout: this.callTimeoutMs },
       );
 
-      return this.toMcpToolResult(toolName, result);
+      return this.toMcpToolResult(
+        toolName,
+        serverName,
+        remoteToolName,
+        performance.now() - startedAt,
+        result,
+      );
     } catch (error) {
+      const timedOut = isTimeoutError(error);
       return {
         status: "error",
         content: formatToolCallError(toolName, toErrorMessage(error)),
+        outcome: {
+          kind: "mcp_call",
+          classification: timedOut ? "timed_out" : "transport_error",
+          serverName,
+          remoteToolName,
+          timeoutMs: this.callTimeoutMs,
+          durationMs: performance.now() - startedAt,
+          completion: "unknown",
+          sideEffect: "unknown",
+        },
       };
     }
   }
@@ -522,9 +548,24 @@ export class McpConnectionManager {
 
   private toMcpToolResult(
     toolName: string,
+    serverName: string,
+    remoteToolName: string,
+    durationMs: number,
     result: Awaited<ReturnType<Client["callTool"]>>,
   ): McpToolResult {
     const content = formatCallToolResult(result);
+    const outcome = {
+      kind: "mcp_call" as const,
+      classification: result.isError
+        ? ("remote_error" as const)
+        : ("succeeded" as const),
+      serverName,
+      remoteToolName,
+      timeoutMs: this.callTimeoutMs,
+      durationMs,
+      completion: "confirmed" as const,
+      sideEffect: "unknown" as const,
+    };
     return result.isError
       ? {
           status: "error",
@@ -532,10 +573,12 @@ export class McpConnectionManager {
             toolName,
             content || "The MCP server reported an error without details.",
           ),
+          outcome,
         }
       : {
           status: "success",
           content: content || "Tool completed successfully.",
+          outcome,
         };
   }
 

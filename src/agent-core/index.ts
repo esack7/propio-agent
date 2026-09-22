@@ -6,6 +6,9 @@ export type {
   AgentExecutionPolicy,
   AgentToolExecutor,
   AgentIntegrations,
+  AgentToolScope,
+  AgentToolAuthorizationRequest,
+  AgentToolPolicyDecision,
 } from "./types.js";
 export type { PromptSubmission, PromptImage } from "./input.js";
 export type {

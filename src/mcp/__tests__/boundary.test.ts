@@ -250,6 +250,16 @@ it("applies the supplied tool-call deadline and recovers for subsequent calls", 
   ).toMatchObject({
     status: "error",
     content: expect.stringMatching(/timed out/i),
+    outcome: {
+      kind: "mcp_call",
+      classification: "timed_out",
+      serverName: "fixture",
+      remoteToolName: "echo",
+      timeoutMs: 50,
+      durationMs: expect.any(Number),
+      completion: "unknown",
+      sideEffect: "unknown",
+    },
   });
   expect(
     (await manager.executeToolWithStatus("mcp__fixture__echo", {})).status,
@@ -292,7 +302,18 @@ it.each([
     await manager.initialize();
     expect(
       await manager.executeToolWithStatus("mcp__fixture__result", { result }),
-    ).toEqual({ status, content });
+    ).toMatchObject({
+      status,
+      content,
+      outcome: {
+        kind: "mcp_call",
+        classification: status === "success" ? "succeeded" : "remote_error",
+        serverName: "fixture",
+        remoteToolName: "result",
+        completion: "confirmed",
+        sideEffect: "unknown",
+      },
+    });
   },
 );
 
@@ -304,6 +325,11 @@ it("reports remote request errors", async () => {
   ).toMatchObject({
     status: "error",
     content: expect.stringContaining("fixture failure"),
+    outcome: expect.objectContaining({
+      kind: "mcp_call",
+      classification: "transport_error",
+      completion: "unknown",
+    }),
   });
 });
 
@@ -471,8 +497,14 @@ it("adapts live MCP calls and local tools through the public tools registry", as
       content: [{ type: "text", text: "remote failure" }],
     },
   });
-  expect(failure).toEqual({
+  expect(failure).toMatchObject({
     status: "error",
     content: "Error executing mcp__fixture__result: remote failure",
+    outcome: {
+      kind: "mcp_call",
+      classification: "remote_error",
+      completion: "confirmed",
+      sideEffect: "unknown",
+    },
   });
 });

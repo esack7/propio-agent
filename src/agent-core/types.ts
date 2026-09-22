@@ -28,6 +28,31 @@ export interface AgentExecutionPolicy {
   readonly discardInterruptedTurn?: (signal: AbortSignal) => boolean;
   /** Evaluated on every iteration, including final-response recovery. */
   readonly allowedTools?: () => ReadonlySet<string> | undefined;
+  /** Preferred revisioned tool scope. When supplied, it supersedes allowedTools. */
+  readonly resolveToolScope?: () => AgentToolScope;
+}
+
+export interface AgentToolScope {
+  readonly allowedTools?: ReadonlySet<string>;
+  readonly policyRevisionId?: string;
+  readonly toolScopeRevisionId?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface AgentToolAuthorizationRequest {
+  readonly name: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  /** The exact scope selected before the provider request was dispatched. */
+  readonly scope: AgentToolScope;
+  readonly signal?: AbortSignal;
+}
+
+export interface AgentToolPolicyDecision {
+  readonly allowed: boolean;
+  readonly actor: "agent" | "application" | "user";
+  readonly rule: string;
+  readonly reason?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface AgentToolExecutor {
@@ -54,6 +79,10 @@ export interface AgentIntegrations {
     iteration?: number,
     allowedTools?: ReadonlySet<string>,
   ): PromptPlan;
+  /** Application policy evaluated against a detached argument snapshot. */
+  authorizeTool?(
+    request: AgentToolAuthorizationRequest,
+  ): AgentToolPolicyDecision | Promise<AgentToolPolicyDecision>;
   shrinkContext?(plan: PromptPlan): Promise<boolean>;
   onAssistantResponse?(content: string): void;
   onToolSuccess?(name: string, args: Record<string, unknown>): void;

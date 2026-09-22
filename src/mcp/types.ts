@@ -43,10 +43,23 @@ export interface McpToolDescriptor extends McpToolSummary {
   readonly inputSchema: { type: "object"; [key: string]: unknown };
 }
 
+export interface McpCallOutcome {
+  readonly kind: "mcp_call";
+  readonly classification:
+    "succeeded" | "remote_error" | "timed_out" | "transport_error";
+  readonly serverName: string;
+  readonly remoteToolName: string;
+  readonly timeoutMs: number;
+  readonly durationMs: number;
+  readonly completion: "confirmed" | "unknown";
+  readonly sideEffect: "unknown";
+}
+
 /** Text representation; media are described rather than decoded. */
 export interface McpToolResult {
   status: "success" | "tool_not_found" | "tool_disabled" | "error";
   content: string;
+  outcome?: McpCallOutcome;
 }
 
 export interface McpConnectionOptions {

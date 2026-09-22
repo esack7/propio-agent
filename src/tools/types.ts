@@ -30,6 +30,17 @@ export type ToolExecutionOutcome =
       readonly beforeHash?: string;
       readonly afterHash: string;
       readonly sideEffect: "completed";
+    }
+  | {
+      readonly kind: "mcp_call";
+      readonly classification:
+        "succeeded" | "remote_error" | "timed_out" | "transport_error";
+      readonly serverName: string;
+      readonly remoteToolName: string;
+      readonly timeoutMs: number;
+      readonly durationMs: number;
+      readonly completion: "confirmed" | "unknown";
+      readonly sideEffect: "unknown";
     };
 
 export interface ToolExecutionResult {
