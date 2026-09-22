@@ -16,7 +16,7 @@ import {
 } from "@propio-ai/providers";
 import * as fs from "fs";
 import * as os from "os";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { getPackageVersion } from "./packageVersion.js";
 import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
 import { loadProvidersConfig } from "./config/providersConfig.js";
@@ -46,6 +46,8 @@ import {
   type TurnReasoningSummary,
   type PromptPlanSnapshot,
   type PromptSubmission,
+  type AgentToolPolicyDecision,
+  type AgentToolScope,
 } from "./agent-core/index.js";
 import { buildSystemPromptContext } from "./prompt/systemPromptContext.js";
 import { ContextManager } from "./context/contextManager.js";
@@ -182,6 +184,89 @@ function isRuntimeOnlyEvent(event: RuntimeEvent): event is AgentLifecycleEvent {
     "turn_failed",
     "assistant_text",
   ].includes(event.type);
+}
+
+interface PlanPolicySnapshot {
+  readonly approved: boolean;
+  readonly filePath?: string;
+}
+
+function resolveScopeMode(
+  scope: AgentToolScope,
+  fallback: AgentMode,
+): AgentMode {
+  const mode = scope.metadata?.mode;
+  return mode === "execute" || mode === "plan" || mode === "discover"
+    ? mode
+    : fallback;
+}
+
+function resolvePlanPolicySnapshot(
+  scope: AgentToolScope,
+  fallback: AgentModeState,
+): PlanPolicySnapshot {
+  return {
+    approved:
+      typeof scope.metadata?.planSaveApproved === "boolean"
+        ? scope.metadata.planSaveApproved
+        : (fallback.planSaveApproved ?? false),
+    filePath:
+      typeof scope.metadata?.planFilePath === "string"
+        ? scope.metadata.planFilePath
+        : fallback.planFilePath,
+  };
+}
+
+function authorizePlanTool(
+  name: string,
+  args: Readonly<Record<string, unknown>>,
+  mode: AgentMode,
+  plan: PlanPolicySnapshot,
+): AgentToolPolicyDecision | undefined {
+  if (mode !== "plan" || !["write", "edit"].includes(name)) return undefined;
+  if (!plan.approved || !plan.filePath) {
+    return {
+      allowed: false,
+      actor: "agent",
+      rule: "plan_write_approval",
+      reason:
+        "In Plan mode, file writes require an approved plan save (/plan save) before write/edit is enabled.",
+      metadata: { mode },
+    };
+  }
+  if (!isPlanFilePath(args.path, plan.filePath)) {
+    return {
+      allowed: false,
+      actor: "agent",
+      rule: "plan_write_path",
+      reason: `In Plan mode, write/edit is only allowed for the approved plan file (${plan.filePath})`,
+      metadata: { mode },
+    };
+  }
+  return undefined;
+}
+
+function authorizeBashTool(
+  name: string,
+  args: Readonly<Record<string, unknown>>,
+  mode: AgentMode,
+): AgentToolPolicyDecision | undefined {
+  if (name !== "bash" || !["plan", "discover"].includes(mode)) {
+    return undefined;
+  }
+  const command =
+    typeof args.command === "string"
+      ? args.command
+      : String(args.command ?? "");
+  const bashPolicy = checkBashAllowedForMode(command, mode);
+  if (bashPolicy.allowed) return undefined;
+  return {
+    allowed: false,
+    actor: "agent",
+    rule: "mode_bash_policy",
+    reason: bashPolicy.reason ?? "Command not allowed in this mode",
+    metadata: { mode },
+  };
 }
 
 export class Agent {
@@ -425,51 +510,11 @@ export class Agent {
     return Array.from(schemas.values());
   }
 
-  // fallow-ignore-next-line complexity
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
-    allowedTools?: ReadonlySet<string>,
     signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    if (allowedTools && !allowedTools.has(name)) {
-      return {
-        status: "tool_disabled",
-        content: `Tool not available in the current mode or skill scope: ${name}`,
-      };
-    }
-
-    const mode = this.modeState.mode;
-    if (mode === "plan" && (name === "write" || name === "edit")) {
-      if (!this.modeState.planSaveApproved || !this.modeState.planFilePath) {
-        return {
-          status: "tool_disabled",
-          content:
-            "In Plan mode, file writes require an approved plan save (/plan save) before write/edit is enabled.",
-        };
-      }
-      if (!isPlanFilePath(args.path, this.modeState.planFilePath)) {
-        return {
-          status: "tool_disabled",
-          content: `In Plan mode, write/edit is only allowed for the approved plan file (${this.modeState.planFilePath})`,
-        };
-      }
-    }
-
-    if (name === "bash" && (mode === "plan" || mode === "discover")) {
-      const command =
-        typeof args.command === "string"
-          ? args.command
-          : String(args.command ?? "");
-      const bashPolicy = checkBashAllowedForMode(command, mode);
-      if (!bashPolicy.allowed) {
-        return {
-          status: "tool_disabled",
-          content: bashPolicy.reason ?? "Command not allowed in this mode",
-        };
-      }
-    }
-
     if (this.toolRegistry.hasTool(name)) {
       return await this.toolRegistry.executeWithStatus(name, args, { signal });
     }
@@ -479,6 +524,31 @@ export class Agent {
     }
 
     return { status: "tool_not_found", content: `Tool not found: ${name}` };
+  }
+
+  private authorizeToolExecution(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+    scope: AgentToolScope,
+  ): AgentToolPolicyDecision {
+    const mode = resolveScopeMode(scope, this.modeState.mode);
+    const planDecision = authorizePlanTool(
+      name,
+      args,
+      mode,
+      resolvePlanPolicySnapshot(scope, this.modeState),
+    );
+    if (planDecision) return planDecision;
+    const bashDecision = authorizeBashTool(name, args, mode);
+    if (bashDecision) return bashDecision;
+
+    return {
+      allowed: true,
+      actor: "agent",
+      rule: "mode_policy",
+      reason: `Tool is allowed in ${mode} mode`,
+      metadata: { mode },
+    };
   }
 
   switchProvider(providerName: string, modelKey?: string): void {
@@ -708,20 +778,6 @@ export class Agent {
     this.contextManager.recordToolResults(
       attachments.map((attachment) => attachment.toolResult),
     );
-  }
-
-  private getActiveSkillScopes(): SkillInvocationScope[] {
-    const invokedSkills =
-      this.contextManager.getConversationState().invokedSkills ?? [];
-    return invokedSkills.map((record) => ({
-      ...record.scope,
-      ...(record.scope.allowedTools
-        ? { allowedTools: [...record.scope.allowedTools] }
-        : {}),
-      ...(record.scope.warnings
-        ? { warnings: [...record.scope.warnings] }
-        : {}),
-    }));
   }
 
   private recordSkillTouchFromToolArgs(
@@ -954,6 +1010,40 @@ export class Agent {
       planFilePath: this.modeState.planFilePath,
       planSaveApproved: this.modeState.planSaveApproved,
     });
+  }
+
+  private resolveRuntimeToolScope() {
+    const invokedSkills =
+      this.contextManager.getConversationState().invokedSkills ?? [];
+    const skillScopes = invokedSkills.map((record) => record.scope);
+    const allowedTools = this.resolveAllowedTools(skillScopes);
+    const activeSkills = invokedSkills
+      .map((record) => ({
+        name: record.name,
+        source: record.source,
+        revisionId: `sha256:${createHash("sha256").update(record.content).digest("hex")}`,
+      }))
+      .sort((a, b) =>
+        a.name === b.name
+          ? a.revisionId.localeCompare(b.revisionId)
+          : a.name.localeCompare(b.name),
+      );
+    const allowedToolNames = allowedTools
+      ? [...allowedTools].sort()
+      : undefined;
+    const metadata = {
+      mode: this.modeState.mode,
+      activeSkills,
+      planSaveApproved: this.modeState.planSaveApproved ?? false,
+      planFilePath: this.modeState.planFilePath,
+    };
+    const fingerprint = JSON.stringify({ ...metadata, allowedToolNames });
+    return {
+      allowedTools,
+      policyRevisionId: this.configurationRevisionId,
+      toolScopeRevisionId: `sha256:${createHash("sha256").update(fingerprint).digest("hex")}`,
+      metadata,
+    };
   }
 
   /**
@@ -1328,13 +1418,12 @@ export class Agent {
         streamIdleTimeoutMs: this.runtimeConfig.streamIdleTimeoutMs,
         outputTokenRecoveryLimit: this.runtimeConfig.outputTokenRecoveryLimit,
         discardInterruptedTurn: (signal) => signal.reason === "escape",
-        allowedTools: () =>
-          this.resolveAllowedTools(this.getActiveSkillScopes()),
+        resolveToolScope: () => this.resolveRuntimeToolScope(),
       },
       tools: {
         getEnabledSchemas: () => this.getMergedToolSchemas(),
         executeWithStatus: (name, args, context) =>
-          this.executeToolWithStatus(name, args, undefined, context?.signal),
+          this.executeToolWithStatus(name, args, context?.signal),
       },
       onDiagnosticEvent: (event) => {
         this.emitDiagnostic(event);
@@ -1359,6 +1448,8 @@ export class Agent {
           this.prepareMessagesForProvider(messages),
         buildPlan: (instruction, retry, iteration, allowed) =>
           this.buildPlan(instruction, retry, iteration, allowed),
+        authorizeTool: ({ name, args, scope }) =>
+          this.authorizeToolExecution(name, args, scope),
         shrinkContext: (plan) => this.attemptSynchronousShrink(plan),
         onAssistantResponse: (content) =>
           this.recordPlanModeAssistantDraft(content),
@@ -1634,6 +1725,7 @@ export class Agent {
       planFilePath,
       planSaveApproved: true,
     };
+    this.recordConfigurationChange("plan_save_approved");
     this.consumePendingPlanDraft();
 
     const event: AgentVisibilityEvent = {

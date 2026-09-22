@@ -1072,6 +1072,63 @@ describe("Agent with Multi-Provider Configuration", () => {
       ).toBe(change?.identity.configurationRevisionId);
     });
 
+    it("links CLI tool policy decisions to the selected request scope", async () => {
+      const provider = new ToolCallMockProvider("lookup", { key: "example" });
+      const traceEvents: Array<{
+        type: string;
+        identity: Record<string, unknown>;
+        payload: unknown;
+      }> = [];
+      const agent = createTestAgent(provider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({
+                ...event,
+                identity: { ...identity, ...event.identity },
+              }),
+          },
+        }),
+      });
+      agent.addTool(
+        createMockTool({ name: "lookup", execute: async () => "found" }),
+      );
+
+      await agent.streamChat(userSubmission("Look it up"), () => {});
+
+      const scope = traceEvents.find(
+        (event) => event.type === "tool_scope_selected",
+      );
+      expect(scope).toMatchObject({
+        identity: {
+          policyRevisionId: expect.any(String),
+          toolScopeRevisionId: expect.stringMatching(/^sha256:/),
+        },
+        payload: {
+          metadata: {
+            mode: "execute",
+            activeSkills: [],
+            planSaveApproved: false,
+          },
+        },
+      });
+      const policyEvents = traceEvents.filter(
+        (event) => event.type === "tool_policy_decision",
+      );
+      expect(
+        policyEvents.map((event) => (event.payload as { rule?: string }).rule),
+      ).toEqual(["tool_scope", "mode_policy"]);
+      for (const event of policyEvents) {
+        expect(event.identity.policyRevisionId).toBe(
+          scope?.identity.policyRevisionId,
+        );
+        expect(event.identity.toolScopeRevisionId).toBe(
+          scope?.identity.toolScopeRevisionId,
+        );
+      }
+    });
+
     it("propagates an in-run configuration revision to later requests", async () => {
       const requests: ChatRequest[] = [];
       let agent!: Agent;

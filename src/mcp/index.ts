@@ -11,4 +11,5 @@ export type {
   McpToolSummary,
   McpToolDescriptor,
   McpToolResult,
+  McpCallOutcome,
 } from "./types.js";

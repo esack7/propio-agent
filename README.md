@@ -833,8 +833,18 @@ try {
   Supplied configurations now receive the same validation as file-loaded ones;
   omitted `mcpServers` means an empty catalog. Repeated identical remote names
   (including overlapping discovery pages) retain the first descriptor.
-- Results are `{ status, content }`, with `status` equal to `success`, `error`,
-  `tool_not_found`, or `tool_disabled`, and **content always a string**. Text and
+- Results are `{ status, content, outcome? }`, with `status` equal to `success`,
+  `error`, `tool_not_found`, or `tool_disabled`, and **content always a string**.
+  A dispatched call includes an `mcp_call` outcome with its server and remote
+  tool names, deadline, duration, and one of `succeeded`, `remote_error`,
+  `timed_out`, or `transport_error`. A normal response, including an MCP
+  `isError` response, has confirmed completion. SDK protocol rejections retain
+  their numeric error code. Parse and unknown-method rejections are marked
+  `not_started` with no side effect. Invalid-request, invalid-parameter, and
+  server failures remain unknown because SDK output validation can raise those
+  codes after execution. Timeout and transport failures also retain unknown
+  completion and must not be interpreted as proof that the remote side effect did
+  not happen. Text and
   embedded resource text are retained; images/audio become MIME/size descriptions,
   resource links and binary resources become URI descriptions, and structured
   content is appended as formatted JSON. Raw media/SDK response objects are not
@@ -1165,6 +1175,20 @@ const runtime = new AgentRuntime({
     useNoProgressDetector: true,
     streamIdleTimeoutMs: 90000,
     outputTokenRecoveryLimit: 3,
+    resolveToolScope: () => ({
+      allowedTools: new Set(["lookup"]),
+      policyRevisionId: "policy-v7",
+      toolScopeRevisionId: "scope-v12",
+      metadata: { mode: "execute" },
+    }),
+  },
+  integrations: {
+    authorizeTool: ({ name, args, scope }) => ({
+      allowed: true,
+      actor: "application",
+      rule: "application-policy-v7",
+      reason: `${name} is allowed by ${String(scope.policyRevisionId)}`,
+    }),
   },
 });
 const controller = new AbortController();
@@ -1202,11 +1226,17 @@ incompatible changes require explicit migration notes.
   text; `useLabel` is null. The CLI adds its existing tool labels and formatting,
   excludes runtime-only lifecycle events, and preserves its original event shapes.
 - Supply a `ToolRegistry` or another `AgentToolExecutor`. The context implements
-  the explicit `AgentContextStore` contract; `ConversationManager` satisfies it. The runtime filters
-  schemas and denies execution outside `policy.allowedTools()` on each iteration.
-  Execution/approval callbacks, workspace access and process isolation belong to
-  the supplied executor. Thrown executor errors become failed tool results;
-  cancellation interrupts the turn. The runtime itself provides no sandbox.
+  the explicit `AgentContextStore` contract; `ConversationManager` satisfies it.
+  Prefer `policy.resolveToolScope()` to select an allowlist plus immutable policy
+  and scope revision IDs for each iteration; the legacy `allowedTools()` callback
+  remains supported. Requests, prompt plans, policy decisions, and tool lifecycle
+  trace records reference the selected revisions. `integrations.authorizeTool`
+  receives detached arguments and that exact scope snapshot immediately before
+  executor dispatch. It returns a typed allow/deny decision with actor, rule,
+  reason, and optional metadata; exceptions fail closed. Execution callbacks,
+  workspace access, approval UI, and process isolation belong to the application.
+  Thrown executor errors become failed tool results; cancellation interrupts the
+  turn. The runtime itself provides no sandbox.
 - Context-length recovery retains the existing levels 0–3 and bounded synchronous
   shrink attempts. `integrations.shrinkContext` can provide summarization; no
   summarizer or provider configuration is loaded implicitly. Repeated tool loops

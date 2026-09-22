@@ -1,12 +1,17 @@
 import { closeClientBestEffort } from "./cleanup.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ErrorCode,
+  McpError,
+  type Tool as McpSdkTool,
+} from "@modelcontextprotocol/sdk/types.js";
 import { isMcpServerEnabled, validateMcpConfig } from "./validation.js";
 import { buildMcpToolName, normalizeMcpNameSegment } from "./toolName.js";
 import type { McpServerRuntime } from "./internalTypes.js";
 import type {
   McpToolDescriptor,
+  McpCallOutcome,
   McpToolResult,
   McpConnectionOptions,
   McpConfigFile,
@@ -38,6 +43,47 @@ function createTimeoutError(message: string): Error {
   const error = new Error(message);
   error.name = "TimeoutError";
   return error;
+}
+
+type McpFailureOutcome = Pick<
+  McpCallOutcome,
+  "classification" | "completion" | "sideEffect" | "protocolErrorCode"
+>;
+
+function classifyMcpCallError(error: unknown): McpFailureOutcome {
+  if (!(error instanceof McpError)) {
+    return {
+      classification: "transport_error",
+      completion: "unknown",
+      sideEffect: "unknown",
+    };
+  }
+  if (error.code === ErrorCode.RequestTimeout) {
+    return {
+      classification: "timed_out",
+      completion: "unknown",
+      sideEffect: "unknown",
+      protocolErrorCode: error.code,
+    };
+  }
+  if (error.code === ErrorCode.ConnectionClosed) {
+    return {
+      classification: "transport_error",
+      completion: "unknown",
+      sideEffect: "unknown",
+      protocolErrorCode: error.code,
+    };
+  }
+  const rejectedBeforeExecution = [
+    ErrorCode.ParseError,
+    ErrorCode.MethodNotFound,
+  ].includes(error.code);
+  return {
+    classification: "remote_error",
+    completion: rejectedBeforeExecution ? "not_started" : "unknown",
+    sideEffect: rejectedBeforeExecution ? "none" : "unknown",
+    protocolErrorCode: error.code,
+  };
 }
 
 function withTimeout<T>(
@@ -490,6 +536,7 @@ export class McpConnectionManager {
       };
     }
 
+    const startedAt = performance.now();
     try {
       const result = await runtime.client.callTool(
         {
@@ -500,11 +547,26 @@ export class McpConnectionManager {
         { timeout: this.callTimeoutMs },
       );
 
-      return this.toMcpToolResult(toolName, result);
+      return this.toMcpToolResult(
+        toolName,
+        serverName,
+        remoteToolName,
+        performance.now() - startedAt,
+        result,
+      );
     } catch (error) {
+      const failure = classifyMcpCallError(error);
       return {
         status: "error",
         content: formatToolCallError(toolName, toErrorMessage(error)),
+        outcome: {
+          kind: "mcp_call",
+          ...failure,
+          serverName,
+          remoteToolName,
+          timeoutMs: this.callTimeoutMs,
+          durationMs: performance.now() - startedAt,
+        },
       };
     }
   }
@@ -522,9 +584,24 @@ export class McpConnectionManager {
 
   private toMcpToolResult(
     toolName: string,
+    serverName: string,
+    remoteToolName: string,
+    durationMs: number,
     result: Awaited<ReturnType<Client["callTool"]>>,
   ): McpToolResult {
     const content = formatCallToolResult(result);
+    const outcome = {
+      kind: "mcp_call" as const,
+      classification: result.isError
+        ? ("remote_error" as const)
+        : ("succeeded" as const),
+      serverName,
+      remoteToolName,
+      timeoutMs: this.callTimeoutMs,
+      durationMs,
+      completion: "confirmed" as const,
+      sideEffect: "unknown" as const,
+    };
     return result.isError
       ? {
           status: "error",
@@ -532,10 +609,12 @@ export class McpConnectionManager {
             toolName,
             content || "The MCP server reported an error without details.",
           ),
+          outcome,
         }
       : {
           status: "success",
           content: content || "Tool completed successfully.",
+          outcome,
         };
   }
 

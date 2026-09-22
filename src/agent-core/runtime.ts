@@ -21,7 +21,11 @@ import type {
 import type { ToolExecutionResult } from "../tools/types.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { PromptSubmission } from "./input.js";
-import type { AgentRuntimeOptions } from "./types.js";
+import type {
+  AgentRuntimeOptions,
+  AgentToolPolicyDecision,
+  AgentToolScope,
+} from "./types.js";
 import type {
   AgentVisibilityEvent,
   AgentEventOptions,
@@ -67,6 +71,9 @@ export class AgentRuntime {
   private currentTurnOperationId: string | undefined;
   private currentTurnId: string | undefined;
   private currentPromptRevisionId: string | undefined;
+  private currentPolicyRevisionId: string | undefined;
+  private currentToolScopeRevisionId: string | undefined;
+  private currentToolScope: AgentToolScope | undefined;
   private readonly toolOperationIds = new Map<string, string>();
   constructor(private readonly dependencies: AgentRuntimeOptions) {}
   private get provider() {
@@ -80,6 +87,34 @@ export class AgentRuntime {
   }
   private get runtimeConfig() {
     return this.dependencies.policy;
+  }
+  private selectToolScope(iteration: number): ReadonlySet<string> | undefined {
+    const scope: AgentToolScope =
+      this.dependencies.policy.resolveToolScope?.() ?? {
+        allowedTools: this.dependencies.policy.allowedTools?.(),
+      };
+    this.currentPolicyRevisionId = scope.policyRevisionId;
+    this.currentToolScopeRevisionId = scope.toolScopeRevisionId;
+    this.currentToolScope = scope;
+    this.dependencies.trace?.record({
+      component: "policy",
+      type: "tool_scope_selected",
+      identity: {
+        operationId: randomUUID(),
+        parentOperationId: this.currentTurnOperationId,
+        turnId: this.currentTurnId,
+        policyRevisionId: scope.policyRevisionId,
+        toolScopeRevisionId: scope.toolScopeRevisionId,
+      },
+      payload: {
+        iteration,
+        allowedTools: scope.allowedTools
+          ? [...scope.allowedTools].sort()
+          : undefined,
+        metadata: scope.metadata,
+      },
+    });
+    return scope.allowedTools;
   }
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
     this.dependencies.onDiagnosticEvent?.(event);
@@ -106,14 +141,8 @@ export class AgentRuntime {
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
-    allowed?: ReadonlySet<string>,
     signal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    if (allowed && !allowed.has(name))
-      return {
-        status: "tool_disabled",
-        content: `Tool not available in the current mode or skill scope: ${name}`,
-      };
     try {
       return await this.dependencies.tools.executeWithStatus(name, args, {
         signal,
@@ -189,6 +218,9 @@ export class AgentRuntime {
       this.currentTurnOperationId = undefined;
       this.currentTurnId = undefined;
       this.currentPromptRevisionId = undefined;
+      this.currentPolicyRevisionId = undefined;
+      this.currentToolScopeRevisionId = undefined;
+      this.currentToolScope = undefined;
       this.toolOperationIds.clear();
     }
   }
@@ -287,6 +319,8 @@ export class AgentRuntime {
       parentOperationId,
       turnId: this.currentTurnId,
       promptRevisionId: this.currentPromptRevisionId,
+      policyRevisionId: this.currentPolicyRevisionId,
+      toolScopeRevisionId: this.currentToolScopeRevisionId,
     };
     recorder.record({
       component: "agent",
@@ -334,6 +368,8 @@ export class AgentRuntime {
           turnId: event.trace.turnId,
           configurationRevisionId: event.trace.configurationRevisionId,
           promptRevisionId: event.trace.promptRevisionId,
+          policyRevisionId: this.currentPolicyRevisionId,
+          toolScopeRevisionId: this.currentToolScopeRevisionId,
           attemptId: "attemptId" in event ? event.attemptId : undefined,
         },
         payload: event,
@@ -569,6 +605,8 @@ export class AgentRuntime {
         parentOperationId: this.currentTurnOperationId,
         turnId: this.currentTurnId,
         promptRevisionId: this.currentPromptRevisionId,
+        policyRevisionId: this.currentPolicyRevisionId,
+        toolScopeRevisionId: this.currentToolScopeRevisionId,
       },
       payload: {
         provider: this.provider.name,
@@ -755,7 +793,7 @@ export class AgentRuntime {
     let retryLevel = 0;
     let shrinkCount = 0;
 
-    const allowedTools = this.dependencies.policy.allowedTools?.();
+    const allowedTools = this.selectToolScope(iteration);
 
     while (retryLevel <= AgentRuntime.MAX_CONTEXT_RETRY_LEVEL) {
       const plan = this.buildPlan(
@@ -960,23 +998,138 @@ export class AgentRuntime {
 
   private async runToolWithAbort(
     toolName: string,
+    toolCallId: string,
     args: Record<string, unknown> | undefined,
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
     this.throwIfAbortCancelled(abortSignal);
+    const executionArgs = args ?? {};
+    const denied = await this.authorizeToolExecution(
+      toolName,
+      toolCallId,
+      executionArgs,
+      allowedTools,
+      abortSignal,
+    );
+    this.throwIfAbortCancelled(abortSignal);
+    if (denied) return denied;
     // Local tools receive cooperative cancellation; integrations may still run.
     const execResult = await this.awaitWithAbortSignal(
-      this.executeToolWithStatus(
-        toolName,
-        args ?? {},
-        allowedTools,
-        abortSignal,
-      ),
+      this.executeToolWithStatus(toolName, executionArgs, abortSignal),
       abortSignal,
     );
     this.throwIfAbortCancelled(abortSignal);
     return execResult;
+  }
+
+  private recordToolPolicyDecision(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    decision: AgentToolPolicyDecision & {
+      readonly outcome?: "allowed" | "denied" | "error";
+    },
+  ): void {
+    this.dependencies.trace?.record({
+      component: "policy",
+      type: "tool_policy_decision",
+      identity: {
+        operationId: this.toolOperationIds.get(toolCallId),
+        parentOperationId: this.currentTurnOperationId,
+        toolCallId,
+        turnId: this.currentTurnId,
+        promptRevisionId: this.currentPromptRevisionId,
+        policyRevisionId: this.currentPolicyRevisionId,
+        toolScopeRevisionId: this.currentToolScopeRevisionId,
+      },
+      payload: {
+        toolName,
+        decision: decision.outcome ?? (decision.allowed ? "allowed" : "denied"),
+        actor: decision.actor,
+        rule: decision.rule,
+        reason: decision.reason,
+        reviewedArgumentKeys: Object.keys(args).sort(),
+        metadata: decision.metadata,
+      },
+    });
+  }
+
+  private async authorizeToolExecution(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    allowedTools: ReadonlySet<string> | undefined,
+    abortSignal?: AbortSignal,
+  ): Promise<ToolExecutionResult | undefined> {
+    const scopeAllowed = !allowedTools || allowedTools.has(toolName);
+    const scopeDecision: AgentToolPolicyDecision = {
+      allowed: scopeAllowed,
+      actor: "agent",
+      rule: "tool_scope",
+      reason: scopeAllowed
+        ? "Tool is available in the active scope"
+        : "Tool is not available in the current mode or skill scope",
+    };
+    this.recordToolPolicyDecision(toolName, toolCallId, args, scopeDecision);
+    if (!scopeAllowed) {
+      return {
+        status: "tool_disabled",
+        content: `Tool not available in the current mode or skill scope: ${toolName}`,
+      };
+    }
+
+    return await this.authorizeApplicationToolExecution(
+      toolName,
+      toolCallId,
+      args,
+      allowedTools,
+      abortSignal,
+    );
+  }
+
+  private async authorizeApplicationToolExecution(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    allowedTools: ReadonlySet<string> | undefined,
+    abortSignal?: AbortSignal,
+  ): Promise<ToolExecutionResult | undefined> {
+    const authorize = this.dependencies.integrations?.authorizeTool;
+    if (!authorize) return undefined;
+    try {
+      const decision = await this.awaitWithAbortSignal(
+        Promise.resolve(
+          authorize({
+            name: toolName,
+            args: structuredClone(args),
+            scope: this.currentToolScope ?? { allowedTools },
+            signal: abortSignal,
+          }),
+        ),
+        abortSignal,
+      );
+      this.recordToolPolicyDecision(toolName, toolCallId, args, decision);
+      if (decision.allowed) return undefined;
+      return {
+        status: "tool_disabled",
+        content: decision.reason ?? `Tool execution denied: ${toolName}`,
+      };
+    } catch (error) {
+      this.throwIfAbortCancelled(abortSignal);
+      const reason = error instanceof Error ? error.message : String(error);
+      this.recordToolPolicyDecision(toolName, toolCallId, args, {
+        allowed: false,
+        actor: "application",
+        rule: "authorization_callback",
+        reason,
+        outcome: "error",
+      });
+      return {
+        status: "tool_disabled",
+        content: `Tool policy evaluation failed: ${reason}`,
+      };
+    }
   }
 
   private async processToolCall(
@@ -1008,6 +1161,7 @@ export class AgentRuntime {
 
     const execResult = await this.runToolWithAbort(
       toolName,
+      toolCallId,
       args,
       allowedTools,
       options?.abortSignal,
@@ -1058,6 +1212,8 @@ export class AgentRuntime {
         toolCallId,
         turnId: this.currentTurnId,
         promptRevisionId: this.currentPromptRevisionId,
+        policyRevisionId: this.currentPolicyRevisionId,
+        toolScopeRevisionId: this.currentToolScopeRevisionId,
       },
       payload: {
         provider: this.provider.name,
@@ -1134,6 +1290,8 @@ export class AgentRuntime {
           toolCallId,
           turnId: this.currentTurnId,
           promptRevisionId: this.currentPromptRevisionId,
+          policyRevisionId: this.currentPolicyRevisionId,
+          toolScopeRevisionId: this.currentToolScopeRevisionId,
         },
         payload: {
           provider: this.provider.name,
@@ -1677,7 +1835,7 @@ export class AgentRuntime {
       while (continueLoop && iterationCount < maxIterations) {
         this.throwIfAbortCancelled(options?.abortSignal);
         iterationCount++;
-        const allowedTools = this.dependencies.policy.allowedTools?.();
+        const allowedTools = this.selectToolScope(iterationCount);
 
         const plan = this.buildPlan(
           extraUserInstruction,
