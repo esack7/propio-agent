@@ -396,6 +396,36 @@ describe("ContextManager", () => {
 
       assertToolCallAlignment(assistantMsg, toolMsg);
     });
+
+    it("merges incrementally committed results into one provider tool message", () => {
+      manager.beginUserTurn("Do two things");
+      manager.commitAssistantResponse("", [
+        { id: "tc-1", function: { name: "read", arguments: {} } },
+        { id: "tc-2", function: { name: "write", arguments: {} } },
+      ]);
+
+      manager.recordToolResults([toolResult("tc-1", "read", "contents")]);
+      manager.recordToolResults([toolResult("tc-2", "write", "ok")]);
+
+      const toolMessages = manager
+        .getSnapshot()
+        .filter((message) => message.role === "tool");
+      expect(toolMessages).toHaveLength(1);
+      expect(
+        toolMessages[0].toolResults?.map((result) => result.toolCallId),
+      ).toEqual(["tc-1", "tc-2"]);
+      const toolEntries = manager
+        .getConversationState()
+        .turns[0].entries.filter((entry) => entry.kind === "tool");
+      expect(toolEntries).toHaveLength(1);
+      if (toolEntries[0].kind === "tool") {
+        expect(
+          toolEntries[0].toolInvocations.map(
+            (invocation) => invocation.toolCallId,
+          ),
+        ).toEqual(["tc-1", "tc-2"]);
+      }
+    });
   });
 
   describe("removeLastUnresolvedAssistantMessage", () => {

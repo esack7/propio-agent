@@ -1,5 +1,7 @@
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
+import type { ToolExecutionResult } from "./types.js";
+import { createHash } from "node:crypto";
 import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
@@ -99,10 +101,10 @@ export class EditTool implements PresentedTool {
     throwFileOperationError(error, "edit");
   }
 
-  async execute(
+  async executeWithStatus(
     args: Record<string, unknown>,
     context: ToolExecutionContext = {},
-  ): Promise<string> {
+  ): Promise<ToolExecutionResult> {
     context.signal?.throwIfAborted();
     const rawPath = args.path;
     const oldString = toStringArg(args.old_string, "old_string");
@@ -134,11 +136,34 @@ export class EditTool implements PresentedTool {
 
       context.signal?.throwIfAborted();
       await writeFileAtomically(path, updated);
-      return replaceAll
-        ? `Edited file: ${rawPath} (${occurrences} replacements)`
-        : `Edited file: ${rawPath} (1 replacement)`;
+      return {
+        status: "success",
+        content: replaceAll
+          ? `Edited file: ${rawPath} (${occurrences} replacements)`
+          : `Edited file: ${rawPath} (1 replacement)`,
+        outcome: {
+          kind: "file_edit",
+          classification: "succeeded",
+          resolvedPath: path,
+          operation: "replace",
+          beforeHash: createContentHash(original),
+          afterHash: createContentHash(updated),
+          sideEffect: "completed",
+        },
+      };
     } catch (error) {
       this.classifyEditError(error, rawPath);
     }
   }
+
+  async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    return (await this.executeWithStatus(args, context)).content;
+  }
+}
+
+function createContentHash(content: string): string {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }

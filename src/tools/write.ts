@@ -1,5 +1,8 @@
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
+import type { ToolExecutionResult } from "./types.js";
+import { createHash } from "node:crypto";
+import * as fsPromises from "node:fs/promises";
 import { PresentedTool } from "./interface.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
@@ -50,23 +53,83 @@ export class WriteTool implements PresentedTool {
     };
   }
 
-  async execute(
+  async executeWithStatus(
     args: Record<string, unknown>,
     context: ToolExecutionContext = {},
-  ): Promise<string> {
+  ): Promise<ToolExecutionResult> {
     context.signal?.throwIfAborted();
     const rawPath = args.path;
     const content = toStringArg(args.content, "content");
     const path = (this.options.resolvePath ?? normalizeToolPath)(rawPath);
 
     try {
+      const existed = await fileExists(path);
+      const beforeHash = existed ? await hashFileContents(path) : undefined;
       context.signal?.throwIfAborted();
       await writeFileAtomically(path, content);
-      return `Wrote file: ${rawPath}`;
+      return {
+        status: "success",
+        content: `Wrote file: ${rawPath}`,
+        outcome: {
+          kind: "file_write",
+          classification: "succeeded",
+          resolvedPath: path,
+          operation: existed ? "replace" : "create",
+          beforeHash,
+          afterHash: createContentHash(content),
+          sideEffect: "completed",
+        },
+      };
     } catch (error) {
       const err = error as NodeJS.ErrnoException | Error;
       throwToolPathAccessError(err, rawPath);
       throw new Error(`Failed to write file: ${err.message || String(error)}`);
     }
   }
+
+  async execute(
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<string> {
+    return (await this.executeWithStatus(args, context)).content;
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await fsPromises.stat(path);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+async function hashFileContents(path: string): Promise<string | undefined> {
+  let handle: Awaited<ReturnType<typeof fsPromises.open>> | undefined;
+  try {
+    handle = await fsPromises.open(path, "r");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        buffer.length,
+        position,
+      );
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    return `sha256:${hash.digest("hex")}`;
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function createContentHash(content: string | Buffer): string {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }

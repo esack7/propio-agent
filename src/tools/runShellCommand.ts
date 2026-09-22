@@ -24,6 +24,10 @@ export interface RunShellCommandResult {
   exitCode: number;
   aborted?: boolean;
   maxBufferExceeded?: boolean;
+  timedOut?: boolean;
+  launchFailed?: boolean;
+  terminationSignal?: string;
+  durationMs: number;
 }
 
 interface ExecShellError {
@@ -42,6 +46,8 @@ interface SpawnCloseState {
   signalAborted: boolean;
   timedOut: boolean;
   maxBufferExceeded: boolean;
+  terminationSignal: string | null;
+  durationMs: number;
 }
 
 function mergeEnv(overrides?: Record<string, string>): NodeJS.ProcessEnv {
@@ -107,7 +113,10 @@ function resultWithMaxBufferFlag(
   return maxBufferExceeded ? { ...result, maxBufferExceeded: true } : result;
 }
 
-function execErrorToResult(execError: ExecShellError): RunShellCommandResult {
+function execErrorToResult(
+  execError: ExecShellError,
+  durationMs: number,
+): RunShellCommandResult {
   const exitCode = execError.killed
     ? -1
     : normalizeExecErrorCode(execError.code);
@@ -121,7 +130,15 @@ function execErrorToResult(execError: ExecShellError): RunShellCommandResult {
   }
 
   return resultWithMaxBufferFlag(
-    { stdout, stderr, exitCode },
+    {
+      stdout,
+      stderr,
+      exitCode,
+      durationMs,
+      ...(execError.killed === true && !maxBufferExceeded
+        ? { timedOut: true }
+        : {}),
+    },
     maxBufferExceeded,
   );
 }
@@ -129,44 +146,61 @@ function execErrorToResult(execError: ExecShellError): RunShellCommandResult {
 function spawnCloseStateToResult(
   state: SpawnCloseState,
 ): RunShellCommandResult {
-  const { stdout, stderr, maxBufferExceeded } = state;
+  const base = {
+    stdout: state.stdout,
+    stderr: state.stderr,
+    durationMs: state.durationMs,
+    ...(state.terminationSignal
+      ? { terminationSignal: state.terminationSignal }
+      : {}),
+  };
 
   if (state.aborted || state.signalAborted) {
     return resultWithMaxBufferFlag(
       {
-        stdout,
-        stderr: stderr || CANCEL_MESSAGE,
+        ...base,
+        stderr: state.stderr || CANCEL_MESSAGE,
         exitCode: -1,
         aborted: true,
       },
-      maxBufferExceeded,
+      state.maxBufferExceeded,
     );
   }
 
   if (state.timedOut) {
     return resultWithMaxBufferFlag(
       {
-        stdout,
-        stderr: stderr || TIMEOUT_MESSAGE,
+        ...base,
+        stderr: state.stderr || TIMEOUT_MESSAGE,
         exitCode: -1,
+        timedOut: true,
       },
-      maxBufferExceeded,
+      state.maxBufferExceeded,
     );
   }
 
-  if (maxBufferExceeded) {
+  if (state.maxBufferExceeded) {
     return {
-      stdout,
-      stderr: appendMaxBufferNotice(stderr),
+      ...base,
+      stderr: appendMaxBufferNotice(state.stderr),
       exitCode: -1,
       maxBufferExceeded: true,
     };
   }
 
   return {
-    stdout,
-    stderr,
+    ...base,
     exitCode: state.code ?? -1,
+  };
+}
+
+function resolveShellRuntimeOptions(options: RunShellCommandOptions) {
+  return {
+    startedAt: performance.now(),
+    cwd: options.cwd ?? process.cwd(),
+    env: mergeEnv(options.env),
+    maxBuffer: options.maxBuffer ?? 50 * 1024 * 2,
+    timeoutMs: options.timeoutMs,
   };
 }
 
@@ -174,10 +208,8 @@ function spawnCloseStateToResult(
 async function runWithExecFile(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
-  const cwd = options.cwd ?? process.cwd();
-  const env = mergeEnv(options.env);
-  const maxBuffer = options.maxBuffer ?? 50 * 1024 * 2;
-  const timeout = options.timeoutMs;
+  const { startedAt, cwd, env, maxBuffer, timeoutMs } =
+    resolveShellRuntimeOptions(options);
 
   try {
     const { stdout, stderr } = await execFileAsync(
@@ -186,7 +218,7 @@ async function runWithExecFile(
       {
         cwd,
         env,
-        timeout,
+        timeout: timeoutMs,
         maxBuffer,
       },
     );
@@ -195,10 +227,11 @@ async function runWithExecFile(
       stdout: String(stdout ?? ""),
       stderr: String(stderr ?? ""),
       exitCode: 0,
+      durationMs: performance.now() - startedAt,
     };
   } catch (error: unknown) {
     if (isExecShellError(error)) {
-      return execErrorToResult(error);
+      return execErrorToResult(error, performance.now() - startedAt);
     }
 
     throw new Error(`Unexpected error executing command: ${String(error)}`);
@@ -233,10 +266,8 @@ function createOutputCollector(maxBytes: number, exceeded: () => void) {
 async function runWithSpawn(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
-  const cwd = options.cwd ?? process.cwd();
-  const env = mergeEnv(options.env);
-  const maxBuffer = options.maxBuffer ?? 50 * 1024 * 2;
-  const timeoutMs = options.timeoutMs;
+  const { startedAt, cwd, env, maxBuffer, timeoutMs } =
+    resolveShellRuntimeOptions(options);
   const signal = options.abortSignal;
 
   return await new Promise<RunShellCommandResult>((resolve) => {
@@ -308,13 +339,15 @@ async function runWithSpawn(
             stderr: stderrOutput.finish() || String(error.message),
             exitCode: -1,
             aborted,
+            launchFailed: true,
+            durationMs: performance.now() - startedAt,
           },
           maxBufferExceeded,
         ),
       );
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, terminationSignal) => {
       const stdout = stdoutOutput.finish();
       const stderr = stderrOutput.finish();
       finish(
@@ -330,6 +363,8 @@ async function runWithSpawn(
           signalAborted: signal?.aborted ?? false,
           timedOut,
           maxBufferExceeded,
+          terminationSignal,
+          durationMs: performance.now() - startedAt,
         }),
       );
     });
@@ -340,7 +375,13 @@ export async function runShellCommand(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
   if (options.abortSignal?.aborted) {
-    return { stdout: "", stderr: CANCEL_MESSAGE, exitCode: -1, aborted: true };
+    return {
+      stdout: "",
+      stderr: CANCEL_MESSAGE,
+      exitCode: -1,
+      aborted: true,
+      durationMs: 0,
+    };
   }
   if (options.abortSignal) {
     return runWithSpawn(options);

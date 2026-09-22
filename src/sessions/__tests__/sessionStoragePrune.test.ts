@@ -37,6 +37,16 @@ describe("sessionStoragePrune", () => {
     return dir;
   }
 
+  function makeTraceJournal(sessionId: string, mtimeMs: number): string {
+    const dir = path.join(sessionsDir, "traces", sessionId);
+    fs.mkdirSync(dir, { recursive: true });
+    const journal = path.join(dir, "run-1.jsonl");
+    fs.writeFileSync(journal, "{}\n");
+    const past = new Date(mtimeMs);
+    fs.utimesSync(journal, past, past);
+    return journal;
+  }
+
   it("prunes stale unanchored artifact dirs past retention", () => {
     const staleMtime = Date.now() - retentionMs - 1000;
     const staleDir = makeStorageDir("artifacts", "stale-artifact", staleMtime);
@@ -146,6 +156,51 @@ describe("sessionStoragePrune", () => {
     pruneStaleSessionStorage(sessionsDir, retentionDays);
 
     expect(fs.existsSync(staleDir)).toBe(false);
+  });
+
+  it("prunes stale trace journals even for anchored sessions", () => {
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const journal = makeTraceJournal("anchored-trace", staleMtime);
+    writeIndexEntries([
+      {
+        sessionId: "snapshot-id",
+        runtimeSessionId: "anchored-trace",
+        snapshotFile: "anchored-trace.json",
+        savedAt: new Date().toISOString(),
+        providerName: "p",
+        modelKey: "m",
+        turnCount: 0,
+        hasRollingSummary: false,
+      },
+    ]);
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(journal)).toBe(false);
+    expect(fs.existsSync(path.dirname(journal))).toBe(false);
+  });
+
+  it("keeps fresh trace journals", () => {
+    const journal = makeTraceJournal("fresh-trace", Date.now());
+    writeIndexEntries([]);
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(journal)).toBe(true);
+  });
+
+  it("keeps trace journals for live sessions", () => {
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const journal = makeTraceJournal("active-trace", staleMtime);
+    writeIndexEntries([]);
+    fs.writeFileSync(
+      path.join(sessionsDir, "inprogress-active-trace.json"),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+    );
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(journal)).toBe(true);
   });
 
   it("listActiveInProgressSessionIds uses process.kill(pid, 0)", () => {

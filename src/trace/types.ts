@@ -1,0 +1,64 @@
+export interface TraceIdentity {
+  readonly sessionId: string;
+  readonly runId: string;
+  readonly turnId?: string;
+  readonly requestId?: string;
+  readonly attemptId?: string;
+  readonly operationId?: string;
+  readonly parentOperationId?: string;
+  readonly toolCallId?: string;
+  readonly configurationRevisionId?: string;
+  readonly promptRevisionId?: string;
+  readonly previousRunId?: string;
+}
+
+export interface TraceEventEnvelope<TPayload = unknown> {
+  readonly version: 1;
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly observedAt: string;
+  readonly monotonicNanoseconds: string;
+  readonly component: string;
+  readonly type: string;
+  readonly identity: TraceIdentity;
+  readonly payload: TPayload;
+}
+
+export interface TraceEventInput<TPayload = unknown> {
+  readonly component: string;
+  readonly type: string;
+  readonly identity?: Partial<TraceIdentity>;
+  readonly payload: TPayload;
+}
+
+export interface TraceRecordOptions {
+  /** Force the event through the configured durable-write barrier. */
+  readonly durable?: boolean;
+}
+
+export interface TraceSink {
+  record(event: TraceEventEnvelope, options?: TraceRecordOptions): void;
+}
+
+export interface AgentTraceRecorder {
+  readonly identity: TraceIdentity;
+  record(event: TraceEventInput, options?: TraceRecordOptions): void;
+}
+
+export interface TraceCaptureFailure {
+  readonly journalPath: string;
+  readonly operation: "open" | "write" | "flush" | "close";
+  readonly errorName: string;
+  readonly message: string;
+}
+
+export interface TraceReadWarning {
+  readonly type: "truncated_final_line" | "invalid_line";
+  readonly line: number;
+  readonly message: string;
+}
+
+export interface TraceReadResult {
+  readonly events: ReadonlyArray<TraceEventEnvelope>;
+  readonly warnings: ReadonlyArray<TraceReadWarning>;
+}

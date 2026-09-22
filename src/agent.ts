@@ -12,10 +12,12 @@ import {
   type ProviderModelSelection,
   resolveProvider,
   resolveModelKey,
+  withProviderTracing,
 } from "@propio-ai/providers";
 import * as fs from "fs";
 import * as os from "os";
 import { randomUUID } from "crypto";
+import { getPackageVersion } from "./packageVersion.js";
 import { loadRuntimeConfig, RuntimeConfig } from "./config/runtimeConfig.js";
 import { loadProvidersConfig } from "./config/providersConfig.js";
 import { ToolRegistry } from "./tools/registry.js";
@@ -77,6 +79,7 @@ import {
   resolveScratchpadDir,
 } from "./scratchpad/scratchpad.js";
 import { isSafeSessionId } from "./sessions/sessionId.js";
+import type { AgentTraceRecorder, TraceIdentity } from "./trace/index.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -120,6 +123,24 @@ import {
 } from "./modes/types.js";
 
 export type { AgentMode, AgentModeState };
+
+export interface AgentTraceRun {
+  readonly recorder: AgentTraceRecorder;
+  close?(): void;
+}
+
+export type AgentTraceRunFactory = (identity: TraceIdentity) => AgentTraceRun;
+
+interface PendingConfigurationChange {
+  readonly revisionId: string;
+  readonly previousRevisionId: string;
+  readonly changedAt: string;
+  readonly cause: string;
+  readonly mode: AgentMode;
+  readonly provider: string;
+  readonly model: string;
+  readonly enabledTools: ReadonlyArray<string>;
+}
 
 type RuntimeToolResultEvent = Extract<
   RuntimeEvent,
@@ -201,6 +222,12 @@ export class Agent {
   private pendingExecuteSwitchReminder = false;
   private latestPlanModeAssistantDraft?: string;
   private planDraftSearchStartTurnIndex?: number;
+  private readonly createTraceRun?: AgentTraceRunFactory;
+  private activeTraceRun?: AgentTraceRun;
+  private configurationRevisionId = randomUUID();
+  private readonly pendingConfigurationChanges: PendingConfigurationChange[] =
+    [];
+  private lastTraceRunId?: string;
 
   constructor(
     options: {
@@ -218,6 +245,8 @@ export class Agent {
       diagnosticsEnabled?: boolean;
       onDiagnosticEvent?: (event: AgentDiagnosticEvent) => void;
       runtimeConfig?: RuntimeConfig;
+      /** Application-owned trace storage. Omit to keep the Agent free of trace I/O. */
+      createTraceRun?: AgentTraceRunFactory;
     } = {} as any,
   ) {
     if (!options.providersConfig) {
@@ -240,6 +269,7 @@ export class Agent {
       homeDir: options.homeDir ?? os.homedir(),
     };
     this.configuredSessionsDir = options.sessionsDir;
+    this.createTraceRun = options.createTraceRun;
 
     this.sessionId = randomUUID();
     this.runtimeConfig = options.runtimeConfig ?? loadRuntimeConfig();
@@ -302,15 +332,17 @@ export class Agent {
     const resolvedProvider = resolveProvider(config, providerName);
     const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
     this.resolvedProviderConfig = resolvedProvider;
-    this.provider = createProvider(
-      resolvedProvider,
-      resolvedModelKey,
-      this.diagnosticsEnabled ? this.forwardProviderDiagnostic : undefined,
-      this.diagnosticsEnabled,
-      {
-        maxRetries: this.runtimeConfig.maxRetries,
-        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
-      },
+    this.provider = withProviderTracing(
+      createProvider(
+        resolvedProvider,
+        resolvedModelKey,
+        this.diagnosticsEnabled ? this.forwardProviderDiagnostic : undefined,
+        this.diagnosticsEnabled,
+        {
+          maxRetries: this.runtimeConfig.maxRetries,
+          consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+        },
+      ),
     );
     this.model = resolvedModelKey;
   }
@@ -330,6 +362,8 @@ export class Agent {
   }
 
   async close(): Promise<void> {
+    this.activeTraceRun?.close?.();
+    this.activeTraceRun = undefined;
     await this.mcpManager.close();
   }
 
@@ -453,20 +487,163 @@ export class Agent {
       providerName,
     );
     const resolvedModelKey = resolveModelKey(resolvedProvider, modelKey);
-    const newProvider = createProvider(
-      resolvedProvider,
-      resolvedModelKey,
-      this.diagnosticsEnabled ? this.forwardProviderDiagnostic : undefined,
-      this.diagnosticsEnabled,
-      {
-        maxRetries: this.runtimeConfig.maxRetries,
-        consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
-      },
+    const newProvider = withProviderTracing(
+      createProvider(
+        resolvedProvider,
+        resolvedModelKey,
+        this.diagnosticsEnabled ? this.forwardProviderDiagnostic : undefined,
+        this.diagnosticsEnabled,
+        {
+          maxRetries: this.runtimeConfig.maxRetries,
+          consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
+        },
+      ),
     );
 
     this.resolvedProviderConfig = resolvedProvider;
     this.provider = newProvider;
     this.model = resolvedModelKey;
+    this.recordConfigurationChange("provider_or_model_changed");
+  }
+
+  private recordConfigurationChange(cause: string): void {
+    const previousRevisionId = this.configurationRevisionId;
+    this.configurationRevisionId = randomUUID();
+    const change: PendingConfigurationChange = {
+      revisionId: this.configurationRevisionId,
+      previousRevisionId,
+      changedAt: new Date().toISOString(),
+      cause,
+      mode: this.modeState.mode,
+      provider: this.provider.name,
+      model: this.model,
+      enabledTools: this.getTools().map((tool) => tool.function.name),
+    };
+    if (!this.activeTraceRun) {
+      if (this.createTraceRun) this.pendingConfigurationChanges.push(change);
+      return;
+    }
+    this.recordConfigurationChangeEvent(change);
+  }
+
+  private recordConfigurationChangeEvent(
+    change: PendingConfigurationChange,
+  ): void {
+    this.activeTraceRun?.recorder.record({
+      component: "configuration",
+      type: "configuration_revision_changed",
+      identity: { configurationRevisionId: change.revisionId },
+      payload: {
+        previousRevisionId: change.previousRevisionId,
+        changedAt: change.changedAt,
+        cause: change.cause,
+        mode: change.mode,
+        provider: change.provider,
+        model: change.model,
+        enabledTools: change.enabledTools,
+      },
+    });
+  }
+
+  private flushPendingConfigurationChanges(): void {
+    while (this.activeTraceRun && this.pendingConfigurationChanges.length > 0) {
+      const change = this.pendingConfigurationChanges[0];
+      this.recordConfigurationChangeEvent(change);
+      this.pendingConfigurationChanges.shift();
+    }
+  }
+
+  private createRuntimeTraceRecorder(): AgentTraceRecorder | undefined {
+    const recorder = this.activeTraceRun?.recorder;
+    if (!recorder) return undefined;
+    const agent = this;
+    return {
+      get identity() {
+        return {
+          ...recorder.identity,
+          configurationRevisionId: agent.configurationRevisionId,
+        };
+      },
+      record(event, options) {
+        recorder.record(
+          {
+            ...event,
+            identity: {
+              configurationRevisionId: agent.configurationRevisionId,
+              ...event.identity,
+            },
+          },
+          options,
+        );
+      },
+    };
+  }
+
+  private tryStartTraceRun(runId: string): AgentTraceRun | undefined {
+    let traceRun: AgentTraceRun | undefined;
+    try {
+      traceRun = this.createTraceRun?.({
+        sessionId: this.sessionId,
+        runId,
+        configurationRevisionId: this.configurationRevisionId,
+        previousRunId: this.lastTraceRunId,
+      });
+      this.activeTraceRun = traceRun;
+      traceRun?.recorder.record(
+        {
+          component: "cli",
+          type: "run_started",
+          payload: {
+            provider: this.provider.name,
+            model: this.model,
+            previousRunId: this.lastTraceRunId,
+            configuration: this.buildRedactedConfigurationSnapshot(),
+          },
+        },
+        { durable: true },
+      );
+      this.flushPendingConfigurationChanges();
+      return traceRun;
+    } catch {
+      if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
+      this.closeTraceRun(traceRun);
+      return undefined;
+    }
+  }
+
+  private closeTraceRun(traceRun: AgentTraceRun | undefined): void {
+    try {
+      traceRun?.close?.();
+    } catch {
+      // Trace capture is observational and must not affect the agent turn.
+    }
+  }
+
+  private buildRedactedConfigurationSnapshot() {
+    const provider = this.resolvedProviderConfig as ProviderConfig & {
+      apiKey?: string;
+    };
+    return {
+      revisionId: this.configurationRevisionId,
+      packageVersion: getPackageVersion(),
+      provider: {
+        name: provider.name,
+        type: provider.type,
+        model: this.model,
+        apiKey: {
+          present: Boolean(provider.apiKey),
+          source: provider.apiKey ? "settings_file" : "environment_or_absent",
+        },
+      },
+      mode: this.modeState.mode,
+      enabledTools: this.getTools().map((tool) => tool.function.name),
+      limits: {
+        maxIterations: this.runtimeConfig.maxIterations,
+        maxRetries: this.runtimeConfig.maxRetries,
+        streamIdleTimeoutMs: this.runtimeConfig.streamIdleTimeoutMs,
+        bashDefaultTimeoutMs: this.runtimeConfig.bashDefaultTimeoutMs,
+      },
+    };
   }
 
   private getSkillRegistry(): SkillRegistry {
@@ -1090,6 +1267,7 @@ export class Agent {
 
   private activeTurn = false;
 
+  // fallow-ignore-next-line complexity
   async streamChat(
     submission: PromptSubmission,
     onToken: (token: string) => void,
@@ -1101,8 +1279,11 @@ export class Agent {
     this.sessionsDir = null;
     this.turnScratchpadDir = undefined;
     const { onToolStart, onToolEnd, ...runtimeOptions } = options ?? {};
-    const runtime = this.createRuntime(onToolStart);
+    const runId = randomUUID();
+    let traceRun: AgentTraceRun | undefined;
     try {
+      traceRun = this.tryStartTraceRun(runId);
+      const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
         onEvent: (event) => {
@@ -1120,6 +1301,17 @@ export class Agent {
     } catch (error) {
       throw this.handleProviderError(error);
     } finally {
+      try {
+        traceRun?.recorder.record(
+          { component: "cli", type: "run_closed", payload: {} },
+          { durable: true },
+        );
+      } catch {
+        // Trace capture is observational and must not wedge the agent.
+      }
+      this.closeTraceRun(traceRun);
+      if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
+      if (traceRun) this.lastTraceRunId = runId;
       this.activeTurn = false;
     }
   }
@@ -1149,6 +1341,7 @@ export class Agent {
         if (event.type === "tool_execution_started")
           onToolStart?.(event.toolName);
       },
+      trace: this.createRuntimeTraceRecorder(),
       integrations: {
         prepareTurn: (submission) => this.attachFileMentions(submission.text),
         startTurn: () => this.startLocalTurn(),
@@ -1495,6 +1688,7 @@ export class Agent {
       ...(approvedPlan ?? {}),
       previousMode,
     };
+    this.recordConfigurationChange("mode_changed");
 
     this.updatePlanDraftTrackingForModeChange(previousMode, mode);
 
@@ -1532,6 +1726,7 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      lastTraceRunId: this.lastTraceRunId,
       agentMode: this.modeState.mode,
       ...(approvedPlan ?? {}),
       ...(this.modeState.mode === "plan" &&
@@ -1580,6 +1775,8 @@ export class Agent {
         model: this.model,
       });
     }
+
+    this.lastTraceRunId = persisted.metadata.lastTraceRunId;
 
     this.contextManager.importState(state);
 
@@ -1659,22 +1856,27 @@ export class Agent {
 
   enableTool(name: string): void {
     this.toolRegistry.enable(name);
+    this.recordConfigurationChange(`tool_enabled:${name}`);
   }
 
   disableTool(name: string): void {
     this.toolRegistry.disable(name);
+    this.recordConfigurationChange(`tool_disabled:${name}`);
   }
 
   enableAllTools(): void {
     this.toolRegistry.enableAll();
+    this.recordConfigurationChange("all_tools_enabled");
   }
 
   disableAllTools(): void {
     this.toolRegistry.disableAll();
+    this.recordConfigurationChange("all_tools_disabled");
   }
 
   resetToolsToManifestDefaults(): void {
     this.toolRegistry.resetToManifestDefaults();
+    this.recordConfigurationChange("tool_defaults_restored");
   }
 
   getToolNames(): string[] {

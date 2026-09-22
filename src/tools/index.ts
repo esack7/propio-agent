@@ -8,7 +8,12 @@ export type {
   ToolRegistryOptions,
 } from "./execution.js";
 export type { ToolSummary } from "./executionRegistry.js";
-export type { ToolExecutionResult, ToolExecutionStatus } from "./types.js";
+export type {
+  CommandOutcomeClassification,
+  ToolExecutionOutcome,
+  ToolExecutionResult,
+  ToolExecutionStatus,
+} from "./types.js";
 export type { LocalToolOptions, LocalToolDefinition } from "./localTools.js";
 export type {
   ShellExecutor,

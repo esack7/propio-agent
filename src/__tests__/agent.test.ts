@@ -989,6 +989,144 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(typeof response).toBe("string");
       expect(tokens.length).toBeGreaterThan(0);
     });
+
+    it("continues without tracing when trace creation fails", async () => {
+      const mockProvider = new MockProvider();
+      const createTraceRun = jest
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error("trace setup failed");
+        })
+        .mockImplementation((identity) => ({
+          recorder: { identity, record: jest.fn() },
+          close: jest.fn(),
+        }));
+      const agent = createTestAgent(mockProvider, { createTraceRun });
+
+      await expect(
+        agent.streamChat(userSubmission("First"), () => {}),
+      ).resolves.toBe("Mock response");
+      await expect(
+        agent.streamChat(userSubmission("Second"), () => {}),
+      ).resolves.toBe("Mock response");
+      expect(mockProvider.streamChatCalls).toHaveLength(2);
+    });
+
+    it("closes a partial trace and continues when its initial record fails", async () => {
+      const mockProvider = new MockProvider();
+      const close = jest.fn();
+      const agent = createTestAgent(mockProvider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: () => {
+              throw new Error("trace record failed");
+            },
+          },
+          close,
+        }),
+      });
+
+      await expect(
+        agent.streamChat(userSubmission("Keep going"), () => {}),
+      ).resolves.toBe("Mock response");
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(mockProvider.streamChatCalls[0].trace).toBeUndefined();
+    });
+
+    it("records between-turn configuration changes in the next trace run", async () => {
+      const mockProvider = new MockProvider();
+      const traceEvents: Array<{
+        type: string;
+        identity: Record<string, unknown>;
+        payload: unknown;
+      }> = [];
+      const agent = createTestAgent(mockProvider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({
+                ...event,
+                identity: { ...identity, ...event.identity },
+              }),
+          },
+        }),
+      });
+      agent.setAgentMode("plan");
+
+      await agent.streamChat(userSubmission("Trace this"), () => {});
+
+      const change = traceEvents.find(
+        (event) => event.type === "configuration_revision_changed",
+      );
+      expect(change).toMatchObject({
+        payload: expect.objectContaining({
+          cause: "mode_changed",
+          mode: "plan",
+          previousRevisionId: expect.any(String),
+        }),
+      });
+      expect(
+        mockProvider.streamChatCalls[0].trace?.configurationRevisionId,
+      ).toBe(change?.identity.configurationRevisionId);
+    });
+
+    it("propagates an in-run configuration revision to later requests", async () => {
+      const requests: ChatRequest[] = [];
+      let agent!: Agent;
+      const provider: LLMProvider = {
+        name: "revision-provider",
+        getCapabilities: () => ({ contextWindowTokens: 128000 }),
+        async *streamChat(request): AsyncIterable<ChatStreamEvent> {
+          requests.push(request);
+          if (requests.length === 1) {
+            agent.disableTool("write");
+            yield {
+              type: "tool_calls",
+              toolCalls: [
+                {
+                  id: "call-lookup-1",
+                  function: { name: "lookup", arguments: {} },
+                },
+              ],
+            };
+            return;
+          }
+          yield { type: "assistant_text", delta: "Done" };
+          yield { type: "terminal", stopReason: "end_turn" };
+        },
+      };
+      const traceEvents: Array<{
+        type: string;
+        identity: Record<string, unknown>;
+      }> = [];
+      agent = createTestAgent(provider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({
+                type: event.type,
+                identity: { ...identity, ...event.identity },
+              }),
+          },
+        }),
+      });
+      agent.addTool(
+        createMockTool({ name: "lookup", execute: async () => "found" }),
+      );
+
+      await agent.streamChat(userSubmission("Look it up"), () => {});
+
+      const change = traceEvents.find(
+        (event) => event.type === "configuration_revision_changed",
+      );
+      expect(requests).toHaveLength(2);
+      expect(requests[1].trace?.configurationRevisionId).toBe(
+        change?.identity.configurationRevisionId,
+      );
+    });
   });
 
   describe("Backward Compatibility", () => {

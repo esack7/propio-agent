@@ -60,7 +60,8 @@ describe("runShellCommand", () => {
 
     const result = await runShellCommand({ command: "echo ok" });
 
-    expect(result).toEqual({ stdout: "ok", stderr: "", exitCode: 0 });
+    expect(result).toMatchObject({ stdout: "ok", stderr: "", exitCode: 0 });
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -77,12 +78,14 @@ describe("runShellCommand", () => {
       stdout: "partial",
       stderr: "Command timed out and was killed",
       exitCode: -1,
+      timedOut: true,
     });
   });
 
   it("maps string execFile error codes to -1 with a useful stderr message", async () => {
     mockExecFileAsync.mockRejectedValue({
       code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      killed: true,
       stdout: "partial",
       stderr: "",
       message: "stdout maxBuffer length exceeded",
@@ -95,6 +98,7 @@ describe("runShellCommand", () => {
 
     expect(result.exitCode).toBe(-1);
     expect(result.maxBufferExceeded).toBe(true);
+    expect(result.timedOut).toBeUndefined();
     expect(result.stdout).toBe("partial");
     expect(result.stderr).toContain(MAXBUFFER_TRUNCATION_MESSAGE);
     expect(normalizeExecErrorCode("ERR_CHILD_PROCESS_STDIO_MAXBUFFER")).toBe(
@@ -115,7 +119,7 @@ describe("runShellCommand", () => {
     child.stdout.emit("data", Buffer.from("abcdefgh"));
     child.emit("close", null);
 
-    await expect(resultPromise).resolves.toEqual({
+    await expect(resultPromise).resolves.toMatchObject({
       stdout: "abcd",
       stderr: MAXBUFFER_TRUNCATION_MESSAGE,
       exitCode: -1,

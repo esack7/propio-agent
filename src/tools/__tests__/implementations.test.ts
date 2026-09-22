@@ -16,6 +16,7 @@ jest.unstable_mockModule("fs/promises", () => ({
   rm: jest.fn(),
   rename: jest.fn(),
   stat: jest.fn(),
+  open: jest.fn(),
 }));
 
 jest.unstable_mockModule("fast-glob", () => ({
@@ -51,6 +52,26 @@ function mockFileStat(isDirectory: boolean): void {
 
 function mockFileContents(contents: string): void {
   jest.mocked(mockFsPromises.readFile).mockResolvedValue(Buffer.from(contents));
+}
+
+function mockOpenFileContents(contents: string): void {
+  const content = Buffer.from(contents);
+  jest.mocked(mockFsPromises.open).mockResolvedValue({
+    read: jest.fn(
+      async (
+        buffer: Buffer,
+        offset: number,
+        length: number,
+        position: number,
+      ) => {
+        if (position >= content.length) return { bytesRead: 0 };
+        const bytesRead = Math.min(length, content.length - position);
+        content.copy(buffer, offset, position, position + bytesRead);
+        return { bytesRead };
+      },
+    ),
+    close: jest.fn(async () => {}),
+  });
 }
 
 function mockDirectoryEntries(entries: unknown[]): void {
@@ -188,6 +209,30 @@ describe("Tool Implementations", () => {
       );
     });
 
+    it("reports resolved path and content hashes for a completed replacement", async () => {
+      const tool = new WriteTool();
+      mockFileStat(false);
+      mockOpenFileContents("old content");
+      jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
+      jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
+
+      const result = await tool.executeWithStatus({
+        path: "/test/file.txt",
+        content: "new content",
+      });
+
+      expect(result.status).toBe("success");
+      expect(result.outcome).toMatchObject({
+        kind: "file_write",
+        classification: "succeeded",
+        operation: "replace",
+        resolvedPath: "/test/file.txt",
+        sideEffect: "completed",
+        beforeHash: expect.stringMatching(/^sha256:/),
+        afterHash: expect.stringMatching(/^sha256:/),
+      });
+    });
+
     it("propagates permission errors", async () => {
       const tool = new WriteTool();
       const error = new Error("EPERM") as NodeJS.ErrnoException;
@@ -232,6 +277,30 @@ describe("Tool Implementations", () => {
       });
 
       expect(result).toBe("Edited file: /test/file.txt (1 replacement)");
+    });
+
+    it("reports before and after hashes for a completed edit", async () => {
+      const tool = new EditTool();
+      mockFileStat(false);
+      mockFileContents("hello world");
+      jest.mocked(mockFsPromises.writeFile).mockResolvedValue(undefined);
+      jest.mocked(mockFsPromises.rename).mockResolvedValue(undefined);
+
+      const result = await tool.executeWithStatus({
+        path: "/test/file.txt",
+        old_string: "world",
+        new_string: "agent",
+      });
+
+      expect(result.outcome).toMatchObject({
+        kind: "file_edit",
+        classification: "succeeded",
+        operation: "replace",
+        resolvedPath: "/test/file.txt",
+        sideEffect: "completed",
+        beforeHash: expect.stringMatching(/^sha256:/),
+        afterHash: expect.stringMatching(/^sha256:/),
+      });
     });
 
     it("fails when the match is missing", async () => {
@@ -312,6 +381,27 @@ describe("Tool Implementations", () => {
       expect(parsed.stderr).toBe("problem");
     });
 
+    it("keeps legacy success status while classifying a nonzero command exit", async () => {
+      const tool = new BashTool();
+      const error: any = new Error("failed");
+      error.code = 7;
+      error.stderr = "problem";
+      mockExecFileAsync.mockRejectedValue(error);
+
+      const result = await tool.executeWithStatus({ command: "exit 7" });
+
+      expect(result.status).toBe("success");
+      expect(result.outcome).toMatchObject({
+        kind: "command",
+        classification: "nonzero_exit",
+        exitCode: 7,
+        cwd: "/test",
+        environmentKeys: [],
+        outputDiscarded: false,
+        sideEffect: "unknown",
+      });
+    });
+
     it("handles timeouts", async () => {
       const tool = new BashTool();
       const error: any = new Error("timed out");
@@ -348,6 +438,39 @@ describe("Tool Implementations", () => {
           }),
         }),
       );
+    });
+
+    it("treats a null env override as empty after the command completes", async () => {
+      const tool = new BashTool();
+      mockExecFileAsync.mockResolvedValue({ stdout: "done", stderr: "" });
+
+      const result = await tool.executeWithStatus({
+        command: "echo done",
+        env: null,
+      });
+
+      expect(result.status).toBe("success");
+      expect(result.outcome).toMatchObject({
+        classification: "succeeded",
+        environmentKeys: [],
+      });
+      expect(JSON.parse(result.content).stdout).toBe("done");
+    });
+
+    it("classifies maxBuffer termination as an output limit", async () => {
+      const tool = new BashTool();
+      const error: any = new Error("stdout maxBuffer length exceeded");
+      error.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+      error.killed = true;
+      error.stdout = "partial";
+      mockExecFileAsync.mockRejectedValue(error);
+
+      const result = await tool.executeWithStatus({ command: "yes" });
+
+      expect(result.outcome).toMatchObject({
+        classification: "output_limit",
+        outputDiscarded: true,
+      });
     });
 
     it("returns full output for large results (agent layer handles persistence)", async () => {

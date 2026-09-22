@@ -527,6 +527,10 @@ propio --debug-llm-file /tmp/propio-debug.log
 
 Session snapshots are stored under `~/.propio/sessions/` and are scoped by workspace, so different repositories keep separate histories automatically.
 
+Each CLI run also writes a standard-capture JSONL trace under the workspace-scoped session directory. Records use ordered per-run sequence numbers and causal session/run/turn/request/attempt/operation identities. Operation and turn completions cross a durable-write barrier. If capture fails, the CLI reports degraded tracing independently and does not replace or retry an already completed side effect. Standard capture records argument keys and bounded metadata rather than raw arguments/results, and applies credential redaction before persistence.
+
+The provisional `@propio-ai/agent/trace` entry point exposes explicit-path `JsonlTraceJournal`, `RunTraceRecorder`, tolerant journal reading, offline inspection, portable export, and bundle hash verification. Importing it performs no discovery or provider/tool execution. `inspectTraceJournal` retains valid records when the final JSONL line is truncated and marks unresolved operations unknown. `exportTraceJournal` writes a versioned manifest plus relative `events.jsonl`; `verifyTraceExport` rejects unsafe paths and reports missing files or hash mismatches.
+
 Meta continuation state stored in session snapshots may include plaintext assistant commentary. Protect saved sessions as conversation content.
 
 ### Pasting image file paths (chat)
@@ -916,6 +920,12 @@ checked again after approval. The four existing statuses remain unchanged:
 `success`, `tool_not_found`, `tool_disabled` (including policy denial), and `error`
 (including cancellation). Shell nonzero exit codes remain in the JSON content,
 matching CLI behavior; they do not by themselves change the registry status.
+The structured result now also carries an optional `outcome`: shell commands
+distinguish zero/nonzero exit, timeout, cancellation, launch failure, and output
+truncation while recording resolved cwd, effective timeout, duration, environment
+key names, and termination signal. Write/edit outcomes record resolved path,
+create/replace semantics, before/after SHA-256 hashes, and completed side-effect
+state. This metadata is additive; legacy `status` behavior is unchanged.
 
 Cancellation is cooperative. Pre-cancelled calls do not execute. Shell calls pass
 the signal to the executor; the Node adapter terminates the direct shell process.
@@ -950,6 +960,10 @@ resolution is not a sandbox: absolute paths, traversal and symlinks can access
 outside the workspace; shell commands can access whatever the host permits.
 Process-tree termination and cross-process filesystem coordination are not
 provided. Use application/OS isolation where required.
+
+Tool batches commit each completed result to conversation state before dispatching
+the next call. If a later call is cancelled or interrupted, earlier artifacts and
+tool associations remain available for recovery and are not replayed automatically.
 
 Run `npm run example:tools` after building for a standalone consumer that performs
 local read/write and adapts an integration without terminal rendering. Public

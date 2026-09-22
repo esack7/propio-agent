@@ -44,10 +44,14 @@ it.each(["stdout", "stderr"])(
 
 it("preserves the failure message for empty-stderr nonzero exits", async () => {
   const options = { command: "exit 3", cwd: process.cwd() };
-  expect(
-    await executeNodeShell({
-      ...options,
-      abortSignal: new AbortController().signal,
-    }),
-  ).toEqual(await executeNodeShell(options));
+  const cancellable = await executeNodeShell({
+    ...options,
+    abortSignal: new AbortController().signal,
+  });
+  const direct = await executeNodeShell(options);
+  const { durationMs: cancellableDuration, ...cancellableStable } = cancellable;
+  const { durationMs: directDuration, ...directStable } = direct;
+  expect(cancellableStable).toEqual(directStable);
+  expect(cancellableDuration).toBeGreaterThanOrEqual(0);
+  expect(directDuration).toBeGreaterThanOrEqual(0);
 });

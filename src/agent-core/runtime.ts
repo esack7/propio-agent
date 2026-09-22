@@ -6,6 +6,12 @@ import {
   type ProviderReasoningSummarySource,
   ProviderContextLengthError,
 } from "@propio-ai/providers";
+import type {
+  ChatRequest,
+  ProviderRequestPurpose,
+  ProviderTraceEvent,
+} from "@propio-ai/providers";
+import { randomUUID } from "node:crypto";
 import { measureMessages } from "../diagnostics.js";
 import type {
   ArtifactToolResult,
@@ -58,6 +64,10 @@ export class AgentRuntime {
   private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
   private turnStarted = false;
   private running = false;
+  private currentTurnOperationId: string | undefined;
+  private currentTurnId: string | undefined;
+  private currentPromptRevisionId: string | undefined;
+  private readonly toolOperationIds = new Map<string, string>();
   constructor(private readonly dependencies: AgentRuntimeOptions) {}
   private get provider() {
     return this.dependencies.provider;
@@ -150,6 +160,7 @@ export class AgentRuntime {
     this.throwIfAbortCancelled(options?.abortSignal);
     this.running = true;
     this.turnStarted = false;
+    this.currentTurnOperationId = randomUUID();
     try {
       this.emitVisibilityEvent(options, { type: "turn_started" });
       const result = await this.runTurn(
@@ -175,6 +186,10 @@ export class AgentRuntime {
       throw error;
     } finally {
       this.running = false;
+      this.currentTurnOperationId = undefined;
+      this.currentTurnId = undefined;
+      this.currentPromptRevisionId = undefined;
+      this.toolOperationIds.clear();
     }
   }
 
@@ -198,6 +213,137 @@ export class AgentRuntime {
     event: AgentVisibilityEvent,
   ): void {
     options?.onEvent?.(event);
+    this.recordLifecycleTrace(event);
+  }
+
+  private recordLifecycleTrace(event: AgentVisibilityEvent): void {
+    const trace = this.dependencies.trace;
+    if (!trace) return;
+    const identity = {
+      operationId: this.currentTurnOperationId,
+      turnId: this.currentTurnId,
+    };
+    switch (event.type) {
+      case "turn_started":
+        trace.record({
+          component: "agent",
+          type: event.type,
+          identity,
+          payload: {},
+        });
+        return;
+      case "turn_completed":
+        trace.record(
+          {
+            component: "agent",
+            type: event.type,
+            identity,
+            payload: { responseChars: event.result.length },
+          },
+          { durable: true },
+        );
+        return;
+      case "turn_cancelled":
+        trace.record(
+          { component: "agent", type: event.type, identity, payload: {} },
+          { durable: true },
+        );
+        return;
+      case "turn_failed":
+        trace.record(
+          {
+            component: "agent",
+            type: event.type,
+            identity,
+            payload: {
+              errorName:
+                event.error instanceof Error ? event.error.name : "Error",
+              message:
+                event.error instanceof Error
+                  ? event.error.message
+                  : String(event.error),
+            },
+          },
+          { durable: true },
+        );
+        return;
+      default:
+        return;
+    }
+  }
+
+  private tracedProviderRequest(
+    request: ChatRequest,
+    purpose: ProviderRequestPurpose,
+  ): ChatRequest {
+    const recorder = this.dependencies.trace;
+    if (!recorder) return request;
+    const requestId = randomUUID();
+    const operationId = randomUUID();
+    const parentOperationId = this.currentTurnOperationId;
+    const identity = {
+      requestId,
+      operationId,
+      parentOperationId,
+      turnId: this.currentTurnId,
+      promptRevisionId: this.currentPromptRevisionId,
+    };
+    recorder.record({
+      component: "agent",
+      type: "provider_request_dispatched",
+      identity,
+      payload: {
+        purpose,
+        provider: this.provider.name,
+        model: request.model,
+        messageCount: request.messages.length,
+        toolCount: request.tools?.length ?? 0,
+      },
+    });
+
+    const previousObserver = request.onTraceEvent;
+    return {
+      ...request,
+      trace: {
+        sessionId: recorder.identity.sessionId,
+        runId: recorder.identity.runId,
+        turnId: this.currentTurnId,
+        requestId,
+        operationId,
+        parentOperationId,
+        purpose,
+        configurationRevisionId: recorder.identity.configurationRevisionId,
+        promptRevisionId: this.currentPromptRevisionId,
+      },
+      onTraceEvent: (event) => {
+        previousObserver?.(event);
+        this.recordProviderTraceEvent(event);
+      },
+    };
+  }
+
+  private recordProviderTraceEvent(event: ProviderTraceEvent): void {
+    this.dependencies.trace?.record(
+      {
+        component: "provider",
+        type: event.type,
+        identity: {
+          requestId: event.trace.requestId,
+          operationId: event.trace.operationId,
+          parentOperationId: event.trace.parentOperationId,
+          turnId: event.trace.turnId,
+          configurationRevisionId: event.trace.configurationRevisionId,
+          promptRevisionId: event.trace.promptRevisionId,
+          attemptId: "attemptId" in event ? event.attemptId : undefined,
+        },
+        payload: event,
+      },
+      {
+        durable:
+          event.type === "provider_request_completed" ||
+          event.type === "provider_request_failed",
+      },
+    );
   }
 
   private throwIfAbortCancelled(abortSignal?: AbortSignal): void {
@@ -414,6 +560,29 @@ export class AgentRuntime {
     enabledTools: number,
     options: AgentEventOptions | undefined,
   ): void {
+    this.currentPromptRevisionId = randomUUID();
+    this.dependencies.trace?.record({
+      component: "context",
+      type: "prompt_plan_selected",
+      identity: {
+        operationId: randomUUID(),
+        parentOperationId: this.currentTurnOperationId,
+        turnId: this.currentTurnId,
+        promptRevisionId: this.currentPromptRevisionId,
+      },
+      payload: {
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        retryLevel: plan.retryLevel,
+        estimatedPromptTokens: plan.estimatedPromptTokens,
+        reservedOutputTokens: plan.reservedOutputTokens,
+        includedTurnIds: plan.includedTurnIds,
+        omittedTurnIds: plan.omittedTurnIds,
+        includedArtifactIds: plan.includedArtifactIds,
+        usedRollingSummary: plan.usedRollingSummary,
+      },
+    });
     this.emitPromptPlanDiagnostic(plan, iteration);
     if (options?.onEvent) {
       const contextWindowTokens = this.resolveContextWindowTokens();
@@ -523,13 +692,18 @@ export class AgentRuntime {
     const streamState = { fullResponse: "", chunkCount: 0 };
     this.emitStatus(options, "Streaming response", "response");
     for await (const event of this.withStreamIdleWatchdog(
-      this.provider.streamChat({
-        model: this.model,
-        messages: this.prepareMessagesForProvider(messages),
-        signal: abortSignal,
-        iteration,
-        requestReasoning: options?.requestReasoning,
-      }),
+      this.provider.streamChat(
+        this.tracedProviderRequest(
+          {
+            model: this.model,
+            messages: this.prepareMessagesForProvider(messages),
+            signal: abortSignal,
+            iteration,
+            requestReasoning: options?.requestReasoning,
+          },
+          "recovery",
+        ),
+      ),
       iteration,
       abortSignal,
     )) {
@@ -650,14 +824,19 @@ export class AgentRuntime {
     this.emitStatus(options, "Streaming response", "response");
 
     for await (const event of this.withStreamIdleWatchdog(
-      this.provider.streamChat({
-        model: this.model,
-        messages: this.prepareMessagesForProvider(messages),
-        tools: this.getMergedToolSchemas(allowedTools),
-        signal: options?.abortSignal,
-        iteration,
-        requestReasoning: options?.requestReasoning,
-      }),
+      this.provider.streamChat(
+        this.tracedProviderRequest(
+          {
+            model: this.model,
+            messages: this.prepareMessagesForProvider(messages),
+            tools: this.getMergedToolSchemas(allowedTools),
+            signal: options?.abortSignal,
+            iteration,
+            requestReasoning: options?.requestReasoning,
+          },
+          "answer",
+        ),
+      ),
       iteration,
       options?.abortSignal,
     )) {
@@ -762,8 +941,6 @@ export class AgentRuntime {
     toolExecutionEvents: Array<{ name: string; failed: boolean }>,
   ): Promise<void> {
     this.dependencies.integrations?.onToolBatch?.();
-    const artifactToolResults: ArtifactToolResult[] = [];
-
     for (const toolCall of toolCallsToExecute) {
       const raw = await this.processToolCall(
         toolCall,
@@ -773,12 +950,12 @@ export class AgentRuntime {
         onToken,
         toolExecutionEvents,
       );
-      artifactToolResults.push(
-        this.dependencies.integrations?.processToolResult?.(raw) ?? raw,
-      );
+      const completedResult =
+        this.dependencies.integrations?.processToolResult?.(raw) ?? raw;
+      // Commit each completed result before dispatching the next call. A later
+      // cancellation must not erase evidence from an earlier side effect.
+      this.contextManager.recordToolResults([completedResult]);
     }
-
-    this.contextManager.recordToolResults(artifactToolResults);
   }
 
   private async runToolWithAbort(
@@ -870,6 +1047,27 @@ export class AgentRuntime {
     iteration: number,
     options: AgentToolOptions | undefined,
   ): void {
+    const operationId = randomUUID();
+    this.toolOperationIds.set(toolCallId, operationId);
+    this.dependencies.trace?.record({
+      component: "tool",
+      type: "tool_execution_started",
+      identity: {
+        operationId,
+        parentOperationId: this.currentTurnOperationId,
+        toolCallId,
+        turnId: this.currentTurnId,
+        promptRevisionId: this.currentPromptRevisionId,
+      },
+      payload: {
+        provider: this.provider.name,
+        model: this.model,
+        iteration,
+        toolName,
+        argumentKeys: Object.keys(args).sort(),
+        argumentChars: serializedArgs.length,
+      },
+    });
     this.emitStatus(options, "Running tool", "tool");
     this.emitVisibilityEvent(options, {
       type: "tool_started",
@@ -925,6 +1123,32 @@ export class AgentRuntime {
       args,
       status: execResult.status,
     });
+    const operationId = this.toolOperationIds.get(toolCallId);
+    this.dependencies.trace?.record(
+      {
+        component: "tool",
+        type: failed ? "tool_execution_failed" : "tool_execution_completed",
+        identity: {
+          operationId,
+          parentOperationId: this.currentTurnOperationId,
+          toolCallId,
+          turnId: this.currentTurnId,
+          promptRevisionId: this.currentPromptRevisionId,
+        },
+        payload: {
+          provider: this.provider.name,
+          model: this.model,
+          iteration,
+          toolName,
+          status: execResult.status,
+          resultChars: result.length,
+          outcome: execResult.outcome,
+          outputPersistenceError: execResult.outputPersistenceError,
+        },
+      },
+      { durable: true },
+    );
+    this.toolOperationIds.delete(toolCallId);
     return failed;
   }
 
@@ -1421,6 +1645,8 @@ export class AgentRuntime {
 
     const userMessage = submission.text;
     this.contextManager.beginUserTurn(userMessage, submission.images);
+    const turns = this.contextManager.getConversationState().turns;
+    this.currentTurnId = turns[turns.length - 1]?.id;
     await this.dependencies.integrations?.prepareTurn?.(submission);
     this.emitStatus(options, "Preparing request", "request");
 
