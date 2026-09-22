@@ -780,9 +780,9 @@ export class Agent {
     cause: string,
     scope: ConfigurationChangeScope,
   ): void {
-    if (!this.createTraceRun) return;
     const previousRevisionId = this.configurationRevisionId;
     this.configurationRevisionId = randomUUID();
+    if (!this.createTraceRun) return;
     const change: PendingConfigurationChange = {
       revisionId: this.configurationRevisionId,
       previousRevisionId,

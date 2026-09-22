@@ -2,6 +2,16 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
+const installedPackageJsonPathCache = new Map<string, string>();
+const installedPackageVersionCache = new Map<string, string>();
+
+function installedPackageCacheKey(
+  packageName: string,
+  entryModuleUrl: string,
+): string {
+  return `${entryModuleUrl}\0${packageName}`;
+}
+
 /** Resolves the repo-root `package.json` from a top-level src/dist module URL. */
 export function resolvePackageJsonPath(entryModuleUrl: string): string {
   const entryFilePath = fileURLToPath(entryModuleUrl);
@@ -32,6 +42,10 @@ export function resolveInstalledPackageJsonPath(
   packageName: string,
   entryModuleUrl: string = import.meta.url,
 ): string {
+  const cacheKey = installedPackageCacheKey(packageName, entryModuleUrl);
+  const cached = installedPackageJsonPathCache.get(cacheKey);
+  if (cached) return cached;
+
   let directory = path.dirname(fileURLToPath(entryModuleUrl));
   while (true) {
     const candidate = path.join(
@@ -44,7 +58,11 @@ export function resolveInstalledPackageJsonPath(
       const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as {
         name?: unknown;
       };
-      if (parsed.name === packageName) return fs.realpathSync(candidate);
+      if (parsed.name === packageName) {
+        const resolved = fs.realpathSync(candidate);
+        installedPackageJsonPathCache.set(cacheKey, resolved);
+        return resolved;
+      }
     }
     const parent = path.dirname(directory);
     if (parent === directory) break;
@@ -60,7 +78,13 @@ export function getInstalledPackageVersion(
   packageName: string,
   entryModuleUrl: string = import.meta.url,
 ): string {
-  return readPackageVersionFromPath(
+  const cacheKey = installedPackageCacheKey(packageName, entryModuleUrl);
+  const cached = installedPackageVersionCache.get(cacheKey);
+  if (cached) return cached;
+
+  const version = readPackageVersionFromPath(
     resolveInstalledPackageJsonPath(packageName, entryModuleUrl),
   );
+  installedPackageVersionCache.set(cacheKey, version);
+  return version;
 }

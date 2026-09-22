@@ -1204,10 +1204,15 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const capabilities = jest.spyOn(mockProvider, "getCapabilities");
       const agent = createTestAgent(mockProvider);
+      const previousPolicyRevisionId = (agent as any).resolveRuntimeToolScope()
+        .policyRevisionId;
 
       agent.setAgentMode("plan");
 
       expect(capabilities).not.toHaveBeenCalled();
+      expect(
+        (agent as any).resolveRuntimeToolScope().policyRevisionId,
+      ).not.toBe(previousPolicyRevisionId);
     });
 
     it("isolates configuration snapshot failures from runtime changes", async () => {

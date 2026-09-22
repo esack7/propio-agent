@@ -63,5 +63,16 @@ describe("packageVersion", () => {
     expect(getInstalledPackageVersion("example-package", consumerUrl)).toBe(
       "9.8.7-local",
     );
+    fs.writeFileSync(
+      packageJsonPath,
+      JSON.stringify({
+        name: "example-package",
+        version: "10.0.0-changed-on-disk",
+        exports: "./dist/index.js",
+      }),
+    );
+    expect(getInstalledPackageVersion("example-package", consumerUrl)).toBe(
+      "9.8.7-local",
+    );
   });
 });
