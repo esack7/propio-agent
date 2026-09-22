@@ -62,6 +62,7 @@ import {
 } from "./agent-core/index.js";
 import { buildSystemPromptContext } from "./prompt/systemPromptContext.js";
 import { ContextManager } from "./context/contextManager.js";
+import type { ConversationRecoveryChange } from "./context/conversationManager.js";
 import {
   ArtifactToolResult,
   PromptBudgetPolicy,
@@ -89,10 +90,14 @@ import {
   getDefaultSessionsDir,
   writeInProgressMarker,
   clearInProgressMarker,
-  writeRecoveryCheckpoint,
   clearRecoveryCheckpoint,
   InProgressMarker,
 } from "./sessions/sessionHistory.js";
+import {
+  appendRecoveryJournal,
+  writeRecoveryJournalBase,
+  type RecoveryJournalPosition,
+} from "./sessions/recoveryJournal.js";
 import {
   removeEmptyScratchpadDir,
   resolveScratchpadDir,
@@ -496,6 +501,9 @@ export class Agent {
   private lastTraceRunId?: string;
   private pendingRecoveredToolCallIds: string[] = [];
   private recoveryCheckpointRequested = false;
+  private recoveryJournalPosition?: RecoveryJournalPosition;
+  private pendingRecoveryChanges: ConversationRecoveryChange[] = [];
+  private recoverySkillCount = 0;
   private readonly onRecoveryCheckpointFailure?: (error: Error) => void;
 
   constructor(
@@ -2201,8 +2209,30 @@ export class Agent {
       return;
     }
     try {
-      writeRecoveryCheckpoint(this.sessionsDir, this.exportSession());
+      if (this.recoveryJournalPosition) {
+        this.recoveryJournalPosition = appendRecoveryJournal(
+          this.sessionsDir,
+          this.sessionId,
+          this.recoveryJournalPosition,
+          this.sessionMetadata(),
+          this.pendingRecoveryChanges,
+          this.contextManager.getInvokedSkillsSince(this.recoverySkillCount),
+        );
+      } else {
+        this.recoveryJournalPosition = writeRecoveryJournalBase(
+          this.sessionsDir,
+          this.exportSession(),
+        );
+        this.contextManager.setRecoveryChangeListener((change) => {
+          this.pendingRecoveryChanges.push(change);
+        });
+      }
+      this.pendingRecoveryChanges = [];
+      this.recoverySkillCount = this.contextManager.getInvokedSkillCount();
     } catch (error) {
+      this.contextManager.setRecoveryChangeListener(undefined);
+      this.recoveryJournalPosition = undefined;
+      this.pendingRecoveryChanges = [];
       const failure = error instanceof Error ? error : new Error(String(error));
       try {
         traceRun?.recorder.record(
@@ -2298,6 +2328,10 @@ export class Agent {
   }
 
   clearContext(): void {
+    this.contextManager.setRecoveryChangeListener(undefined);
+    this.recoveryJournalPosition = undefined;
+    this.pendingRecoveryChanges = [];
+    this.recoverySkillCount = 0;
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
@@ -2608,8 +2642,12 @@ export class Agent {
 
   exportSession(): string {
     const state = this.contextManager.getConversationState();
+    return serializeSession(state, this.sessionMetadata());
+  }
+
+  private sessionMetadata(): SessionMetadata {
     const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
-    const metadata: SessionMetadata = {
+    return {
       providerName: this.provider.name,
       modelKey: this.model,
       systemPrompt: this.baseRules,
@@ -2628,7 +2666,6 @@ export class Agent {
           }
         : {}),
     };
-    return serializeSession(state, metadata);
   }
 
   /** Fill only missing responses in a recovery checkpoint; never execute them. */
@@ -2734,6 +2771,10 @@ export class Agent {
     const state = restoreConversationState(persisted);
     const outgoingSessionId = this.sessionId;
     const outgoingRecoveryRequested = this.recoveryCheckpointRequested;
+    this.contextManager.setRecoveryChangeListener(undefined);
+    this.recoveryJournalPosition = undefined;
+    this.pendingRecoveryChanges = [];
+    this.recoverySkillCount = 0;
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;

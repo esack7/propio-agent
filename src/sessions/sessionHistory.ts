@@ -4,6 +4,7 @@ import * as crypto from "crypto";
 import * as os from "os";
 import { execSync } from "child_process";
 import { isSafeSessionId } from "./sessionId.js";
+import { readRecoveryJournal } from "./recoveryJournal.js";
 
 const GLOBAL_SESSIONS_ROOT = path.join(os.homedir(), ".propio", "sessions");
 const INDEX_FILE = "index.json";
@@ -251,6 +252,8 @@ export function clearRecoveryCheckpoint(
   if (!isSafeSessionId(sessionId)) return;
   const checkpointPath = recoveryCheckpointPath(sessionsDir, sessionId);
   if (fs.existsSync(checkpointPath)) fs.unlinkSync(checkpointPath);
+  const journalPath = path.join(sessionsDir, `recovery-${sessionId}.jsonl`);
+  if (fs.existsSync(journalPath)) fs.unlinkSync(journalPath);
 }
 
 function recoveryCheckpointPath(
@@ -264,6 +267,12 @@ export function readSnapshot(
   sessionsDir: string,
   snapshotFile: string,
 ): string {
+  const journal = /^recovery-([A-Za-z0-9._-]+)\.jsonl$/.exec(snapshotFile);
+  if (journal) {
+    const restored = readRecoveryJournal(sessionsDir, journal[1]!);
+    if (!restored) throw new Error("Recovery journal has no valid baseline");
+    return restored.json;
+  }
   return fs.readFileSync(path.join(sessionsDir, snapshotFile), "utf8");
 }
 
@@ -410,35 +419,41 @@ export function listSessions(sessionsDir: string): SessionIndexEntry[] {
     (entry) => !entry.snapshotFile.startsWith("recovery-"),
   );
   if (!fs.existsSync(sessionsDir)) return [...saved];
-  const recovery = fs
+  const recoveryFiles = fs
     .readdirSync(sessionsDir)
-    .filter((file) => /^recovery-[A-Za-z0-9._-]+\.json$/.test(file))
-    .flatMap((file) => {
-      try {
-        const sessionId = file.slice("recovery-".length, -".json".length);
-        if (!isSafeSessionId(sessionId)) return [];
-        const parsed = parseSnapshotObject(
-          JSON.parse(fs.readFileSync(path.join(sessionsDir, file), "utf8")),
-        );
-        if (
-          !parsed ||
-          parsed.metadata.recoveryCheckpoint !== true ||
-          parsed.metadata.sessionId !== sessionId
-        ) {
-          return [];
-        }
-        return [
-          toSessionIndexEntry(
-            file,
-            parsed.snapshot,
-            parsed.metadata,
-            parsed.context,
-          ),
-        ];
-      } catch {
+    .filter((file) => /^recovery-[A-Za-z0-9._-]+\.(json|jsonl)$/.test(file))
+    .sort(
+      (a, b) => Number(b.endsWith(".jsonl")) - Number(a.endsWith(".jsonl")),
+    );
+  const seenRecoveryIds = new Set<string>();
+  const recovery = recoveryFiles.flatMap((file) => {
+    try {
+      const sessionId = file.slice("recovery-".length, file.lastIndexOf("."));
+      if (!isSafeSessionId(sessionId) || seenRecoveryIds.has(sessionId))
+        return [];
+      const parsed = parseSnapshotObject(
+        JSON.parse(readSnapshot(sessionsDir, file)),
+      );
+      if (
+        !parsed ||
+        parsed.metadata.recoveryCheckpoint !== true ||
+        parsed.metadata.sessionId !== sessionId
+      ) {
         return [];
       }
-    });
+      seenRecoveryIds.add(sessionId);
+      return [
+        toSessionIndexEntry(
+          file,
+          parsed.snapshot,
+          parsed.metadata,
+          parsed.context,
+        ),
+      ];
+    } catch {
+      return [];
+    }
+  });
   return [...saved, ...recovery].sort((a, b) =>
     b.savedAt.localeCompare(a.savedAt),
   );
@@ -508,7 +523,7 @@ function toSessionIndexEntry(
   context: Record<string, unknown>,
 ): SessionIndexEntry {
   return {
-    sessionId: path.basename(snapshotFile, ".json"),
+    sessionId: snapshotFile.replace(/\.(jsonl|json)$/, ""),
     runtimeSessionId:
       typeof metadata.sessionId === "string" ? metadata.sessionId : undefined,
     snapshotFile,

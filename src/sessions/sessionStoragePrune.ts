@@ -65,8 +65,8 @@ function pruneOneRecoveryFile(
   activeSessionIds: ReadonlySet<string>,
 ): void {
   const match =
-    /^recovery-(.+)\.json$/.exec(file) ??
-    /^recovery-(.+)\.json\.[0-9a-f]{12}\.tmp$/.exec(file);
+    /^recovery-(.+)\.(?:json|jsonl)$/.exec(file) ??
+    /^recovery-(.+)\.(?:json|jsonl)\.[0-9a-f]{12}\.tmp$/.exec(file);
   const sessionId = match?.[1];
   if (!sessionId || !isSafeSessionId(sessionId)) return;
   if (activeSessionIds.has(sessionId)) return;

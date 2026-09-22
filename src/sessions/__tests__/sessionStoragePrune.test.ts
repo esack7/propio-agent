@@ -6,6 +6,7 @@ import {
   writeRecoveryCheckpoint,
   type SessionIndex,
 } from "../sessionHistory.js";
+import { writeRecoveryJournalBase } from "../recoveryJournal.js";
 import {
   listActiveInProgressSessionIds,
   pruneStaleSessionStorage,
@@ -132,17 +133,62 @@ describe("sessionStoragePrune", () => {
     expect(fs.existsSync(artifacts)).toBe(false);
   });
 
+  it("expires an inactive journal before pruning its artifacts", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const artifacts = makeStorageDir("artifacts", sessionId, staleMtime);
+    writeRecoveryJournalBase(
+      sessionsDir,
+      JSON.stringify({
+        version: 4,
+        savedAt: new Date(staleMtime).toISOString(),
+        metadata: {
+          providerName: "fixture",
+          modelKey: "fixture",
+          systemPrompt: "",
+          promptBudgetPolicy: {
+            reservedOutputTokens: 2048,
+            maxRecentTurns: 50,
+            artifactInlineCharCap: 12000,
+          },
+          summaryPolicy: {
+            rawRecentTurns: 6,
+            refreshIntervalTurns: 3,
+            summaryTargetTokens: 512,
+            contextPressureThreshold: 0.6,
+          },
+          contextWindowTokens: 128000,
+          sessionId,
+        },
+        context: {
+          preamble: [],
+          turns: [],
+          artifacts: [],
+          pinnedMemory: [],
+          invokedSkills: [],
+        },
+      }),
+    );
+    const journal = path.join(sessionsDir, `recovery-${sessionId}.jsonl`);
+    fs.utimesSync(journal, new Date(staleMtime), new Date(staleMtime));
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(journal)).toBe(false);
+    expect(fs.existsSync(artifacts)).toBe(false);
+  });
+
   it("removes old interrupted temp files but leaves active ones alone", () => {
     const staleMtime = Date.now() - retentionMs - 1000;
     const inactiveId = "11111111-1111-4111-8111-111111111111";
     const activeId = "22222222-2222-4222-8222-222222222222";
     const staleTemp = path.join(
       sessionsDir,
-      `recovery-${inactiveId}.json.abcdef123456.tmp`,
+      `recovery-${inactiveId}.jsonl.abcdef123456.tmp`,
     );
     const activeTemp = path.join(
       sessionsDir,
-      `recovery-${activeId}.json.abcdef123456.tmp`,
+      `recovery-${activeId}.jsonl.abcdef123456.tmp`,
     );
     const activeCheckpoint = path.join(
       sessionsDir,
