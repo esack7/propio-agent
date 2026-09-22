@@ -2,8 +2,12 @@ const SENSITIVE_VALUE_PATTERNS: ReadonlyArray<RegExp> = [
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
   /\bAIza[A-Za-z0-9_-]{12,}\b/g,
-  /(?<![A-Za-z0-9/])\/(?:Users|home|var|tmp|private|Volumes|workspace|mnt)\/(?:[^/\s"'`]+\/)*[^/\s"'`]+/g,
-  /\b[A-Za-z]:\\Users\\[^\s"'`]+/g,
+];
+
+const FILESYSTEM_PATH_PATTERNS: ReadonlyArray<RegExp> = [
+  /(?<![A-Za-z0-9/])\/(?:Users|home|var|tmp|private|Volumes|workspace|workspaces|mnt|opt|srv|root|etc|builds|data|app|build|code|repo|usr|run)\/[^\s"'`<>]+/g,
+  /\b[A-Za-z]:\\[^\s"'`<>]+/g,
+  /\\\\[^\\\s"'`<>]+\\[^\s"'`<>]+/g,
 ];
 
 function keySegments(key: string): string[] {
@@ -86,17 +90,46 @@ function isCredentialPresenceMetadata(value: unknown): boolean {
   );
 }
 
-function redactString(value: string): string {
-  return SENSITIVE_VALUE_PATTERNS.reduce(
+function isPathKey(key: string | undefined): boolean {
+  if (!key) return false;
+  const segments = keySegments(key);
+  if (
+    segments.some((segment) => ["endpoint", "route", "url"].includes(segment))
+  )
+    return false;
+  return segments.some((segment) =>
+    ["path", "paths", "file", "files", "directory", "dir", "cwd"].includes(
+      segment,
+    ),
+  );
+}
+
+function redactString(value: string, key?: string): string {
+  const credentialSafe = SENSITIVE_VALUE_PATTERNS.reduce(
     (redacted, pattern) => redacted.replace(pattern, "[REDACTED]"),
     value,
+  );
+  if (isPathKey(key) && /^(?:\/|[A-Za-z]:\\|\\\\)/.test(credentialSafe.trim()))
+    return "[REDACTED]";
+  return FILESYSTEM_PATH_PATTERNS.reduce(
+    (redacted, pattern) =>
+      redacted.replace(pattern, (match) => {
+        const suffix = match.match(/[),.;!?}\]]+$/)?.[0] ?? "";
+        return `[REDACTED]${suffix}`;
+      }),
+    credentialSafe,
   );
 }
 
 /** Standard capture redaction. Full payload capture requires a separate policy. */
 export function redactTraceValue(value: unknown): unknown {
-  if (typeof value === "string") return redactString(value);
-  if (Array.isArray(value)) return value.map(redactTraceValue);
+  return redactEntry(value);
+}
+
+function redactEntry(value: unknown, key?: string): unknown {
+  if (typeof value === "string") return redactString(value, key);
+  if (Array.isArray(value))
+    return value.map((entry) => redactEntry(entry, key));
   if (value === null || typeof value !== "object") return value;
 
   const redacted: Record<string, unknown> = {};
@@ -106,7 +139,7 @@ export function redactTraceValue(value: unknown): unknown {
         ? entry === undefined
           ? undefined
           : "[REDACTED]"
-        : redactTraceValue(entry);
+        : redactEntry(entry, key);
   }
   return redacted;
 }

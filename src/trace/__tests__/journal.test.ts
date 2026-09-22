@@ -7,6 +7,7 @@ import {
   readTraceJournal,
   RunTraceRecorder,
   exportTraceJournal,
+  inspectTraceExport,
   inspectTraceJournal,
   verifyTraceExport,
   type TraceCaptureFailure,
@@ -113,6 +114,9 @@ describe("JSONL trace journal", () => {
         tokenEstimate: { input: 40, output: 2 },
         homePath: "/home/example/private/config.json",
         endpointPath: "/v1/messages",
+        customPath: "/custom/checkouts/private.json",
+        pathMessage:
+          "(/Users/me/a.ts) /opt/app/secret.json /srv/data/cfg.yml /root/.ssh/id_rsa /etc/passwd D:\\work\\checkout\\file.ts \\\\server\\share\\private.txt",
         provider: {
           apiKey: { present: true, source: "settings_file" },
         },
@@ -129,6 +133,14 @@ describe("JSONL trace journal", () => {
     expect(persisted).not.toContain("token-value");
     expect(persisted).not.toContain("sk-example123456");
     expect(persisted).not.toContain("/home/example/private/config.json");
+    expect(persisted).not.toContain("/custom/checkouts/private.json");
+    expect(persisted).not.toContain("/opt/app/secret.json");
+    expect(persisted).not.toContain("/srv/data/cfg.yml");
+    expect(persisted).not.toContain("/root/.ssh/id_rsa");
+    expect(persisted).not.toContain("/etc/passwd");
+    expect(persisted).not.toContain("D:\\work\\checkout\\file.ts");
+    expect(persisted).not.toContain("\\\\server\\share\\private.txt");
+    expect(persisted).toContain("([REDACTED])");
     expect(persisted).toContain("/v1/messages");
     expect(persisted).toContain("[REDACTED]");
     expect(readTraceJournal(journalPath).events[0].payload).toMatchObject({
@@ -296,6 +308,12 @@ describe("JSONL trace journal", () => {
       payload: { messageCount: 1 },
     });
     recorder.record({
+      component: "agent",
+      type: "provider_request_completed",
+      identity: { operationId: "provider-1" },
+      payload: {},
+    });
+    recorder.record({
       component: "tool",
       type: "tool_execution_completed",
       identity: { operationId: "tool-1" },
@@ -317,6 +335,7 @@ describe("JSONL trace journal", () => {
     });
     expect(manifest.material).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ kind: "journal", status: "partial" }),
         expect.objectContaining({ kind: "tool_result", status: "omitted" }),
         expect.objectContaining({ kind: "prompt_artifact", status: "omitted" }),
         expect.objectContaining({ kind: "prompt_artifact", status: "pruned" }),
@@ -351,9 +370,15 @@ describe("JSONL trace journal", () => {
     expect(
       inspectTraceJournal(path.join(bundle, "events.jsonl")),
     ).toMatchObject({
-      eventCount: 4,
+      eventCount: 5,
+      captureComplete: true,
+      operations: [expect.objectContaining({ outcome: "completed" })],
+    });
+    expect(inspectTraceExport(bundle)).toMatchObject({
+      eventCount: 5,
       captureComplete: false,
-      operations: [expect.objectContaining({ outcome: "unknown" })],
+      warnings: [expect.objectContaining({ type: "truncated_final_line" })],
+      manifest: { version: 3, captureComplete: false },
     });
   });
 
@@ -476,5 +501,91 @@ describe("JSONL trace journal", () => {
     fs.writeFileSync(manifestPath, original);
     fs.rmSync(checksumPath);
     expect(verifyTraceExport(bundle)).toContain("Missing manifest checksum");
+  });
+
+  it("returns failures instead of throwing for malformed manifest entries", () => {
+    const journalPath = path.join(tempDir, "source.jsonl");
+    const journal = new JsonlTraceJournal(journalPath);
+    new RunTraceRecorder(
+      { sessionId: "session-1", runId: "run-1" },
+      journal,
+    ).record({ component: "cli", type: "run_started", payload: {} });
+    journal.close();
+    const bundle = path.join(tempDir, "bundle");
+    exportTraceJournal(journalPath, bundle);
+    const manifestPath = path.join(bundle, "manifest.json");
+    const checksumPath = path.join(bundle, "manifest.sha256");
+    const original = fs.readFileSync(manifestPath, "utf8");
+
+    for (const [field, expectedFailure] of [
+      ["material", "Invalid material entry"],
+      ["files", "Invalid export file entry"],
+    ] as const) {
+      const altered = JSON.parse(original) as Record<string, unknown>;
+      altered[field] = [null];
+      const bytes = Buffer.from(`${JSON.stringify(altered)}\n`);
+      fs.writeFileSync(manifestPath, bytes);
+      fs.writeFileSync(
+        checksumPath,
+        `${createHash("sha256").update(bytes).digest("hex")}\n`,
+      );
+      expect(() => verifyTraceExport(bundle)).not.toThrow();
+      expect(verifyTraceExport(bundle)).toContain(expectedFailure);
+      expect(() => inspectTraceExport(bundle)).toThrow(
+        "Trace export verification failed",
+      );
+    }
+  });
+
+  it("preserves artifact status changes across prompt plans", () => {
+    const journalPath = path.join(tempDir, "source.jsonl");
+    const journal = new JsonlTraceJournal(journalPath);
+    const recorder = new RunTraceRecorder(
+      { sessionId: "session-1", runId: "run-1" },
+      journal,
+    );
+    recorder.record({
+      component: "context",
+      type: "prompt_plan_selected",
+      payload: { includedArtifactIds: ["included-then-pruned"] },
+    });
+    recorder.record({
+      component: "context",
+      type: "prompt_plan_selected",
+      payload: {
+        omissions: [
+          {
+            kind: "artifact",
+            id: "included-then-pruned",
+            reason: "evicted",
+            reasonCode: "artifact_pruned",
+          },
+          {
+            kind: "artifact",
+            id: "pruned-then-included",
+            reason: "evicted",
+            reasonCode: "artifact_pruned",
+          },
+        ],
+      },
+    });
+    recorder.record({
+      component: "context",
+      type: "prompt_plan_selected",
+      payload: { includedArtifactIds: ["pruned-then-included"] },
+    });
+    journal.close();
+
+    const manifest = exportTraceJournal(
+      journalPath,
+      path.join(tempDir, "bundle"),
+    );
+    const statuses = (id: string) =>
+      manifest.material
+        .filter((item) => item.referenceId === id)
+        .map((item) => item.status);
+    expect(statuses("included-then-pruned")).toEqual(["omitted", "pruned"]);
+    expect(statuses("pruned-then-included")).toEqual(["pruned", "omitted"]);
+    expect(verifyTraceExport(path.join(tempDir, "bundle"))).toEqual([]);
   });
 });

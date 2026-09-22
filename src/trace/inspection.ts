@@ -156,7 +156,7 @@ export interface TraceExportMaterial {
     | "provider_payload"
     | "workspace_baseline"
     | "workspace_diff";
-  readonly status: "included" | "omitted" | "missing" | "pruned";
+  readonly status: "included" | "partial" | "omitted" | "missing" | "pruned";
   readonly eventId?: string;
   readonly referenceId?: string;
   readonly path?: string;
@@ -179,6 +179,10 @@ export interface TraceExportManifestV3 extends TraceExportManifestBase {
 
 export type TraceExportManifest =
   TraceExportManifestV1 | TraceExportManifestV2 | TraceExportManifestV3;
+
+export interface TraceExportInspection extends TraceInspection {
+  readonly manifest: TraceExportManifest;
+}
 
 function payloadRecord(event: TraceEventEnvelope): Record<string, unknown> {
   return event.payload !== null && typeof event.payload === "object"
@@ -253,43 +257,36 @@ function eventMaterial(event: TraceEventEnvelope): TraceExportMaterial[] {
 
 function promptArtifactMaterial(
   event: TraceEventEnvelope,
-  seenArtifacts: Set<string>,
 ): TraceExportMaterial[] {
   if (event.type !== "prompt_plan_selected") return [];
   const ids = payloadRecord(event).includedArtifactIds;
   if (!Array.isArray(ids)) return [];
-  return ids.filter(isString).flatMap((id) => {
-    if (seenArtifacts.has(id)) return [];
-    seenArtifacts.add(id);
-    return [
-      {
-        kind: "prompt_artifact" as const,
-        status: "omitted" as const,
-        referenceId: id,
-        eventId: event.eventId,
-        reason: "raw_prompt_artifact_excluded_by_standard_capture",
-      },
-    ];
-  });
+  return [...new Set(ids.filter(isString))].map((id) => ({
+    kind: "prompt_artifact" as const,
+    status: "omitted" as const,
+    referenceId: id,
+    eventId: event.eventId,
+    reason: "raw_prompt_artifact_excluded_by_standard_capture",
+  }));
 }
 
 function omittedArtifactMaterial(
   event: TraceEventEnvelope,
-  seenArtifacts: Set<string>,
 ): TraceExportMaterial[] {
   if (event.type !== "prompt_plan_selected") return [];
   const omissions = payloadRecord(event).omissions;
   if (!Array.isArray(omissions)) return [];
+  const seenInEvent = new Set<string>();
   return omissions.flatMap((entry: unknown) => {
     if (entry === null || typeof entry !== "object") return [];
     const omission = entry as Record<string, unknown>;
     if (
       omission.kind !== "artifact" ||
       !isString(omission.id) ||
-      seenArtifacts.has(omission.id)
+      seenInEvent.has(omission.id)
     )
       return [];
-    seenArtifacts.add(omission.id);
+    seenInEvent.add(omission.id);
     const pruned = omission.reasonCode === "artifact_pruned";
     return [
       {
@@ -307,15 +304,22 @@ function omittedArtifactMaterial(
 
 function exportMaterial(
   events: ReadonlyArray<TraceEventEnvelope>,
+  warnings: ReadonlyArray<TraceReadWarning>,
 ): TraceExportMaterial[] {
   const material: TraceExportMaterial[] = [
-    { kind: "journal", status: "included", path: "events.jsonl" },
+    {
+      kind: "journal",
+      status: warnings.length === 0 ? "included" : "partial",
+      path: "events.jsonl",
+      ...(warnings.length === 0
+        ? {}
+        : { reason: "source_journal_had_invalid_lines" }),
+    },
   ];
-  const seenArtifacts = new Set<string>();
   for (const event of events) {
     material.push(...eventMaterial(event));
-    material.push(...promptArtifactMaterial(event, seenArtifacts));
-    material.push(...omittedArtifactMaterial(event, seenArtifacts));
+    material.push(...promptArtifactMaterial(event));
+    material.push(...omittedArtifactMaterial(event));
   }
   material.push(
     {
@@ -370,7 +374,7 @@ export function exportTraceJournal(
       mode: 0o600,
     },
   );
-  const material = exportMaterial(safeEvents);
+  const material = exportMaterial(safeEvents, inspection.warnings);
   const manifest: TraceExportManifestV3 = {
     version: 3,
     exportedAt: new Date().toISOString(),
@@ -411,6 +415,18 @@ export function exportTraceJournal(
   return safeManifest;
 }
 
+function materialEntryFailure(
+  item: TraceExportMaterial,
+  files: TraceExportManifestV3["files"],
+): string | undefined {
+  if (item === null || typeof item !== "object")
+    return "Invalid material entry";
+  if (item.status !== "included" && item.status !== "partial") return undefined;
+  if (!item.path || !files.some((file) => file?.path === item.path))
+    return `Unlisted included material: ${item.kind}`;
+  return undefined;
+}
+
 function version3Failures(manifest: TraceExportManifestV3): string[] {
   const failures: string[] = [];
   if (!Array.isArray(manifest.operations))
@@ -420,14 +436,12 @@ function version3Failures(manifest: TraceExportManifestV3): string[] {
   if (!manifest.revisions)
     failures.push("Missing revisions in version 3 manifest");
   if (Array.isArray(manifest.material)) {
-    for (const item of manifest.material) {
-      if (
-        item.status === "included" &&
-        (!item.path || !manifest.files.some((file) => file.path === item.path))
-      ) {
-        failures.push(`Unlisted included material: ${item.kind}`);
-      }
-    }
+    failures.push(
+      ...manifest.material.flatMap((item) => {
+        const failure = materialEntryFailure(item, manifest.files);
+        return failure ? [failure] : [];
+      }),
+    );
   }
   return failures;
 }
@@ -444,6 +458,8 @@ function manifestFailures(manifest: TraceExportManifest): string[] {
       `Unsupported export manifest version: ${String((manifest as { version: unknown }).version)}`,
     ];
   const failures: string[] = [];
+  if (!Array.isArray(manifest.warnings))
+    failures.push("Missing manifest warnings");
   if (manifest.version !== 1 && !manifest.providerMeasurements)
     failures.push(
       `Missing provider measurements in version ${manifest.version} manifest`,
@@ -541,7 +557,11 @@ function verifyDerivedClaims(
       ["captureComplete", manifest.captureComplete, inspection.captureComplete],
       ["operations", manifest.operations, inspection.operations],
       ["revisions", manifest.revisions, exportRevisions(events)],
-      ["material", manifest.material, exportMaterial(events)],
+      [
+        "material",
+        manifest.material,
+        exportMaterial(events, manifest.warnings),
+      ],
       [
         "completenessWarnings",
         manifest.completenessWarnings,
@@ -556,7 +576,7 @@ function verifyDerivedClaims(
   }
 }
 
-export function verifyTraceExport(destinationDirectory: string): string[] {
+function verifyTraceExportUnchecked(destinationDirectory: string): string[] {
   let manifest: TraceExportManifest;
   let manifestBytes: Buffer;
   try {
@@ -589,4 +609,37 @@ export function verifyTraceExport(destinationDirectory: string): string[] {
       ? verifyDerivedClaims(root, manifest)
       : []),
   ];
+}
+
+export function verifyTraceExport(destinationDirectory: string): string[] {
+  try {
+    return verifyTraceExportUnchecked(destinationDirectory);
+  } catch {
+    return ["Unreadable export bundle"];
+  }
+}
+
+/** Inspect a bundle with its source-journal warnings, not just its valid events. */
+export function inspectTraceExport(
+  destinationDirectory: string,
+  options: TraceInspectionOptions = {},
+): TraceExportInspection {
+  const failures = verifyTraceExport(destinationDirectory);
+  if (failures.length > 0)
+    throw new Error(`Trace export verification failed: ${failures.join("; ")}`);
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(destinationDirectory, "manifest.json"), "utf8"),
+  ) as TraceExportManifest;
+  const { events } = readTraceJournal(
+    path.join(destinationDirectory, "events.jsonl"),
+  );
+  const inspection = inspectEvents(events, manifest.warnings, options);
+  return {
+    ...inspection,
+    providerMeasurements:
+      manifest.version === 1
+        ? inspection.providerMeasurements
+        : manifest.providerMeasurements,
+    manifest,
+  };
 }
