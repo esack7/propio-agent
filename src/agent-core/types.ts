@@ -55,6 +55,25 @@ export interface AgentToolPolicyDecision {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+export interface AgentPromptInstructionRevision {
+  readonly source: string;
+  readonly scope: string;
+  readonly revisionId: string;
+}
+
+export interface AgentPromptOmission {
+  readonly kind: "turn" | "artifact";
+  readonly id: string;
+  readonly reason: string;
+}
+
+/** Optional application-owned lineage for a prompt plan. */
+export interface AgentPromptTraceMetadata {
+  readonly summaryRevisionId?: string;
+  readonly instructionRevisions?: ReadonlyArray<AgentPromptInstructionRevision>;
+  readonly omissions?: ReadonlyArray<AgentPromptOmission>;
+}
+
 export interface AgentToolExecutor {
   getEnabledSchemas(): ChatTool[];
   executeWithStatus(
@@ -79,6 +98,7 @@ export interface AgentIntegrations {
     iteration?: number,
     allowedTools?: ReadonlySet<string>,
   ): PromptPlan;
+  describePromptPlan?(plan: PromptPlan): AgentPromptTraceMetadata;
   /** Application policy evaluated against a detached argument snapshot. */
   authorizeTool?(
     request: AgentToolAuthorizationRequest,

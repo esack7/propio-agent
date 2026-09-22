@@ -12,6 +12,7 @@ export type {
   TraceOperationSummary,
 } from "./inspection.js";
 export { redactTraceValue } from "./redaction.js";
+export { createTraceRevisionId } from "./revisions.js";
 export type {
   AgentTraceRecorder,
   TraceCaptureFailure,

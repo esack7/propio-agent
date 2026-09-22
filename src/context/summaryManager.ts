@@ -4,6 +4,7 @@ import {
   measureMessages,
 } from "./tokenEstimator.js";
 import type { LLMProvider, ChatRequest } from "@propio-ai/providers";
+import { createTraceRevisionId } from "../trace/revisions.js";
 import {
   RollingSummaryRecord,
   RollingSummarySections,
@@ -229,6 +230,8 @@ export type SummaryGenerator = (request: ChatRequest) => Promise<string>;
 
 export interface SummaryGenerationHooks {
   readonly onRequestMeasured?: (metrics: SummaryRequestMetrics) => void;
+  /** Allows an application to attach tracing without adding storage to this module. */
+  readonly prepareRequest?: (request: ChatRequest) => ChatRequest;
 }
 
 function parseSummarySections(
@@ -246,16 +249,14 @@ function parseSummarySections(
 
 async function collectSummaryContent(
   provider: Pick<LLMProvider, "streamChat"> | SummaryGenerator,
-  model: string,
-  messages: Array<{ role: "system" | "user"; content: string }>,
-  signal?: AbortSignal,
+  request: ChatRequest,
 ): Promise<string> {
-  if (signal?.aborted) throw new Error("Summary generation cancelled");
+  if (request.signal?.aborted) throw new Error("Summary generation cancelled");
   const content =
     typeof provider === "function"
-      ? await provider({ model, messages, signal })
-      : await collectProviderSummary(provider, { model, messages, signal });
-  if (signal?.aborted) throw new Error("Summary generation cancelled");
+      ? await provider(request)
+      : await collectProviderSummary(provider, request);
+  if (request.signal?.aborted) throw new Error("Summary generation cancelled");
   return content.trim();
 }
 
@@ -288,6 +289,10 @@ function buildSummaryRecord(
     ? renderSectionsToContent(sections)
     : content;
   return {
+    revisionId: createTraceRevisionId({
+      content: renderedContent,
+      coveredTurnIds: eligibleTurns.map((turn) => turn.id),
+    }),
     content: renderedContent,
     updatedAt: new Date().toISOString(),
     coveredTurnIds: eligibleTurns.map((turn) => turn.id),
@@ -353,12 +358,12 @@ export class SummaryManager {
       estimatedPromptTokens: this.tokenEstimator.estimateMessages(messages),
     });
 
-    const content = await collectSummaryContent(
-      provider,
+    const request = hooks?.prepareRequest?.({ model, messages, signal }) ?? {
       model,
       messages,
       signal,
-    );
+    };
+    const content = await collectSummaryContent(provider, request);
     const summary = buildSummaryRecord(
       content,
       parseSummarySections(content),

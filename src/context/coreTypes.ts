@@ -122,6 +122,8 @@ export interface RollingSummarySections {
  * into a concise narrative for long-session continuity.
  */
 export interface RollingSummaryRecord {
+  /** Content-derived identity used to link the summary to prompt plans. */
+  readonly revisionId?: string;
   readonly content: string;
   readonly updatedAt: string;
   readonly coveredTurnIds: ReadonlyArray<string>;

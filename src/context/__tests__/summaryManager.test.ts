@@ -337,6 +337,39 @@ describe("SummaryManager", () => {
     );
   }
 
+  it("assigns a content-derived revision and allows request decoration", async () => {
+    let capturedRequest: ChatRequest | undefined;
+    const generator = async (request: ChatRequest) => {
+      capturedRequest = request;
+      return "summary text";
+    };
+
+    const result = await manager.generateSummary(
+      generator,
+      "test-model",
+      makeQATurns(1),
+      undefined,
+      DEFAULT_SUMMARY_POLICY,
+      undefined,
+      {
+        prepareRequest: (request) => ({
+          ...request,
+          trace: {
+            sessionId: "session-1",
+            runId: "run-1",
+            requestId: "request-1",
+            operationId: "operation-1",
+            purpose: "summarize",
+          },
+        }),
+      },
+    );
+
+    expect(capturedRequest?.trace?.purpose).toBe("summarize");
+    expect(result.summary.revisionId).toMatch(/^sha256:/);
+    expect(result.summary.coveredTurnIds).toEqual(["t0"]);
+  });
+
   it("should generate a summary from eligible turns", async () => {
     const turns = makeQATurns(3);
 

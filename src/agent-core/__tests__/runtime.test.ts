@@ -83,6 +83,72 @@ function setup(
 }
 
 describe("public headless runtime", () => {
+  it("records content-derived prompt lineage and standard capture evidence", async () => {
+    const traceEvents: TraceEventInput[] = [];
+    const fixture = setup([[answer]], {
+      trace: {
+        identity: {
+          sessionId: "session-1",
+          runId: "run-1",
+          configurationRevisionId: "config-1",
+        },
+        record: (event) => traceEvents.push(event),
+      },
+      integrations: {
+        describePromptPlan: () => ({
+          summaryRevisionId: "sha256:summary",
+          instructionRevisions: [
+            {
+              source: "fixture_rules",
+              scope: "application",
+              revisionId: "sha256:rules",
+            },
+          ],
+          omissions: [
+            { kind: "turn", id: "turn-old", reason: "fixture_budget" },
+          ],
+        }),
+      },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    const promptPlan = traceEvents.find(
+      (event) => event.type === "prompt_plan_selected",
+    );
+    expect(promptPlan).toMatchObject({
+      identity: {
+        promptRevisionId: expect.stringMatching(/^sha256:/),
+        summaryRevisionId: "sha256:summary",
+      },
+      payload: {
+        captureLevel: "standard",
+        promptFingerprint: expect.stringMatching(/^sha256:/),
+        instructionRevisions: expect.arrayContaining([
+          {
+            source: "fixture_rules",
+            scope: "application",
+            revisionId: "sha256:rules",
+          },
+        ]),
+        omissions: [{ kind: "turn", id: "turn-old", reason: "fixture_budget" }],
+      },
+    });
+    const dispatched = traceEvents.find(
+      (event) => event.type === "provider_request_dispatched",
+    );
+    expect(dispatched).toMatchObject({
+      identity: {
+        promptRevisionId: promptPlan?.identity?.promptRevisionId,
+        summaryRevisionId: "sha256:summary",
+      },
+      payload: {
+        captureLevel: "standard",
+        outboundPayloadFingerprint: expect.stringMatching(/^sha256:/),
+      },
+    });
+  });
+
   it("links tool scope and policy decisions to the dispatched operation", async () => {
     const traceEvents: TraceEventInput[] = [];
     const executeWithStatus = jest.fn(async () => ({

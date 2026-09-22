@@ -12,6 +12,7 @@ import type {
   ProviderTraceEvent,
 } from "@propio-ai/providers";
 import { randomUUID } from "node:crypto";
+import { createTraceRevisionId } from "../trace/revisions.js";
 import { measureMessages } from "../diagnostics.js";
 import type {
   ArtifactToolResult,
@@ -48,6 +49,46 @@ function normalizeAssistantText(content: string | undefined | null): string {
   return (content ?? "").trim().replace(/\s+/g, " ");
 }
 
+function collectSystemInstructionRevisions(messages: ChatMessage[]) {
+  const revisions: Array<{
+    source: string;
+    scope: string;
+    revisionId: string;
+  }> = [];
+  messages.forEach((message, index) => {
+    if (message.role !== "system") return;
+    revisions.push({
+      source: `system_message_${index}`,
+      scope: "request",
+      revisionId: createTraceRevisionId(message.content),
+    });
+  });
+  return revisions;
+}
+
+function buildDefaultPromptOmissions(plan: PromptPlan) {
+  let reason = "prompt_budget";
+  if (plan.usedRollingSummary) {
+    reason = "rolling_summary_or_prompt_budget";
+  } else if (plan.retryLevel > 0) {
+    reason = "context_retry_budget";
+  }
+  return plan.omittedTurnIds.map((id) => ({
+    kind: "turn" as const,
+    id,
+    reason,
+  }));
+}
+
+function resolvePromptOmissions(
+  plan: PromptPlan,
+  omissions:
+    | ReadonlyArray<{ kind: "turn" | "artifact"; id: string; reason: string }>
+    | undefined,
+) {
+  return omissions ?? buildDefaultPromptOmissions(plan);
+}
+
 function buildAssistantToolIterationSignature(
   content: string | undefined | null,
   toolCalls: ReadonlyArray<ChatToolCall> | undefined,
@@ -71,6 +112,7 @@ export class AgentRuntime {
   private currentTurnOperationId: string | undefined;
   private currentTurnId: string | undefined;
   private currentPromptRevisionId: string | undefined;
+  private currentSummaryRevisionId: string | undefined;
   private currentPolicyRevisionId: string | undefined;
   private currentToolScopeRevisionId: string | undefined;
   private currentToolScope: AgentToolScope | undefined;
@@ -218,6 +260,7 @@ export class AgentRuntime {
       this.currentTurnOperationId = undefined;
       this.currentTurnId = undefined;
       this.currentPromptRevisionId = undefined;
+      this.currentSummaryRevisionId = undefined;
       this.currentPolicyRevisionId = undefined;
       this.currentToolScopeRevisionId = undefined;
       this.currentToolScope = undefined;
@@ -319,6 +362,7 @@ export class AgentRuntime {
       parentOperationId,
       turnId: this.currentTurnId,
       promptRevisionId: this.currentPromptRevisionId,
+      summaryRevisionId: this.currentSummaryRevisionId,
       policyRevisionId: this.currentPolicyRevisionId,
       toolScopeRevisionId: this.currentToolScopeRevisionId,
     };
@@ -332,6 +376,14 @@ export class AgentRuntime {
         model: request.model,
         messageCount: request.messages.length,
         toolCount: request.tools?.length ?? 0,
+        captureLevel: "standard",
+        outboundPayloadFingerprint: createTraceRevisionId({
+          model: request.model,
+          messages: request.messages,
+          tools: request.tools ?? [],
+          iteration: request.iteration,
+          requestReasoning: request.requestReasoning,
+        }),
       },
     });
 
@@ -368,6 +420,7 @@ export class AgentRuntime {
           turnId: event.trace.turnId,
           configurationRevisionId: event.trace.configurationRevisionId,
           promptRevisionId: event.trace.promptRevisionId,
+          summaryRevisionId: this.currentSummaryRevisionId,
           policyRevisionId: this.currentPolicyRevisionId,
           toolScopeRevisionId: this.currentToolScopeRevisionId,
           attemptId: "attemptId" in event ? event.attemptId : undefined,
@@ -589,6 +642,30 @@ export class AgentRuntime {
     });
   }
 
+  private buildPromptTraceDetails(plan: PromptPlan, messages: ChatMessage[]) {
+    const metadata = this.dependencies.integrations?.describePromptPlan?.(plan);
+    const omissions = resolvePromptOmissions(plan, metadata?.omissions);
+    const instructionRevisions = [
+      ...collectSystemInstructionRevisions(messages),
+      ...(metadata?.instructionRevisions ?? []),
+    ];
+    return {
+      summaryRevisionId: metadata?.summaryRevisionId,
+      instructionRevisions,
+      omissions,
+      promptFingerprint: createTraceRevisionId(messages),
+      promptRevisionId: createTraceRevisionId({
+        messages,
+        retryLevel: plan.retryLevel,
+        includedTurnIds: plan.includedTurnIds,
+        omittedTurnIds: plan.omittedTurnIds,
+        includedArtifactIds: plan.includedArtifactIds,
+        summaryRevisionId: metadata?.summaryRevisionId,
+        instructionRevisions: metadata?.instructionRevisions ?? [],
+      }),
+    };
+  }
+
   private emitPromptPlanAndRequestStartedDiagnostics(
     plan: PromptPlan,
     messages: ChatMessage[],
@@ -596,31 +673,41 @@ export class AgentRuntime {
     enabledTools: number,
     options: AgentEventOptions | undefined,
   ): void {
-    this.currentPromptRevisionId = randomUUID();
-    this.dependencies.trace?.record({
-      component: "context",
-      type: "prompt_plan_selected",
-      identity: {
-        operationId: randomUUID(),
-        parentOperationId: this.currentTurnOperationId,
-        turnId: this.currentTurnId,
-        promptRevisionId: this.currentPromptRevisionId,
-        policyRevisionId: this.currentPolicyRevisionId,
-        toolScopeRevisionId: this.currentToolScopeRevisionId,
-      },
-      payload: {
-        provider: this.provider.name,
-        model: this.model,
-        iteration,
-        retryLevel: plan.retryLevel,
-        estimatedPromptTokens: plan.estimatedPromptTokens,
-        reservedOutputTokens: plan.reservedOutputTokens,
-        includedTurnIds: plan.includedTurnIds,
-        omittedTurnIds: plan.omittedTurnIds,
-        includedArtifactIds: plan.includedArtifactIds,
-        usedRollingSummary: plan.usedRollingSummary,
-      },
-    });
+    const trace = this.dependencies.trace;
+    if (trace) {
+      const traceDetails = this.buildPromptTraceDetails(plan, messages);
+      this.currentSummaryRevisionId = traceDetails.summaryRevisionId;
+      this.currentPromptRevisionId = traceDetails.promptRevisionId;
+      trace.record({
+        component: "context",
+        type: "prompt_plan_selected",
+        identity: {
+          operationId: randomUUID(),
+          parentOperationId: this.currentTurnOperationId,
+          turnId: this.currentTurnId,
+          promptRevisionId: this.currentPromptRevisionId,
+          summaryRevisionId: this.currentSummaryRevisionId,
+          policyRevisionId: this.currentPolicyRevisionId,
+          toolScopeRevisionId: this.currentToolScopeRevisionId,
+        },
+        payload: {
+          provider: this.provider.name,
+          model: this.model,
+          iteration,
+          retryLevel: plan.retryLevel,
+          estimatedPromptTokens: plan.estimatedPromptTokens,
+          reservedOutputTokens: plan.reservedOutputTokens,
+          includedTurnIds: plan.includedTurnIds,
+          omittedTurnIds: plan.omittedTurnIds,
+          includedArtifactIds: plan.includedArtifactIds,
+          usedRollingSummary: plan.usedRollingSummary,
+          captureLevel: "standard",
+          promptFingerprint: traceDetails.promptFingerprint,
+          instructionRevisions: traceDetails.instructionRevisions,
+          omissions: traceDetails.omissions,
+        },
+      });
+    }
     this.emitPromptPlanDiagnostic(plan, iteration);
     if (options?.onEvent) {
       const contextWindowTokens = this.resolveContextWindowTokens();
