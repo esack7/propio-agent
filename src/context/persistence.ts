@@ -38,6 +38,8 @@ export interface SessionMetadata {
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
   readonly lastTraceRunId?: string;
+  /** A tool-boundary checkpoint from an interrupted run. */
+  readonly recoveryCheckpoint?: boolean;
   readonly agentMode?: AgentMode;
   readonly planFilePath?: string;
   readonly planSaveApproved?: boolean;
@@ -280,6 +282,14 @@ function validateMetadata(metadata: unknown): void {
   }
   if (meta.lastTraceRunId !== undefined) {
     assertString(meta.lastTraceRunId, "metadata.lastTraceRunId");
+  }
+  if (
+    meta.recoveryCheckpoint !== undefined &&
+    typeof meta.recoveryCheckpoint !== "boolean"
+  ) {
+    throw new SessionParseError(
+      "metadata.recoveryCheckpoint must be a boolean",
+    );
   }
   validateAgentModeMetadata(meta);
   validatePlanMetadata(meta);

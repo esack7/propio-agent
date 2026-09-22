@@ -4,8 +4,7 @@ import {
   isPidRunning,
   parseInProgressMarkerSessionId,
   readInProgressMarkerFile,
-  readIndex,
-  rebuildIndex,
+  listSessions,
 } from "./sessionHistory.js";
 
 export function listActiveInProgressSessionIds(
@@ -34,9 +33,8 @@ export function listActiveInProgressSessionIds(
 }
 
 function buildAnchoredSessionIds(sessionsDir: string): Set<string> {
-  const index = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir);
   const anchored = new Set<string>();
-  for (const entry of index.entries) {
+  for (const entry of listSessions(sessionsDir)) {
     if (entry.runtimeSessionId) {
       anchored.add(entry.runtimeSessionId);
     }

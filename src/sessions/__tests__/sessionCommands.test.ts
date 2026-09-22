@@ -9,7 +9,7 @@ import {
   SessionAgent,
   SessionCommandIO,
 } from "../sessionCommands.js";
-import { writeSnapshot } from "../sessionHistory.js";
+import { writeRecoveryCheckpoint, writeSnapshot } from "../sessionHistory.js";
 import { ConversationState } from "../../context/types.js";
 import { SessionIndexEntry } from "../sessionHistory.js";
 
@@ -272,6 +272,23 @@ describe("formatSessionEntry", () => {
 });
 
 describe("saveSessionOnExit", () => {
+  it("retires the recovery checkpoint after a normal snapshot is saved", () => {
+    const dir = freshDir();
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const agent = createMockAgent(stateWithTurns(1));
+    const snapshot = JSON.parse(agent.exportSession());
+    snapshot.metadata.sessionId = sessionId;
+    const json = JSON.stringify(snapshot);
+    agent.exportSession = () => json;
+    writeRecoveryCheckpoint(dir, json);
+
+    saveSessionOnExit(agent, dir, createMockIO());
+
+    expect(fs.existsSync(path.join(dir, `recovery-${sessionId}.json`))).toBe(
+      false,
+    );
+  });
+
   it("should save when session has turns", () => {
     const dir = freshDir();
     const agent = createMockAgent(stateWithTurns(2));

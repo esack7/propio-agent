@@ -1,6 +1,7 @@
 import { ConversationState } from "../context/types.js";
 import {
   writeSnapshot,
+  clearRecoveryCheckpoint,
   readSnapshot,
   listSessions,
   resolveLatestSession,
@@ -46,7 +47,8 @@ export function formatSessionEntry(entry: SessionIndexEntry): string {
   const timeStr = date.toLocaleString();
   const turns = `${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"}`;
   const summary = entry.hasRollingSummary ? ", has summary" : "";
-  return `${entry.sessionId}  ${timeStr}  ${entry.providerName}/${entry.modelKey}  ${turns}${summary}`;
+  const recovery = entry.recoveryCheckpoint ? ", recovery checkpoint" : "";
+  return `${entry.sessionId}  ${timeStr}  ${entry.providerName}/${entry.modelKey}  ${turns}${summary}${recovery}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,15 @@ export function saveSessionOnExit(
   try {
     const json = agent.exportSession();
     const entry = writeSnapshot(sessionsDir, json);
+    if (entry.runtimeSessionId) {
+      try {
+        clearRecoveryCheckpoint(sessionsDir, entry.runtimeSessionId);
+      } catch (error) {
+        io.error(
+          `Session saved, but its recovery checkpoint could not be cleared: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     io.info(
       `Session saved: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );
@@ -128,7 +139,7 @@ async function loadSavedSession(
   try {
     agent.importSession(readSnapshot(sessionsDir, entry.snapshotFile));
     io.success(
-      `Loaded session: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
+      `Loaded ${entry.recoveryCheckpoint ? "recovery checkpoint" : "session"}: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );
   } catch (error) {
     io.error(

@@ -248,4 +248,11 @@ export type AgentDiagnosticEvent =
       operation: "open" | "write" | "flush" | "close";
       errorName: string;
       message: string;
+    }
+  | {
+      type: "recovery_checkpoint_failed";
+      sessionId: string;
+      runId: string;
+      errorName: string;
+      message: string;
     };

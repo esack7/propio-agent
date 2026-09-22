@@ -1171,6 +1171,7 @@ async function createInitializedAgent(
   diagnosticLogger: { onEvent: (event: AgentDiagnosticEvent) => void },
   sessionsDir: string,
   onTraceCaptureFailure: (failure: TraceCaptureFailure) => void,
+  onRecoveryCheckpointFailure: (error: Error) => void,
 ): Promise<{ agent: AgentType; configPath: string }> {
   const configPath = getConfigPath();
   const mcpConfigPath = getMcpConfigPath();
@@ -1191,6 +1192,7 @@ async function createInitializedAgent(
     agentsMdContent,
     diagnosticsEnabled,
     onDiagnosticEvent: diagnosticLogger.onEvent,
+    onRecoveryCheckpointFailure,
     runtimeConfig,
     runtimeConfigOrigins,
     configurationOrigins: {
@@ -1300,6 +1302,9 @@ async function runConfiguredSession(options: {
         type: "trace_capture_failed",
         ...failure,
       });
+    },
+    (error) => {
+      options.ui.warn(`Session recovery checkpoint failed: ${error.message}`);
     },
   );
 

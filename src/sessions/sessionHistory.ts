@@ -3,6 +3,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import { execSync } from "child_process";
+import { isSafeSessionId } from "./sessionId.js";
 
 const GLOBAL_SESSIONS_ROOT = path.join(os.homedir(), ".propio", "sessions");
 const INDEX_FILE = "index.json";
@@ -20,6 +21,7 @@ export interface SessionIndexEntry {
   readonly modelKey: string;
   readonly turnCount: number;
   readonly hasRollingSummary: boolean;
+  readonly recoveryCheckpoint?: boolean;
 }
 
 export interface SessionIndex {
@@ -114,7 +116,10 @@ export function rebuildIndex(sessionsDir: string): SessionIndex {
 
   const files = fs
     .readdirSync(sessionsDir)
-    .filter((f) => f.endsWith(".json") && f !== INDEX_FILE)
+    .filter(
+      (f) =>
+        f.endsWith(".json") && f !== INDEX_FILE && !f.startsWith("recovery-"),
+    )
     .sort();
 
   const entries: SessionIndexEntry[] = [];
@@ -188,6 +193,71 @@ export function writeSnapshot(
   writeIndex(sessionsDir, { entries: currentEntries });
 
   return entry;
+}
+
+/**
+ * Keep one atomic, private checkpoint per runtime session. This is not an
+ * ordinary saved snapshot: it is replaced after each committed tool result.
+ * The file and containing directory are synced before the next tool starts.
+ */
+export function writeRecoveryCheckpoint(
+  sessionsDir: string,
+  sessionJson: string,
+): void {
+  const parsedSnapshot = parseSnapshotObject(JSON.parse(sessionJson));
+  const sessionId = parsedSnapshot?.metadata.sessionId;
+  if (typeof sessionId !== "string" || !isSafeSessionId(sessionId)) {
+    throw new Error("Recovery checkpoint requires a safe runtime session ID");
+  }
+
+  fs.mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
+  const snapshotPath = recoveryCheckpointPath(sessionsDir, sessionId);
+  const tempPath = `${snapshotPath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  const checkpoint = JSON.stringify({
+    ...parsedSnapshot!.snapshot,
+    metadata: { ...parsedSnapshot!.metadata, recoveryCheckpoint: true },
+  });
+  try {
+    const fd = fs.openSync(tempPath, "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, checkpoint, "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tempPath, snapshotPath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // A failed checkpoint does not affect the running tool sequence.
+    }
+    throw error;
+  }
+  if (process.platform !== "win32") {
+    const directoryFd = fs.openSync(sessionsDir, "r");
+    try {
+      fs.fsyncSync(directoryFd);
+    } finally {
+      fs.closeSync(directoryFd);
+    }
+  }
+}
+
+export function clearRecoveryCheckpoint(
+  sessionsDir: string,
+  sessionId: string,
+): void {
+  if (!isSafeSessionId(sessionId)) return;
+  const checkpointPath = recoveryCheckpointPath(sessionsDir, sessionId);
+  if (fs.existsSync(checkpointPath)) fs.unlinkSync(checkpointPath);
+}
+
+function recoveryCheckpointPath(
+  sessionsDir: string,
+  sessionId: string,
+): string {
+  return path.join(sessionsDir, `recovery-${sessionId}.json`);
 }
 
 export function readSnapshot(
@@ -336,7 +406,42 @@ export function listSessions(sessionsDir: string): SessionIndexEntry[] {
   if (!index) {
     index = rebuildIndex(sessionsDir);
   }
-  return [...index.entries].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  const saved = index.entries.filter(
+    (entry) => !entry.snapshotFile.startsWith("recovery-"),
+  );
+  if (!fs.existsSync(sessionsDir)) return [...saved];
+  const recovery = fs
+    .readdirSync(sessionsDir)
+    .filter((file) => /^recovery-[A-Za-z0-9._-]+\.json$/.test(file))
+    .flatMap((file) => {
+      try {
+        const sessionId = file.slice("recovery-".length, -".json".length);
+        if (!isSafeSessionId(sessionId)) return [];
+        const parsed = parseSnapshotObject(
+          JSON.parse(fs.readFileSync(path.join(sessionsDir, file), "utf8")),
+        );
+        if (
+          !parsed ||
+          parsed.metadata.recoveryCheckpoint !== true ||
+          parsed.metadata.sessionId !== sessionId
+        ) {
+          return [];
+        }
+        return [
+          toSessionIndexEntry(
+            file,
+            parsed.snapshot,
+            parsed.metadata,
+            parsed.context,
+          ),
+        ];
+      } catch {
+        return [];
+      }
+    });
+  return [...saved, ...recovery].sort((a, b) =>
+    b.savedAt.localeCompare(a.savedAt),
+  );
 }
 
 export function resolveLatestSession(
@@ -403,5 +508,8 @@ function toSessionIndexEntry(
     modelKey: typeof metadata.modelKey === "string" ? metadata.modelKey : "",
     turnCount: Array.isArray(context.turns) ? context.turns.length : 0,
     hasRollingSummary: context.rollingSummary !== undefined,
+    ...(metadata.recoveryCheckpoint === true
+      ? { recoveryCheckpoint: true }
+      : {}),
   };
 }

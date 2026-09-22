@@ -1,7 +1,11 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { writeIndex, type SessionIndex } from "../sessionHistory.js";
+import {
+  writeIndex,
+  writeRecoveryCheckpoint,
+  type SessionIndex,
+} from "../sessionHistory.js";
 import {
   listActiveInProgressSessionIds,
   pruneStaleSessionStorage,
@@ -82,6 +86,28 @@ describe("sessionStoragePrune", () => {
     pruneStaleSessionStorage(sessionsDir, retentionDays);
 
     expect(fs.existsSync(anchoredDir)).toBe(true);
+  });
+
+  it("keeps artifacts anchored only by a recovery checkpoint", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const staleDir = makeStorageDir(
+      "artifacts",
+      sessionId,
+      Date.now() - retentionMs - 1000,
+    );
+    writeRecoveryCheckpoint(
+      sessionsDir,
+      JSON.stringify({
+        version: 4,
+        savedAt: new Date().toISOString(),
+        metadata: { sessionId },
+        context: { turns: [] },
+      }),
+    );
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(staleDir)).toBe(true);
   });
 
   it("keeps anchored scratchpad by legacy sessionId in index", () => {

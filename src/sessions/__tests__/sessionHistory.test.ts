@@ -4,6 +4,8 @@ import * as os from "os";
 import * as crypto from "crypto";
 import {
   writeSnapshot,
+  writeRecoveryCheckpoint,
+  clearRecoveryCheckpoint,
   readSnapshot,
   readIndex,
   writeIndex,
@@ -102,6 +104,63 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("sessionHistory", () => {
+  describe("recovery checkpoints", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    it("replaces one private checkpoint and makes it loadable without indexing it", () => {
+      const dir = freshDir();
+      const first = minimalSessionJson({
+        metadata: { sessionId, lastTraceRunId: "run-1" },
+        turns: [makeTurn("t1", "first")],
+      });
+      writeRecoveryCheckpoint(dir, first);
+      expect(readIndex(dir)).toBeNull();
+      expect(resolveLatestSession(dir)).toMatchObject({
+        snapshotFile: `recovery-${sessionId}.json`,
+        recoveryCheckpoint: true,
+        runtimeSessionId: sessionId,
+      });
+      const checkpointPath = path.join(dir, `recovery-${sessionId}.json`);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(checkpointPath).mode & 0o777).toBe(0o600);
+      }
+
+      writeRecoveryCheckpoint(
+        dir,
+        minimalSessionJson({
+          metadata: { sessionId, lastTraceRunId: "run-2" },
+          turns: [makeTurn("t2", "second")],
+        }),
+      );
+      expect(listSessions(dir)).toHaveLength(1);
+      expect(
+        JSON.parse(readSnapshot(dir, `recovery-${sessionId}.json`)),
+      ).toMatchObject({
+        metadata: { recoveryCheckpoint: true, lastTraceRunId: "run-2" },
+      });
+      clearRecoveryCheckpoint(dir, sessionId);
+      expect(listSessions(dir)).toEqual([]);
+    });
+
+    it("rejects an unsafe ID and reports a blocked checkpoint directory", () => {
+      const dir = freshDir();
+      expect(() =>
+        writeRecoveryCheckpoint(
+          dir,
+          minimalSessionJson({ metadata: { sessionId: "../unsafe" } }),
+        ),
+      ).toThrow("safe runtime session ID");
+      const blocked = path.join(dir, "blocked");
+      fs.writeFileSync(blocked, "occupied");
+      expect(() =>
+        writeRecoveryCheckpoint(
+          blocked,
+          minimalSessionJson({ metadata: { sessionId } }),
+        ),
+      ).toThrow();
+    });
+  });
+
   // =================================================================
   // writeSnapshot
   // =================================================================

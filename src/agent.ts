@@ -89,6 +89,8 @@ import {
   getDefaultSessionsDir,
   writeInProgressMarker,
   clearInProgressMarker,
+  writeRecoveryCheckpoint,
+  clearRecoveryCheckpoint,
   InProgressMarker,
 } from "./sessions/sessionHistory.js";
 import {
@@ -492,6 +494,9 @@ export class Agent {
   private readonly pendingConfigurationChanges: PendingConfigurationChange[] =
     [];
   private lastTraceRunId?: string;
+  private pendingRecoveredToolCallIds: string[] = [];
+  private recoveryCheckpointRequested = false;
+  private readonly onRecoveryCheckpointFailure?: (error: Error) => void;
 
   constructor(
     options: {
@@ -513,6 +518,7 @@ export class Agent {
       configurationOrigins?: Partial<AgentConfigurationOrigins>;
       /** Application-owned trace storage. Omit to keep the Agent free of trace I/O. */
       createTraceRun?: AgentTraceRunFactory;
+      onRecoveryCheckpointFailure?: (error: Error) => void;
     } = {} as any,
   ) {
     if (!options.providersConfig) {
@@ -536,6 +542,7 @@ export class Agent {
     };
     this.configuredSessionsDir = options.sessionsDir;
     this.createTraceRun = options.createTraceRun;
+    this.onRecoveryCheckpointFailure = options.onRecoveryCheckpointFailure;
 
     this.sessionId = randomUUID();
     const resolvedRuntimeConfig = options.runtimeConfig
@@ -885,6 +892,22 @@ export class Agent {
         { durable: true },
       );
       this.flushPendingConfigurationChanges();
+      for (const toolCallId of this.pendingRecoveredToolCallIds) {
+        traceRun?.recorder.record(
+          {
+            component: "tool",
+            type: "recovered_tool_call_unresolved",
+            identity: { toolCallId },
+            payload: {
+              previousRunId: this.lastTraceRunId,
+              outcome: "unknown",
+              replayed: false,
+            },
+          },
+          { durable: true },
+        );
+      }
+      if (traceRun) this.pendingRecoveredToolCallIds = [];
       return traceRun;
     } catch {
       if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
@@ -2065,6 +2088,9 @@ export class Agent {
     } catch (error) {
       throw this.handleProviderError(error);
     } finally {
+      if (this.recoveryCheckpointRequested) {
+        this.writeSessionRecoveryCheckpoint();
+      }
       try {
         traceRun?.recorder.record(
           { component: "cli", type: "run_closed", payload: {} },
@@ -2134,8 +2160,56 @@ export class Agent {
           this.pendingToolResultBytes = 0;
         },
         processToolResult: (result) => this.maybePersistedResult(result),
+        onToolResultCommitted: () => {
+          this.recoveryCheckpointRequested = true;
+          this.writeSessionRecoveryCheckpoint();
+        },
       },
     });
+  }
+
+  private writeSessionRecoveryCheckpoint(): void {
+    const traceRun = this.activeTraceRun;
+    if (!traceRun || !this.sessionsDir) return;
+    try {
+      writeRecoveryCheckpoint(this.sessionsDir, this.exportSession());
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.emitDiagnostic({
+        type: "recovery_checkpoint_failed",
+        sessionId: this.sessionId,
+        runId: traceRun.recorder.identity.runId,
+        errorName: failure.name,
+        message: failure.message,
+      });
+      try {
+        traceRun.recorder.record(
+          {
+            component: "context",
+            type: "recovery_checkpoint_failed",
+            payload: { errorName: failure.name, message: failure.message },
+          },
+          { durable: true },
+        );
+      } catch {
+        // The warning callback is independent of the trace sink.
+      }
+      try {
+        this.onRecoveryCheckpointFailure?.(failure);
+      } catch {
+        // Recovery capture is observational and must not change tool behavior.
+      }
+      return;
+    }
+    try {
+      traceRun.recorder.record({
+        component: "context",
+        type: "recovery_checkpoint_written",
+        payload: { sessionId: this.sessionId },
+      });
+    } catch {
+      // The checkpoint is durable independently of trace capture.
+    }
   }
 
   private startLocalTurn(): void {
@@ -2210,6 +2284,23 @@ export class Agent {
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
     this.contextManager.clear();
+    if (this.recoveryCheckpointRequested) {
+      try {
+        clearRecoveryCheckpoint(
+          this.configuredSessionsDir ?? getDefaultSessionsDir(),
+          this.sessionId,
+        );
+        this.recoveryCheckpointRequested = false;
+      } catch (error) {
+        const failure =
+          error instanceof Error ? error : new Error(String(error));
+        try {
+          this.onRecoveryCheckpointFailure?.(failure);
+        } catch {
+          // Clearing context must remain available when warning delivery fails.
+        }
+      }
+    }
   }
 
   getContext(): ChatMessage[] {
@@ -2513,7 +2604,8 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
-      lastTraceRunId: this.lastTraceRunId,
+      lastTraceRunId:
+        this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
       agentMode: this.modeState.mode,
       ...(approvedPlan ?? {}),
       ...(this.modeState.mode === "plan" &&
@@ -2524,6 +2616,54 @@ export class Agent {
         : {}),
     };
     return serializeSession(state, metadata);
+  }
+
+  /** Fill only missing responses in a recovery checkpoint; never execute them. */
+  private reconcileRecoveredToolCalls(): string[] {
+    const unresolved = this.findMissingRecoveryToolCalls();
+    if (unresolved.length === 0) return [];
+
+    this.contextManager.recordToolResults(
+      unresolved.map((call) => ({
+        toolCallId: call.id,
+        toolName: call.name,
+        status: "error" as const,
+        rawContent:
+          "[Recovery: no durable tool result in the session checkpoint. Completion is unknown; the tool was not replayed.]",
+      })),
+    );
+    return unresolved.map((call) => call.id);
+  }
+
+  private findMissingRecoveryToolCalls(): Array<{ id: string; name: string }> {
+    const turns = this.contextManager.getConversationState().turns;
+    const turn = turns[turns.length - 1];
+    if (!turn || turn.completedAt) return [];
+
+    let assistantIndex = -1;
+    for (let index = turn.entries.length - 1; index >= 0; index--) {
+      if (turn.entries[index]?.kind === "assistant") {
+        assistantIndex = index;
+        break;
+      }
+    }
+    if (assistantIndex < 0) return [];
+    const calls = turn.entries[assistantIndex]?.message.toolCalls ?? [];
+    if (calls.length === 0) return [];
+
+    const recorded = new Set(
+      turn.entries
+        .slice(assistantIndex + 1)
+        .flatMap((entry) =>
+          entry.kind === "tool" ? (entry.toolInvocations ?? []) : [],
+        )
+        .map((invocation) => invocation.toolCallId),
+    );
+    return calls.flatMap((call) =>
+      typeof call.id === "string" && !recorded.has(call.id)
+        ? [{ id: call.id, name: call.function.name }]
+        : [],
+    );
   }
 
   /**
@@ -2566,6 +2706,11 @@ export class Agent {
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
 
     this.contextManager.importState(state);
+    this.recoveryCheckpointRequested =
+      persisted.metadata.recoveryCheckpoint === true;
+    this.pendingRecoveredToolCallIds = persisted.metadata.recoveryCheckpoint
+      ? this.reconcileRecoveredToolCalls()
+      : [];
 
     const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
