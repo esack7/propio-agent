@@ -20,7 +20,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { createHash, randomUUID } from "crypto";
 import {
-  getPackageDependencyVersion,
+  getInstalledPackageVersion,
   getPackageVersion,
 } from "./packageVersion.js";
 import {
@@ -150,7 +150,12 @@ export interface AgentTraceRun {
 export type AgentTraceRunFactory = (identity: TraceIdentity) => AgentTraceRun;
 
 export type AgentConfigurationValueSource =
-  RuntimeConfigSource | "workspace" | "package_metadata" | "provider" | "mcp";
+  | RuntimeConfigSource
+  | "workspace"
+  | "package_metadata"
+  | "provider"
+  | "mcp"
+  | "session";
 
 export interface AgentConfigurationOrigins {
   readonly providersConfig: AgentConfigurationValueSource;
@@ -172,7 +177,8 @@ type ConfigurationChangeScope =
   | "system_prompt"
   | "tool_scope"
   | "mcp"
-  | "approval";
+  | "approval"
+  | "session";
 
 interface PendingConfigurationChange {
   readonly revisionId: string;
@@ -417,6 +423,25 @@ function buildRedactedProviderConfig(
   }
 }
 
+function modeConfigurationChanged(
+  previous: AgentModeState,
+  next: AgentModeState,
+): boolean {
+  return (
+    previous.mode !== next.mode ||
+    previous.planSaveApproved !== next.planSaveApproved ||
+    previous.planFilePath !== next.planFilePath
+  );
+}
+
+function capturePackageVersion(readVersion: () => string): string {
+  try {
+    return readVersion();
+  } catch {
+    return "unavailable";
+  }
+}
+
 export class Agent {
   private provider!: LLMProvider;
   private model!: string;
@@ -426,6 +451,10 @@ export class Agent {
   private agentsMdContent: string;
   private systemPromptRegistry: SystemPromptSectionRegistry;
   private toolRegistry: ToolRegistry;
+  private readonly toolConfigurationOrigins = new Map<
+    string,
+    AgentConfigurationValueSource
+  >();
   private mcpManager: McpManager;
   private providersConfig: ProvidersConfig;
   private diagnosticsEnabled: boolean;
@@ -751,6 +780,7 @@ export class Agent {
     cause: string,
     scope: ConfigurationChangeScope,
   ): void {
+    if (!this.createTraceRun) return;
     const previousRevisionId = this.configurationRevisionId;
     this.configurationRevisionId = randomUUID();
     const change: PendingConfigurationChange = {
@@ -759,14 +789,14 @@ export class Agent {
       changedAt: new Date().toISOString(),
       cause,
       scope,
-      configuration: this.buildRedactedConfigurationSnapshot(),
+      configuration: this.captureRedactedConfigurationSnapshot(),
       mode: this.modeState.mode,
       provider: this.provider.name,
       model: this.model,
-      enabledTools: this.getTools().map((tool) => tool.function.name),
+      enabledTools: this.captureEnabledToolNames(),
     };
     if (!this.activeTraceRun) {
-      if (this.createTraceRun) this.pendingConfigurationChanges.push(change);
+      this.pendingConfigurationChanges.push(change);
       return;
     }
     this.recordConfigurationChangeEvent(change);
@@ -775,22 +805,26 @@ export class Agent {
   private recordConfigurationChangeEvent(
     change: PendingConfigurationChange,
   ): void {
-    this.activeTraceRun?.recorder.record({
-      component: "configuration",
-      type: "configuration_revision_changed",
-      identity: { configurationRevisionId: change.revisionId },
-      payload: {
-        previousRevisionId: change.previousRevisionId,
-        changedAt: change.changedAt,
-        cause: change.cause,
-        scope: change.scope,
-        configuration: change.configuration,
-        mode: change.mode,
-        provider: change.provider,
-        model: change.model,
-        enabledTools: change.enabledTools,
-      },
-    });
+    try {
+      this.activeTraceRun?.recorder.record({
+        component: "configuration",
+        type: "configuration_revision_changed",
+        identity: { configurationRevisionId: change.revisionId },
+        payload: {
+          previousRevisionId: change.previousRevisionId,
+          changedAt: change.changedAt,
+          cause: change.cause,
+          scope: change.scope,
+          configuration: change.configuration,
+          mode: change.mode,
+          provider: change.provider,
+          model: change.model,
+          enabledTools: change.enabledTools,
+        },
+      });
+    } catch {
+      // Trace capture is observational and must not affect configuration changes.
+    }
   }
 
   private flushPendingConfigurationChanges(): void {
@@ -1080,6 +1114,25 @@ export class Agent {
     return { present: false, source: "absent" };
   }
 
+  private captureEnabledToolNames(): ReadonlyArray<string> {
+    try {
+      return this.getTools().map((tool) => tool.function.name);
+    } catch {
+      return [];
+    }
+  }
+
+  private captureRedactedConfigurationSnapshot(): Record<string, unknown> {
+    try {
+      return this.buildRedactedConfigurationSnapshot();
+    } catch {
+      return {
+        revisionId: this.configurationRevisionId,
+        capture: { status: "unavailable", reason: "snapshot_failed" },
+      };
+    }
+  }
+
   private buildRedactedConfigurationSnapshot(): Record<string, unknown> {
     const provider = this.resolvedProviderConfig;
     const tools = this.getMergedToolSchemas()
@@ -1087,7 +1140,7 @@ export class Agent {
         name: tool.function.name,
         schemaRevisionId: createTraceRevisionId(tool),
         source: this.toolRegistry.hasTool(tool.function.name)
-          ? this.configurationOrigins.tools
+          ? (this.toolConfigurationOrigins.get(tool.function.name) ?? "default")
           : "mcp",
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
@@ -1105,8 +1158,10 @@ export class Agent {
       .sort((left, right) => left.name.localeCompare(right.name));
     const configuration = {
       packages: {
-        agent: getPackageVersion(),
-        providers: getPackageDependencyVersion("@propio-ai/providers"),
+        agent: capturePackageVersion(() => getPackageVersion()),
+        providers: capturePackageVersion(() =>
+          getInstalledPackageVersion("@propio-ai/providers"),
+        ),
       },
       provider: {
         name: provider.name,
@@ -1122,6 +1177,9 @@ export class Agent {
       mode: this.modeState.mode,
       approvals: {
         planSaveApproved: this.modeState.planSaveApproved ?? false,
+        planFileRevisionId: this.modeState.planFilePath
+          ? createTraceRevisionId(this.modeState.planFilePath)
+          : undefined,
         globalInstallApprovalCallbackConfigured: Boolean(
           this.bashGlobalInstallGate.requestGlobalInstallApproval,
         ),
@@ -2509,11 +2567,29 @@ export class Agent {
 
     this.contextManager.importState(state);
 
+    const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
-    this.modeState = {
+    const importedModeState: AgentModeState = {
       mode: importedMode,
       ...resolveImportedPlanState(persisted.metadata),
     };
+    this.modeState = importedModeState;
+    if (modeConfigurationChanged(previousModeState, importedModeState)) {
+      if (previousModeState.mode !== importedModeState.mode) {
+        this.configurationOrigins.mode = "session";
+      }
+      if (
+        previousModeState.planSaveApproved !==
+          importedModeState.planSaveApproved ||
+        previousModeState.planFilePath !== importedModeState.planFilePath
+      ) {
+        this.configurationOrigins.planApproval = "session";
+      }
+      this.recordConfigurationChange(
+        "session_configuration_imported",
+        "session",
+      );
+    }
     this.pendingExecuteSwitchReminder = false;
     this.restorePlanModeDraftTrackingFromImport(
       persisted.metadata.planDraftSearchStartTurnIndex,
@@ -2597,8 +2673,9 @@ export class Agent {
 
   addTool(tool: PresentedTool): void {
     this.toolRegistry.register(tool, true);
-    if (!this.activeTraceRun && !this.lastTraceRunId) return;
+    this.toolConfigurationOrigins.set(tool.name, "runtime_change");
     this.configurationOrigins.tools = "runtime_change";
+    if (!this.activeTraceRun && !this.lastTraceRunId) return;
     this.recordConfigurationChange(
       `tool_registered:${tool.name}`,
       "tool_scope",

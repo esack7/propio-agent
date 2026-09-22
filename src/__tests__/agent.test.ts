@@ -1112,6 +1112,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         }),
       });
       (agent as any).provider = mockProvider;
+      agent.addTool(createMockTool({ name: "custom_lookup" }));
 
       await agent.streamChat(userSubmission("Trace configuration"), () => {});
 
@@ -1140,7 +1141,16 @@ describe("Agent with Multi-Provider Configuration", () => {
         },
         workspace: { revisionId: expect.stringMatching(/^sha256:/) },
       });
-      expect(configuration.tools[0].schemaRevisionId).toMatch(/^sha256:/);
+      expect(configuration.tools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "custom_lookup",
+            source: "runtime_change",
+            schemaRevisionId: expect.stringMatching(/^sha256:/),
+          }),
+          expect.objectContaining({ name: "read", source: "default" }),
+        ]),
+      );
       expect(JSON.stringify(configuration)).not.toContain(syntheticSecret);
       expect(JSON.stringify(configuration)).not.toContain(urlSecret);
       expect(JSON.stringify(configuration)).not.toContain(process.cwd());
@@ -1182,6 +1192,99 @@ describe("Agent with Multi-Provider Configuration", () => {
               coreIdentityRevisionId: expect.stringMatching(/^sha256:/),
             },
             sources: { systemPrompt: "runtime_change" },
+          },
+        },
+      });
+      expect(
+        mockProvider.streamChatCalls[0].trace?.configurationRevisionId,
+      ).toBe(change?.identity.configurationRevisionId);
+    });
+
+    it("does not build configuration snapshots when tracing is disabled", () => {
+      const mockProvider = new MockProvider();
+      const capabilities = jest.spyOn(mockProvider, "getCapabilities");
+      const agent = createTestAgent(mockProvider);
+
+      agent.setAgentMode("plan");
+
+      expect(capabilities).not.toHaveBeenCalled();
+    });
+
+    it("isolates configuration snapshot failures from runtime changes", async () => {
+      const mockProvider = new MockProvider();
+      jest
+        .spyOn(mockProvider, "getCapabilities")
+        .mockImplementationOnce(() => {
+          throw new Error("snapshot failure");
+        })
+        .mockReturnValue({ contextWindowTokens: 128000 });
+      const traceEvents: Array<{ type: string; payload: unknown }> = [];
+      const agent = createTestAgent(mockProvider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({ type: event.type, payload: event.payload }),
+          },
+        }),
+      });
+
+      expect(() => agent.setAgentMode("plan")).not.toThrow();
+      await expect(
+        agent.streamChat(userSubmission("Continue"), () => {}),
+      ).resolves.toBe("Mock response");
+
+      const change = traceEvents.find(
+        (event) => event.type === "configuration_revision_changed",
+      );
+      expect(change).toMatchObject({
+        payload: {
+          cause: "mode_changed",
+          configuration: {
+            capture: { status: "unavailable", reason: "snapshot_failed" },
+          },
+        },
+      });
+    });
+
+    it("records configuration lineage for an imported session mode", async () => {
+      const source = new Agent({ providersConfig: testProvidersConfig });
+      source.setAgentMode("plan");
+      const session = source.exportSession();
+      const mockProvider = new MockProvider();
+      const traceEvents: Array<{
+        type: string;
+        identity: Record<string, unknown>;
+        payload: unknown;
+      }> = [];
+      const imported = createTestAgent(mockProvider, {
+        createTraceRun: (identity) => ({
+          recorder: {
+            identity,
+            record: (event) =>
+              traceEvents.push({
+                type: event.type,
+                identity: { ...identity, ...event.identity },
+                payload: event.payload,
+              }),
+          },
+        }),
+      });
+
+      imported.importSession(session);
+      await imported.streamChat(userSubmission("Continue the plan"), () => {});
+
+      const change = traceEvents.find(
+        (event) => event.type === "configuration_revision_changed",
+      );
+      expect(change).toMatchObject({
+        payload: {
+          cause: "session_configuration_imported",
+          scope: "session",
+          mode: "plan",
+          configuration: {
+            mode: "plan",
+            sources: { mode: "session" },
           },
         },
       });

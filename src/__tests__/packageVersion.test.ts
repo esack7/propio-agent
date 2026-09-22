@@ -3,10 +3,10 @@ import * as os from "os";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import {
-  getPackageDependencyVersion,
+  getInstalledPackageVersion,
   getPackageVersion,
-  readPackageDependencyVersionFromPath,
   readPackageVersionFromPath,
+  resolveInstalledPackageJsonPath,
   resolvePackageJsonPath,
 } from "../packageVersion.js";
 
@@ -40,20 +40,28 @@ describe("packageVersion", () => {
     expect(getPackageVersion()).toBe(expected);
   });
 
-  it("reads a declared dependency version", () => {
+  it("reads the version from an installed package's own metadata", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "propio-pkg-"));
-    const packageJsonPath = path.join(dir, "package.json");
+    const packageDir = path.join(dir, "node_modules", "example-package");
+    const packageJsonPath = path.join(packageDir, "package.json");
+    const installedEntry = path.join(packageDir, "dist", "index.js");
+    fs.mkdirSync(path.dirname(installedEntry), { recursive: true });
     fs.writeFileSync(
       packageJsonPath,
-      JSON.stringify({ dependencies: { "example-package": "1.2.3" } }),
+      JSON.stringify({
+        name: "example-package",
+        version: "9.8.7-local",
+        exports: "./dist/index.js",
+      }),
     );
+    fs.writeFileSync(installedEntry, "export {};\n");
+    const consumerUrl = pathToFileURL(path.join(dir, "consumer.mjs")).href;
 
     expect(
-      readPackageDependencyVersionFromPath(packageJsonPath, "example-package"),
-    ).toBe("1.2.3");
-  });
-
-  it("returns the declared providers package version", () => {
-    expect(getPackageDependencyVersion("@propio-ai/providers")).toBe("0.3.0");
+      resolveInstalledPackageJsonPath("example-package", consumerUrl),
+    ).toBe(fs.realpathSync(packageJsonPath));
+    expect(getInstalledPackageVersion("example-package", consumerUrl)).toBe(
+      "9.8.7-local",
+    );
   });
 });
