@@ -1079,6 +1079,7 @@ export class AgentRuntime {
       // Commit each completed result before dispatching the next call. A later
       // cancellation must not erase evidence from an earlier side effect.
       this.contextManager.recordToolResults([completedResult]);
+      this.dependencies.integrations?.onToolResultCommitted?.(completedResult);
     }
   }
 

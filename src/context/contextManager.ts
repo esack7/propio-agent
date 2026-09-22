@@ -20,6 +20,14 @@ export class ContextManager extends ConversationManager {
     this.invokedSkills.push(cloneInvokedSkillRecord(record));
   }
 
+  getInvokedSkillCount(): number {
+    return this.invokedSkills.length;
+  }
+
+  getInvokedSkillsSince(count: number): InvokedSkillRecord[] {
+    return this.invokedSkills.slice(count).map(cloneInvokedSkillRecord);
+  }
+
   override clear(): void {
     super.clear();
     this.invokedSkills = [];

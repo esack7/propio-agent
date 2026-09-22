@@ -56,6 +56,38 @@ export interface BuildPromptPlanOptions {
   supplementalContext?: ReadonlyArray<string>;
 }
 
+/** Changes since a recovery baseline; records contain only newly changed data. */
+export type ConversationRecoveryChange =
+  | { kind: "turn_added"; turn: TurnRecord }
+  | { kind: "turn_removed"; turnId: string; artifactIds: string[] }
+  | {
+      kind: "assistant_added";
+      turnId: string;
+      entry: TurnEntry;
+      turn: TurnRecordUpdate;
+    }
+  | { kind: "assistant_removed"; turnId: string }
+  | {
+      kind: "tool_results_added";
+      turnId: string;
+      entry: TurnEntry;
+      artifacts: ArtifactRecord[];
+      appendToToolEntry: boolean;
+    }
+  | {
+      kind: "preamble_added";
+      message: ChatMessage;
+      artifacts?: ArtifactRecord[];
+    }
+  | { kind: "preamble_removed" }
+  | { kind: "summary_set"; summary: RollingSummaryRecord }
+  | { kind: "memory_set"; records: PinnedMemoryRecord[] };
+
+export interface TurnRecordUpdate {
+  readonly completedAt?: string;
+  readonly estimatedTokens?: number;
+}
+
 interface NormalizedBuildPromptPlanOptions {
   contextWindowTokens: number;
   policy: PromptBudgetPolicy;
@@ -288,6 +320,17 @@ export class ConversationManager {
   private rehydrationMaxChars: number;
   private pinnedMemoryMaxContentLength: number;
   private compactionFailureCount = 0;
+  private recoveryChangeListener?: (change: ConversationRecoveryChange) => void;
+
+  setRecoveryChangeListener(
+    listener?: (change: ConversationRecoveryChange) => void,
+  ): void {
+    this.recoveryChangeListener = listener;
+  }
+
+  protected emitRecoveryChange(change: ConversationRecoveryChange): void {
+    this.recoveryChangeListener?.(change);
+  }
 
   private readonly tokenEstimator: TokenEstimator;
   private readonly artifactLookup?: (id: string) => ArtifactRecord | undefined;
@@ -347,6 +390,12 @@ export class ConversationManager {
       userMessage: message,
       entries: [],
     });
+    if (this.recoveryChangeListener) {
+      this.emitRecoveryChange({
+        kind: "turn_added",
+        turn: cloneTurn(this.turns[this.turns.length - 1]!),
+      });
+    }
   }
 
   /**
@@ -365,6 +414,11 @@ export class ConversationManager {
     }
 
     this.turns.pop();
+    this.emitRecoveryChange({
+      kind: "turn_removed",
+      turnId: turn.id,
+      artifactIds: [],
+    });
   }
 
   /** Application adapters may discard a recognized incomplete turn. */
@@ -373,12 +427,19 @@ export class ConversationManager {
   ): void {
     const turn = this.currentTurn();
     if (!turn || turn.completedAt != null || !matches(cloneTurn(turn))) return;
+    const artifactIds: string[] = [];
     for (const entry of turn.entries) {
       for (const invocation of entry.toolInvocations ?? []) {
         this.artifacts.delete(invocation.artifactId);
+        artifactIds.push(invocation.artifactId);
       }
     }
     this.turns.pop();
+    this.emitRecoveryChange({
+      kind: "turn_removed",
+      turnId: turn.id,
+      artifactIds,
+    });
   }
 
   commitAssistantResponse(
@@ -394,6 +455,11 @@ export class ConversationManager {
     const turn = this.currentTurn();
     if (!turn) {
       this.preTurnMessages.push(message);
+      if (this.recoveryChangeListener)
+        this.emitRecoveryChange({
+          kind: "preamble_added",
+          message: cloneMessage(message),
+        });
       return;
     }
 
@@ -406,6 +472,17 @@ export class ConversationManager {
 
     if (!toolCalls || toolCalls.length === 0) {
       this.completeTurn(turn);
+    }
+    if (this.recoveryChangeListener) {
+      this.emitRecoveryChange({
+        kind: "assistant_added",
+        turnId: turn.id,
+        entry: cloneEntry(turn.entries[turn.entries.length - 1]!),
+        turn: {
+          completedAt: turn.completedAt,
+          estimatedTokens: turn.estimatedTokens,
+        },
+      });
     }
   }
 
@@ -432,6 +509,7 @@ export class ConversationManager {
     const invocations: MutableToolInvocation[] = [];
     const toolResults: ToolResult[] = [];
 
+    const newArtifacts: ArtifactRecord[] = [];
     for (const result of results) {
       const artifactId = randomUUID();
       const mediaType = resolveMediaType(result);
@@ -463,6 +541,8 @@ export class ConversationManager {
       }
 
       this.artifacts.set(artifactId, artifact);
+      if (this.recoveryChangeListener)
+        newArtifacts.push(cloneArtifact(artifact));
 
       invocations.push({
         toolCallId: result.toolCallId,
@@ -490,6 +570,12 @@ export class ConversationManager {
 
     if (!turn) {
       this.preTurnMessages.push(message);
+      if (this.recoveryChangeListener)
+        this.emitRecoveryChange({
+          kind: "preamble_added",
+          message: cloneMessage(message),
+          artifacts: newArtifacts,
+        });
       return;
     }
 
@@ -506,6 +592,21 @@ export class ConversationManager {
       previousEntry.estimatedTokens = this.tokenEstimator.estimateMessages([
         previousEntry.message,
       ]);
+      if (this.recoveryChangeListener) {
+        this.emitRecoveryChange({
+          kind: "tool_results_added",
+          turnId: turn.id,
+          entry: {
+            kind: "tool",
+            createdAt: previousEntry.createdAt,
+            estimatedTokens: previousEntry.estimatedTokens,
+            message: cloneMessage(message),
+            toolInvocations: invocations.map(cloneInvocation),
+          },
+          artifacts: newArtifacts,
+          appendToToolEntry: true,
+        });
+      }
       return;
     }
 
@@ -516,6 +617,15 @@ export class ConversationManager {
       message,
       toolInvocations: invocations,
     });
+    if (this.recoveryChangeListener) {
+      this.emitRecoveryChange({
+        kind: "tool_results_added",
+        turnId: turn.id,
+        entry: cloneEntry(turn.entries[turn.entries.length - 1]!),
+        artifacts: newArtifacts,
+        appendToToolEntry: false,
+      });
+    }
   }
 
   // fallow-ignore-next-line complexity
@@ -529,6 +639,7 @@ export class ConversationManager {
         last.toolCalls.length > 0
       ) {
         this.preTurnMessages.pop();
+        this.emitRecoveryChange({ kind: "preamble_removed" });
       }
       return;
     }
@@ -544,6 +655,7 @@ export class ConversationManager {
     const last = turn.entries[lastAssistantIdx];
     if (last.message.toolCalls && last.message.toolCalls.length > 0) {
       turn.entries.pop();
+      this.emitRecoveryChange({ kind: "assistant_removed", turnId: turn.id });
     }
   }
 
@@ -647,6 +759,11 @@ export class ConversationManager {
       ...summary,
       coveredTurnIds: [...summary.coveredTurnIds],
     };
+    if (this.recoveryChangeListener)
+      this.emitRecoveryChange({
+        kind: "summary_set",
+        summary: this.getRollingSummary()!,
+      });
   }
 
   /**
@@ -720,6 +837,7 @@ export class ConversationManager {
     };
 
     this.pinnedMemory.push(record);
+    this.emitPinnedMemoryChange();
     return record.id;
   }
 
@@ -792,6 +910,7 @@ export class ConversationManager {
 
     this.pinnedMemory[idx] = supersedRecord(existing, replacement.id);
     this.pinnedMemory.push(replacement);
+    this.emitPinnedMemoryChange();
     return replacement.id;
   }
 
@@ -806,6 +925,16 @@ export class ConversationManager {
     );
 
     this.pinnedMemory[idx] = removeRecord(existing, rationale);
+    this.emitPinnedMemoryChange();
+  }
+
+  private emitPinnedMemoryChange(): void {
+    if (this.recoveryChangeListener) {
+      this.emitRecoveryChange({
+        kind: "memory_set",
+        records: this.pinnedMemory.map(clonePinnedRecord),
+      });
+    }
   }
 
   private getActivePinnedMemoryRecord(

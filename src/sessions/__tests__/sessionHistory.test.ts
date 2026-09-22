@@ -4,12 +4,15 @@ import * as os from "os";
 import * as crypto from "crypto";
 import {
   writeSnapshot,
+  writeRecoveryCheckpoint,
+  clearRecoveryCheckpoint,
   readSnapshot,
   readIndex,
   writeIndex,
   rebuildIndex,
   listSessions,
   resolveLatestSession,
+  resolveLatestRecoveryCheckpoint,
   resolveSessionById,
   resolveWorkspaceRoot,
   hashWorkspace,
@@ -18,6 +21,10 @@ import {
   SessionIndex,
   SessionIndexEntry,
 } from "../sessionHistory.js";
+import {
+  appendRecoveryJournal,
+  writeRecoveryJournalBase,
+} from "../recoveryJournal.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -102,6 +109,212 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 describe("sessionHistory", () => {
+  describe("recovery checkpoints", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+
+    it("replaces one private checkpoint and makes it loadable without indexing it", () => {
+      const dir = freshDir();
+      const first = minimalSessionJson({
+        metadata: { sessionId, lastTraceRunId: "run-1" },
+        turns: [makeTurn("t1", "first")],
+      });
+      writeRecoveryCheckpoint(dir, first);
+      expect(readIndex(dir)).toBeNull();
+      expect(resolveLatestSession(dir)).toBeNull();
+      expect(resolveLatestRecoveryCheckpoint(dir)).toMatchObject({
+        snapshotFile: `recovery-${sessionId}.json`,
+        recoveryCheckpoint: true,
+        runtimeSessionId: sessionId,
+      });
+      const checkpointPath = path.join(dir, `recovery-${sessionId}.json`);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(checkpointPath).mode & 0o777).toBe(0o600);
+      }
+
+      writeRecoveryCheckpoint(
+        dir,
+        minimalSessionJson({
+          metadata: { sessionId, lastTraceRunId: "run-2" },
+          turns: [makeTurn("t2", "second")],
+        }),
+      );
+      expect(listSessions(dir)).toHaveLength(1);
+      expect(
+        JSON.parse(readSnapshot(dir, `recovery-${sessionId}.json`)),
+      ).toMatchObject({
+        metadata: { recoveryCheckpoint: true, lastTraceRunId: "run-2" },
+      });
+      clearRecoveryCheckpoint(dir, sessionId);
+      expect(listSessions(dir)).toEqual([]);
+    });
+
+    it("replays a complete journal prefix and repairs an interrupted tail", () => {
+      const dir = freshDir();
+      const baseline = minimalSessionJson({
+        version: 4,
+        metadata: { sessionId },
+        invokedSkills: [],
+        turns: [
+          {
+            id: "turn-1",
+            startedAt: "2026-03-29T08:00:00.000Z",
+            importance: "normal",
+            userMessage: { role: "user", content: "work" },
+            entries: [],
+          },
+        ],
+      });
+      let position = writeRecoveryJournalBase(dir, baseline);
+      writeRecoveryCheckpoint(dir, baseline);
+      expect(listSessions(dir)).toHaveLength(1);
+      expect(resolveLatestRecoveryCheckpoint(dir)?.snapshotFile).toBe(
+        `recovery-${sessionId}.jsonl`,
+      );
+      position = appendRecoveryJournal(
+        dir,
+        sessionId,
+        position,
+        JSON.parse(baseline).metadata,
+        [
+          {
+            kind: "assistant_added",
+            turnId: "turn-1",
+            entry: {
+              kind: "assistant",
+              createdAt: "2026-03-29T08:00:01.000Z",
+              message: { role: "assistant", content: "done" },
+            },
+            turn: {
+              completedAt: "2026-03-29T08:00:01.000Z",
+              estimatedTokens: 4,
+            },
+          },
+        ],
+        [],
+      );
+      const journalPath = path.join(dir, `recovery-${sessionId}.jsonl`);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(journalPath).mode & 0o777).toBe(0o600);
+      }
+      fs.appendFileSync(journalPath, '{"version":1,"sequence":2');
+
+      const entry = resolveLatestRecoveryCheckpoint(dir);
+      expect(entry?.snapshotFile).toBe(`recovery-${sessionId}.jsonl`);
+      expect(
+        JSON.parse(readSnapshot(dir, entry!.snapshotFile)).context.turns[0],
+      ).toMatchObject({
+        completedAt: "2026-03-29T08:00:01.000Z",
+        entries: [{ message: { content: "done" } }],
+      });
+
+      appendRecoveryJournal(
+        dir,
+        sessionId,
+        position,
+        JSON.parse(baseline).metadata,
+        [
+          {
+            kind: "turn_added",
+            turn: {
+              id: "turn-2",
+              startedAt: "2026-03-29T08:00:02.000Z",
+              importance: "normal",
+              userMessage: { role: "user", content: "next" },
+              entries: [],
+            },
+          },
+        ],
+        [],
+      );
+      expect(
+        JSON.parse(readSnapshot(dir, entry!.snapshotFile)).context.turns,
+      ).toHaveLength(2);
+      expect(
+        fs.readFileSync(journalPath, "utf8").trimEnd().split("\n"),
+      ).toHaveLength(3);
+      fs.appendFileSync(journalPath, '{"version":1,"sequence":3}\n');
+      expect(
+        JSON.parse(readSnapshot(dir, entry!.snapshotFile)).context.turns,
+      ).toHaveLength(2);
+      clearRecoveryCheckpoint(dir, sessionId);
+      expect(fs.existsSync(journalPath)).toBe(false);
+      expect(fs.existsSync(path.join(dir, `recovery-${sessionId}.json`))).toBe(
+        false,
+      );
+    });
+
+    it("refuses to append through a replaced journal symlink", () => {
+      if (process.platform === "win32") return;
+      const dir = freshDir();
+      const baseline = minimalSessionJson({
+        version: 4,
+        metadata: { sessionId },
+        invokedSkills: [],
+      });
+      const position = writeRecoveryJournalBase(dir, baseline);
+      const journal = path.join(dir, `recovery-${sessionId}.jsonl`);
+      const original = path.join(dir, "original.jsonl");
+      fs.renameSync(journal, original);
+      fs.symlinkSync(original, journal);
+
+      expect(() =>
+        appendRecoveryJournal(
+          dir,
+          sessionId,
+          position,
+          JSON.parse(baseline).metadata,
+          [],
+          [],
+        ),
+      ).toThrow();
+      expect(
+        fs.readFileSync(original, "utf8").trimEnd().split("\n"),
+      ).toHaveLength(1);
+    });
+
+    it("keeps the latest saved snapshot distinct from a newer checkpoint", () => {
+      const dir = freshDir();
+      const saved = writeSnapshot(
+        dir,
+        minimalSessionJson({
+          savedAt: "2026-03-29T08:00:00.000Z",
+          turns: [makeTurn("saved", "saved")],
+        }),
+      );
+      writeRecoveryCheckpoint(
+        dir,
+        minimalSessionJson({
+          savedAt: "2026-03-29T12:00:00.000Z",
+          metadata: { sessionId },
+          turns: [makeTurn("recovery", "recovery")],
+        }),
+      );
+
+      expect(resolveLatestSession(dir)?.snapshotFile).toBe(saved.snapshotFile);
+      expect(resolveLatestRecoveryCheckpoint(dir)?.recoveryCheckpoint).toBe(
+        true,
+      );
+    });
+
+    it("rejects an unsafe ID and reports a blocked checkpoint directory", () => {
+      const dir = freshDir();
+      expect(() =>
+        writeRecoveryCheckpoint(
+          dir,
+          minimalSessionJson({ metadata: { sessionId: "../unsafe" } }),
+        ),
+      ).toThrow("safe runtime session ID");
+      const blocked = path.join(dir, "blocked");
+      fs.writeFileSync(blocked, "occupied");
+      expect(() =>
+        writeRecoveryCheckpoint(
+          blocked,
+          minimalSessionJson({ metadata: { sessionId } }),
+        ),
+      ).toThrow();
+    });
+  });
+
   // =================================================================
   // writeSnapshot
   // =================================================================

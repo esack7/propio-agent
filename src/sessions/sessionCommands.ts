@@ -1,9 +1,11 @@
 import { ConversationState } from "../context/types.js";
 import {
   writeSnapshot,
+  clearRecoveryCheckpoint,
   readSnapshot,
   listSessions,
   resolveLatestSession,
+  resolveLatestRecoveryCheckpoint,
   resolveSessionById,
   SessionIndexEntry,
 } from "./sessionHistory.js";
@@ -22,6 +24,7 @@ export interface SessionCommandIO {
 
 export interface SessionAgent {
   getConversationState(): ConversationState;
+  getRuntimeSessionId?(): string;
   exportSession(): string;
   importSession(json: string): void;
 }
@@ -46,7 +49,8 @@ export function formatSessionEntry(entry: SessionIndexEntry): string {
   const timeStr = date.toLocaleString();
   const turns = `${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"}`;
   const summary = entry.hasRollingSummary ? ", has summary" : "";
-  return `${entry.sessionId}  ${timeStr}  ${entry.providerName}/${entry.modelKey}  ${turns}${summary}`;
+  const recovery = entry.recoveryCheckpoint ? ", recovery checkpoint" : "";
+  return `${entry.sessionId}  ${timeStr}  ${entry.providerName}/${entry.modelKey}  ${turns}${summary}${recovery}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +69,15 @@ export function saveSessionOnExit(
   try {
     const json = agent.exportSession();
     const entry = writeSnapshot(sessionsDir, json);
+    if (entry.runtimeSessionId) {
+      try {
+        clearRecoveryCheckpoint(sessionsDir, entry.runtimeSessionId);
+      } catch (error) {
+        io.error(
+          `Session saved, but its recovery checkpoint could not be cleared: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     io.info(
       `Session saved: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );
@@ -92,11 +105,20 @@ function listSavedSessions(sessionsDir: string, io: SessionCommandIO): void {
 
 async function confirmSessionReplacement(
   agent: SessionAgent,
+  entry: SessionIndexEntry,
   io: SessionCommandIO,
 ): Promise<boolean> {
   if (!hasSessionContent(agent.getConversationState())) return true;
+  if (
+    entry.recoveryCheckpoint &&
+    entry.runtimeSessionId === agent.getRuntimeSessionId?.()
+  ) {
+    return io.promptConfirm(
+      "Reload this session's recovery checkpoint? Changes made since it was saved will be lost. [y/N] ",
+    );
+  }
   return io.promptConfirm(
-    "This will replace current session context. Continue? [y/N] ",
+    "This will replace current session context and discard its recovery checkpoint. Continue? [y/N] ",
   );
 }
 
@@ -105,21 +127,16 @@ async function loadSavedSession(
   agent: SessionAgent,
   sessionsDir: string,
   io: SessionCommandIO,
+  recoveryOnly = false,
 ): Promise<void> {
-  const entry = sessionId
-    ? resolveSessionById(sessionsDir, sessionId)
-    : resolveLatestSession(sessionsDir);
+  const entry = resolveLoadEntry(sessionId, sessionsDir, recoveryOnly);
 
   if (!entry) {
-    io.error(
-      sessionId
-        ? `Session not found: ${sessionId}`
-        : "No saved sessions to load.",
-    );
+    io.error(missingLoadMessage(sessionId, recoveryOnly));
     finishSessionCommand(io);
     return;
   }
-  if (!(await confirmSessionReplacement(agent, io))) {
+  if (!(await confirmSessionReplacement(agent, entry, io))) {
     io.info("Load cancelled.");
     finishSessionCommand(io);
     return;
@@ -128,7 +145,7 @@ async function loadSavedSession(
   try {
     agent.importSession(readSnapshot(sessionsDir, entry.snapshotFile));
     io.success(
-      `Loaded session: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
+      `Loaded ${entry.recoveryCheckpoint ? "recovery checkpoint" : "session"}: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );
   } catch (error) {
     io.error(
@@ -136,6 +153,24 @@ async function loadSavedSession(
     );
   }
   finishSessionCommand(io);
+}
+
+function resolveLoadEntry(
+  sessionId: string,
+  sessionsDir: string,
+  recoveryOnly: boolean,
+): SessionIndexEntry | null {
+  if (sessionId) return resolveSessionById(sessionsDir, sessionId);
+  return recoveryOnly
+    ? resolveLatestRecoveryCheckpoint(sessionsDir)
+    : resolveLatestSession(sessionsDir);
+}
+
+function missingLoadMessage(sessionId: string, recoveryOnly: boolean): string {
+  if (sessionId) return `Session not found: ${sessionId}`;
+  return recoveryOnly
+    ? "No recovery checkpoints to load."
+    : "No saved sessions to load.";
 }
 
 export async function handleSessionCommand(
@@ -157,7 +192,12 @@ export async function handleSessionCommand(
     return;
   }
 
+  if (args === "recover") {
+    await loadSavedSession("", agent, sessionsDir, io, true);
+    return;
+  }
+
   io.error(`Unknown /session subcommand: "${args}"`);
-  io.command("Usage: /session list | /session load [<id>]");
+  io.command("Usage: /session list | /session load [<id>] | /session recover");
   io.command("");
 }

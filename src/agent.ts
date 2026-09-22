@@ -62,6 +62,7 @@ import {
 } from "./agent-core/index.js";
 import { buildSystemPromptContext } from "./prompt/systemPromptContext.js";
 import { ContextManager } from "./context/contextManager.js";
+import type { ConversationRecoveryChange } from "./context/conversationManager.js";
 import {
   ArtifactToolResult,
   PromptBudgetPolicy,
@@ -89,8 +90,14 @@ import {
   getDefaultSessionsDir,
   writeInProgressMarker,
   clearInProgressMarker,
+  clearRecoveryCheckpoint,
   InProgressMarker,
 } from "./sessions/sessionHistory.js";
+import {
+  appendRecoveryJournal,
+  writeRecoveryJournalBase,
+  type RecoveryJournalPosition,
+} from "./sessions/recoveryJournal.js";
 import {
   removeEmptyScratchpadDir,
   resolveScratchpadDir,
@@ -492,6 +499,12 @@ export class Agent {
   private readonly pendingConfigurationChanges: PendingConfigurationChange[] =
     [];
   private lastTraceRunId?: string;
+  private pendingRecoveredToolCallIds: string[] = [];
+  private recoveryCheckpointRequested = false;
+  private recoveryJournalPosition?: RecoveryJournalPosition;
+  private pendingRecoveryChanges: ConversationRecoveryChange[] = [];
+  private recoverySkillCount = 0;
+  private readonly onRecoveryCheckpointFailure?: (error: Error) => void;
 
   constructor(
     options: {
@@ -513,6 +526,7 @@ export class Agent {
       configurationOrigins?: Partial<AgentConfigurationOrigins>;
       /** Application-owned trace storage. Omit to keep the Agent free of trace I/O. */
       createTraceRun?: AgentTraceRunFactory;
+      onRecoveryCheckpointFailure?: (error: Error) => void;
     } = {} as any,
   ) {
     if (!options.providersConfig) {
@@ -536,6 +550,7 @@ export class Agent {
     };
     this.configuredSessionsDir = options.sessionsDir;
     this.createTraceRun = options.createTraceRun;
+    this.onRecoveryCheckpointFailure = options.onRecoveryCheckpointFailure;
 
     this.sessionId = randomUUID();
     const resolvedRuntimeConfig = options.runtimeConfig
@@ -885,6 +900,22 @@ export class Agent {
         { durable: true },
       );
       this.flushPendingConfigurationChanges();
+      for (const toolCallId of this.pendingRecoveredToolCallIds) {
+        traceRun?.recorder.record(
+          {
+            component: "tool",
+            type: "recovered_tool_call_unresolved",
+            identity: { toolCallId },
+            payload: {
+              previousRunId: this.lastTraceRunId,
+              outcome: "unknown",
+              replayed: false,
+            },
+          },
+          { durable: true },
+        );
+      }
+      if (traceRun) this.pendingRecoveredToolCallIds = [];
       return traceRun;
     } catch {
       if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
@@ -898,6 +929,29 @@ export class Agent {
       traceRun?.close?.();
     } catch {
       // Trace capture is observational and must not affect the agent turn.
+    }
+  }
+
+  private reportRecoveryCheckpointFailure(
+    error: unknown,
+    sessionId = this.sessionId,
+  ): void {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    try {
+      this.emitDiagnostic({
+        type: "recovery_checkpoint_failed",
+        sessionId,
+        runId: this.activeTraceRun?.recorder.identity.runId,
+        errorName: failure.name,
+        message: failure.message,
+      });
+    } catch {
+      // Diagnostic sinks must not change tool or session behavior.
+    }
+    try {
+      this.onRecoveryCheckpointFailure?.(failure);
+    } catch {
+      // The independent warning channel is also observational.
     }
   }
 
@@ -2065,6 +2119,9 @@ export class Agent {
     } catch (error) {
       throw this.handleProviderError(error);
     } finally {
+      if (this.recoveryCheckpointRequested) {
+        this.writeSessionRecoveryCheckpoint();
+      }
       try {
         traceRun?.recorder.record(
           { component: "cli", type: "run_closed", payload: {} },
@@ -2134,8 +2191,73 @@ export class Agent {
           this.pendingToolResultBytes = 0;
         },
         processToolResult: (result) => this.maybePersistedResult(result),
+        onToolResultCommitted: () => {
+          if (!this.createTraceRun && !this.recoveryCheckpointRequested) return;
+          this.recoveryCheckpointRequested = true;
+          this.writeSessionRecoveryCheckpoint();
+        },
       },
     });
+  }
+
+  private writeSessionRecoveryCheckpoint(): void {
+    const traceRun = this.activeTraceRun;
+    if (!this.sessionsDir) {
+      this.reportRecoveryCheckpointFailure(
+        new Error("Session directory unavailable for recovery checkpoint"),
+      );
+      return;
+    }
+    try {
+      if (this.recoveryJournalPosition) {
+        this.recoveryJournalPosition = appendRecoveryJournal(
+          this.sessionsDir,
+          this.sessionId,
+          this.recoveryJournalPosition,
+          this.sessionMetadata(),
+          this.pendingRecoveryChanges,
+          this.contextManager.getInvokedSkillsSince(this.recoverySkillCount),
+        );
+      } else {
+        this.recoveryJournalPosition = writeRecoveryJournalBase(
+          this.sessionsDir,
+          this.exportSession(),
+        );
+        this.contextManager.setRecoveryChangeListener((change) => {
+          this.pendingRecoveryChanges.push(change);
+        });
+      }
+      this.pendingRecoveryChanges = [];
+      this.recoverySkillCount = this.contextManager.getInvokedSkillCount();
+    } catch (error) {
+      this.contextManager.setRecoveryChangeListener(undefined);
+      this.recoveryJournalPosition = undefined;
+      this.pendingRecoveryChanges = [];
+      const failure = error instanceof Error ? error : new Error(String(error));
+      try {
+        traceRun?.recorder.record(
+          {
+            component: "context",
+            type: "recovery_checkpoint_failed",
+            payload: { errorName: failure.name, message: failure.message },
+          },
+          { durable: true },
+        );
+      } catch {
+        // The warning callback is independent of the trace sink.
+      }
+      this.reportRecoveryCheckpointFailure(failure);
+      return;
+    }
+    try {
+      traceRun?.recorder.record({
+        component: "context",
+        type: "recovery_checkpoint_written",
+        payload: { sessionId: this.sessionId },
+      });
+    } catch {
+      // The checkpoint is durable independently of trace capture.
+    }
   }
 
   private startLocalTurn(): void {
@@ -2206,10 +2328,26 @@ export class Agent {
   }
 
   clearContext(): void {
+    this.contextManager.setRecoveryChangeListener(undefined);
+    this.recoveryJournalPosition = undefined;
+    this.pendingRecoveryChanges = [];
+    this.recoverySkillCount = 0;
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
     this.contextManager.clear();
+    this.pendingRecoveredToolCallIds = [];
+    if (this.recoveryCheckpointRequested) {
+      try {
+        clearRecoveryCheckpoint(
+          this.configuredSessionsDir ?? getDefaultSessionsDir(),
+          this.sessionId,
+        );
+        this.recoveryCheckpointRequested = false;
+      } catch (error) {
+        this.reportRecoveryCheckpointFailure(error);
+      }
+    }
   }
 
   getContext(): ChatMessage[] {
@@ -2218,6 +2356,12 @@ export class Agent {
 
   getConversationState(): ConversationState {
     return this.contextManager.getConversationState();
+  }
+
+  // Called through SessionAgent by the session command handler.
+  // fallow-ignore-next-line unused-class-member
+  getRuntimeSessionId(): string {
+    return this.sessionId;
   }
 
   getActiveModelSelection(): ProviderModelSelection {
@@ -2504,8 +2648,12 @@ export class Agent {
 
   exportSession(): string {
     const state = this.contextManager.getConversationState();
+    return serializeSession(state, this.sessionMetadata());
+  }
+
+  private sessionMetadata(): SessionMetadata {
     const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
-    const metadata: SessionMetadata = {
+    return {
       providerName: this.provider.name,
       modelKey: this.model,
       systemPrompt: this.baseRules,
@@ -2513,7 +2661,8 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
-      lastTraceRunId: this.lastTraceRunId,
+      lastTraceRunId:
+        this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
       agentMode: this.modeState.mode,
       ...(approvedPlan ?? {}),
       ...(this.modeState.mode === "plan" &&
@@ -2523,7 +2672,93 @@ export class Agent {
           }
         : {}),
     };
-    return serializeSession(state, metadata);
+  }
+
+  /** Fill only missing responses in a recovery checkpoint; never execute them. */
+  private reconcileRecoveredToolCalls(): string[] {
+    const unresolved = this.findMissingRecoveryToolCalls();
+    if (unresolved.length === 0) return [];
+
+    this.contextManager.recordToolResults(
+      unresolved.map((call) => ({
+        toolCallId: call.id,
+        toolName: call.name,
+        status: "error" as const,
+        rawContent:
+          "[Recovery: no durable tool result in the session checkpoint. Completion is unknown; the tool was not replayed.]",
+      })),
+    );
+    return unresolved.map((call) => call.id);
+  }
+
+  private findMissingRecoveryToolCalls(): Array<{ id: string; name: string }> {
+    const turns = this.contextManager.getConversationState().turns;
+    const turn = turns[turns.length - 1];
+    if (!turn || turn.completedAt) return [];
+
+    let assistantIndex = -1;
+    for (let index = turn.entries.length - 1; index >= 0; index--) {
+      if (turn.entries[index]?.kind === "assistant") {
+        assistantIndex = index;
+        break;
+      }
+    }
+    if (assistantIndex < 0) return [];
+    const calls = turn.entries[assistantIndex]?.message.toolCalls ?? [];
+    if (calls.length === 0) return [];
+
+    const recorded = new Set(
+      turn.entries
+        .slice(assistantIndex + 1)
+        .flatMap((entry) =>
+          entry.kind === "tool" ? (entry.toolInvocations ?? []) : [],
+        )
+        .map((invocation) => invocation.toolCallId),
+    );
+    return calls.flatMap((call) =>
+      typeof call.id === "string" && !recorded.has(call.id)
+        ? [{ id: call.id, name: call.function.name }]
+        : [],
+    );
+  }
+
+  private retireOutgoingRecoveryCheckpoint(
+    sessionId: string,
+    wasRequested: boolean,
+    incomingIsRecovery: boolean,
+  ): void {
+    if (!wasRequested || (sessionId === this.sessionId && incomingIsRecovery)) {
+      return;
+    }
+    try {
+      clearRecoveryCheckpoint(
+        this.configuredSessionsDir ?? getDefaultSessionsDir(),
+        sessionId,
+      );
+    } catch (error) {
+      this.reportRecoveryCheckpointFailure(error, sessionId);
+    }
+  }
+
+  private adoptImportedSessionId(sessionId: string | undefined): void {
+    if (sessionId && isSafeSessionId(sessionId)) {
+      (this as any).sessionId = sessionId;
+      return;
+    }
+    this.emitDiagnostic(
+      sessionId
+        ? {
+            type: "invalid_session_id",
+            sessionId,
+            provider: this.provider.name,
+            model: this.model,
+          }
+        : {
+            type: "legacy_session_no_id",
+            provider: this.provider.name,
+            model: this.model,
+          },
+    );
   }
 
   /**
@@ -2540,32 +2775,27 @@ export class Agent {
   importSession(json: string): void {
     const persisted = parseSession(json);
     const state = restoreConversationState(persisted);
+    const outgoingSessionId = this.sessionId;
+    const outgoingRecoveryRequested = this.recoveryCheckpointRequested;
+    this.contextManager.setRecoveryChangeListener(undefined);
+    this.recoveryJournalPosition = undefined;
+    this.pendingRecoveryChanges = [];
+    this.recoverySkillCount = 0;
     this.summaryGeneration++;
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
 
-    if (persisted.metadata.sessionId) {
-      if (isSafeSessionId(persisted.metadata.sessionId)) {
-        (this as any).sessionId = persisted.metadata.sessionId;
-      } else {
-        this.emitDiagnostic({
-          type: "invalid_session_id",
-          sessionId: persisted.metadata.sessionId,
-          provider: this.provider.name,
-          model: this.model,
-        });
-      }
-    } else {
-      this.emitDiagnostic({
-        type: "legacy_session_no_id",
-        provider: this.provider.name,
-        model: this.model,
-      });
-    }
+    this.adoptImportedSessionId(persisted.metadata.sessionId);
 
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
 
     this.contextManager.importState(state);
+    this.recoveryCheckpointRequested =
+      persisted.metadata.recoveryCheckpoint === true;
+    const unresolved = persisted.metadata.recoveryCheckpoint
+      ? this.reconcileRecoveredToolCalls()
+      : [];
+    this.pendingRecoveredToolCallIds = this.createTraceRun ? unresolved : [];
 
     const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
@@ -2593,6 +2823,11 @@ export class Agent {
     this.pendingExecuteSwitchReminder = false;
     this.restorePlanModeDraftTrackingFromImport(
       persisted.metadata.planDraftSearchStartTurnIndex,
+    );
+    this.retireOutgoingRecoveryCheckpoint(
+      outgoingSessionId,
+      outgoingRecoveryRequested,
+      persisted.metadata.recoveryCheckpoint === true,
     );
   }
 

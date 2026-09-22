@@ -511,21 +511,26 @@ propio --debug-llm-file /tmp/propio-debug.log
 
 ### Session commands
 
-| Command              | Description                                            |
-| -------------------- | ------------------------------------------------------ |
-| `/help`              | Show slash-command help                                |
-| `/clear`             | Clear session context                                  |
-| `/model`             | Switch the current provider/model or update defaults   |
-| `/context`           | Show structured context overview                       |
-| `/context prompt`    | Show the latest prompt plan                            |
-| `/context memory`    | Show rolling summary and pinned memory                 |
-| `/tools`             | Enable or disable tools at runtime                     |
-| `/session list`      | List saved session snapshots for the current workspace |
-| `/session load`      | Load the latest saved session snapshot                 |
-| `/session load <id>` | Load a specific saved session snapshot                 |
-| `/exit`              | Save a session snapshot and quit                       |
+| Command              | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `/help`              | Show slash-command help                              |
+| `/clear`             | Clear session context                                |
+| `/model`             | Switch the current provider/model or update defaults |
+| `/context`           | Show structured context overview                     |
+| `/context prompt`    | Show the latest prompt plan                          |
+| `/context memory`    | Show rolling summary and pinned memory               |
+| `/tools`             | Enable or disable tools at runtime                   |
+| `/session list`      | List saved sessions and recovery checkpoints         |
+| `/session load`      | Load the latest saved session snapshot               |
+| `/session load <id>` | Load a specific saved session snapshot               |
+| `/session recover`   | Load the latest recovery checkpoint                  |
+| `/exit`              | Save a session snapshot and quit                     |
 
 Session snapshots are stored under `~/.propio/sessions/` and are scoped by workspace, so different repositories keep separate histories automatically.
+
+With tracing enabled, the CLI writes one private recovery journal per session. The first committed tool result establishes a full baseline; later results append only new conversation changes and are synced before the next tool is dispatched. Subsequent run ends also append updated metadata and changes. An interrupted final journal line is ignored, preserving the last complete checkpoint. After a process crash, `/session list` shows the journal and `/session recover` can restore it; `/session load` continues to mean the latest normally saved snapshot. Results in the last successful checkpoint are retained once; missing responses are represented as unresolved with unknown completion, never automatically replayed. A crash between tool completion and journal commit can leave a completed trace outcome without recoverable raw result content. When captured, the trace distinguishes tool calls that started from those never dispatched. If recovery storage fails, the tool's recorded outcome remains a separate fact and the CLI warns that session recovery is degraded. The CLI can continue checkpointing if trace-run creation fails, but the trace itself is then unavailable. Embedders that omit `createTraceRun` do not write recovery journals by default. Journals contain conversation and tool-result content in plaintext and are not included in standard portable trace exports. The initial baseline is proportional to existing session size; subsequent appends are proportional to new changes. Journals are not compacted during an active session. On startup, inactive journals, legacy checkpoints, and interrupted temporary files older than `artifactRetentionDays` (seven days by default) are pruned; a confirmed session switch discards the outgoing recovery state.
+
+In an active session, `/session recover` can select that same session's latest checkpoint. Its confirmation warns that any newer in-memory changes will be lost when the checkpoint is reloaded.
 
 Each CLI run also writes a standard-capture JSONL trace under the workspace-scoped session directory. Records use ordered per-run sequence numbers and causal session/run/turn/request/attempt/operation identities. Operation and turn completions cross a durable-write barrier. If capture fails, the CLI reports degraded tracing independently and does not replace or retry an already completed side effect. Standard capture records argument keys and bounded metadata rather than raw arguments/results, and applies credential redaction before persistence.
 

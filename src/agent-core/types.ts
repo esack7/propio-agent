@@ -110,6 +110,8 @@ export interface AgentIntegrations {
   onToolSuccess?(name: string, args: Record<string, unknown>): void;
   onToolBatch?(): void;
   processToolResult?(result: ArtifactToolResult): ArtifactToolResult;
+  /** Called after the result is in context, before the next tool is dispatched. */
+  onToolResultCommitted?(result: ArtifactToolResult): void;
 }
 
 /** Explicit conversation operations required by the runtime. */

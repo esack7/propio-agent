@@ -106,7 +106,7 @@ function persistImage(img: Uint8Array | string): PersistedImage {
   return { data: img, encoding: "utf8" };
 }
 
-function persistMessage(msg: ChatMessage): PersistedChatMessage {
+export function persistMessage(msg: ChatMessage): PersistedChatMessage {
   const result: Record<string, unknown> = {
     role: msg.role,
     content: msg.content,
@@ -121,7 +121,7 @@ function persistMessage(msg: ChatMessage): PersistedChatMessage {
   return result as unknown as PersistedChatMessage;
 }
 
-function persistEntry(entry: TurnEntry): PersistedTurnEntry {
+export function persistEntry(entry: TurnEntry): PersistedTurnEntry {
   const result: Record<string, unknown> = {
     kind: entry.kind,
     createdAt: entry.createdAt,
@@ -134,7 +134,7 @@ function persistEntry(entry: TurnEntry): PersistedTurnEntry {
   return result as unknown as PersistedTurnEntry;
 }
 
-function persistTurn(turn: TurnRecord): PersistedTurnRecord {
+export function persistTurn(turn: TurnRecord): PersistedTurnRecord {
   const result: Record<string, unknown> = {
     id: turn.id,
     startedAt: turn.startedAt,
@@ -149,7 +149,9 @@ function persistTurn(turn: TurnRecord): PersistedTurnRecord {
   return result as unknown as PersistedTurnRecord;
 }
 
-function persistArtifact(artifact: ArtifactRecord): PersistedArtifactRecord {
+export function persistArtifact(
+  artifact: ArtifactRecord,
+): PersistedArtifactRecord {
   const isBinary = artifact.content instanceof Uint8Array;
   const persisted: PersistedArtifactRecord = {
     id: artifact.id,
@@ -176,7 +178,7 @@ function persistArtifact(artifact: ArtifactRecord): PersistedArtifactRecord {
   return persisted;
 }
 
-function persistPinnedMemory(
+export function persistPinnedMemory(
   record: PinnedMemoryRecord,
 ): PersistedPinnedMemoryRecord {
   const result: Record<string, unknown> = {

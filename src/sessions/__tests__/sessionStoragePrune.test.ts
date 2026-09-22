@@ -1,7 +1,12 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { writeIndex, type SessionIndex } from "../sessionHistory.js";
+import {
+  writeIndex,
+  writeRecoveryCheckpoint,
+  type SessionIndex,
+} from "../sessionHistory.js";
+import { writeRecoveryJournalBase } from "../recoveryJournal.js";
 import {
   listActiveInProgressSessionIds,
   pruneStaleSessionStorage,
@@ -82,6 +87,129 @@ describe("sessionStoragePrune", () => {
     pruneStaleSessionStorage(sessionsDir, retentionDays);
 
     expect(fs.existsSync(anchoredDir)).toBe(true);
+  });
+
+  it("keeps artifacts anchored only by a recovery checkpoint", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const staleDir = makeStorageDir(
+      "artifacts",
+      sessionId,
+      Date.now() - retentionMs - 1000,
+    );
+    writeRecoveryCheckpoint(
+      sessionsDir,
+      JSON.stringify({
+        version: 4,
+        savedAt: new Date().toISOString(),
+        metadata: { sessionId },
+        context: { turns: [] },
+      }),
+    );
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(staleDir)).toBe(true);
+  });
+
+  it("expires an inactive checkpoint before pruning its artifacts", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const artifacts = makeStorageDir("artifacts", sessionId, staleMtime);
+    writeRecoveryCheckpoint(
+      sessionsDir,
+      JSON.stringify({
+        version: 4,
+        savedAt: new Date(staleMtime).toISOString(),
+        metadata: { sessionId },
+        context: { turns: [] },
+      }),
+    );
+    const checkpoint = path.join(sessionsDir, `recovery-${sessionId}.json`);
+    fs.utimesSync(checkpoint, new Date(staleMtime), new Date(staleMtime));
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(checkpoint)).toBe(false);
+    expect(fs.existsSync(artifacts)).toBe(false);
+  });
+
+  it("expires an inactive journal before pruning its artifacts", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const artifacts = makeStorageDir("artifacts", sessionId, staleMtime);
+    writeRecoveryJournalBase(
+      sessionsDir,
+      JSON.stringify({
+        version: 4,
+        savedAt: new Date(staleMtime).toISOString(),
+        metadata: {
+          providerName: "fixture",
+          modelKey: "fixture",
+          systemPrompt: "",
+          promptBudgetPolicy: {
+            reservedOutputTokens: 2048,
+            maxRecentTurns: 50,
+            artifactInlineCharCap: 12000,
+          },
+          summaryPolicy: {
+            rawRecentTurns: 6,
+            refreshIntervalTurns: 3,
+            summaryTargetTokens: 512,
+            contextPressureThreshold: 0.6,
+          },
+          contextWindowTokens: 128000,
+          sessionId,
+        },
+        context: {
+          preamble: [],
+          turns: [],
+          artifacts: [],
+          pinnedMemory: [],
+          invokedSkills: [],
+        },
+      }),
+    );
+    const journal = path.join(sessionsDir, `recovery-${sessionId}.jsonl`);
+    fs.utimesSync(journal, new Date(staleMtime), new Date(staleMtime));
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(journal)).toBe(false);
+    expect(fs.existsSync(artifacts)).toBe(false);
+  });
+
+  it("removes old interrupted temp files but leaves active ones alone", () => {
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const inactiveId = "11111111-1111-4111-8111-111111111111";
+    const activeId = "22222222-2222-4222-8222-222222222222";
+    const staleTemp = path.join(
+      sessionsDir,
+      `recovery-${inactiveId}.jsonl.abcdef123456.tmp`,
+    );
+    const activeTemp = path.join(
+      sessionsDir,
+      `recovery-${activeId}.jsonl.abcdef123456.tmp`,
+    );
+    const activeCheckpoint = path.join(
+      sessionsDir,
+      `recovery-${activeId}.json`,
+    );
+    fs.writeFileSync(staleTemp, "private interrupted state");
+    fs.writeFileSync(activeTemp, "active state");
+    fs.writeFileSync(activeCheckpoint, "active checkpoint");
+    fs.utimesSync(staleTemp, new Date(staleMtime), new Date(staleMtime));
+    fs.utimesSync(activeTemp, new Date(staleMtime), new Date(staleMtime));
+    fs.utimesSync(activeCheckpoint, new Date(staleMtime), new Date(staleMtime));
+    fs.writeFileSync(
+      path.join(sessionsDir, `inprogress-${activeId}.json`),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+    );
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(staleTemp)).toBe(false);
+    expect(fs.existsSync(activeTemp)).toBe(true);
+    expect(fs.existsSync(activeCheckpoint)).toBe(true);
   });
 
   it("keeps anchored scratchpad by legacy sessionId in index", () => {

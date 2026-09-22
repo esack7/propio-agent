@@ -3,6 +3,8 @@ import * as path from "path";
 import * as crypto from "crypto";
 import * as os from "os";
 import { execSync } from "child_process";
+import { isSafeSessionId } from "./sessionId.js";
+import { readRecoveryJournal } from "./recoveryJournal.js";
 
 const GLOBAL_SESSIONS_ROOT = path.join(os.homedir(), ".propio", "sessions");
 const INDEX_FILE = "index.json";
@@ -20,6 +22,7 @@ export interface SessionIndexEntry {
   readonly modelKey: string;
   readonly turnCount: number;
   readonly hasRollingSummary: boolean;
+  readonly recoveryCheckpoint?: boolean;
 }
 
 export interface SessionIndex {
@@ -114,7 +117,10 @@ export function rebuildIndex(sessionsDir: string): SessionIndex {
 
   const files = fs
     .readdirSync(sessionsDir)
-    .filter((f) => f.endsWith(".json") && f !== INDEX_FILE)
+    .filter(
+      (f) =>
+        f.endsWith(".json") && f !== INDEX_FILE && !f.startsWith("recovery-"),
+    )
     .sort();
 
   const entries: SessionIndexEntry[] = [];
@@ -190,10 +196,83 @@ export function writeSnapshot(
   return entry;
 }
 
+/**
+ * Keep one atomic, private checkpoint per runtime session. This is not an
+ * ordinary saved snapshot: it is replaced after each committed tool result.
+ * The file and containing directory are synced before the next tool starts.
+ */
+export function writeRecoveryCheckpoint(
+  sessionsDir: string,
+  sessionJson: string,
+): void {
+  const parsedSnapshot = parseSnapshotObject(JSON.parse(sessionJson));
+  const sessionId = parsedSnapshot?.metadata.sessionId;
+  if (typeof sessionId !== "string" || !isSafeSessionId(sessionId)) {
+    throw new Error("Recovery checkpoint requires a safe runtime session ID");
+  }
+
+  fs.mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
+  const snapshotPath = recoveryCheckpointPath(sessionsDir, sessionId);
+  const tempPath = `${snapshotPath}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  const checkpoint = JSON.stringify({
+    ...parsedSnapshot!.snapshot,
+    metadata: { ...parsedSnapshot!.metadata, recoveryCheckpoint: true },
+  });
+  try {
+    const fd = fs.openSync(tempPath, "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, checkpoint, "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tempPath, snapshotPath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // A failed checkpoint does not affect the running tool sequence.
+    }
+    throw error;
+  }
+  if (process.platform !== "win32") {
+    const directoryFd = fs.openSync(sessionsDir, "r");
+    try {
+      fs.fsyncSync(directoryFd);
+    } finally {
+      fs.closeSync(directoryFd);
+    }
+  }
+}
+
+export function clearRecoveryCheckpoint(
+  sessionsDir: string,
+  sessionId: string,
+): void {
+  if (!isSafeSessionId(sessionId)) return;
+  const checkpointPath = recoveryCheckpointPath(sessionsDir, sessionId);
+  if (fs.existsSync(checkpointPath)) fs.unlinkSync(checkpointPath);
+  const journalPath = path.join(sessionsDir, `recovery-${sessionId}.jsonl`);
+  if (fs.existsSync(journalPath)) fs.unlinkSync(journalPath);
+}
+
+function recoveryCheckpointPath(
+  sessionsDir: string,
+  sessionId: string,
+): string {
+  return path.join(sessionsDir, `recovery-${sessionId}.json`);
+}
+
 export function readSnapshot(
   sessionsDir: string,
   snapshotFile: string,
 ): string {
+  const journal = /^recovery-([A-Za-z0-9._-]+)\.jsonl$/.exec(snapshotFile);
+  if (journal) {
+    const restored = readRecoveryJournal(sessionsDir, journal[1]!);
+    if (!restored) throw new Error("Recovery journal has no valid baseline");
+    return restored.json;
+  }
   return fs.readFileSync(path.join(sessionsDir, snapshotFile), "utf8");
 }
 
@@ -336,14 +415,65 @@ export function listSessions(sessionsDir: string): SessionIndexEntry[] {
   if (!index) {
     index = rebuildIndex(sessionsDir);
   }
-  return [...index.entries].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  const saved = index.entries.filter(
+    (entry) => !entry.snapshotFile.startsWith("recovery-"),
+  );
+  if (!fs.existsSync(sessionsDir)) return [...saved];
+  const recoveryFiles = fs
+    .readdirSync(sessionsDir)
+    .filter((file) => /^recovery-[A-Za-z0-9._-]+\.(json|jsonl)$/.test(file))
+    .sort(
+      (a, b) => Number(b.endsWith(".jsonl")) - Number(a.endsWith(".jsonl")),
+    );
+  const seenRecoveryIds = new Set<string>();
+  const recovery = recoveryFiles.flatMap((file) => {
+    try {
+      const sessionId = file.slice("recovery-".length, file.lastIndexOf("."));
+      if (!isSafeSessionId(sessionId) || seenRecoveryIds.has(sessionId))
+        return [];
+      const parsed = parseSnapshotObject(
+        JSON.parse(readSnapshot(sessionsDir, file)),
+      );
+      if (
+        !parsed ||
+        parsed.metadata.recoveryCheckpoint !== true ||
+        parsed.metadata.sessionId !== sessionId
+      ) {
+        return [];
+      }
+      seenRecoveryIds.add(sessionId);
+      return [
+        toSessionIndexEntry(
+          file,
+          parsed.snapshot,
+          parsed.metadata,
+          parsed.context,
+        ),
+      ];
+    } catch {
+      return [];
+    }
+  });
+  return [...saved, ...recovery].sort((a, b) =>
+    b.savedAt.localeCompare(a.savedAt),
+  );
 }
 
 export function resolveLatestSession(
   sessionsDir: string,
 ): SessionIndexEntry | null {
-  const sessions = listSessions(sessionsDir);
+  const sessions = listSessions(sessionsDir).filter(
+    (entry) => !entry.recoveryCheckpoint,
+  );
   return sessions.length > 0 ? sessions[0] : null;
+}
+
+export function resolveLatestRecoveryCheckpoint(
+  sessionsDir: string,
+): SessionIndexEntry | null {
+  return (
+    listSessions(sessionsDir).find((entry) => entry.recoveryCheckpoint) ?? null
+  );
 }
 
 export function resolveSessionById(
@@ -393,7 +523,7 @@ function toSessionIndexEntry(
   context: Record<string, unknown>,
 ): SessionIndexEntry {
   return {
-    sessionId: path.basename(snapshotFile, ".json"),
+    sessionId: snapshotFile.replace(/\.(jsonl|json)$/, ""),
     runtimeSessionId:
       typeof metadata.sessionId === "string" ? metadata.sessionId : undefined,
     snapshotFile,
@@ -403,5 +533,8 @@ function toSessionIndexEntry(
     modelKey: typeof metadata.modelKey === "string" ? metadata.modelKey : "",
     turnCount: Array.isArray(context.turns) ? context.turns.length : 0,
     hasRollingSummary: context.rollingSummary !== undefined,
+    ...(metadata.recoveryCheckpoint === true
+      ? { recoveryCheckpoint: true }
+      : {}),
   };
 }
