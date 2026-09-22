@@ -2702,6 +2702,37 @@ describe("Agent with Multi-Provider Configuration", () => {
   });
 
   describe("prompt_plan diagnostic event", () => {
+    it("does not credit omitted turns to a summary excluded from the plan", () => {
+      const agent = createTestAgent(new MockProvider());
+      (agent as any).contextManager.setRollingSummary({
+        revisionId: "sha256:summary",
+        content: "Covered earlier context",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        coveredTurnIds: ["turn-covered"],
+        estimatedTokens: 10,
+      });
+
+      const metadata = (agent as any).describePromptPlan({
+        messages: [],
+        estimatedPromptTokens: 0,
+        reservedOutputTokens: 0,
+        includedTurnIds: [],
+        includedArtifactIds: [],
+        omittedTurnIds: ["turn-covered"],
+        usedRollingSummary: false,
+        retryLevel: 0,
+      });
+
+      expect(metadata.summaryRevisionId).toBeUndefined();
+      expect(metadata.omissions).toEqual([
+        {
+          kind: "turn",
+          id: "turn-covered",
+          reason: "prompt_budget",
+        },
+      ]);
+    });
+
     it("should emit prompt_plan event with plan metadata on each request", async () => {
       const { diagnosticEvents, agent } = createDiagnosticsAgent();
 

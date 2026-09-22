@@ -14,6 +14,7 @@ import {
 } from "../types.js";
 import { LLMProvider } from "@propio-ai/providers";
 import { ChatRequest, ChatStreamEvent } from "@propio-ai/providers";
+import { createTraceRevisionId } from "../../trace/revisions.js";
 
 import {
   makeTurn as makeTurnBase,
@@ -573,7 +574,14 @@ describe("SummaryManager", () => {
       makeTurn({ id: "t0", userMessage: "Q0" }),
       makeTurn({ id: "t1", userMessage: "Q1" }),
     ];
-    const previousSummary = makeSummary("Covers both", ["t0", "t1"]);
+    const previousCoverage = ["t1", "t0"];
+    const previousSummary = {
+      ...makeSummary("Covers both", previousCoverage),
+      revisionId: createTraceRevisionId({
+        content: "Covers both",
+        coveredTurnIds: previousCoverage,
+      }),
+    };
 
     const result = await generateSummaryWithPrevious(
       provider,
@@ -585,6 +593,13 @@ describe("SummaryManager", () => {
     expect(result.refreshedTurnCount).toBe(0);
     expect(result.summary.content).toBe("Covers both");
     expect(result.summary.coveredTurnIds).toEqual(["t0", "t1"]);
+    expect(result.summary.revisionId).toBe(
+      createTraceRevisionId({
+        content: "Covers both",
+        coveredTurnIds: ["t0", "t1"],
+      }),
+    );
+    expect(result.summary.revisionId).not.toBe(previousSummary.revisionId);
   });
 
   // -----------------------------------------------------------------------

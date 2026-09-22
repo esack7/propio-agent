@@ -1597,11 +1597,12 @@ export class Agent {
       omissions: plan.omittedTurnIds.map((id) => ({
         kind: "turn" as const,
         id,
-        reason: coveredTurnIds.has(id)
-          ? "covered_by_rolling_summary"
-          : plan.retryLevel > 0
-            ? "context_retry_budget"
-            : "prompt_budget",
+        reason:
+          plan.usedRollingSummary && coveredTurnIds.has(id)
+            ? "covered_by_rolling_summary"
+            : plan.retryLevel > 0
+              ? "context_retry_budget"
+              : "prompt_budget",
       })),
     };
   }

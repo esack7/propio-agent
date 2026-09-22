@@ -288,17 +288,22 @@ function buildSummaryRecord(
   const renderedContent = sections
     ? renderSectionsToContent(sections)
     : content;
+  const coveredTurnIds = eligibleTurns.map((turn) => turn.id);
   return {
-    revisionId: createTraceRevisionId({
-      content: renderedContent,
-      coveredTurnIds: eligibleTurns.map((turn) => turn.id),
-    }),
+    revisionId: createSummaryRevisionId(renderedContent, coveredTurnIds),
     content: renderedContent,
     updatedAt: new Date().toISOString(),
-    coveredTurnIds: eligibleTurns.map((turn) => turn.id),
+    coveredTurnIds,
     estimatedTokens: tokenEstimator.estimateText(renderedContent),
     ...(sections ? { sections } : {}),
   };
+}
+
+function createSummaryRevisionId(
+  content: string,
+  coveredTurnIds: ReadonlyArray<string>,
+): string {
+  return createTraceRevisionId({ content, coveredTurnIds });
 }
 
 /**
@@ -332,10 +337,15 @@ export class SummaryManager {
     const newTurns = eligibleTurns.filter((t) => !coveredSet.has(t.id));
 
     if (newTurns.length === 0 && previousSummary) {
+      const coveredTurnIds = eligibleTurns.map((turn) => turn.id);
       return {
         summary: {
           ...previousSummary,
-          coveredTurnIds: eligibleTurns.map((t) => t.id),
+          revisionId: createSummaryRevisionId(
+            previousSummary.content,
+            coveredTurnIds,
+          ),
+          coveredTurnIds,
         },
         refreshedTurnCount: 0,
       };
