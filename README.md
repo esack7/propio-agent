@@ -838,9 +838,12 @@ try {
   A dispatched call includes an `mcp_call` outcome with its server and remote
   tool names, deadline, duration, and one of `succeeded`, `remote_error`,
   `timed_out`, or `transport_error`. A normal response, including an MCP
-  `isError` response, has confirmed completion. Timeout and transport failures
-  retain unknown completion and must not be interpreted as proof that the remote
-  side effect did not happen. Text and
+  `isError` response, has confirmed completion. SDK protocol rejections retain
+  their numeric error code; validation and routing rejections are marked
+  `not_started` with no side effect, while server failures that may occur during
+  execution remain unknown. Timeout and transport failures also retain unknown
+  completion and must not be interpreted as proof that the remote side effect did
+  not happen. Text and
   embedded resource text are retained; images/audio become MIME/size descriptions,
   resource links and binary resources become URI descriptions, and structured
   content is appended as formatted JSON. Raw media/SDK response objects are not

@@ -1,12 +1,17 @@
 import { closeClientBestEffort } from "./cleanup.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ErrorCode,
+  McpError,
+  type Tool as McpSdkTool,
+} from "@modelcontextprotocol/sdk/types.js";
 import { isMcpServerEnabled, validateMcpConfig } from "./validation.js";
 import { buildMcpToolName, normalizeMcpNameSegment } from "./toolName.js";
 import type { McpServerRuntime } from "./internalTypes.js";
 import type {
   McpToolDescriptor,
+  McpCallOutcome,
   McpToolResult,
   McpConnectionOptions,
   McpConfigFile,
@@ -40,12 +45,47 @@ function createTimeoutError(message: string): Error {
   return error;
 }
 
-function isTimeoutError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return (
-    error.name === "TimeoutError" ||
-    /(?:timed?\s*out|timeout)/i.test(error.message)
-  );
+type McpFailureOutcome = Pick<
+  McpCallOutcome,
+  "classification" | "completion" | "sideEffect" | "protocolErrorCode"
+>;
+
+function classifyMcpCallError(error: unknown): McpFailureOutcome {
+  if (!(error instanceof McpError)) {
+    return {
+      classification: "transport_error",
+      completion: "unknown",
+      sideEffect: "unknown",
+    };
+  }
+  if (error.code === ErrorCode.RequestTimeout) {
+    return {
+      classification: "timed_out",
+      completion: "unknown",
+      sideEffect: "unknown",
+      protocolErrorCode: error.code,
+    };
+  }
+  if (error.code === ErrorCode.ConnectionClosed) {
+    return {
+      classification: "transport_error",
+      completion: "unknown",
+      sideEffect: "unknown",
+      protocolErrorCode: error.code,
+    };
+  }
+  const rejectedBeforeExecution = [
+    ErrorCode.ParseError,
+    ErrorCode.InvalidRequest,
+    ErrorCode.MethodNotFound,
+    ErrorCode.InvalidParams,
+  ].includes(error.code);
+  return {
+    classification: "remote_error",
+    completion: rejectedBeforeExecution ? "not_started" : "unknown",
+    sideEffect: rejectedBeforeExecution ? "none" : "unknown",
+    protocolErrorCode: error.code,
+  };
 }
 
 function withTimeout<T>(
@@ -517,19 +557,17 @@ export class McpConnectionManager {
         result,
       );
     } catch (error) {
-      const timedOut = isTimeoutError(error);
+      const failure = classifyMcpCallError(error);
       return {
         status: "error",
         content: formatToolCallError(toolName, toErrorMessage(error)),
         outcome: {
           kind: "mcp_call",
-          classification: timedOut ? "timed_out" : "transport_error",
+          ...failure,
           serverName,
           remoteToolName,
           timeoutMs: this.callTimeoutMs,
           durationMs: performance.now() - startedAt,
-          completion: "unknown",
-          sideEffect: "unknown",
         },
       };
     }

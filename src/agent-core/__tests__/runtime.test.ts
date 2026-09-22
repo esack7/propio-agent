@@ -262,6 +262,49 @@ describe("public headless runtime", () => {
     });
   });
 
+  it.each(["resolve", "reject"] as const)(
+    "does not dispatch when cancellation occurs while authorization will %s",
+    async (settlement) => {
+      const controller = new AbortController();
+      let enterAuthorization!: () => void;
+      let settleAuthorization!: () => void;
+      const authorizationEntered = new Promise<void>((resolve) => {
+        enterAuthorization = resolve;
+      });
+      const authorizationSettlement = new Promise<void>((resolve) => {
+        settleAuthorization = resolve;
+      });
+      const executeWithStatus = jest.fn(async () => ({
+        status: "success" as const,
+        content: "must not run",
+      }));
+      const fixture = setup([[toolCall]], {
+        tools: { getEnabledSchemas: () => [], executeWithStatus },
+        integrations: {
+          authorizeTool: async () => {
+            enterAuthorization();
+            await authorizationSettlement;
+            if (settlement === "reject") throw new Error("approval aborted");
+            return {
+              allowed: true,
+              actor: "user" as const,
+              rule: "interactive_approval",
+            };
+          },
+        },
+      });
+
+      const running = fixture.run(controller.signal);
+      await authorizationEntered;
+      controller.abort("escape");
+      settleAuthorization();
+
+      await expect(running).rejects.toThrow("cancelled");
+      expect(executeWithStatus).not.toHaveBeenCalled();
+      expect(fixture.events).toContainEqual({ type: "turn_cancelled" });
+    },
+  );
+
   it("commits each completed tool result before dispatching the next call", async () => {
     const controller = new AbortController();
     const calls = ["first", "second", "third"].map((name, index) => ({

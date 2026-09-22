@@ -51,8 +51,9 @@ export interface McpCallOutcome {
   readonly remoteToolName: string;
   readonly timeoutMs: number;
   readonly durationMs: number;
-  readonly completion: "confirmed" | "unknown";
-  readonly sideEffect: "unknown";
+  readonly completion: "confirmed" | "not_started" | "unknown";
+  readonly sideEffect: "none" | "unknown";
+  readonly protocolErrorCode?: number;
 }
 
 /** Text representation; media are described rather than decoded. */

@@ -1012,6 +1012,7 @@ export class AgentRuntime {
       allowedTools,
       abortSignal,
     );
+    this.throwIfAbortCancelled(abortSignal);
     if (denied) return denied;
     // Local tools receive cooperative cancellation; integrations may still run.
     const execResult = await this.awaitWithAbortSignal(
@@ -1097,12 +1098,17 @@ export class AgentRuntime {
     const authorize = this.dependencies.integrations?.authorizeTool;
     if (!authorize) return undefined;
     try {
-      const decision = await authorize({
-        name: toolName,
-        args: structuredClone(args),
-        scope: this.currentToolScope ?? { allowedTools },
-        signal: abortSignal,
-      });
+      const decision = await this.awaitWithAbortSignal(
+        Promise.resolve(
+          authorize({
+            name: toolName,
+            args: structuredClone(args),
+            scope: this.currentToolScope ?? { allowedTools },
+            signal: abortSignal,
+          }),
+        ),
+        abortSignal,
+      );
       this.recordToolPolicyDecision(toolName, toolCallId, args, decision);
       if (decision.allowed) return undefined;
       return {
@@ -1110,6 +1116,7 @@ export class AgentRuntime {
         content: decision.reason ?? `Tool execution denied: ${toolName}`,
       };
     } catch (error) {
+      this.throwIfAbortCancelled(abortSignal);
       const reason = error instanceof Error ? error.message : String(error);
       this.recordToolPolicyDecision(toolName, toolCallId, args, {
         allowed: false,

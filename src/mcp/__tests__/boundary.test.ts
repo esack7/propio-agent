@@ -20,7 +20,7 @@ beforeAll(() => {
 import fs from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, CallToolRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 const [mode, pidFile, readyFile] = process.argv.slice(2);
 fs.writeFileSync(pidFile, String(process.pid));
 if (mode === "connect-hang") {
@@ -43,6 +43,7 @@ if (mode === "connect-hang") {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
     if (args.hang) return await new Promise(() => {});
+    if (args.invalidTimeout) throw new McpError(ErrorCode.InvalidParams, "invalid timeout argument");
     if (args.throw) throw new Error("fixture failure");
     if (args.result) return args.result;
     return { content: [{ type: "text", text: JSON.stringify({ args, identity: server.getClientVersion() }) }] };
@@ -259,6 +260,7 @@ it("applies the supplied tool-call deadline and recovers for subsequent calls", 
       durationMs: expect.any(Number),
       completion: "unknown",
       sideEffect: "unknown",
+      protocolErrorCode: -32001,
     },
   });
   expect(
@@ -327,9 +329,35 @@ it("reports remote request errors", async () => {
     content: expect.stringContaining("fixture failure"),
     outcome: expect.objectContaining({
       kind: "mcp_call",
-      classification: "transport_error",
+      classification: "remote_error",
       completion: "unknown",
+      sideEffect: "unknown",
+      protocolErrorCode: -32603,
     }),
+  });
+});
+
+it("distinguishes a protocol rejection from a timeout-like error message", async () => {
+  const { manager } = fixture();
+  await manager.initialize();
+  expect(
+    await manager.executeToolWithStatus("mcp__fixture__echo", {
+      invalidTimeout: true,
+    }),
+  ).toMatchObject({
+    status: "error",
+    content: expect.stringContaining("invalid timeout argument"),
+    outcome: {
+      kind: "mcp_call",
+      classification: "remote_error",
+      serverName: "fixture",
+      remoteToolName: "echo",
+      timeoutMs: 60_000,
+      durationMs: expect.any(Number),
+      completion: "not_started",
+      sideEffect: "none",
+      protocolErrorCode: -32602,
+    },
   });
 });
 
