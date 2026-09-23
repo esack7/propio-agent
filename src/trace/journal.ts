@@ -22,6 +22,10 @@ export interface JsonlTraceJournalOptions {
   readonly captureLevel?: "standard" | "full";
 }
 
+export function materialDirectoryForJournal(journalPath: string): string {
+  return `${path.basename(journalPath, ".jsonl")}.materials`;
+}
+
 function materialBytes(value: unknown): {
   bytes: Buffer;
   encoding: TraceMaterialReference["encoding"];
@@ -85,7 +89,7 @@ export class JsonlTraceJournal implements TraceSink {
     try {
       const { bytes, encoding } = materialBytes(value);
       const sha256 = createHash("sha256").update(bytes).digest("hex");
-      const directory = `${path.basename(this.journalPath, ".jsonl")}.materials`;
+      const directory = materialDirectoryForJournal(this.journalPath);
       const materialDirectory = this.ensureMaterialDirectory(directory);
       const relativePath = `${directory}/${sha256}.${encoding === "json" ? "json" : "bin"}`;
       const target = path.join(path.dirname(this.journalPath), relativePath);

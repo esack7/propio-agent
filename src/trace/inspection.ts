@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { readTraceJournal } from "./journal.js";
+import { materialDirectoryForJournal, readTraceJournal } from "./journal.js";
 import { redactTraceValue } from "./redaction.js";
 import {
   summarizeProviderMeasurements,
@@ -190,7 +190,12 @@ export interface TraceExportManifestV3 extends TraceExportManifestBase {
 export type TraceExportManifestV4 = Omit<
   TraceExportManifestV3,
   "version" | "captureLevel"
-> & { readonly version: 4; readonly captureLevel: "full" };
+> & {
+  readonly version: 4;
+  readonly captureLevel: "full";
+  /** The only source-journal material directory included in this bundle. */
+  readonly materialDirectory: string;
+};
 
 export type TraceExportManifest =
   | TraceExportManifestV1
@@ -450,11 +455,26 @@ function validMaterialReferencePath(
   if (parts.length !== 2) return false;
   const [directory, fileName] = parts;
   return (
-    directory.endsWith(".materials") &&
-    !directory.includes("\\") &&
-    !directory.includes("\0") &&
+    validMaterialDirectoryName(directory) &&
     fileName === `${ref.sha256}.${ref.encoding === "json" ? "json" : "bin"}`
   );
+}
+
+function validMaterialDirectoryName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.endsWith(".materials") &&
+    !value.includes("/") &&
+    !value.includes("\\") &&
+    !value.includes("\0")
+  );
+}
+
+function belongsToMaterialDirectory(
+  ref: TraceMaterialReference,
+  materialDirectory: string,
+): boolean {
+  return ref.path.startsWith(`${materialDirectory}/`);
 }
 
 function findMaterialReferences(value: unknown): TraceMaterialReference[] {
@@ -478,6 +498,7 @@ function findMaterialReferences(value: unknown): TraceMaterialReference[] {
 function materialGraph(
   root: string,
   events: ReadonlyArray<TraceEventEnvelope>,
+  materialDirectory: string,
 ): CapturedMaterial[] {
   const captures = capturedMaterial(events);
   const pending = [...captures];
@@ -485,7 +506,12 @@ function materialGraph(
   while (pending.length > 0) {
     const capture = pending.shift()!;
     const ref = capture.ref;
-    if (!ref || seen.has(ref.path)) continue;
+    if (
+      !ref ||
+      !belongsToMaterialDirectory(ref, materialDirectory) ||
+      seen.has(ref.path)
+    )
+      continue;
     seen.add(ref.path);
     for (const child of readNestedMaterialReferences(root, ref)) {
       const nested = {
@@ -520,6 +546,7 @@ function fullExportMaterial(
   events: ReadonlyArray<TraceEventEnvelope>,
   warnings: ReadonlyArray<TraceReadWarning>,
   files: TraceExportManifestBase["files"],
+  materialDirectory: string,
 ): TraceExportMaterial[] {
   const material: TraceExportMaterial[] = [
     {
@@ -542,8 +569,8 @@ function fullExportMaterial(
       .map((event) => event.eventId),
   );
   material.push(
-    ...materialGraph(root, events).map((capture) =>
-      fullMaterialEntry(capture, files, partialEvents),
+    ...materialGraph(root, events, materialDirectory).map((capture) =>
+      fullMaterialEntry(capture, files, partialEvents, materialDirectory),
     ),
   );
   if (!material.some((entry) => entry.kind === "workspace_baseline")) {
@@ -567,12 +594,13 @@ function fullMaterialEntry(
   capture: CapturedMaterial,
   files: TraceExportManifestBase["files"],
   partialEvents: ReadonlySet<string>,
+  materialDirectory: string,
 ): TraceExportMaterial {
   return {
     kind: capture.kind,
     eventId: capture.eventId,
     ...(capture.referenceId ? { referenceId: capture.referenceId } : {}),
-    ...fullMaterialStatus(capture, files, partialEvents),
+    ...fullMaterialStatus(capture, files, partialEvents, materialDirectory),
   };
 }
 
@@ -580,8 +608,11 @@ function fullMaterialStatus(
   capture: CapturedMaterial,
   files: TraceExportManifestBase["files"],
   partialEvents: ReadonlySet<string>,
+  materialDirectory: string,
 ): Pick<TraceExportMaterial, "status" | "path" | "reason"> {
   const ref = capture.ref;
+  if (ref && !belongsToMaterialDirectory(ref, materialDirectory))
+    return { status: "missing", reason: "material_outside_source_run" };
   if (
     !ref ||
     !files.some((file) => file.path === ref.path && file.sha256 === ref.sha256)
@@ -648,12 +679,14 @@ function copyCapturedMaterials(
   journalPath: string,
   destinationDirectory: string,
   events: ReadonlyArray<TraceEventEnvelope>,
+  materialDirectory: string,
 ): TraceExportManifestBase["files"] {
   const sourceRoot = fs.realpathSync(path.dirname(journalPath));
   const destinationRoot = fs.realpathSync(destinationDirectory);
   const copied = new Map<string, TraceExportManifestBase["files"][number]>();
-  for (const { ref } of materialGraph(sourceRoot, events)) {
+  for (const { ref } of materialGraph(sourceRoot, events, materialDirectory)) {
     if (!ref || copied.has(ref.path)) continue;
+    if (!belongsToMaterialDirectory(ref, materialDirectory)) continue;
     const bytes = readVerifiedMaterial(sourceRoot, ref);
     if (!bytes) continue;
     writeExportMaterial(destinationRoot, ref, bytes);
@@ -729,6 +762,7 @@ export function exportTraceJournal(
     },
   );
   const full = captureLevel === "full";
+  const materialDirectory = materialDirectoryForJournal(journalPath);
   const files = [
     {
       path: relativeEventsPath,
@@ -736,7 +770,12 @@ export function exportTraceJournal(
       sizeBytes: events.byteLength,
     },
     ...(full
-      ? copyCapturedMaterials(journalPath, destinationDirectory, safeEvents)
+      ? copyCapturedMaterials(
+          journalPath,
+          destinationDirectory,
+          safeEvents,
+          materialDirectory,
+        )
       : []),
   ];
   const material = full
@@ -745,6 +784,7 @@ export function exportTraceJournal(
         safeEvents,
         inspection.warnings,
         files,
+        materialDirectory,
       )
     : exportMaterial(safeEvents, inspection.warnings);
   const commonManifest = {
@@ -768,7 +808,12 @@ export function exportTraceJournal(
     files,
   };
   const manifest: TraceExportManifestV3 | TraceExportManifestV4 = full
-    ? { ...commonManifest, version: 4, captureLevel: "full" }
+    ? {
+        ...commonManifest,
+        version: 4,
+        captureLevel: "full",
+        materialDirectory,
+      }
     : { ...commonManifest, version: 3, captureLevel: "standard" };
   const safeManifest = redactTraceValue(manifest) as
     TraceExportManifestV3 | TraceExportManifestV4;
@@ -837,7 +882,21 @@ function manifestFailures(manifest: TraceExportManifest): string[] {
     return [...failures, "Missing export file list"];
   if (manifest.version === 3 || manifest.version === 4)
     failures.push(...version3Failures(manifest));
+  if (manifest.version === 4) failures.push(...fullManifestFailures(manifest));
   return failures;
+}
+
+function fullManifestFailures(manifest: TraceExportManifestV4): string[] {
+  if (!validMaterialDirectoryName(manifest.materialDirectory))
+    return ["Invalid full export material directory"];
+  const foreignFile = manifest.files.some(
+    (file) =>
+      file?.path !== "events.jsonl" &&
+      !file?.path?.startsWith(`${manifest.materialDirectory}/`),
+  );
+  return foreignFile
+    ? ["Full export file outside source run material directory"]
+    : [];
 }
 
 function manifestMetadataFailures(manifest: TraceExportManifest): string[] {
@@ -947,7 +1006,13 @@ function derivedClaims(
   const inspection = inspectEvents(events, manifest.warnings, {});
   const full = manifest.version === 4;
   const material = full
-    ? fullExportMaterial(root, events, manifest.warnings, manifest.files)
+    ? fullExportMaterial(
+        root,
+        events,
+        manifest.warnings,
+        manifest.files,
+        manifest.materialDirectory,
+      )
     : exportMaterial(events, manifest.warnings);
   const captureComplete =
     inspection.captureComplete &&

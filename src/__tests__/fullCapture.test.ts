@@ -415,6 +415,72 @@ describe("private full trace capture", () => {
     },
   );
 
+  it("does not traverse or copy material referenced from a sibling run", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-run-scope-"));
+    try {
+      const sourceRoot = path.join(root, "source");
+      const other = new JsonlTraceJournal(
+        path.join(sourceRoot, "run_b.jsonl"),
+        { captureLevel: "full" },
+      );
+      const nested = other.captureMaterial({ note: "nested-other-run" })!;
+      const foreign = other.captureMaterial({ nested })!;
+      other.close();
+
+      const journalPath = path.join(sourceRoot, "run_a.jsonl");
+      const journal = new JsonlTraceJournal(journalPath, {
+        captureLevel: "full",
+      });
+      const recorder = new RunTraceRecorder(
+        { sessionId: "session-1", runId: "run_a" },
+        journal,
+      );
+      const own = recorder.captureMaterial({ result: { foreign } })!;
+      recorder.record(
+        {
+          component: "tool",
+          type: "tool_execution_completed",
+          payload: { resultMaterial: own },
+        },
+        { durable: true },
+      );
+      journal.close();
+
+      const exportRoot = path.join(root, "bundle");
+      const manifest = exportTraceJournal(journalPath, exportRoot, {
+        captureLevel: "full",
+      });
+      expect(manifest.version).toBe(4);
+      if (manifest.version !== 4) throw new Error("Expected full export");
+      expect(manifest.materialDirectory).toBe("run_a.materials");
+      expect(manifest.files.map((file) => file.path)).toContain(own.path);
+      expect(manifest.files.map((file) => file.path)).not.toContain(
+        foreign.path,
+      );
+      expect(manifest.files.map((file) => file.path)).not.toContain(
+        nested.path,
+      );
+      expect(manifest.material).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            status: "missing",
+            reason: "material_outside_source_run",
+            referenceId: foreign.sha256,
+          }),
+        ]),
+      );
+      expect(manifest.material).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ referenceId: nested.sha256 }),
+        ]),
+      );
+      expect(manifest.captureComplete).toBe(false);
+      expect(verifyTraceExport(exportRoot)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("stores nested Buffers as compact base64 material", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-buffer-image-"));
     try {
