@@ -1174,8 +1174,17 @@ export class AgentRuntime {
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
   ): Promise<ToolExecutionResult> {
-    this.throwIfAbortCancelled(abortSignal);
     const executionArgs = args ?? {};
+    if (abortSignal?.aborted) {
+      this.recordToolPolicyDecision(toolName, toolCallId, executionArgs, {
+        allowed: false,
+        actor: "agent",
+        rule: "pre_authorization",
+        reason: "Tool authorization cancelled before dispatch",
+        outcome: "cancelled",
+      });
+      this.throwIfAbortCancelled(abortSignal);
+    }
     const denied = await this.authorizeToolExecution(
       toolName,
       toolCallId,
@@ -1183,6 +1192,15 @@ export class AgentRuntime {
       allowedTools,
       abortSignal,
     );
+    if (abortSignal?.aborted) {
+      this.recordToolPolicyDecision(toolName, toolCallId, executionArgs, {
+        allowed: false,
+        actor: "agent",
+        rule: "pre_dispatch",
+        reason: "Tool dispatch cancelled after authorization",
+        outcome: "cancelled",
+      });
+    }
     this.throwIfAbortCancelled(abortSignal);
     if (denied) return denied;
     // Local tools receive cooperative cancellation; integrations may still run.
@@ -1199,7 +1217,7 @@ export class AgentRuntime {
     toolCallId: string,
     args: Record<string, unknown>,
     decision: AgentToolPolicyDecision & {
-      readonly outcome?: "allowed" | "denied" | "error";
+      readonly outcome?: "allowed" | "denied" | "error" | "cancelled";
     },
   ): void {
     this.dependencies.trace?.record({
@@ -1221,6 +1239,7 @@ export class AgentRuntime {
         rule: decision.rule,
         reason: decision.reason,
         reviewedArgumentKeys: Object.keys(args).sort(),
+        reviewedArgumentFingerprint: createTraceRevisionId(args),
         metadata: decision.metadata,
       },
     });
@@ -1287,20 +1306,42 @@ export class AgentRuntime {
         content: decision.reason ?? `Tool execution denied: ${toolName}`,
       };
     } catch (error) {
+      const reason = this.recordAuthorizationRejection(
+        toolName,
+        toolCallId,
+        args,
+        error,
+        abortSignal,
+      );
       this.throwIfAbortCancelled(abortSignal);
-      const reason = error instanceof Error ? error.message : String(error);
-      this.recordToolPolicyDecision(toolName, toolCallId, args, {
-        allowed: false,
-        actor: "application",
-        rule: "authorization_callback",
-        reason,
-        outcome: "error",
-      });
       return {
         status: "tool_disabled",
         content: `Tool policy evaluation failed: ${reason}`,
       };
     }
+  }
+
+  private recordAuthorizationRejection(
+    toolName: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    error: unknown,
+    abortSignal?: AbortSignal,
+  ): string {
+    const cancelled = abortSignal?.aborted === true;
+    const reason = cancelled
+      ? "Tool authorization cancelled before dispatch"
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    this.recordToolPolicyDecision(toolName, toolCallId, args, {
+      allowed: false,
+      actor: "application",
+      rule: "authorization_callback",
+      reason,
+      outcome: cancelled ? "cancelled" : "error",
+    });
+    return reason;
   }
 
   private async processToolCall(
@@ -1396,6 +1437,7 @@ export class AgentRuntime {
         iteration,
         toolName,
         argumentKeys: Object.keys(args).sort(),
+        argumentFingerprint: createTraceRevisionId(args),
         argumentChars: serializedArgs.length,
         argumentMaterial,
       },
