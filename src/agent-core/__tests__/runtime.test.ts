@@ -13,6 +13,7 @@ import {
 import { ConversationManager } from "../../context/index.js";
 import { ToolRegistry, createExecutableTool } from "../../tools/index.js";
 import type { TraceEventInput } from "../../trace/index.js";
+import { createTraceRevisionId } from "../../trace/revisions.js";
 
 const toolCall: ChatStreamEvent = {
   type: "tool_calls",
@@ -220,10 +221,29 @@ describe("public headless runtime", () => {
           payload: expect.objectContaining({
             decision: "allowed",
             reviewedArgumentKeys: ["key"],
+            reviewedArgumentFingerprint: expect.stringMatching(/^hmac-sha256:/),
           }),
         }),
       ]),
     );
+    const started = traceEvents.find(
+      (event) => event.type === "tool_execution_started",
+    );
+    expect(started).toBeDefined();
+    const argumentFingerprint = (
+      started!.payload as { argumentFingerprint: string }
+    ).argumentFingerprint;
+    expect(argumentFingerprint).toMatch(/^hmac-sha256:/);
+    expect(argumentFingerprint).not.toBe(
+      createTraceRevisionId({ key: "example" }),
+    );
+    expect(
+      decisions.map(
+        (event) =>
+          (event.payload as { reviewedArgumentFingerprint: string })
+            .reviewedArgumentFingerprint,
+      ),
+    ).toEqual([argumentFingerprint, argumentFingerprint]);
     const completedIndex = traceEvents.findIndex(
       (event) => event.type === "tool_execution_completed",
     );
@@ -245,6 +265,28 @@ describe("public headless runtime", () => {
         }),
       }),
     );
+  });
+
+  it("does not reuse a candidate-checkable tool fingerprint across runtimes", async () => {
+    const fingerprints: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const fixture = setup([[toolCall], [answer]], {
+        trace: {
+          identity: { sessionId: "session-1", runId: "run-1" },
+          record: (event) => {
+            if (event.type === "tool_execution_started") {
+              fingerprints.push(
+                (event.payload as { argumentFingerprint: string })
+                  .argumentFingerprint,
+              );
+            }
+          },
+        },
+      });
+      await expect(fixture.run()).resolves.toBe("Finished.");
+    }
+    expect(fingerprints).toHaveLength(2);
+    expect(fingerprints[0]).not.toBe(fingerprints[1]);
   });
 
   it("records a scope denial without dispatching the tool", async () => {
@@ -289,6 +331,61 @@ describe("public headless runtime", () => {
       payload: { decision: "denied", reviewedArgumentKeys: ["key"] },
     });
   });
+
+  it.each([
+    { rule: "tool_scope", scopeAllowed: false },
+    { rule: "fixture_denial", scopeAllowed: true },
+  ])(
+    "does not append cancellation after $rule already denied a tool",
+    async ({ rule, scopeAllowed }) => {
+      const controller = new AbortController();
+      const traceEvents: TraceEventInput[] = [];
+      const executeWithStatus = jest.fn(async () => ({
+        status: "success" as const,
+        content: "must not run",
+      }));
+      const fixture = setup([[toolCall]], {
+        tools: { getEnabledSchemas: () => [], executeWithStatus },
+        policy: {
+          maxIterations: 5,
+          useNoProgressDetector: true,
+          streamIdleTimeoutMs: 0,
+          outputTokenRecoveryLimit: 1,
+          resolveToolScope: () => ({
+            allowedTools: new Set(scopeAllowed ? ["lookup"] : []),
+          }),
+        },
+        trace: {
+          identity: { sessionId: "session-1", runId: "run-1" },
+          record: (event) => {
+            traceEvents.push(event);
+            if (
+              event.type === "tool_policy_decision" &&
+              (event.payload as { rule?: string }).rule === rule
+            ) {
+              controller.abort("cancel after denial");
+            }
+          },
+        },
+        integrations: {
+          authorizeTool: () => ({
+            allowed: false,
+            actor: "application",
+            rule: "fixture_denial",
+          }),
+        },
+      });
+
+      await expect(fixture.run(controller.signal)).rejects.toThrow("cancelled");
+      expect(executeWithStatus).not.toHaveBeenCalled();
+      expect(
+        traceEvents
+          .filter((event) => event.type === "tool_policy_decision")
+          .map((event) => (event.payload as { decision?: string }).decision)
+          .filter((decision) => decision !== "allowed"),
+      ).toEqual(["denied"]);
+    },
+  );
 
   it("records authorization callback failures and fails closed", async () => {
     const traceEvents: TraceEventInput[] = [];
@@ -344,8 +441,13 @@ describe("public headless runtime", () => {
         status: "success" as const,
         content: "must not run",
       }));
+      const traceEvents: TraceEventInput[] = [];
       const fixture = setup([[toolCall]], {
         tools: { getEnabledSchemas: () => [], executeWithStatus },
+        trace: {
+          identity: { sessionId: "session-1", runId: "run-1" },
+          record: (event) => traceEvents.push(event),
+        },
         integrations: {
           authorizeTool: async () => {
             enterAuthorization();
@@ -368,6 +470,22 @@ describe("public headless runtime", () => {
       await expect(running).rejects.toThrow("cancelled");
       expect(executeWithStatus).not.toHaveBeenCalled();
       expect(fixture.events).toContainEqual({ type: "turn_cancelled" });
+      expect(traceEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "tool_policy_decision",
+            payload: expect.objectContaining({
+              decision: "cancelled",
+              rule: "authorization_callback",
+              reviewedArgumentFingerprint:
+                expect.stringMatching(/^hmac-sha256:/),
+            }),
+          }),
+        ]),
+      );
+      expect(
+        traceEvents.some((event) => event.type === "tool_execution_completed"),
+      ).toBe(false);
     },
   );
 
@@ -571,7 +689,13 @@ describe("public headless runtime", () => {
   });
 
   it("never starts a tool when its start event cancels the turn", async () => {
-    const fixture = setup([[toolCall]]);
+    const traceEvents: TraceEventInput[] = [];
+    const fixture = setup([[toolCall]], {
+      trace: {
+        identity: { sessionId: "session-1", runId: "run-1" },
+        record: (event) => traceEvents.push(event),
+      },
+    });
     const controller = new AbortController();
     await expect(
       fixture.runtime.streamChat({ text: "Stop" }, () => {}, {
@@ -582,6 +706,17 @@ describe("public headless runtime", () => {
       }),
     ).rejects.toThrow("cancelled");
     expect(fixture.execute).not.toHaveBeenCalled();
+    expect(traceEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "tool_policy_decision",
+          payload: expect.objectContaining({
+            decision: "cancelled",
+            rule: "pre_authorization",
+          }),
+        }),
+      ]),
+    );
   });
 
   it("rejects overlapping turns before they mutate context", async () => {

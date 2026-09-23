@@ -114,6 +114,7 @@ describe("persistence", () => {
     it("should round-trip invoked skills and keep them active in prompt assembly", () => {
       const manager = new ContextManager();
       manager.recordInvokedSkill({
+        invocationId: "invocation-review-1",
         name: "review",
         source: "project",
         skillRoot: "/repo/.propio/skills/review",
@@ -135,6 +136,7 @@ describe("persistence", () => {
 
       expect(restored.invokedSkills).toHaveLength(1);
       const restoredInvokedSkills = restored.invokedSkills ?? [];
+      expect(restoredInvokedSkills[0].invocationId).toBe("invocation-review-1");
       expect(restoredInvokedSkills[0].scope.allowedTools).toEqual(["read"]);
       expect(restoredInvokedSkills[0].scope.warnings).toEqual([
         "Recorded for persistence testing.",
