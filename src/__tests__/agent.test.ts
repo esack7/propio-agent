@@ -2,6 +2,7 @@ import * as path from "path";
 import { userSubmission } from "./testHelpers.js";
 import { createRequire } from "module";
 import { Agent } from "../agent.js";
+import { getInstalledPackageVersion } from "../packageVersion.js";
 import { LLMProvider } from "@propio-ai/providers";
 import {
   ChatRequest,
@@ -1122,7 +1123,7 @@ describe("Agent with Multi-Provider Configuration", () => {
         fingerprint: expect.stringMatching(/^sha256:/),
         packages: {
           agent: expect.any(String),
-          providers: "0.4.0",
+          providers: getInstalledPackageVersion("@propio-ai/providers"),
         },
         provider: {
           name: "remote",

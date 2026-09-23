@@ -383,6 +383,11 @@ function capturedMaterial(
         kind: "provider_payload",
       },
       {
+        type: "provider_attempt_payload",
+        key: "bodyMaterial",
+        kind: "provider_payload",
+      },
+      {
         type: "provider_response_captured",
         key: "responseMaterial",
         kind: "provider_payload",
@@ -665,6 +670,7 @@ function exportEvent(
   const payload = { ...payloadRecord(safe) };
   for (const key of [
     "requestMaterial",
+    "bodyMaterial",
     "responseMaterial",
     "argumentMaterial",
     "resultMaterial",

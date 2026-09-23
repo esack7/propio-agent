@@ -5,6 +5,7 @@ import {
   type ProviderDiagnosticEvent,
   type ProviderTraceEvent,
   type ChatRequest,
+  type ChatStreamEvent,
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
@@ -105,6 +106,7 @@ import {
 import { isSafeSessionId } from "./sessions/sessionId.js";
 import type { AgentTraceRecorder, TraceIdentity } from "./trace/index.js";
 import { createTraceRevisionId } from "./trace/revisions.js";
+import { capturedProviderEventPayload } from "./trace/providerPayload.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -1081,6 +1083,7 @@ export class Agent {
     const previousObserver = request.onTraceEvent;
     return {
       ...request,
+      captureRequestPayload: recorder.captureLevel === "full",
       trace: {
         sessionId: recorder.identity.sessionId,
         runId: recorder.identity.runId,
@@ -1102,6 +1105,10 @@ export class Agent {
     context: SummaryTraceContext,
     event: ProviderTraceEvent,
   ): void {
+    const payload = capturedProviderEventPayload(
+      event,
+      context.traceRun.recorder,
+    );
     this.recordSummaryTrace(
       context,
       {
@@ -1116,7 +1123,7 @@ export class Agent {
           summaryRevisionId: context.previousSummaryRevisionId,
           attemptId: "attemptId" in event ? event.attemptId : undefined,
         },
-        payload: event,
+        payload,
       },
       {
         durable:
@@ -1687,15 +1694,20 @@ export class Agent {
       },
     };
     if (!summaryTrace) return hooks;
+    const recorder = summaryTrace.traceRun.recorder;
+    const responseEvents: ChatStreamEvent[] = [];
     return {
       ...hooks,
       prepareRequest: (request) =>
         this.prepareSummaryTraceRequest(summaryTrace, request),
-      onResponse: (request, content) => {
-        const recorder = summaryTrace.traceRun.recorder;
+      onStreamEvent:
+        recorder.captureLevel === "full"
+          ? (_request, event) => responseEvents.push(event)
+          : undefined,
+      onResponse: (request) => {
         if (recorder.captureLevel !== "full") return;
         const responseMaterial = recorder.captureMaterial?.({
-          content,
+          events: responseEvents,
           completed: true,
         });
         this.recordSummaryTrace(summaryTrace, {

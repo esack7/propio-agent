@@ -2,11 +2,18 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { withProviderTracing } from "@propio-ai/providers";
+import {
+  withProviderTracing,
+  type LLMProvider,
+  type ProviderTraceEvent,
+  type ChatStreamEvent,
+} from "@propio-ai/providers";
 import {
   exportTraceJournal,
   inspectTraceExport,
   JsonlTraceJournal,
+  loadRecordedProviderResponse,
+  playRecordedProviderResponse,
   readTraceJournal,
   RunTraceRecorder,
   verifyTraceExport,
@@ -36,6 +43,83 @@ function materialRef(
 }
 
 describe("private full trace capture", () => {
+  it("plays back the actual stream events from a summary refresh", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "propio-summary-playback-"),
+    );
+    try {
+      const journalPaths: string[] = [];
+      const summaryEvents: ChatStreamEvent[] = [
+        { type: "status", status: "Summarizing" },
+        { type: "assistant_text", delta: '{"goals":' },
+        { type: "assistant_text", delta: '"Keep context"}' },
+        { type: "terminal", stopReason: "end_turn" },
+      ];
+      const provider: LLMProvider = {
+        name: "fixture",
+        getCapabilities: () => ({ contextWindowTokens: 128000 }),
+        async *streamChat(request) {
+          if (request.trace?.purpose === "summarize") {
+            yield* summaryEvents;
+          } else {
+            yield { type: "assistant_text", delta: "First answer" };
+          }
+        },
+      };
+      const agent = createTestAgent(provider, {
+        createTraceRun: (identity) => {
+          const journalPath = path.join(root, `${identity.runId}.jsonl`);
+          journalPaths.push(journalPath);
+          const journal = new JsonlTraceJournal(journalPath, {
+            captureLevel: "full",
+          });
+          return {
+            recorder: new RunTraceRecorder(identity, journal),
+            close: () => journal.close(),
+          };
+        },
+      });
+      (agent as any).summaryPolicy = {
+        rawRecentTurns: 0,
+        refreshIntervalTurns: 999,
+        summaryTargetTokens: 256,
+        contextPressureThreshold: 2,
+      };
+
+      await agent.streamChat(userSubmission("First"), () => {});
+      await (agent as any).runSummaryRefresh("turn_cadence");
+      expect(journalPaths).toHaveLength(2);
+      const bundle = path.join(root, "bundle");
+      exportTraceJournal(journalPaths[1]!, bundle, { captureLevel: "full" });
+      expect(verifyTraceExport(bundle)).toEqual([]);
+      const response = readTraceJournal(
+        path.join(bundle, "events.jsonl"),
+      ).events.find((event) => event.type === "provider_response_captured");
+      expect(response?.payload).toMatchObject({
+        purpose: "summarize",
+        completed: true,
+      });
+      expect(
+        readMaterial(bundle, materialRef(response, "responseMaterial")),
+      ).toEqual({ events: summaryEvents, completed: true });
+      const requestId = response?.identity.requestId;
+      expect(requestId).toBeDefined();
+      expect(loadRecordedProviderResponse(bundle, requestId!)).toEqual(
+        summaryEvents,
+      );
+      const played: ChatStreamEvent[] = [];
+      for await (const event of playRecordedProviderResponse(
+        bundle,
+        requestId!,
+      )) {
+        played.push(event);
+      }
+      expect(played).toEqual(summaryEvents);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("exports requests, responses, tool material, and workspace changes for offline inspection", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-full-capture-"));
     try {
@@ -212,6 +296,30 @@ describe("private full trace capture", () => {
 
       fs.renameSync(sessionsDir, path.join(root, "removed-source"));
       expect(inspectTraceExport(exportRoot).manifest.version).toBe(4);
+      const requestId = response?.identity.requestId;
+      expect(requestId).toBeDefined();
+      const recorded = loadRecordedProviderResponse(exportRoot, requestId!);
+      const played = [];
+      for await (const event of playRecordedProviderResponse(
+        exportRoot,
+        requestId!,
+      )) {
+        played.push(event);
+      }
+      expect(played).toEqual(recorded);
+      expect(played).toEqual(
+        (
+          readMaterial(
+            exportRoot,
+            materialRef(response, "responseMaterial"),
+          ) as {
+            events: unknown[];
+          }
+        ).events,
+      );
+      expect(() =>
+        loadRecordedProviderResponse(standardRoot, requestId!),
+      ).toThrow("full trace export");
       fs.appendFileSync(
         path.join(
           exportRoot,
@@ -222,6 +330,116 @@ describe("private full trace capture", () => {
       );
       expect(verifyTraceExport(exportRoot)).toEqual(
         expect.arrayContaining([expect.stringContaining("mismatch")]),
+      );
+      expect(() =>
+        loadRecordedProviderResponse(exportRoot, requestId!),
+      ).toThrow("verification failed");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stores adapter attempt bodies as private material without inlining them in the journal", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-attempt-body-"));
+    try {
+      const journalPath = path.join(root, "run.jsonl");
+      const provider: LLMProvider = {
+        name: "fixture",
+        getCapabilities: () => ({ contextWindowTokens: 1000 }),
+        async *streamChat(request) {
+          expect(request.captureRequestPayload).toBe(true);
+          const trace = request.trace!;
+          request.onTraceEvent?.({
+            version: 1,
+            eventId: "provider-event-1",
+            observedAt: new Date().toISOString(),
+            provider: "fixture",
+            requestedModel: request.model,
+            trace,
+            type: "provider_attempt_payload",
+            attemptId: "attempt-1",
+            attemptNumber: 1,
+            transport: "http_json",
+            requestBody: { messages: [{ content: "private prompt" }] },
+          } satisfies ProviderTraceEvent);
+          yield { type: "assistant_text", delta: "done" };
+          yield { type: "terminal", stopReason: "end_turn" };
+        },
+      };
+      const agent = createTestAgent(provider, {
+        createTraceRun: (identity) => {
+          const journal = new JsonlTraceJournal(journalPath, {
+            captureLevel: "full",
+          });
+          return {
+            recorder: new RunTraceRecorder(identity, journal),
+            close: () => journal.close(),
+          };
+        },
+      });
+      await agent.streamChat(userSubmission("private prompt"), () => {});
+      const event = readTraceJournal(journalPath).events.find(
+        (entry) => entry.type === "provider_attempt_payload",
+      );
+      expect(event).toBeDefined();
+      expect(event?.payload).not.toHaveProperty("requestBody");
+      expect(
+        readMaterial(
+          path.dirname(journalPath),
+          materialRef(event, "bodyMaterial"),
+        ),
+      ).toEqual({ messages: [{ content: "private prompt" }] });
+      expect(fs.readFileSync(journalPath, "utf8")).not.toContain(
+        "private prompt",
+      );
+      const bundle = path.join(root, "bundle");
+      const manifest = exportTraceJournal(journalPath, bundle, {
+        captureLevel: "full",
+      });
+      expect(verifyTraceExport(bundle)).toEqual([]);
+      expect(manifest.material).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            eventId: event?.eventId,
+            kind: "provider_payload",
+            status: "included",
+          }),
+        ]),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses playback of an incomplete recorded response", () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "propio-partial-playback-"),
+    );
+    try {
+      const journalPath = path.join(root, "run.jsonl");
+      const journal = new JsonlTraceJournal(journalPath, {
+        captureLevel: "full",
+      });
+      const recorder = new RunTraceRecorder(
+        { sessionId: "session-1", runId: "run-1" },
+        journal,
+      );
+      const responseMaterial = recorder.captureMaterial({
+        completed: false,
+        events: [{ type: "assistant_text", delta: "partial" }],
+      });
+      recorder.record({
+        component: "agent",
+        type: "provider_response_captured",
+        identity: { requestId: "request-1" },
+        payload: { completed: false, responseMaterial },
+      });
+      journal.close();
+      const bundle = path.join(root, "bundle");
+      exportTraceJournal(journalPath, bundle, { captureLevel: "full" });
+      expect(verifyTraceExport(bundle)).toEqual([]);
+      expect(() => loadRecordedProviderResponse(bundle, "request-1")).toThrow(
+        "incomplete",
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
