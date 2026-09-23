@@ -104,13 +104,22 @@ function isPathKey(key: string | undefined): boolean {
   );
 }
 
-function redactString(value: string, key?: string): string {
+function redactString(
+  value: string,
+  key?: string,
+  preservePaths = false,
+): string {
   const credentialSafe = SENSITIVE_VALUE_PATTERNS.reduce(
     (redacted, pattern) => redacted.replace(pattern, "[REDACTED]"),
     value,
   );
-  if (isPathKey(key) && /^(?:\/|[A-Za-z]:\\|\\\\)/.test(credentialSafe.trim()))
+  if (
+    !preservePaths &&
+    isPathKey(key) &&
+    /^(?:\/|[A-Za-z]:\\|\\\\)/.test(credentialSafe.trim())
+  )
     return "[REDACTED]";
+  if (preservePaths) return credentialSafe;
   return FILESYSTEM_PATH_PATTERNS.reduce(
     (redacted, pattern) =>
       redacted.replace(pattern, (match) => {
@@ -122,14 +131,21 @@ function redactString(value: string, key?: string): string {
 }
 
 /** Standard capture redaction. Full payload capture requires a separate policy. */
-export function redactTraceValue(value: unknown): unknown {
-  return redactEntry(value);
+export function redactTraceValue(
+  value: unknown,
+  options: { preservePaths?: boolean } = {},
+): unknown {
+  return redactEntry(value, undefined, options.preservePaths ?? false);
 }
 
-function redactEntry(value: unknown, key?: string): unknown {
-  if (typeof value === "string") return redactString(value, key);
+function redactEntry(
+  value: unknown,
+  key?: string,
+  preservePaths = false,
+): unknown {
+  if (typeof value === "string") return redactString(value, key, preservePaths);
   if (Array.isArray(value))
-    return value.map((entry) => redactEntry(entry, key));
+    return value.map((entry) => redactEntry(entry, key, preservePaths));
   if (value === null || typeof value !== "object") return value;
 
   const redacted: Record<string, unknown> = {};
@@ -139,7 +155,7 @@ function redactEntry(value: unknown, key?: string): unknown {
         ? entry === undefined
           ? undefined
           : "[REDACTED]"
-        : redactEntry(entry, key);
+        : redactEntry(entry, key, preservePaths);
   }
   return redacted;
 }

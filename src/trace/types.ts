@@ -39,18 +39,30 @@ export interface TraceRecordOptions {
   readonly durable?: boolean;
 }
 
+export interface TraceMaterialReference {
+  readonly path: string;
+  readonly sha256: string;
+  readonly sizeBytes: number;
+  readonly encoding: "json" | "binary";
+}
+
 export interface TraceSink {
+  readonly captureLevel?: "standard" | "full";
   record(event: TraceEventEnvelope, options?: TraceRecordOptions): void;
+  /** Optional private, content-addressed capture owned by the sink. */
+  captureMaterial?(value: unknown): TraceMaterialReference | undefined;
 }
 
 export interface AgentTraceRecorder {
   readonly identity: TraceIdentity;
+  readonly captureLevel?: "standard" | "full";
   record(event: TraceEventInput, options?: TraceRecordOptions): void;
+  captureMaterial?(value: unknown): TraceMaterialReference | undefined;
 }
 
 export interface TraceCaptureFailure {
   readonly journalPath: string;
-  readonly operation: "open" | "write" | "flush" | "close";
+  readonly operation: "open" | "write" | "flush" | "close" | "material";
   readonly errorName: string;
   readonly message: string;
 }

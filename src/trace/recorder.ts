@@ -4,6 +4,7 @@ import type {
   TraceEventEnvelope,
   TraceEventInput,
   TraceIdentity,
+  TraceMaterialReference,
   TraceRecordOptions,
   TraceSink,
 } from "./types.js";
@@ -20,6 +21,12 @@ export class RunTraceRecorder implements AgentTraceRecorder {
     this.identity = { ...identity };
   }
 
+  // Runtime consumers access this through the AgentTraceRecorder contract.
+  // fallow-ignore-next-line unused-class-member
+  get captureLevel(): "standard" | "full" | undefined {
+    return this.sink.captureLevel;
+  }
+
   record(event: TraceEventInput, options?: TraceRecordOptions): void {
     const envelope: TraceEventEnvelope = {
       version: 1,
@@ -33,5 +40,9 @@ export class RunTraceRecorder implements AgentTraceRecorder {
       payload: event.payload,
     };
     this.sink.record(envelope, options);
+  }
+
+  captureMaterial(value: unknown): TraceMaterialReference | undefined {
+    return this.sink.captureMaterial?.(value);
   }
 }

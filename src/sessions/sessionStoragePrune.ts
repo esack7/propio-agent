@@ -169,17 +169,58 @@ function pruneTraceJournalSession(
   if (!fs.statSync(sessionDir).isDirectory()) return;
 
   for (const fileName of fs.readdirSync(sessionDir)) {
-    if (!fileName.endsWith(".jsonl")) continue;
-    const journalPath = path.join(sessionDir, fileName);
-    const stat = fs.statSync(journalPath);
-    if (stat.isFile() && Date.now() - stat.mtimeMs > retentionMs) {
-      fs.rmSync(journalPath, { force: true });
-    }
+    pruneExpiredTraceJournal(sessionDir, fileName, retentionMs);
+  }
+
+  for (const name of fs.readdirSync(sessionDir)) {
+    pruneOrphanTraceMaterial(sessionDir, name, retentionMs);
   }
 
   if (isEmptyDirectory(sessionDir)) {
     fs.rmSync(sessionDir, { recursive: true, force: true });
   }
+}
+
+function pruneExpiredTraceJournal(
+  sessionDir: string,
+  fileName: string,
+  retentionMs: number,
+): void {
+  if (!fileName.endsWith(".jsonl")) return;
+  const journalPath = path.join(sessionDir, fileName);
+  const stat = fs.statSync(journalPath);
+  if (!stat.isFile() || Date.now() - stat.mtimeMs <= retentionMs) return;
+
+  fs.rmSync(journalPath, { force: true });
+  removeTraceMaterialDirectory(
+    path.join(sessionDir, `${fileName.slice(0, -".jsonl".length)}.materials`),
+  );
+}
+
+function pruneOrphanTraceMaterial(
+  sessionDir: string,
+  name: string,
+  retentionMs: number,
+): void {
+  if (!name.endsWith(".materials")) return;
+  const materialPath = path.join(sessionDir, name);
+  const journalPath = path.join(
+    sessionDir,
+    `${name.slice(0, -".materials".length)}.jsonl`,
+  );
+  if (
+    !fs.existsSync(journalPath) &&
+    Date.now() - fs.lstatSync(materialPath).mtimeMs > retentionMs
+  ) {
+    removeTraceMaterialDirectory(materialPath);
+  }
+}
+
+function removeTraceMaterialDirectory(directory: string): void {
+  if (!fs.existsSync(directory)) return;
+  const stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+  fs.rmSync(directory, { recursive: true, force: true });
 }
 
 /** Prune stale per-session artifacts, scratchpads, and trace journals. */

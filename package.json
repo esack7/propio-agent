@@ -76,7 +76,8 @@
     "README.md",
     "npm-shrinkwrap.json",
     "examples/tools-consumer.mjs",
-    "examples/agent-core-consumer.mjs"
+    "examples/agent-core-consumer.mjs",
+    "benchmarks/traceCapture.mjs"
   ],
   "engines": {
     "node": ">=20"
@@ -98,7 +99,8 @@
     "example:skills": "node examples/skills-consumer.mjs",
     "example:mcp": "node examples/mcp-consumer.mjs",
     "example:tools": "node examples/tools-consumer.mjs",
-    "example:agent-core": "node examples/agent-core-consumer.mjs"
+    "example:agent-core": "node examples/agent-core-consumer.mjs",
+    "benchmark:trace": "npm run build && node benchmarks/traceCapture.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

@@ -587,10 +587,16 @@ describe("public headless runtime", () => {
     expect(fixture.context.getConversationState().turns).toHaveLength(1);
   });
 
-  it.each(["cancel", "timeout"])(
-    "returns promptly from a stalled stream on %s",
-    async (mode) => {
+  it.each([
+    ["cancel", "standard"],
+    ["timeout", "standard"],
+    ["cancel", "full"],
+    ["timeout", "full"],
+  ] as const)(
+    "returns promptly from a stalled stream on %s with %s capture",
+    async (mode, captureLevel) => {
       const controller = new AbortController();
+      const traceEvents: TraceEventInput[] = [];
       const close = jest.fn(
         async () => new Promise<IteratorResult<ChatStreamEvent>>(() => {}),
       );
@@ -611,6 +617,12 @@ describe("public headless runtime", () => {
       };
       const fixture = setup([], {
         provider,
+        trace: {
+          identity: { sessionId: "session-1", runId: "run-1" },
+          captureLevel,
+          captureMaterial: () => undefined,
+          record: (event) => traceEvents.push(event),
+        },
         policy: {
           maxIterations: 2,
           useNoProgressDetector: true,
@@ -622,6 +634,23 @@ describe("public headless runtime", () => {
         mode === "cancel" ? "cancelled" : "idle timeout",
       );
       expect(close).toHaveBeenCalledTimes(1);
+      expect(
+        traceEvents.filter(
+          (event) => event.type === "provider_response_captured",
+        ),
+      ).toEqual(
+        captureLevel === "full"
+          ? [
+              expect.objectContaining({
+                payload: {
+                  completed: false,
+                  purpose: "answer",
+                  responseMaterial: undefined,
+                },
+              }),
+            ]
+          : [],
+      );
     },
   );
 });

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "../../agent.ts";
 import { JsonlTraceJournal, RunTraceRecorder } from "../../trace/index.ts";
+import { WorkspaceTraceCapture } from "../../trace/workspace.ts";
 import {
   readSnapshot,
   resolveLatestRecoveryCheckpoint,
@@ -11,6 +12,11 @@ const [mode, sessionsDir] = process.argv.slice(2);
 const callsPath = path.join(sessionsDir, "tool-calls.txt");
 const providerRequestsPath = path.join(sessionsDir, "resumed-requests.json");
 const failuresPath = path.join(sessionsDir, "checkpoint-failures.txt");
+const workspaceRoot = path.join(path.dirname(sessionsDir), "workspace");
+if (mode === "run-full") {
+  fs.mkdirSync(workspaceRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspaceRoot, "before.txt"), "before");
+}
 const config = {
   default: "local",
   providers: [
@@ -40,9 +46,18 @@ const agent = new Agent({
         identity.sessionId,
         `${identity.runId}.jsonl`,
       ),
+      { captureLevel: mode === "run-full" ? "full" : "standard" },
     );
+    const recorder = new RunTraceRecorder(identity, journal);
+    const workspace =
+      mode === "run-full"
+        ? new WorkspaceTraceCapture(workspaceRoot, recorder)
+        : undefined;
     return {
-      recorder: new RunTraceRecorder(identity, journal),
+      recorder,
+      captureWorkspace: workspace
+        ? (phase) => workspace.capture(phase)
+        : undefined,
       close: () => journal.close(),
     };
   },
@@ -83,6 +98,9 @@ agent.addTool({
   }),
   execute: async ({ key }) => {
     fs.appendFileSync(callsPath, `${key}\n`);
+    if (mode === "run-full" && key === "first") {
+      fs.writeFileSync(path.join(workspaceRoot, "after.txt"), "after");
+    }
     if (key === "second") {
       process.stdout.write("SECOND_STARTED\n");
       await new Promise(() => {});
