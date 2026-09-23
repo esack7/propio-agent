@@ -30,11 +30,13 @@ function materialBytes(value: unknown): {
     return { bytes: Buffer.from(value), encoding: "binary" };
   }
   const serializable = JSON.parse(
-    JSON.stringify(value, (_key, entry) =>
-      entry instanceof Uint8Array
-        ? { $binary: Buffer.from(entry).toString("base64") }
-        : entry,
-    ),
+    JSON.stringify(value, function (this: Record<string, unknown>, key, entry) {
+      // Buffer.toJSON runs before the replacer; inspect the holder's raw value.
+      const raw = this[key];
+      return raw instanceof Uint8Array
+        ? { $binary: Buffer.from(raw).toString("base64") }
+        : entry;
+    }),
   );
   const redacted = redactTraceValue(serializable, { preservePaths: true });
   return { bytes: Buffer.from(JSON.stringify(redacted)), encoding: "json" };

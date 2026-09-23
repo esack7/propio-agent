@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -325,6 +326,113 @@ describe("private full trace capture", () => {
       );
       expect(manifest.captureComplete).toBe(false);
       expect(verifyTraceExport(bundle)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records deletion of a Git-tracked workspace file without an omission", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-git-delete-"));
+    try {
+      const workspaceRoot = path.join(root, "workspace");
+      const journalPath = path.join(root, "source", "run.jsonl");
+      const exportRoot = path.join(root, "bundle");
+      fs.mkdirSync(workspaceRoot);
+      fs.writeFileSync(path.join(workspaceRoot, "tracked.txt"), "before");
+      execFileSync("git", ["init", "-q"], { cwd: workspaceRoot });
+      execFileSync("git", ["add", "tracked.txt"], { cwd: workspaceRoot });
+      const journal = new JsonlTraceJournal(journalPath, {
+        captureLevel: "full",
+      });
+      const recorder = new RunTraceRecorder(
+        { sessionId: "session-1", runId: "run" },
+        journal,
+      );
+      const workspace = new WorkspaceTraceCapture(workspaceRoot, recorder);
+      workspace.capture("baseline");
+      fs.unlinkSync(path.join(workspaceRoot, "tracked.txt"));
+      workspace.capture("checkpoint");
+      journal.close();
+
+      const manifest = exportTraceJournal(journalPath, exportRoot, {
+        captureLevel: "full",
+      });
+      const diff = readTraceJournal(
+        path.join(exportRoot, "events.jsonl"),
+      ).events.find((event) => event.type === "workspace_diff_captured");
+      expect(diff?.payload).toMatchObject({ omissionCount: 0 });
+      expect(
+        readMaterial(exportRoot, materialRef(diff, "material")),
+      ).toMatchObject({
+        changes: [{ path: "tracked.txt", change: "deleted" }],
+      });
+      expect(manifest.captureComplete).toBe(true);
+      expect(verifyTraceExport(exportRoot)).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["run_1.jsonl", "trace.log"])(
+    "exports full material from a %s journal",
+    (journalName) => {
+      const root = fs.mkdtempSync(
+        path.join(os.tmpdir(), "propio-journal-name-"),
+      );
+      try {
+        const journalPath = path.join(root, journalName);
+        const journal = new JsonlTraceJournal(journalPath, {
+          captureLevel: "full",
+        });
+        const recorder = new RunTraceRecorder(
+          { sessionId: "session-1", runId: "run" },
+          journal,
+        );
+        const resultMaterial = recorder.captureMaterial({ result: "present" });
+        recorder.record({
+          component: "tool",
+          type: "tool_execution_completed",
+          payload: { resultMaterial },
+        });
+        journal.close();
+
+        const exportRoot = path.join(root, "bundle");
+        const manifest = exportTraceJournal(journalPath, exportRoot, {
+          captureLevel: "full",
+        });
+        expect(manifest.material).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "tool_result",
+              status: "included",
+            }),
+          ]),
+        );
+        expect(verifyTraceExport(exportRoot)).toEqual([]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("stores nested Buffers as compact base64 material", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-buffer-image-"));
+    try {
+      const journal = new JsonlTraceJournal(path.join(root, "run.jsonl"), {
+        captureLevel: "full",
+      });
+      const image = Buffer.from([0, 255, 1, 128]);
+      const bytes = new Uint8Array([2, 3, 4]);
+      const ref = journal.captureMaterial({ messages: [{ image, bytes }] })!;
+      expect(readMaterial(root, ref)).toEqual({
+        messages: [
+          {
+            image: { $binary: image.toString("base64") },
+            bytes: { $binary: Buffer.from(bytes).toString("base64") },
+          },
+        ],
+      });
+      journal.close();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

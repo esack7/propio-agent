@@ -169,7 +169,9 @@ export class WorkspaceTraceCapture {
         stat,
         nextCache,
       );
-    } catch {
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return undefined;
       return { path: relativePath, sizeBytes: 0, omittedReason: "read_failed" };
     }
   }

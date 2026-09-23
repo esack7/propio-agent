@@ -433,23 +433,20 @@ export class AgentRuntime {
       turnId: traced.trace.turnId,
       promptRevisionId: traced.trace.promptRevisionId,
     };
-    return (async function* () {
-      const events: ChatStreamEvent[] = [];
-      let completed = false;
-      let error: { name: string; message: string } | undefined;
+    const iterator = source[Symbol.asyncIterator]();
+    const events: ChatStreamEvent[] = [];
+    let closed = false;
+    const finish = (completed: boolean, cause?: unknown): void => {
+      if (closed) return;
+      closed = true;
       try {
-        for await (const event of source) {
-          events.push(event);
-          yield event;
-        }
-        completed = true;
-      } catch (cause) {
-        error = {
-          name: cause instanceof Error ? cause.name : "Error",
-          message: cause instanceof Error ? cause.message : String(cause),
-        };
-        throw cause;
-      } finally {
+        const error =
+          cause === undefined
+            ? undefined
+            : {
+                name: cause instanceof Error ? cause.name : "Error",
+                message: cause instanceof Error ? cause.message : String(cause),
+              };
         const responseMaterial = recorder.captureMaterial?.({
           events,
           completed,
@@ -461,8 +458,36 @@ export class AgentRuntime {
           identity,
           payload: { purpose, completed, responseMaterial },
         });
+      } catch {
+        // Observational capture must not prevent closing the provider stream.
       }
-    })();
+    };
+    const captured: AsyncIterableIterator<ChatStreamEvent> = {
+      [Symbol.asyncIterator]() {
+        return captured;
+      },
+      async next() {
+        if (closed) return { done: true, value: undefined };
+        try {
+          const result = await iterator.next();
+          if (closed) return { done: true, value: undefined };
+          if (result.done) finish(true);
+          else events.push(result.value);
+          return result;
+        } catch (cause) {
+          finish(false, cause);
+          throw cause;
+        }
+      },
+      return() {
+        finish(false);
+        return (
+          iterator.return?.() ??
+          Promise.resolve({ done: true, value: undefined })
+        );
+      },
+    };
+    return captured;
   }
 
   private recordProviderTraceEvent(event: ProviderTraceEvent): void {

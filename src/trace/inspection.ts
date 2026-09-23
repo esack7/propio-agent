@@ -446,11 +446,14 @@ function validMaterialReferencePath(
   ref: Partial<TraceMaterialReference>,
 ): boolean {
   if (!ref.path || !ref.sha256 || !ref.encoding) return false;
+  const parts = ref.path.split("/");
+  if (parts.length !== 2) return false;
+  const [directory, fileName] = parts;
   return (
-    /^[A-Za-z0-9-]+\.materials\/[a-f0-9]{64}\.(json|bin)$/.test(ref.path) &&
-    ref.path.endsWith(
-      `${ref.sha256}.${ref.encoding === "json" ? "json" : "bin"}`,
-    )
+    directory.endsWith(".materials") &&
+    !directory.includes("\\") &&
+    !directory.includes("\0") &&
+    fileName === `${ref.sha256}.${ref.encoding === "json" ? "json" : "bin"}`
   );
 }
 
