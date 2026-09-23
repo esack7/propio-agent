@@ -11,7 +11,7 @@ import type {
   ProviderRequestPurpose,
   ProviderTraceEvent,
 } from "@propio-ai/providers";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { createTraceRevisionId } from "../trace/revisions.js";
 import { capturedProviderEventPayload } from "../trace/providerPayload.js";
 import { measureMessages } from "../diagnostics.js";
@@ -117,7 +117,18 @@ export class AgentRuntime {
   private currentToolScopeRevisionId: string | undefined;
   private currentToolScope: AgentToolScope | undefined;
   private readonly toolOperationIds = new Map<string, string>();
+  private readonly toolArgumentFingerprintKey = randomBytes(32);
   constructor(private readonly dependencies: AgentRuntimeOptions) {}
+  private toolArgumentFingerprint(
+    toolCallId: string,
+    args: Record<string, unknown>,
+  ): string {
+    return `hmac-sha256:${createHmac("sha256", this.toolArgumentFingerprintKey)
+      .update(toolCallId)
+      .update("\0")
+      .update(createTraceRevisionId(args))
+      .digest("hex")}`;
+  }
   private get provider() {
     return this.dependencies.provider;
   }
@@ -1192,7 +1203,7 @@ export class AgentRuntime {
       allowedTools,
       abortSignal,
     );
-    if (abortSignal?.aborted) {
+    if (abortSignal?.aborted && !denied) {
       this.recordToolPolicyDecision(toolName, toolCallId, executionArgs, {
         allowed: false,
         actor: "agent",
@@ -1239,7 +1250,10 @@ export class AgentRuntime {
         rule: decision.rule,
         reason: decision.reason,
         reviewedArgumentKeys: Object.keys(args).sort(),
-        reviewedArgumentFingerprint: createTraceRevisionId(args),
+        reviewedArgumentFingerprint: this.toolArgumentFingerprint(
+          toolCallId,
+          args,
+        ),
         metadata: decision.metadata,
       },
     });
@@ -1437,7 +1451,7 @@ export class AgentRuntime {
         iteration,
         toolName,
         argumentKeys: Object.keys(args).sort(),
-        argumentFingerprint: createTraceRevisionId(args),
+        argumentFingerprint: this.toolArgumentFingerprint(toolCallId, args),
         argumentChars: serializedArgs.length,
         argumentMaterial,
       },
