@@ -1081,6 +1081,7 @@ export class Agent {
     const previousObserver = request.onTraceEvent;
     return {
       ...request,
+      captureRequestPayload: recorder.captureLevel === "full",
       trace: {
         sessionId: recorder.identity.sessionId,
         runId: recorder.identity.runId,
@@ -1102,6 +1103,19 @@ export class Agent {
     context: SummaryTraceContext,
     event: ProviderTraceEvent,
   ): void {
+    const payload =
+      event.type === "provider_attempt_payload"
+        ? (() => {
+            const { requestBody, ...metadata } = event;
+            return {
+              ...metadata,
+              bodyMaterial:
+                requestBody === undefined
+                  ? undefined
+                  : context.traceRun.recorder.captureMaterial?.(requestBody),
+            };
+          })()
+        : event;
     this.recordSummaryTrace(
       context,
       {
@@ -1116,7 +1130,7 @@ export class Agent {
           summaryRevisionId: context.previousSummaryRevisionId,
           attemptId: "attemptId" in event ? event.attemptId : undefined,
         },
-        payload: event,
+        payload,
       },
       {
         durable:

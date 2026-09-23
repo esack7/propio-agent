@@ -400,6 +400,7 @@ export class AgentRuntime {
     const previousObserver = request.onTraceEvent;
     return {
       ...request,
+      captureRequestPayload: recorder.captureLevel === "full",
       trace: {
         sessionId: recorder.identity.sessionId,
         runId: recorder.identity.runId,
@@ -491,7 +492,22 @@ export class AgentRuntime {
   }
 
   private recordProviderTraceEvent(event: ProviderTraceEvent): void {
-    this.dependencies.trace?.record(
+    const recorder = this.dependencies.trace;
+    if (!recorder) return;
+    const payload =
+      event.type === "provider_attempt_payload"
+        ? (() => {
+            const { requestBody, ...metadata } = event;
+            return {
+              ...metadata,
+              bodyMaterial:
+                requestBody === undefined
+                  ? undefined
+                  : recorder.captureMaterial?.(requestBody),
+            };
+          })()
+        : event;
+    recorder.record(
       {
         component: "provider",
         type: event.type,
@@ -507,7 +523,7 @@ export class AgentRuntime {
           toolScopeRevisionId: this.currentToolScopeRevisionId,
           attemptId: "attemptId" in event ? event.attemptId : undefined,
         },
-        payload: event,
+        payload,
       },
       {
         durable:

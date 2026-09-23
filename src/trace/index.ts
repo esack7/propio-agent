@@ -1,4 +1,8 @@
 export { JsonlTraceJournal, readTraceJournal } from "./journal.js";
+export {
+  loadRecordedProviderResponse,
+  playRecordedProviderResponse,
+} from "./playback.js";
 export type { JsonlTraceJournalOptions } from "./journal.js";
 export { RunTraceRecorder } from "./recorder.js";
 export {
