@@ -194,10 +194,11 @@ describe("private full trace capture", () => {
       const firstRequest = first!.find(
         (event) => event.type === "provider_request_dispatched",
       );
+      expect(firstRequest).toBeDefined();
       const firstAttempts = first!.filter(
         (event) =>
           event.type === "provider_attempt_started" &&
-          event.identity.requestId === firstRequest?.identity.requestId,
+          event.identity.requestId === firstRequest!.identity.requestId,
       );
       expect(firstAttempts).toHaveLength(2);
       expect(firstAttempts[0]?.identity.attemptId).not.toBe(
@@ -206,19 +207,21 @@ describe("private full trace capture", () => {
       expect(
         first!.find((event) => event.type === "provider_retry_wait")?.identity,
       ).toMatchObject({
-        requestId: firstRequest?.identity.requestId,
+        requestId: firstRequest!.identity.requestId,
         attemptId: firstAttempts[0]?.identity.attemptId,
       });
       const firstTurn = first!.find((event) => event.type === "turn_started");
       const firstCompletion = first!.find(
         (event) => event.type === "turn_completed",
       );
+      expect(firstTurn).toBeDefined();
+      expect(firstCompletion).toBeDefined();
       expect(
         first!.find((event) => event.type === "tool_execution_completed")
           ?.identity,
       ).toMatchObject({
-        turnId: firstCompletion?.identity.turnId,
-        parentOperationId: firstTurn?.identity.operationId,
+        turnId: firstCompletion!.identity.turnId,
+        parentOperationId: firstTurn!.identity.operationId,
         toolCallId: "call-1",
       });
       expect(new Set(first!.map((event) => event.eventId)).size).toBe(
@@ -227,10 +230,13 @@ describe("private full trace capture", () => {
       expect(first!.map((event) => event.sequence)).toEqual(
         first!.map((_, index) => index + 1),
       );
-      expect(
-        second!.find((event) => event.type === "turn_completed")?.identity
-          .turnId,
-      ).not.toBe(firstCompletion?.identity.turnId);
+      const secondCompletion = second!.find(
+        (event) => event.type === "turn_completed",
+      );
+      expect(secondCompletion).toBeDefined();
+      expect(secondCompletion!.identity.turnId).not.toBe(
+        firstCompletion!.identity.turnId,
+      );
       const summaryStart = summary!.find(
         (event) => event.type === "run_started",
       );
@@ -248,10 +254,14 @@ describe("private full trace capture", () => {
       const summaryRequest = summary!.find(
         (event) => event.type === "provider_request_dispatched",
       );
-      expect(
-        summary!.find((event) => event.type === "provider_attempt_started")
-          ?.identity.requestId,
-      ).toBe(summaryRequest?.identity.requestId);
+      const summaryAttempt = summary!.find(
+        (event) => event.type === "provider_attempt_started",
+      );
+      expect(summaryRequest).toBeDefined();
+      expect(summaryAttempt).toBeDefined();
+      expect(summaryAttempt!.identity.requestId).toBe(
+        summaryRequest!.identity.requestId,
+      );
       const bundle = path.join(root, "bundle");
       exportTraceJournal(journalPaths[2]!, bundle, { captureLevel: "full" });
       expect(verifyTraceExport(bundle)).toEqual([]);
