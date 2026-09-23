@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
   withProviderTracing,
+  type ChatRequest,
   type LLMProvider,
   type ProviderTraceEvent,
   type ChatStreamEvent,
@@ -42,8 +44,111 @@ function materialRef(
   return ref!;
 }
 
+function emitFixtureAttemptTrace(
+  request: ChatRequest,
+  retry: boolean,
+): () => void {
+  const trace = request.trace!;
+  const eventBase = () => ({
+    version: 1 as const,
+    eventId: randomUUID(),
+    observedAt: "2026-01-01T00:00:00.000Z",
+    provider: "fixture",
+    requestedModel: request.model,
+    trace,
+  });
+  let attemptNumber = 1;
+  let attemptId = `${trace.requestId}-attempt-${attemptNumber}`;
+  request.onTraceEvent?.({
+    ...eventBase(),
+    type: "provider_attempt_started",
+    attemptId,
+    attemptNumber,
+  });
+  if (retry) {
+    request.onTraceEvent?.({
+      ...eventBase(),
+      type: "provider_attempt_failed",
+      attemptId,
+      attemptNumber,
+      durationMs: 1,
+      errorName: "TransientError",
+      message: "retry fixture",
+    });
+    request.onTraceEvent?.({
+      ...eventBase(),
+      type: "provider_retry_wait",
+      attemptId,
+      attemptNumber,
+      delayMs: 0,
+      reason: "retry fixture",
+    });
+    attemptNumber = 2;
+    attemptId = `${trace.requestId}-attempt-${attemptNumber}`;
+    request.onTraceEvent?.({
+      ...eventBase(),
+      type: "provider_attempt_started",
+      attemptId,
+      attemptNumber,
+    });
+  }
+  request.onTraceEvent?.({
+    ...eventBase(),
+    type: "provider_attempt_connected",
+    attemptId,
+    attemptNumber,
+    durationMs: 2,
+  });
+  return () =>
+    request.onTraceEvent?.({
+      ...eventBase(),
+      type: "provider_attempt_completed",
+      attemptId,
+      attemptNumber,
+      durationMs: 3,
+    });
+}
+
+function createAcceptanceProvider(
+  summaryEvents: ChatStreamEvent[],
+): LLMProvider {
+  let answerCalls = 0;
+  return {
+    name: "fixture",
+    getCapabilities: () => ({ contextWindowTokens: 128000 }),
+    async *streamChat(request) {
+      const completeAttempt = emitFixtureAttemptTrace(
+        request,
+        request.trace?.purpose === "answer" && answerCalls === 0,
+      );
+      if (request.trace?.purpose === "summarize") {
+        for (const event of summaryEvents) {
+          if (event.type === "terminal") completeAttempt();
+          yield event;
+        }
+        return;
+      }
+      answerCalls++;
+      if (answerCalls === 1) {
+        yield {
+          type: "tool_calls",
+          toolCalls: [
+            { id: "call-1", function: { name: "fixture_tool", arguments: {} } },
+          ],
+        };
+      } else {
+        yield {
+          type: "assistant_text",
+          delta: answerCalls === 2 ? "First answer" : "Second answer",
+        };
+      }
+      completeAttempt();
+    },
+  };
+}
+
 describe("private full trace capture", () => {
-  it("plays back the actual stream events from a summary refresh", async () => {
+  it("correlates two turns, a retry, and summary playback", async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), "propio-summary-playback-"),
     );
@@ -55,42 +160,110 @@ describe("private full trace capture", () => {
         { type: "assistant_text", delta: '"Keep context"}' },
         { type: "terminal", stopReason: "end_turn" },
       ];
-      const provider: LLMProvider = {
-        name: "fixture",
-        getCapabilities: () => ({ contextWindowTokens: 128000 }),
-        async *streamChat(request) {
-          if (request.trace?.purpose === "summarize") {
-            yield* summaryEvents;
-          } else {
-            yield { type: "assistant_text", delta: "First answer" };
-          }
+      const agent = createTestAgent(
+        withProviderTracing(createAcceptanceProvider(summaryEvents)),
+        {
+          createTraceRun: (identity) => {
+            const journalPath = path.join(root, `${identity.runId}.jsonl`);
+            journalPaths.push(journalPath);
+            const journal = new JsonlTraceJournal(journalPath, {
+              captureLevel: "full",
+            });
+            return {
+              recorder: new RunTraceRecorder(identity, journal),
+              close: () => journal.close(),
+            };
+          },
         },
-      };
-      const agent = createTestAgent(provider, {
-        createTraceRun: (identity) => {
-          const journalPath = path.join(root, `${identity.runId}.jsonl`);
-          journalPaths.push(journalPath);
-          const journal = new JsonlTraceJournal(journalPath, {
-            captureLevel: "full",
-          });
-          return {
-            recorder: new RunTraceRecorder(identity, journal),
-            close: () => journal.close(),
-          };
-        },
-      });
+      );
       (agent as any).summaryPolicy = {
         rawRecentTurns: 0,
         refreshIntervalTurns: 999,
         summaryTargetTokens: 256,
         contextPressureThreshold: 2,
       };
+      agent.addTool(createMockTool({ name: "fixture_tool" }));
 
       await agent.streamChat(userSubmission("First"), () => {});
+      await agent.streamChat(userSubmission("Second"), () => {});
       await (agent as any).runSummaryRefresh("turn_cadence");
-      expect(journalPaths).toHaveLength(2);
+      expect(journalPaths).toHaveLength(3);
+      const [first, second, summary] = journalPaths.map(
+        (journalPath) => readTraceJournal(journalPath).events,
+      );
+      const firstRequest = first!.find(
+        (event) => event.type === "provider_request_dispatched",
+      );
+      expect(firstRequest).toBeDefined();
+      const firstAttempts = first!.filter(
+        (event) =>
+          event.type === "provider_attempt_started" &&
+          event.identity.requestId === firstRequest!.identity.requestId,
+      );
+      expect(firstAttempts).toHaveLength(2);
+      expect(firstAttempts[0]?.identity.attemptId).not.toBe(
+        firstAttempts[1]?.identity.attemptId,
+      );
+      expect(
+        first!.find((event) => event.type === "provider_retry_wait")?.identity,
+      ).toMatchObject({
+        requestId: firstRequest!.identity.requestId,
+        attemptId: firstAttempts[0]?.identity.attemptId,
+      });
+      const firstTurn = first!.find((event) => event.type === "turn_started");
+      const firstCompletion = first!.find(
+        (event) => event.type === "turn_completed",
+      );
+      expect(firstTurn).toBeDefined();
+      expect(firstCompletion).toBeDefined();
+      expect(
+        first!.find((event) => event.type === "tool_execution_completed")
+          ?.identity,
+      ).toMatchObject({
+        turnId: firstCompletion!.identity.turnId,
+        parentOperationId: firstTurn!.identity.operationId,
+        toolCallId: "call-1",
+      });
+      expect(new Set(first!.map((event) => event.eventId)).size).toBe(
+        first!.length,
+      );
+      expect(first!.map((event) => event.sequence)).toEqual(
+        first!.map((_, index) => index + 1),
+      );
+      const secondCompletion = second!.find(
+        (event) => event.type === "turn_completed",
+      );
+      expect(secondCompletion).toBeDefined();
+      expect(secondCompletion!.identity.turnId).not.toBe(
+        firstCompletion!.identity.turnId,
+      );
+      const summaryStart = summary!.find(
+        (event) => event.type === "run_started",
+      );
+      expect(summaryStart?.payload).toMatchObject({
+        kind: "summary_refresh",
+        parentRunId: second![0]?.identity.runId,
+      });
+      expect(first![0]?.identity.sessionId).toBe(
+        second![0]?.identity.sessionId,
+      );
+      expect(second![0]?.identity.sessionId).toBe(
+        summary![0]?.identity.sessionId,
+      );
+      expect(summary![0]?.identity.runId).not.toBe(second![0]?.identity.runId);
+      const summaryRequest = summary!.find(
+        (event) => event.type === "provider_request_dispatched",
+      );
+      const summaryAttempt = summary!.find(
+        (event) => event.type === "provider_attempt_started",
+      );
+      expect(summaryRequest).toBeDefined();
+      expect(summaryAttempt).toBeDefined();
+      expect(summaryAttempt!.identity.requestId).toBe(
+        summaryRequest!.identity.requestId,
+      );
       const bundle = path.join(root, "bundle");
-      exportTraceJournal(journalPaths[1]!, bundle, { captureLevel: "full" });
+      exportTraceJournal(journalPaths[2]!, bundle, { captureLevel: "full" });
       expect(verifyTraceExport(bundle)).toEqual([]);
       const response = readTraceJournal(
         path.join(bundle, "events.jsonl"),
