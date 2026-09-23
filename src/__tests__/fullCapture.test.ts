@@ -269,10 +269,7 @@ describe("private full trace capture", () => {
         name: "fixture",
         getCapabilities: () => ({ contextWindowTokens: 1000 }),
         async *streamChat(request) {
-          expect(
-            (request as typeof request & { captureRequestPayload?: boolean })
-              .captureRequestPayload,
-          ).toBe(true);
+          expect(request.captureRequestPayload).toBe(true);
           const trace = request.trace!;
           request.onTraceEvent?.({
             version: 1,
@@ -286,7 +283,7 @@ describe("private full trace capture", () => {
             attemptNumber: 1,
             transport: "http_json",
             requestBody: { messages: [{ content: "private prompt" }] },
-          } as unknown as ProviderTraceEvent);
+          } satisfies ProviderTraceEvent);
           yield { type: "assistant_text", delta: "done" };
           yield { type: "terminal", stopReason: "end_turn" };
         },

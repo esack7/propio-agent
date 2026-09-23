@@ -1,17 +1,13 @@
 import type { ProviderTraceEvent } from "@propio-ai/providers";
 import type { AgentTraceRecorder } from "./types.js";
 
-/**
- * The payload event is additive in providers. Keep the agent buildable against
- * the previously published package while the coordinated release is pending.
- */
+/** Keep private request bodies in content-addressed material, not JSONL. */
 export function capturedProviderEventPayload(
   event: ProviderTraceEvent,
   recorder: AgentTraceRecorder,
 ): unknown {
-  const candidate = event as unknown as Record<string, unknown>;
-  if (candidate.type !== "provider_attempt_payload") return event;
-  const { requestBody, ...metadata } = candidate;
+  if (event.type !== "provider_attempt_payload") return event;
+  const { requestBody, ...metadata } = event;
   return {
     ...metadata,
     bodyMaterial:

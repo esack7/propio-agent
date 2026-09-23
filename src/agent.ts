@@ -1082,7 +1082,7 @@ export class Agent {
     const previousObserver = request.onTraceEvent;
     return {
       ...request,
-      ...{ captureRequestPayload: recorder.captureLevel === "full" },
+      captureRequestPayload: recorder.captureLevel === "full",
       trace: {
         sessionId: recorder.identity.sessionId,
         runId: recorder.identity.runId,
