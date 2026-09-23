@@ -186,6 +186,7 @@ type ConfigurationChangeScope =
   | "mode"
   | "system_prompt"
   | "tool_scope"
+  | "skill_scope"
   | "mcp"
   | "approval"
   | "session";
@@ -1276,6 +1277,7 @@ export class Agent {
           ? createTraceRevisionId(this.agentsMdContent)
           : undefined,
       },
+      activeSkills: this.getActiveSkillTraceSummaries(),
       tools,
       mcpServers,
       workspace: {
@@ -1447,6 +1449,7 @@ export class Agent {
     );
 
     const invocationRecord: InvokedSkillRecord = {
+      invocationId: randomUUID(),
       name: skill.name,
       source: skill.source,
       skillRoot: skill.skillRoot,
@@ -1458,6 +1461,7 @@ export class Agent {
     };
 
     this.contextManager.recordInvokedSkill(invocationRecord);
+    this.recordConfigurationChange("skill_invoked", "skill_scope");
     return invocationRecord.content;
   }
 
@@ -1600,22 +1604,33 @@ export class Agent {
     });
   }
 
+  private getActiveSkillTraceSummaries() {
+    const invokedSkills =
+      this.contextManager.getConversationState().invokedSkills ?? [];
+    return invokedSkills
+      .map((record, index) => ({
+        invocationId:
+          record.invocationId ??
+          createTraceRevisionId({ legacyInvocation: record, index }),
+        name: record.name,
+        source: record.source,
+        invocationSource: record.scope.invocationSource,
+        invokedAt: record.invokedAt,
+        revisionId: `sha256:${createHash("sha256").update(record.content).digest("hex")}`,
+      }))
+      .sort((a, b) =>
+        a.name === b.name
+          ? a.invocationId.localeCompare(b.invocationId)
+          : a.name.localeCompare(b.name),
+      );
+  }
+
   private resolveRuntimeToolScope() {
     const invokedSkills =
       this.contextManager.getConversationState().invokedSkills ?? [];
     const skillScopes = invokedSkills.map((record) => record.scope);
     const allowedTools = this.resolveAllowedTools(skillScopes);
-    const activeSkills = invokedSkills
-      .map((record) => ({
-        name: record.name,
-        source: record.source,
-        revisionId: `sha256:${createHash("sha256").update(record.content).digest("hex")}`,
-      }))
-      .sort((a, b) =>
-        a.name === b.name
-          ? a.revisionId.localeCompare(b.revisionId)
-          : a.name.localeCompare(b.name),
-      );
+    const activeSkills = this.getActiveSkillTraceSummaries();
     const allowedToolNames = allowedTools
       ? [...allowedTools].sort()
       : undefined;
@@ -1990,8 +2005,7 @@ export class Agent {
   private describePromptPlan(plan: PromptPlan) {
     const summary = this.contextManager.getRollingSummary();
     const coveredTurnIds = new Set(summary?.coveredTurnIds ?? []);
-    const invokedSkills =
-      this.contextManager.getConversationState().invokedSkills ?? [];
+    const activeSkills = this.getActiveSkillTraceSummaries();
     return {
       summaryRevisionId:
         plan.usedRollingSummary && summary
@@ -2016,10 +2030,11 @@ export class Agent {
               },
             ]
           : []),
-        ...invokedSkills.map((skill) => ({
+        ...activeSkills.map((skill) => ({
           source: `skill:${skill.name}`,
           scope: skill.source,
-          revisionId: createTraceRevisionId(skill.content),
+          revisionId: skill.revisionId,
+          invocationId: skill.invocationId,
         })),
       ],
       omissions: plan.omittedTurnIds.map((id) => ({
@@ -2391,6 +2406,7 @@ export class Agent {
   }
 
   clearContext(): void {
+    const hadInvokedSkills = this.contextManager.getInvokedSkillCount() > 0;
     this.contextManager.setRecoveryChangeListener(undefined);
     this.recoveryJournalPosition = undefined;
     this.pendingRecoveryChanges = [];
@@ -2399,6 +2415,9 @@ export class Agent {
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
     this.contextManager.clear();
+    if (hadInvokedSkills) {
+      this.recordConfigurationChange("skill_scope_cleared", "skill_scope");
+    }
     this.pendingRecoveredToolCallIds = [];
     if (this.recoveryCheckpointRequested) {
       try {
@@ -2838,6 +2857,9 @@ export class Agent {
   importSession(json: string): void {
     const persisted = parseSession(json);
     const state = restoreConversationState(persisted);
+    const previousSkillInvocationIds = this.getActiveSkillTraceSummaries().map(
+      (skill) => skill.invocationId,
+    );
     const outgoingSessionId = this.sessionId;
     const outgoingRecoveryRequested = this.recoveryCheckpointRequested;
     this.contextManager.setRecoveryChangeListener(undefined);
@@ -2867,7 +2889,14 @@ export class Agent {
       ...resolveImportedPlanState(persisted.metadata),
     };
     this.modeState = importedModeState;
-    if (modeConfigurationChanged(previousModeState, importedModeState)) {
+    const importedSkillInvocationIds = this.getActiveSkillTraceSummaries().map(
+      (skill) => skill.invocationId,
+    );
+    if (
+      modeConfigurationChanged(previousModeState, importedModeState) ||
+      JSON.stringify(previousSkillInvocationIds) !==
+        JSON.stringify(importedSkillInvocationIds)
+    ) {
       if (previousModeState.mode !== importedModeState.mode) {
         this.configurationOrigins.mode = "session";
       }

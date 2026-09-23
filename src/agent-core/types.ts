@@ -59,6 +59,8 @@ export interface AgentPromptInstructionRevision {
   readonly source: string;
   readonly scope: string;
   readonly revisionId: string;
+  /** Optional application-owned identity for a particular instruction invocation. */
+  readonly invocationId?: string;
 }
 
 export interface AgentPromptOmission {

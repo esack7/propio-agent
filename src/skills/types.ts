@@ -56,6 +56,8 @@ export interface Skill extends SkillMetadata {
 }
 
 export interface InvokedSkillRecord {
+  /** Stable identity for this invocation across session save and recovery. */
+  readonly invocationId?: string;
   readonly name: string;
   readonly source: SkillSource;
   readonly skillRoot: string;

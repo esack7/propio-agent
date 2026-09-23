@@ -651,6 +651,120 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
     });
 
+    it("links distinct skill invocations to request scope and records expiration", async () => {
+      const { cwdDir, homeDir } = createSkillDirs(
+        "skill-lineage-cwd",
+        "skill-lineage-home",
+        tempDir,
+      );
+      writeSkillDocument(
+        cwdDir,
+        "review",
+        "name: review\ndescription: Review skill",
+        "Private skill instructions for the request.",
+      );
+
+      await withSpiedDirs(cwdDir, homeDir, async () => {
+        const traceEvents: Array<{
+          type: string;
+          identity: Record<string, unknown>;
+          payload: unknown;
+        }> = [];
+        const agent = createTestAgent(new MockProvider(), {
+          cwd: cwdDir,
+          homeDir,
+          createTraceRun: (identity) => ({
+            recorder: {
+              identity,
+              record: (event) =>
+                traceEvents.push({
+                  ...event,
+                  identity: { ...identity, ...event.identity },
+                }),
+            },
+          }),
+        });
+
+        await agent.invokeSkill("review", "first");
+        await agent.invokeSkill("review", "second");
+        await agent.streamChat(
+          userSubmission("Apply both invocations"),
+          () => {},
+        );
+
+        const scope = traceEvents.find(
+          (event) => event.type === "tool_scope_selected",
+        );
+        const prompt = traceEvents.find(
+          (event) => event.type === "prompt_plan_selected",
+        );
+        const request = traceEvents.find(
+          (event) => event.type === "provider_request_dispatched",
+        );
+        expect(scope).toBeDefined();
+        expect(prompt).toBeDefined();
+        expect(request).toBeDefined();
+        const activeSkills = (
+          scope!.payload as {
+            metadata: { activeSkills: Array<{ invocationId: string }> };
+          }
+        ).metadata.activeSkills;
+        const invocationIds = activeSkills.map((skill) => skill.invocationId);
+        expect(new Set(invocationIds).size).toBe(2);
+        const instructionRevisions = (
+          prompt!.payload as {
+            instructionRevisions: Array<{
+              source: string;
+              invocationId?: string;
+            }>;
+          }
+        ).instructionRevisions;
+        expect(
+          instructionRevisions
+            .filter((entry) => entry.source === "skill:review")
+            .map((entry) => entry.invocationId)
+            .sort(),
+        ).toEqual([...invocationIds].sort());
+        expect(request?.identity.toolScopeRevisionId).toBe(
+          scope?.identity.toolScopeRevisionId,
+        );
+        expect(request?.identity.promptRevisionId).toBe(
+          prompt?.identity.promptRevisionId,
+        );
+        expect(
+          traceEvents
+            .filter((event) => event.type === "configuration_revision_changed")
+            .map((event) => (event.payload as { cause: string }).cause),
+        ).toEqual(["skill_invoked", "skill_invoked"]);
+        expect(JSON.stringify(traceEvents)).not.toContain(
+          "Private skill instructions for the request.",
+        );
+
+        agent.clearContext();
+        await agent.streamChat(userSubmission("After clearing"), () => {});
+        const cleared = traceEvents.find(
+          (event) =>
+            event.type === "configuration_revision_changed" &&
+            (event.payload as { cause?: string }).cause ===
+              "skill_scope_cleared",
+        );
+        expect(
+          (cleared?.payload as { configuration: { activeSkills: unknown[] } })
+            .configuration.activeSkills,
+        ).toEqual([]);
+        const scopes = traceEvents.filter(
+          (event) => event.type === "tool_scope_selected",
+        );
+        expect(
+          (
+            scopes.at(-1)?.payload as {
+              metadata: { activeSkills: unknown[] };
+            }
+          ).metadata.activeSkills,
+        ).toEqual([]);
+      });
+    });
+
     it("should support an immediate skill turn with an empty user prompt", async () => {
       const { cwdDir, homeDir } = createSkillDirs(
         "skill-immediate-cwd",

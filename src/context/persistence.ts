@@ -71,6 +71,7 @@ export interface PersistedSkillInvocationScope {
 }
 
 export interface PersistedInvokedSkillRecord {
+  readonly invocationId?: string;
   readonly name: string;
   readonly source: InvokedSkillRecord["source"];
   readonly skillRoot: string;
@@ -158,6 +159,8 @@ function persistInvokedSkill(
     invokedAt: record.invokedAt,
     scope: persistSkillScope(record.scope),
   };
+  if (record.invocationId !== undefined)
+    result.invocationId = record.invocationId;
   if (record.arguments !== undefined) result.arguments = record.arguments;
   return result as unknown as PersistedInvokedSkillRecord;
 }
@@ -214,6 +217,9 @@ function validateInvokedSkillRecord(record: unknown, label: string): void {
     `${label}.scope`,
   );
   const rec = record as Record<string, unknown>;
+  if (rec.invocationId !== undefined) {
+    assertString(rec.invocationId, `${label}.invocationId`);
+  }
   if (rec.arguments !== undefined) {
     assertString(rec.arguments, `${label}.arguments`);
   }
@@ -372,6 +378,7 @@ function restoreInvokedSkill(
   record: PersistedInvokedSkillRecord,
 ): InvokedSkillRecord {
   return {
+    ...(record.invocationId ? { invocationId: record.invocationId } : {}),
     name: record.name,
     source: record.source,
     skillRoot: record.skillRoot,
