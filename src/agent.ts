@@ -105,6 +105,7 @@ import {
 import { isSafeSessionId } from "./sessions/sessionId.js";
 import type { AgentTraceRecorder, TraceIdentity } from "./trace/index.js";
 import { createTraceRevisionId } from "./trace/revisions.js";
+import { capturedProviderEventPayload } from "./trace/providerPayload.js";
 import { McpManager } from "./mcp/manager.js";
 import type {
   McpConfigFile,
@@ -1081,7 +1082,7 @@ export class Agent {
     const previousObserver = request.onTraceEvent;
     return {
       ...request,
-      captureRequestPayload: recorder.captureLevel === "full",
+      ...{ captureRequestPayload: recorder.captureLevel === "full" },
       trace: {
         sessionId: recorder.identity.sessionId,
         runId: recorder.identity.runId,
@@ -1103,19 +1104,10 @@ export class Agent {
     context: SummaryTraceContext,
     event: ProviderTraceEvent,
   ): void {
-    const payload =
-      event.type === "provider_attempt_payload"
-        ? (() => {
-            const { requestBody, ...metadata } = event;
-            return {
-              ...metadata,
-              bodyMaterial:
-                requestBody === undefined
-                  ? undefined
-                  : context.traceRun.recorder.captureMaterial?.(requestBody),
-            };
-          })()
-        : event;
+    const payload = capturedProviderEventPayload(
+      event,
+      context.traceRun.recorder,
+    );
     this.recordSummaryTrace(
       context,
       {

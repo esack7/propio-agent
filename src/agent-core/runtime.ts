@@ -13,6 +13,7 @@ import type {
 } from "@propio-ai/providers";
 import { randomUUID } from "node:crypto";
 import { createTraceRevisionId } from "../trace/revisions.js";
+import { capturedProviderEventPayload } from "../trace/providerPayload.js";
 import { measureMessages } from "../diagnostics.js";
 import type {
   ArtifactToolResult,
@@ -400,7 +401,7 @@ export class AgentRuntime {
     const previousObserver = request.onTraceEvent;
     return {
       ...request,
-      captureRequestPayload: recorder.captureLevel === "full",
+      ...{ captureRequestPayload: recorder.captureLevel === "full" },
       trace: {
         sessionId: recorder.identity.sessionId,
         runId: recorder.identity.runId,
@@ -494,19 +495,7 @@ export class AgentRuntime {
   private recordProviderTraceEvent(event: ProviderTraceEvent): void {
     const recorder = this.dependencies.trace;
     if (!recorder) return;
-    const payload =
-      event.type === "provider_attempt_payload"
-        ? (() => {
-            const { requestBody, ...metadata } = event;
-            return {
-              ...metadata,
-              bodyMaterial:
-                requestBody === undefined
-                  ? undefined
-                  : recorder.captureMaterial?.(requestBody),
-            };
-          })()
-        : event;
+    const payload = capturedProviderEventPayload(event, recorder);
     recorder.record(
       {
         component: "provider",
