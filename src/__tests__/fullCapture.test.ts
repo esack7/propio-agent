@@ -6,6 +6,7 @@ import {
   withProviderTracing,
   type LLMProvider,
   type ProviderTraceEvent,
+  type ChatStreamEvent,
 } from "@propio-ai/providers";
 import {
   exportTraceJournal,
@@ -42,6 +43,83 @@ function materialRef(
 }
 
 describe("private full trace capture", () => {
+  it("plays back the actual stream events from a summary refresh", async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), "propio-summary-playback-"),
+    );
+    try {
+      const journalPaths: string[] = [];
+      const summaryEvents: ChatStreamEvent[] = [
+        { type: "status", status: "Summarizing" },
+        { type: "assistant_text", delta: '{"goals":' },
+        { type: "assistant_text", delta: '"Keep context"}' },
+        { type: "terminal", stopReason: "end_turn" },
+      ];
+      const provider: LLMProvider = {
+        name: "fixture",
+        getCapabilities: () => ({ contextWindowTokens: 128000 }),
+        async *streamChat(request) {
+          if (request.trace?.purpose === "summarize") {
+            yield* summaryEvents;
+          } else {
+            yield { type: "assistant_text", delta: "First answer" };
+          }
+        },
+      };
+      const agent = createTestAgent(provider, {
+        createTraceRun: (identity) => {
+          const journalPath = path.join(root, `${identity.runId}.jsonl`);
+          journalPaths.push(journalPath);
+          const journal = new JsonlTraceJournal(journalPath, {
+            captureLevel: "full",
+          });
+          return {
+            recorder: new RunTraceRecorder(identity, journal),
+            close: () => journal.close(),
+          };
+        },
+      });
+      (agent as any).summaryPolicy = {
+        rawRecentTurns: 0,
+        refreshIntervalTurns: 999,
+        summaryTargetTokens: 256,
+        contextPressureThreshold: 2,
+      };
+
+      await agent.streamChat(userSubmission("First"), () => {});
+      await (agent as any).runSummaryRefresh("turn_cadence");
+      expect(journalPaths).toHaveLength(2);
+      const bundle = path.join(root, "bundle");
+      exportTraceJournal(journalPaths[1]!, bundle, { captureLevel: "full" });
+      expect(verifyTraceExport(bundle)).toEqual([]);
+      const response = readTraceJournal(
+        path.join(bundle, "events.jsonl"),
+      ).events.find((event) => event.type === "provider_response_captured");
+      expect(response?.payload).toMatchObject({
+        purpose: "summarize",
+        completed: true,
+      });
+      expect(
+        readMaterial(bundle, materialRef(response, "responseMaterial")),
+      ).toEqual({ events: summaryEvents, completed: true });
+      const requestId = response?.identity.requestId;
+      expect(requestId).toBeDefined();
+      expect(loadRecordedProviderResponse(bundle, requestId!)).toEqual(
+        summaryEvents,
+      );
+      const played: ChatStreamEvent[] = [];
+      for await (const event of playRecordedProviderResponse(
+        bundle,
+        requestId!,
+      )) {
+        played.push(event);
+      }
+      expect(played).toEqual(summaryEvents);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("exports requests, responses, tool material, and workspace changes for offline inspection", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "propio-full-capture-"));
     try {

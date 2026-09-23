@@ -3,7 +3,11 @@ import {
   type TokenEstimator,
   measureMessages,
 } from "./tokenEstimator.js";
-import type { LLMProvider, ChatRequest } from "@propio-ai/providers";
+import type {
+  LLMProvider,
+  ChatRequest,
+  ChatStreamEvent,
+} from "@propio-ai/providers";
 import { createTraceRevisionId } from "../trace/revisions.js";
 import {
   RollingSummaryRecord,
@@ -232,6 +236,10 @@ export interface SummaryGenerationHooks {
   readonly onRequestMeasured?: (metrics: SummaryRequestMetrics) => void;
   /** Allows an application to attach tracing without adding storage to this module. */
   readonly prepareRequest?: (request: ChatRequest) => ChatRequest;
+  readonly onStreamEvent?: (
+    request: ChatRequest,
+    event: ChatStreamEvent,
+  ) => void;
   readonly onResponse?: (request: ChatRequest, content: string) => void;
 }
 
@@ -251,12 +259,13 @@ function parseSummarySections(
 async function collectSummaryContent(
   provider: Pick<LLMProvider, "streamChat"> | SummaryGenerator,
   request: ChatRequest,
+  onStreamEvent?: SummaryGenerationHooks["onStreamEvent"],
 ): Promise<string> {
   if (request.signal?.aborted) throw new Error("Summary generation cancelled");
   const content =
     typeof provider === "function"
       ? await provider(request)
-      : await collectProviderSummary(provider, request);
+      : await collectProviderSummary(provider, request, onStreamEvent);
   if (request.signal?.aborted) throw new Error("Summary generation cancelled");
   return content.trim();
 }
@@ -264,11 +273,13 @@ async function collectSummaryContent(
 async function collectProviderSummary(
   provider: Pick<LLMProvider, "streamChat">,
   request: ChatRequest,
+  onStreamEvent?: SummaryGenerationHooks["onStreamEvent"],
 ): Promise<string> {
   let content = "";
   for await (const event of provider.streamChat(request)) {
     if (request.signal?.aborted)
       throw new Error("Summary generation cancelled");
+    onStreamEvent?.(request, event);
     const delta =
       "type" in event
         ? event.type === "assistant_text"
@@ -376,7 +387,11 @@ export class SummaryManager {
       messages,
       signal,
     };
-    const content = await collectSummaryContent(provider, request);
+    const content = await collectSummaryContent(
+      provider,
+      request,
+      hooks?.onStreamEvent,
+    );
     hooks?.onResponse?.(request, content);
     const summary = buildSummaryRecord(
       content,

@@ -5,6 +5,7 @@ import {
   type ProviderDiagnosticEvent,
   type ProviderTraceEvent,
   type ChatRequest,
+  type ChatStreamEvent,
   ProviderError,
   ProviderAuthenticationError,
   ProviderModelNotFoundError,
@@ -1693,15 +1694,20 @@ export class Agent {
       },
     };
     if (!summaryTrace) return hooks;
+    const recorder = summaryTrace.traceRun.recorder;
+    const responseEvents: ChatStreamEvent[] = [];
     return {
       ...hooks,
       prepareRequest: (request) =>
         this.prepareSummaryTraceRequest(summaryTrace, request),
-      onResponse: (request, content) => {
-        const recorder = summaryTrace.traceRun.recorder;
+      onStreamEvent:
+        recorder.captureLevel === "full"
+          ? (_request, event) => responseEvents.push(event)
+          : undefined,
+      onResponse: (request) => {
         if (recorder.captureLevel !== "full") return;
         const responseMaterial = recorder.captureMaterial?.({
-          content,
+          events: responseEvents,
           completed: true,
         });
         this.recordSummaryTrace(summaryTrace, {
