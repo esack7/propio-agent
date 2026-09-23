@@ -371,14 +371,27 @@ describe("public headless runtime", () => {
     },
   );
 
-  it("commits each completed tool result before dispatching the next call", async () => {
+  it("commits each result and waits for a slow trace sink before the next call", async () => {
     const controller = new AbortController();
     const calls = ["first", "second", "third"].map((name, index) => ({
       id: `call-${index + 1}`,
       function: { name: "lookup", arguments: { key: name } },
     }));
     let executionCount = 0;
+    let firstCompletionRecorded = false;
     const fixture = setup([[{ type: "tool_calls", toolCalls: calls }]], {
+      trace: {
+        identity: { sessionId: "session-1", runId: "run-1" },
+        record: (event) => {
+          if (
+            event.type === "tool_execution_completed" &&
+            event.identity?.toolCallId === "call-1"
+          ) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+            firstCompletionRecorded = true;
+          }
+        },
+      },
       tools: {
         getEnabledSchemas: () => [],
         executeWithStatus: async () => {
@@ -386,6 +399,7 @@ describe("public headless runtime", () => {
           if (executionCount === 1) {
             return { status: "success", content: "first completed" };
           }
+          expect(firstCompletionRecorded).toBe(true);
           controller.abort("interrupt batch");
           return await new Promise(() => {});
         },
