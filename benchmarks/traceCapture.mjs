@@ -2,8 +2,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
-import { JsonlTraceJournal, RunTraceRecorder } from "../dist/trace/index.js";
-import { WorkspaceTraceCapture } from "../dist/trace/workspace.js";
+
+// The benchmark script builds dist first; these modules do not exist at audit time.
+const builtTraceRoot = new URL("../dist/trace/", import.meta.url);
+const { JsonlTraceJournal, RunTraceRecorder } = await import(
+  new URL("index.js", builtTraceRoot).href
+);
+const { WorkspaceTraceCapture } = await import(
+  new URL("workspace.js", builtTraceRoot).href
+);
 
 const limits = {
   tokenCaptureMs: 1000,
