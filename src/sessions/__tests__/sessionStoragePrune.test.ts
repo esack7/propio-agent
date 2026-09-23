@@ -310,11 +310,29 @@ describe("sessionStoragePrune", () => {
 
   it("keeps fresh trace journals", () => {
     const journal = makeTraceJournal("fresh-trace", Date.now());
+    const materialDir = path.join(path.dirname(journal), "run-1.materials");
+    fs.mkdirSync(materialDir);
+    fs.writeFileSync(path.join(materialDir, "content.bin"), "captured");
     writeIndexEntries([]);
 
     pruneStaleSessionStorage(sessionsDir, retentionDays);
 
     expect(fs.existsSync(journal)).toBe(true);
+    expect(fs.existsSync(materialDir)).toBe(true);
+  });
+
+  it("removes private material with an expired trace journal", () => {
+    const staleMtime = Date.now() - retentionMs - 1000;
+    const journal = makeTraceJournal("full-trace", staleMtime);
+    const materialDir = path.join(path.dirname(journal), "run-1.materials");
+    fs.mkdirSync(materialDir);
+    fs.writeFileSync(path.join(materialDir, "content.bin"), "captured");
+    writeIndexEntries([]);
+
+    pruneStaleSessionStorage(sessionsDir, retentionDays);
+
+    expect(fs.existsSync(journal)).toBe(false);
+    expect(fs.existsSync(materialDir)).toBe(false);
   });
 
   it("keeps trace journals for live sessions", () => {

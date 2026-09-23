@@ -19,7 +19,7 @@ const childScript = fileURLToPath(
 );
 
 function runChild(
-  mode: "run" | "resume" | "failure",
+  mode: "run" | "run-full" | "resume" | "failure",
   sessionsDir: string,
   stopAtSecondTool = false,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
@@ -193,5 +193,57 @@ describe("failed-run recovery across process restart", () => {
         "run_closed",
       ]),
     );
+  }, 30_000);
+
+  it("exports the last completed workspace change after a hard stop", async () => {
+    await runChild("run-full", sessionsDir, true);
+    const checkpoint = resolveLatestRecoveryCheckpoint(sessionsDir);
+    const snapshot = JSON.parse(
+      readSnapshot(sessionsDir, checkpoint!.snapshotFile),
+    );
+    const sessionId = snapshot.metadata.sessionId as string;
+    const runId = snapshot.metadata.lastTraceRunId as string;
+    const journalPath = path.join(
+      sessionsDir,
+      "traces",
+      sessionId,
+      `${runId}.jsonl`,
+    );
+    const exportDirectory = path.join(tempDir, "full-export");
+    const manifest = exportTraceJournal(journalPath, exportDirectory, {
+      captureLevel: "full",
+    });
+    expect(manifest.version).toBe(4);
+    expect(manifest.captureComplete).toBe(false);
+    expect(manifest.material).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "workspace_baseline",
+          status: "included",
+        }),
+        expect.objectContaining({ kind: "workspace_diff", status: "included" }),
+        expect.objectContaining({ kind: "tool_result", status: "included" }),
+      ]),
+    );
+    const diffEvent = readTraceJournal(
+      path.join(exportDirectory, "events.jsonl"),
+    ).events.find((event) => event.type === "workspace_diff_captured");
+    const diffRef = (diffEvent?.payload as { material: { path: string } })
+      .material;
+    const diff = JSON.parse(
+      fs.readFileSync(path.join(exportDirectory, diffRef.path), "utf8"),
+    ) as {
+      changes: Array<{ path: string; file: { material: { path: string } } }>;
+    };
+    const changed = diff.changes.find((change) => change.path === "after.txt");
+    expect(changed).toBeDefined();
+    expect(
+      fs.readFileSync(
+        path.join(exportDirectory, changed!.file.material.path),
+        "utf8",
+      ),
+    ).toBe("after");
+    fs.renameSync(sessionsDir, path.join(tempDir, "removed-sessions"));
+    expect(inspectTraceExport(exportDirectory).manifest.version).toBe(4);
   }, 30_000);
 });

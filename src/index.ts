@@ -95,6 +95,7 @@ import {
   type TraceCaptureFailure,
   type TraceIdentity,
 } from "./trace/index.js";
+import { WorkspaceTraceCapture } from "./trace/workspace.js";
 
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
@@ -1163,6 +1164,14 @@ function reportParseErrors(
   return true;
 }
 
+function traceCaptureLevel(): "standard" | "full" {
+  const value = process.env.PROPIO_TRACE_CAPTURE_LEVEL ?? "standard";
+  if (value !== "standard" && value !== "full") {
+    throw new Error("PROPIO_TRACE_CAPTURE_LEVEL must be standard or full");
+  }
+  return value;
+}
+
 async function createInitializedAgent(
   parsedArgs: ParsedCliArgs,
   runtimeConfig: RuntimeConfig,
@@ -1173,6 +1182,7 @@ async function createInitializedAgent(
   onTraceCaptureFailure: (failure: TraceCaptureFailure) => void,
   onRecoveryCheckpointFailure: (error: Error) => void,
 ): Promise<{ agent: AgentType; configPath: string }> {
+  const captureLevel = traceCaptureLevel();
   const configPath = getConfigPath();
   const mcpConfigPath = getMcpConfigPath();
   const [agentModule, providersConfig, mcpConfig, agentsMdContent] =
@@ -1211,10 +1221,22 @@ async function createInitializedAgent(
           identity.sessionId,
           `${identity.runId}.jsonl`,
         ),
-        { onCaptureFailure: onTraceCaptureFailure },
+        {
+          onCaptureFailure: onTraceCaptureFailure,
+          captureLevel,
+        },
       );
+      const recorder = new RunTraceRecorder(identity, journal);
+      const workspace =
+        captureLevel === "full"
+          ? new WorkspaceTraceCapture(process.cwd(), recorder)
+          : undefined;
       return {
-        recorder: new RunTraceRecorder(identity, journal),
+        recorder,
+        captureWorkspace: workspace
+          ? (phase: "baseline" | "checkpoint" | "final") =>
+              workspace.capture(phase)
+          : undefined,
         close: () => journal.close(),
       };
     },

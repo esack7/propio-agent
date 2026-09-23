@@ -232,6 +232,7 @@ export interface SummaryGenerationHooks {
   readonly onRequestMeasured?: (metrics: SummaryRequestMetrics) => void;
   /** Allows an application to attach tracing without adding storage to this module. */
   readonly prepareRequest?: (request: ChatRequest) => ChatRequest;
+  readonly onResponse?: (request: ChatRequest, content: string) => void;
 }
 
 function parseSummarySections(
@@ -324,6 +325,8 @@ export class SummaryManager {
    * and sent to the model alongside the existing summary text. The
    * resulting coverage set spans all `eligibleTurns`.
    */
+  // Existing summary parsing and refresh flow is kept together; this change adds only an observer hook.
+  // fallow-ignore-next-line complexity
   async generateSummary(
     provider: Pick<LLMProvider, "streamChat"> | SummaryGenerator,
     model: string,
@@ -374,6 +377,7 @@ export class SummaryManager {
       signal,
     };
     const content = await collectSummaryContent(provider, request);
+    hooks?.onResponse?.(request, content);
     const summary = buildSummaryRecord(
       content,
       parseSummarySections(content),

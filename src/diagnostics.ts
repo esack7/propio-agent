@@ -245,7 +245,7 @@ export type AgentDiagnosticEvent =
   | {
       type: "trace_capture_failed";
       journalPath: string;
-      operation: "open" | "write" | "flush" | "close";
+      operation: "open" | "write" | "flush" | "close" | "material";
       errorName: string;
       message: string;
     }

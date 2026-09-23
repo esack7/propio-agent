@@ -151,6 +151,7 @@ export type { AgentMode, AgentModeState };
 
 export interface AgentTraceRun {
   readonly recorder: AgentTraceRecorder;
+  captureWorkspace?(phase: "baseline" | "checkpoint" | "final"): void;
   close?(): void;
 }
 
@@ -861,6 +862,12 @@ export class Agent {
           configurationRevisionId: agent.configurationRevisionId,
         };
       },
+      get captureLevel() {
+        return recorder.captureLevel;
+      },
+      captureMaterial(value) {
+        return recorder.captureMaterial?.(value);
+      },
       record(event, options) {
         recorder.record(
           {
@@ -899,6 +906,7 @@ export class Agent {
         },
         { durable: true },
       );
+      traceRun?.captureWorkspace?.("baseline");
       this.flushPendingConfigurationChanges();
       for (const toolCallId of this.pendingRecoveredToolCallIds) {
         traceRun?.recorder.record(
@@ -992,6 +1000,7 @@ export class Agent {
         },
         { durable: true },
       );
+      traceRun.captureWorkspace?.("baseline");
       traceRun.recorder.record({
         component: "context",
         type: "summary_refresh_started",
@@ -1043,6 +1052,14 @@ export class Agent {
       promptRevisionId: context.promptRevisionId,
       summaryRevisionId: context.previousSummaryRevisionId,
     };
+    const requestMaterial =
+      recorder.captureLevel === "full"
+        ? recorder.captureMaterial?.({
+            model: request.model,
+            messages: request.messages,
+            tools: [],
+          })
+        : undefined;
     this.recordSummaryTrace(context, {
       component: "agent",
       type: "provider_request_dispatched",
@@ -1053,7 +1070,8 @@ export class Agent {
         model: request.model,
         messageCount: request.messages.length,
         toolCount: 0,
-        captureLevel: "standard",
+        captureLevel: recorder.captureLevel ?? "standard",
+        requestMaterial,
         outboundPayloadFingerprint: createTraceRevisionId({
           model: request.model,
           messages: request.messages,
@@ -1110,6 +1128,11 @@ export class Agent {
 
   private closeSummaryTrace(context: SummaryTraceContext | undefined): void {
     if (!context) return;
+    try {
+      context.traceRun.captureWorkspace?.("final");
+    } catch {
+      // Summary capture is observational.
+    }
     this.recordSummaryTrace(
       context,
       {
@@ -1668,6 +1691,24 @@ export class Agent {
       ...hooks,
       prepareRequest: (request) =>
         this.prepareSummaryTraceRequest(summaryTrace, request),
+      onResponse: (request, content) => {
+        const recorder = summaryTrace.traceRun.recorder;
+        if (recorder.captureLevel !== "full") return;
+        const responseMaterial = recorder.captureMaterial?.({
+          content,
+          completed: true,
+        });
+        this.recordSummaryTrace(summaryTrace, {
+          component: "agent",
+          type: "provider_response_captured",
+          identity: {
+            requestId: request.trace?.requestId,
+            operationId: request.trace?.operationId,
+            promptRevisionId: request.trace?.promptRevisionId,
+          },
+          payload: { purpose: "summarize", completed: true, responseMaterial },
+        });
+      },
     };
   }
 
@@ -2123,6 +2164,11 @@ export class Agent {
         this.writeSessionRecoveryCheckpoint();
       }
       try {
+        traceRun?.captureWorkspace?.("final");
+      } catch {
+        // Workspace capture must not replace the turn result.
+      }
+      try {
         traceRun?.recorder.record(
           { component: "cli", type: "run_closed", payload: {} },
           { durable: true },
@@ -2195,6 +2241,11 @@ export class Agent {
           if (!this.createTraceRun && !this.recoveryCheckpointRequested) return;
           this.recoveryCheckpointRequested = true;
           this.writeSessionRecoveryCheckpoint();
+          try {
+            this.activeTraceRun?.captureWorkspace?.("checkpoint");
+          } catch {
+            // A completed result remains independent of workspace capture.
+          }
         },
       },
     });

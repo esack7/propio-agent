@@ -365,6 +365,16 @@ export class AgentRuntime {
       policyRevisionId: this.currentPolicyRevisionId,
       toolScopeRevisionId: this.currentToolScopeRevisionId,
     };
+    const requestMaterial =
+      recorder.captureLevel === "full"
+        ? recorder.captureMaterial?.({
+            model: request.model,
+            messages: request.messages,
+            tools: request.tools ?? [],
+            iteration: request.iteration,
+            requestReasoning: request.requestReasoning,
+          })
+        : undefined;
     recorder.record({
       component: "agent",
       type: "provider_request_dispatched",
@@ -375,7 +385,8 @@ export class AgentRuntime {
         model: request.model,
         messageCount: request.messages.length,
         toolCount: request.tools?.length ?? 0,
-        captureLevel: "standard",
+        captureLevel: recorder.captureLevel ?? "standard",
+        requestMaterial,
         outboundPayloadFingerprint: createTraceRevisionId({
           model: request.model,
           messages: request.messages,
@@ -405,6 +416,53 @@ export class AgentRuntime {
         this.recordProviderTraceEvent(event);
       },
     };
+  }
+
+  private streamProviderWithCapture(
+    request: ChatRequest,
+    purpose: ProviderRequestPurpose,
+  ): AsyncIterable<ChatStreamEvent> {
+    const traced = this.tracedProviderRequest(request, purpose);
+    const source = this.provider.streamChat(traced);
+    const recorder = this.dependencies.trace;
+    if (recorder?.captureLevel !== "full" || !traced.trace) return source;
+    const identity = {
+      requestId: traced.trace.requestId,
+      operationId: traced.trace.operationId,
+      parentOperationId: traced.trace.parentOperationId,
+      turnId: traced.trace.turnId,
+      promptRevisionId: traced.trace.promptRevisionId,
+    };
+    return (async function* () {
+      const events: ChatStreamEvent[] = [];
+      let completed = false;
+      let error: { name: string; message: string } | undefined;
+      try {
+        for await (const event of source) {
+          events.push(event);
+          yield event;
+        }
+        completed = true;
+      } catch (cause) {
+        error = {
+          name: cause instanceof Error ? cause.name : "Error",
+          message: cause instanceof Error ? cause.message : String(cause),
+        };
+        throw cause;
+      } finally {
+        const responseMaterial = recorder.captureMaterial?.({
+          events,
+          completed,
+          error,
+        });
+        recorder.record({
+          component: "agent",
+          type: "provider_response_captured",
+          identity,
+          payload: { purpose, completed, responseMaterial },
+        });
+      }
+    })();
   }
 
   private recordProviderTraceEvent(event: ProviderTraceEvent): void {
@@ -816,17 +874,15 @@ export class AgentRuntime {
     const streamState = { fullResponse: "", chunkCount: 0 };
     this.emitStatus(options, "Streaming response", "response");
     for await (const event of this.withStreamIdleWatchdog(
-      this.provider.streamChat(
-        this.tracedProviderRequest(
-          {
-            model: this.model,
-            messages: this.prepareMessagesForProvider(messages),
-            signal: abortSignal,
-            iteration,
-            requestReasoning: options?.requestReasoning,
-          },
-          "recovery",
-        ),
+      this.streamProviderWithCapture(
+        {
+          model: this.model,
+          messages: this.prepareMessagesForProvider(messages),
+          signal: abortSignal,
+          iteration,
+          requestReasoning: options?.requestReasoning,
+        },
+        "recovery",
       ),
       iteration,
       abortSignal,
@@ -948,18 +1004,16 @@ export class AgentRuntime {
     this.emitStatus(options, "Streaming response", "response");
 
     for await (const event of this.withStreamIdleWatchdog(
-      this.provider.streamChat(
-        this.tracedProviderRequest(
-          {
-            model: this.model,
-            messages: this.prepareMessagesForProvider(messages),
-            tools: this.getMergedToolSchemas(allowedTools),
-            signal: options?.abortSignal,
-            iteration,
-            requestReasoning: options?.requestReasoning,
-          },
-          "answer",
-        ),
+      this.streamProviderWithCapture(
+        {
+          model: this.model,
+          messages: this.prepareMessagesForProvider(messages),
+          tools: this.getMergedToolSchemas(allowedTools),
+          signal: options?.abortSignal,
+          iteration,
+          requestReasoning: options?.requestReasoning,
+        },
+        "answer",
       ),
       iteration,
       options?.abortSignal,
@@ -1290,6 +1344,10 @@ export class AgentRuntime {
   ): void {
     const operationId = randomUUID();
     this.toolOperationIds.set(toolCallId, operationId);
+    const argumentMaterial =
+      this.dependencies.trace?.captureLevel === "full"
+        ? this.dependencies.trace.captureMaterial?.(args)
+        : undefined;
     this.dependencies.trace?.record({
       component: "tool",
       type: "tool_execution_started",
@@ -1309,6 +1367,7 @@ export class AgentRuntime {
         toolName,
         argumentKeys: Object.keys(args).sort(),
         argumentChars: serializedArgs.length,
+        argumentMaterial,
       },
     });
     this.emitStatus(options, "Running tool", "tool");
@@ -1344,6 +1403,13 @@ export class AgentRuntime {
     options: AgentToolOptions | undefined,
   ): boolean {
     const failed = execResult.status !== "success";
+    const resultMaterial =
+      this.dependencies.trace?.captureLevel === "full"
+        ? this.dependencies.trace.captureMaterial?.({
+            result,
+            execution: execResult,
+          })
+        : undefined;
     this.emitDiagnostic({
       type: "tool_execution_finished",
       provider: this.provider.name,
@@ -1389,6 +1455,7 @@ export class AgentRuntime {
           resultChars: result.length,
           outcome: execResult.outcome,
           outputPersistenceError: execResult.outputPersistenceError,
+          resultMaterial,
         },
       },
       { durable: true },
