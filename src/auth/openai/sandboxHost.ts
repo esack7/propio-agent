@@ -1,7 +1,8 @@
 import { cp, mkdtemp, writeFile, rm, lstat, chmod } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
-import { loadProvidersConfig } from "@propio-ai/providers";
+import { loadProvidersConfig, resolveProvider } from "@propio-ai/providers";
 import { authForAccount, subscriptionAccountId } from "./runtime.js";
 import { startCredentialBroker } from "./broker.js";
 
@@ -9,19 +10,21 @@ import { startCredentialBroker } from "./broker.js";
 export async function createSandboxConfigView(source: string): Promise<string> {
   const view = await mkdtemp(join(homedir(), ".propio-sandbox-config-"));
   try {
-    await cp(source, view, {
-      recursive: true,
-      dereference: false,
-      filter: async (path) => {
-        const part = relative(source, path).replace(/\\/g, "/");
-        return (
-          !(await lstat(path)).isSymbolicLink() &&
-          !["poc", "auth/openai"].some(
-            (excluded) => part === excluded || part.startsWith(`${excluded}/`),
-          )
-        );
-      },
-    });
+    if (existsSync(source))
+      await cp(source, view, {
+        recursive: true,
+        dereference: false,
+        filter: async (path) => {
+          const part = relative(source, path).replace(/\\/g, "/");
+          return (
+            !(await lstat(path)).isSymbolicLink() &&
+            !["poc", "auth/openai"].some(
+              (excluded) =>
+                part === excluded || part.startsWith(`${excluded}/`),
+            )
+          );
+        },
+      });
     await chmod(view, 0o700);
     return view;
   } catch (error) {
@@ -42,11 +45,11 @@ async function run(): Promise<void> {
     await rm(channel, { recursive: true, force: true });
   };
   try {
-    const config = loadProvidersConfig(join(view, "providers.json"));
-    const selected = config.providers.find(
-      (entry) => entry.name === config.default,
-    )!;
-    const accountId = subscriptionAccountId(selected);
+    const path = join(view, "providers.json");
+    const config = existsSync(path) ? loadProvidersConfig(path) : undefined;
+    const accountId = config?.default
+      ? subscriptionAccountId(resolveProvider(config))
+      : undefined;
     if (accountId) {
       if (process.platform !== "darwin")
         throw new Error(
@@ -73,9 +76,8 @@ async function run(): Promise<void> {
   }
 }
 
-async function waitForSandboxOwner(): Promise<void> {
+export async function waitForSandboxOwner(): Promise<void> {
   const parent = process.ppid;
-  const deadline = Date.now() + 8 * 60 * 60 * 1000;
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
       try {
@@ -84,7 +86,7 @@ async function waitForSandboxOwner(): Promise<void> {
         finish();
         return;
       }
-      if (process.ppid !== parent || Date.now() > deadline) finish();
+      if (process.ppid !== parent) finish();
     }, 1000);
     const finish = () => {
       clearInterval(timer);

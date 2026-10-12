@@ -2,6 +2,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { OpenAiAuth } from "../auth.js";
 import { ChatGptCredentialStore } from "../store.js";
@@ -298,6 +299,93 @@ it("preserves credentials on a temporary refresh failure", async () => {
     )?.accounts.default.accessToken,
   ).toBe("access-1");
 });
+
+it.each(["network", "abort", "timeout", "empty-503"])(
+  "retains usable credentials and permits retry after a transient %s refresh failure",
+  async (kind) => {
+    await login();
+    const working = request;
+    request = (async () => {
+      if (kind === "network") throw new TypeError("Network unavailable");
+      if (kind === "abort") throw new DOMException("Cancelled", "AbortError");
+      if (kind === "timeout")
+        throw new DOMException("Timed out", "TimeoutError");
+      return new Response(null, { status: 503 });
+    }) as typeof fetch;
+    await expect(auth().getAccessToken(undefined, true)).rejects.toThrow();
+    expect(await auth().status()).toMatchObject({ state: "connected" });
+    expect(await auth().getAccessToken()).toBe("access-1");
+    request = working;
+    expect(await auth().getAccessToken(undefined, true)).toBe("access-2");
+    expect(tokenRequests[1].get("refresh_token")).toBe("refresh-1");
+  },
+);
+
+it("blocks reuse after a malformed successful rotation response", async () => {
+  await login();
+  request = (async () =>
+    Response.json({ access_token: "possibly-rotated" })) as typeof fetch;
+  await expect(auth().getAccessToken(undefined, true)).rejects.toThrow(
+    "Sign in again",
+  );
+  expect((await auth().status()).state).toBe("recovery-required");
+});
+
+async function pendingLogin() {
+  const controller = new AbortController();
+  let started!: (url: string) => void;
+  const browser = new Promise<string>((resolve) => {
+    started = resolve;
+  });
+  const pending = auth().login({
+    signal: controller.signal,
+    openBrowser: async (url) => {
+      started(url);
+    },
+  });
+  // Attach rejection handling while the browser flow is pending.
+  const result = pending.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  return { controller, result, url: await browser };
+}
+
+it("allows token reads and renewal while browser reauthorization is pending", async () => {
+  await login();
+  const pending = await pendingLogin();
+  try {
+    expect(
+      await Promise.race([
+        auth().getAccessToken(undefined, true),
+        delay(1500).then(() => {
+          throw new Error("Browser flow blocked token renewal");
+        }),
+      ]),
+    ).toBe("access-2");
+  } finally {
+    pending.controller.abort();
+    await pending.result;
+  }
+  expect(await auth().getAccessToken()).toBe("access-2");
+});
+
+it.each(["connected", "signed-out"])(
+  "does not resurrect an initially %s registration logged out during pending sign-in",
+  async (state) => {
+    await login();
+    if (state === "signed-out") await auth().logout();
+    const pending = await pendingLogin();
+    await auth().logout();
+    await openBrowser(pending.url);
+    expect(await pending.result).toBeInstanceOf(Error);
+    expect(await auth().status()).toMatchObject({
+      connected: false,
+      state: "signed-out",
+    });
+    expect(tokenRequests).toHaveLength(1);
+  },
+);
 
 it.each([200, 503])(
   "reports remote revocation accurately and clears local tokens for HTTP %i",

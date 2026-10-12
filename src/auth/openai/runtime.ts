@@ -6,6 +6,7 @@ import type {
 } from "@propio-ai/providers";
 import { OpenAiAuth } from "./auth.js";
 import { discoverModels } from "./catalog.js";
+import { resolveProvider } from "@propio-ai/providers";
 
 export function subscriptionAccountId(
   config: ProviderConfig,
@@ -33,6 +34,14 @@ export async function prepareProviderRuntime(
 ): Promise<ProviderRuntimeOptions> {
   if (!config.providers.some(subscriptionAccountId)) return {};
   const broker = await readBrokerDescriptor();
+  return credentialRuntime(broker);
+}
+
+function credentialRuntime(
+  broker: Awaited<ReturnType<typeof readBrokerDescriptor>>,
+  preparedAuth?: OpenAiAuth,
+  preparedAccountId?: string,
+): ProviderRuntimeOptions {
   return {
     openAiCredentialSource: (id) => ({
       getAccessToken: async (signal) =>
@@ -44,9 +53,41 @@ export async function prepareProviderRuntime(
                   "Restart the sandbox with this subscription account selected on the host.",
                 ),
               )
-            : (await authForAccount(id)).getAccessToken(signal),
+            : (id === preparedAccountId && preparedAuth
+                ? preparedAuth
+                : await authForAccount(id)
+              ).getAccessToken(signal),
     }),
   };
+}
+
+/** Load saved selections offline; explicit setup and /model refresh eligibility. */
+export async function prepareProviderStartup(config: ProvidersConfig): Promise<{
+  providerRuntimeOptions: ProviderRuntimeOptions;
+  label?: string;
+}> {
+  const selected = resolveProvider(config);
+  if (!config.providers.some(subscriptionAccountId))
+    return { providerRuntimeOptions: {} };
+  const broker = await readBrokerDescriptor();
+  const id = subscriptionAccountId(selected);
+  if (id && broker && broker.accountId !== id)
+    throw new Error(
+      "Restart the sandbox with this subscription account selected on the host.",
+    );
+  if (id && !broker && process.env.IS_SANDBOX === "true")
+    throw new Error(
+      "Restart the sandbox with this subscription account selected on the host.",
+    );
+  const auth = id && !broker ? await authForAccount(id) : undefined;
+  return {
+    providerRuntimeOptions: credentialRuntime(broker, auth, id),
+    label: id ? planLabel(broker?.label ?? auth!.profile) : undefined,
+  };
+}
+
+function planLabel(label: string): string {
+  return `Using ChatGPT plan · ${label}. Conversations and summaries use this account. Manage usage: https://chatgpt.com/settings/usage`;
 }
 
 export async function preflightSubscription(
@@ -70,7 +111,7 @@ export async function accessLabel(config: ProviderConfig): Promise<string> {
     broker?.accountId === id
       ? broker.label
       : (await authForAccount(id)).profile;
-  return `Using ChatGPT plan · ${label}. Conversations and summaries use this account. Manage usage: https://chatgpt.com/settings/usage`;
+  return planLabel(label);
 }
 
 export async function discoverAccountModels(

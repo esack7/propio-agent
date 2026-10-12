@@ -4,6 +4,7 @@ import type { TerminalUi } from "./terminal.js";
 import { OpenAiAuth } from "../auth/openai/auth.js";
 import { openSystemBrowser } from "../auth/openai/browser.js";
 import { guidedOpenAiSetup } from "../auth/openai/setup.js";
+import { chooseTranscriptTransfer } from "./subscriptionSwitch.js";
 import {
   prepareProviderRuntime,
   preflightSubscription,
@@ -17,6 +18,7 @@ export async function showAccountMenu(
     | "setPreparedProvidersConfig"
     | "switchProvider"
     | "cancelSubscriptionRequests"
+    | "getActiveAccessBinding"
   >,
   ui: Pick<TerminalUi, "info" | "error" | "prompt" | "success">,
   configPath: string,
@@ -62,15 +64,28 @@ async function performAccountAction(
   configPath: string,
 ): Promise<void> {
   if (action === "setup") {
+    let transferTranscript = false;
     const setup = await guidedOpenAiSetup(
       { ask, info: (message) => ui.info(message) },
       configPath,
+      async (provider) => {
+        const transfer = await chooseTranscriptTransfer(
+          ask,
+          (message) => ui.info(message),
+          agent.getActiveAccessBinding().accountId,
+          provider,
+        );
+        transferTranscript = transfer === true;
+        return transfer !== null;
+      },
     );
     if (!setup) return;
     const runtime = await prepareProviderRuntime(setup.config);
     await preflightSubscription(setup.provider, setup.provider.defaultModel);
     agent.setPreparedProvidersConfig(setup.config, runtime);
-    agent.switchProvider(setup.provider.name, setup.provider.defaultModel);
+    agent.switchProvider(setup.provider.name, setup.provider.defaultModel, {
+      transferTranscript,
+    });
     ui.info(await accessLabel(setup.provider));
     return;
   }

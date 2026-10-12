@@ -3,16 +3,13 @@ import {
   loadProvidersConfig,
   writeProvidersConfig,
   type OpenAiProviderConfig,
+  type ProviderConfig,
   type ProvidersConfig,
 } from "@propio-ai/providers";
 import { OpenAiAuth } from "./auth.js";
 import { discoverModels } from "./catalog.js";
 import { openSystemBrowser } from "./browser.js";
-import {
-  recordPromptBudget,
-  resolvePromptBudget,
-  type PromptBudget,
-} from "./budgets.js";
+import { resolvePromptBudget, type PromptBudget } from "./budgets.js";
 
 export interface SetupUi {
   ask(prompt: string): Promise<string | null>;
@@ -77,7 +74,6 @@ async function subscriptionEntry(
     models: [model],
     defaultModel: model.key,
   };
-  await recordPromptBudget(configPath, status.accountId!, model, budget);
   return provider;
 }
 
@@ -105,6 +101,7 @@ async function apiEntry(ui: SetupUi): Promise<OpenAiProviderConfig | null> {
 export async function guidedOpenAiSetup(
   ui: SetupUi,
   configPath: string,
+  confirmSelection?: (provider: OpenAiProviderConfig) => Promise<boolean>,
 ): Promise<{
   config: ProvidersConfig;
   provider: OpenAiProviderConfig;
@@ -118,26 +115,29 @@ export async function guidedOpenAiSetup(
   const provider =
     access === 0 ? await apiEntry(ui) : await subscriptionEntry(ui, configPath);
   if (!provider) return null;
-  const scope = await chooseSetupScope(ui, provider, configPath);
+  const scope = await chooseSetupScope(ui, provider);
   if (scope === null) return null;
+  if (confirmSelection && !(await confirmSelection(provider))) return null;
   const existing = existsSync(configPath)
     ? loadProvidersConfig(configPath)
     : undefined;
   if (
     existing?.providers.some(
       (entry) =>
-        entry.name === provider.name &&
-        JSON.stringify(entry.type === "openai" ? entry.auth : undefined) !==
-          JSON.stringify(provider.auth),
+        entry.name === provider.name && !sameOpenAiAccess(entry, provider),
     )
   )
     throw new Error(
       "A provider with this name already exists with different access. Choose another account label.",
     );
+  const configuredProvider: OpenAiProviderConfig = {
+    ...existing?.providers.find((entry) => entry.name === provider.name),
+    ...provider,
+  };
   const providers = [
     ...(existing?.providers.filter((entry) => entry.name !== provider.name) ??
       []),
-    provider,
+    configuredProvider,
   ];
   const config = { providers, default: provider.name };
   let persistent = false;
@@ -151,7 +151,21 @@ export async function guidedOpenAiSetup(
       );
     }
   }
-  return { config, provider, persistent };
+  return { config, provider: configuredProvider, persistent };
+}
+
+function sameOpenAiAccess(
+  entry: ProviderConfig,
+  destination: OpenAiProviderConfig,
+): boolean {
+  if (entry.type !== "openai") return false;
+  const current = entry.auth ?? { mode: "api-key" };
+  const next = destination.auth ?? { mode: "api-key" };
+  if (current.mode !== next.mode) return false;
+  return (
+    current.mode !== "chatgpt" ||
+    (next.mode === "chatgpt" && current.accountId === next.accountId)
+  );
 }
 
 async function chooseSetupAccount(ui: SetupUi): Promise<OpenAiAuth | null> {
@@ -227,7 +241,6 @@ function parsePromptBudget(
 async function chooseSetupScope(
   ui: SetupUi,
   provider: OpenAiProviderConfig,
-  configPath: string,
 ): Promise<number | null> {
   const accountId =
     provider.auth?.mode === "chatgpt" ? provider.auth.accountId : undefined;
@@ -247,7 +260,6 @@ async function chooseSetupScope(
     );
     if (!budget) return null;
     model.contextWindowTokens = budget.contextWindowTokens;
-    await recordPromptBudget(configPath, accountId!, model, budget);
   }
 }
 

@@ -3,11 +3,7 @@ import { existsSync } from "node:fs";
 import { runOpenAiAuthCommand, runOpenAiSetup } from "./auth/openai/cli.js";
 import { showAccountMenu } from "./ui/accountMenu.js";
 import type { ProvidersConfig } from "@propio-ai/providers";
-import {
-  prepareProviderRuntime,
-  preflightSubscription,
-  accessLabel,
-} from "./auth/openai/runtime.js";
+import { prepareProviderStartup } from "./auth/openai/runtime.js";
 let setupProvidersConfig: ProvidersConfig | undefined;
 import * as fs from "fs";
 import * as path from "path";
@@ -1235,13 +1231,9 @@ async function createInitializedAgent(
       ),
     ]);
 
-  const selected = providersConfig.providers.find(
-    (entry) => entry.name === providersConfig.default,
-  )!;
-  const providerRuntimeOptions = await prepareProviderRuntime(providersConfig);
-  await preflightSubscription(selected, selected.defaultModel);
-  if (selected.type === "openai" && selected.auth?.mode === "chatgpt")
-    process.stderr.write(`${await accessLabel(selected)}\n`);
+  const { providerRuntimeOptions, label } =
+    await prepareProviderStartup(providersConfig);
+  if (label) process.stderr.write(`${label}\n`);
   const agent = new agentModule.Agent({
     providersConfig,
     providerRuntimeOptions,

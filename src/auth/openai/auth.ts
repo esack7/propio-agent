@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { SecretBackend } from "./secrets.js";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 import { z } from "zod";
 import {
@@ -35,6 +35,7 @@ class ChatGptAuthError extends Error {
   constructor(
     message: string,
     readonly code?: string,
+    readonly rotationUncertain = false,
   ) {
     super(message);
     this.name = "ChatGptAuthError";
@@ -192,7 +193,11 @@ export class OpenAiAuth {
     });
     const parsed = tokensSchema.safeParse(data);
     if (!parsed.success)
-      throw new ChatGptAuthError("ChatGPT returned an invalid token response.");
+      throw new ChatGptAuthError(
+        "ChatGPT returned an invalid token response.",
+        undefined,
+        true,
+      );
     return parsed.data;
   }
 
@@ -229,14 +234,12 @@ export class OpenAiAuth {
     enablePlan?: boolean;
     signal?: AbortSignal;
   }): Promise<void> {
-    await this.store.withLock(async () => {
-      const state: ChatGptStore = (await this.store.read()) ?? {
-        version: 1,
-        hostId: `urn:uuid:${randomUUID()}`,
-        accounts: {},
-      };
-      await this.store.write(state); // Persist the host before the first browser flow.
-      const saved = this.selectedAccount(state);
+    await this.store.withLoginLock(async () => {
+      const snapshot = await this.store.withLock(async () => {
+        const state = (await this.store.read())!;
+        return { hostId: state.hostId, saved: this.selectedAccount(state) };
+      }, options.signal);
+      const { saved } = snapshot;
       const pendingState = randomBytes(32).toString("base64url");
       const nonce = randomBytes(32).toString("base64url");
       const verifier = randomBytes(32).toString("base64url");
@@ -249,7 +252,7 @@ export class OpenAiAuth {
         await options.openBrowser(
           this.authorizationUrl({
             saved,
-            hostId: state.hostId,
+            hostId: snapshot.hostId,
             redirectUri: callback.redirectUri,
             state: pendingState,
             nonce,
@@ -258,43 +261,49 @@ export class OpenAiAuth {
           }),
         );
         const registration = await callback.result;
-        if (!saved) {
-          state.accounts[this.profile] = this.store.newAccount(
-            registration.clientId,
-            state.hostId,
+        await this.store.withLock(async () => {
+          const state = (await this.store.read())!;
+          const current = this.selectedAccount(state);
+          assertLoginSnapshot(saved, current);
+          if (!saved) {
+            state.accounts[this.profile] = this.store.newAccount(
+              registration.clientId,
+              state.hostId,
+            );
+            await this.store.write(state); // Reuse registration even if code exchange fails.
+          }
+          const tokens = await this.exchange(
+            new URLSearchParams({
+              grant_type: "authorization_code",
+              client_id: registration.clientId,
+              code: registration.code,
+              code_verifier: verifier,
+              redirect_uri: callback.redirectUri,
+              resource: RESOURCE,
+            }),
+            options.signal,
           );
-          await this.store.write(state); // Reuse registration even if code exchange fails.
-        }
-        const tokens = await this.exchange(
-          new URLSearchParams({
-            grant_type: "authorization_code",
-            client_id: registration.clientId,
-            code: registration.code,
-            code_verifier: verifier,
-            redirect_uri: callback.redirectUri,
-            resource: RESOURCE,
-          }),
-          options.signal,
-        );
-        if (!tokens.id_token)
-          throw new ChatGptAuthError("ChatGPT did not return an ID token.");
-        const payload = await this.verifyIdentity(
-          tokens.id_token,
-          registration.clientId,
-          nonce,
-          saved,
-          options.signal,
-        );
-        state.accounts[this.profile] = {
-          ...state.accounts[this.profile],
-          state: "connected",
-          clientId: registration.clientId,
-          subject: payload.sub,
-          email: typeof payload.email === "string" ? payload.email : undefined,
-          idToken: tokens.id_token,
-          ...this.tokenFields(tokens),
-        };
-        await this.store.write(state);
+          if (!tokens.id_token)
+            throw new ChatGptAuthError("ChatGPT did not return an ID token.");
+          const payload = await this.verifyIdentity(
+            tokens.id_token,
+            registration.clientId,
+            nonce,
+            saved,
+            options.signal,
+          );
+          state.accounts[this.profile] = {
+            ...state.accounts[this.profile],
+            state: "connected",
+            clientId: registration.clientId,
+            subject: payload.sub,
+            email:
+              typeof payload.email === "string" ? payload.email : undefined,
+            idToken: tokens.id_token,
+            ...this.tokenFields(tokens),
+          };
+          await this.store.write(state);
+        }, options.signal);
       } finally {
         callback.close();
       }
@@ -440,7 +449,10 @@ export class OpenAiAuth {
         error.code,
       );
     }
-    if (rotated || !(error instanceof ChatGptAuthError && error.code)) {
+    if (
+      rotated ||
+      (error instanceof ChatGptAuthError && error.rotationUncertain)
+    ) {
       await this.store
         .writeMetadata({ ...account, state: "recovery-required" })
         .catch(() => {});
@@ -542,4 +554,18 @@ function safeAuthCode(value: unknown): string | undefined {
   return typeof value.error === "string" && /^[a-z_]{1,80}$/.test(value.error)
     ? value.error
     : undefined;
+}
+
+function assertLoginSnapshot(
+  saved: ChatGptAccount | undefined,
+  current: ChatGptAccount | undefined,
+): void {
+  if (
+    current?.accountId !== saved?.accountId ||
+    (current?.state === "signed-out" &&
+      current.generation !== saved?.generation)
+  )
+    throw new ChatGptAuthError(
+      "The registration changed or was signed out during sign-in. Start sign-in again.",
+    );
 }

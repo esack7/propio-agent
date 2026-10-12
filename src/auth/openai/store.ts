@@ -206,6 +206,16 @@ export class ChatGptCredentialStore {
       signal,
     );
   }
+  async withLoginLock<T>(
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return withCredentialLock(
+      join(this.directory, `${this.key()}.signin.lock`),
+      operation,
+      signal,
+    );
+  }
   async accounts(): Promise<ChatGptAccount[]> {
     await privateDirectory(this.directory);
     const paths = (await readdir(this.directory)).filter((name) =>

@@ -1,6 +1,3 @@
-import { dirname, join } from "node:path";
-import type { Model } from "@propio-ai/providers";
-import { atomicPrivateWrite } from "./secureFiles.js";
 import {
   documentedModelCapacity,
   type DocumentedModelCapacity,
@@ -32,22 +29,4 @@ export function resolvePromptBudget(
     source: "official-documentation",
     capacity,
   };
-}
-
-export async function recordPromptBudget(
-  configPath: string,
-  accountId: string,
-  model: Model,
-  budget: PromptBudget,
-): Promise<void> {
-  await atomicPrivateWrite(
-    join(dirname(configPath), "auth", "openai", `${accountId}.budget.json`),
-    {
-      accountId,
-      model: model.key,
-      contextWindowTokens: model.contextWindowTokens,
-      source: budget.source,
-      capacity: budget.capacity,
-    },
-  );
 }

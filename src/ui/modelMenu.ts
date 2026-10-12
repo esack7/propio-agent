@@ -1,4 +1,5 @@
-import { recordPromptBudget } from "../auth/openai/budgets.js";
+import { existsSync } from "node:fs";
+import { chooseTranscriptTransfer } from "./subscriptionSwitch.js";
 import { choosePromptBudget } from "../auth/openai/setup.js";
 import type { Agent } from "../agent.js";
 import {
@@ -214,7 +215,6 @@ async function selectModelMenuChoice(
   composer: PromptComposer,
   ui: ModelMenuUi,
   providers: ReadonlyArray<ProviderConfig>,
-  configPath: string,
 ): Promise<ModelSelection | null> {
   const provider = await selectProvider(composer, ui, providers);
   if (!provider) {
@@ -225,8 +225,7 @@ async function selectModelMenuChoice(
   if (!eligibleProvider) return null;
   const model = await selectModel(composer, ui, eligibleProvider);
   if (!model) return null;
-  if (!(await selectNewModelBudget(composer, ui, provider, model, configPath)))
-    return null;
+  if (!(await selectNewModelBudget(composer, ui, provider, model))) return null;
 
   let applyMode;
   do {
@@ -239,14 +238,7 @@ async function selectModelMenuChoice(
     );
     if (
       applyMode === "budget" &&
-      !(await selectNewModelBudget(
-        composer,
-        ui,
-        provider,
-        model,
-        configPath,
-        true,
-      ))
+      !(await selectNewModelBudget(composer, ui, provider, model, true))
     )
       return null;
   } while (applyMode === "budget");
@@ -311,8 +303,7 @@ export async function showModelMenu(
   ui: ModelMenuUi,
   configPath: string,
 ): Promise<void> {
-  const config =
-    agent.getAvailableProvidersConfig?.() ?? loadConfigForMenu(ui, configPath);
+  const config = latestMenuConfig(agent, ui, configPath);
   if (!config) {
     return;
   }
@@ -323,12 +314,7 @@ export async function showModelMenu(
     savedDefault(configPath),
   );
 
-  const selection = await selectModelMenuChoice(
-    composer,
-    ui,
-    config.providers,
-    configPath,
-  );
+  const selection = await selectModelMenuChoice(composer, ui, config.providers);
   if (!selection) {
     ui.command("");
     return;
@@ -382,6 +368,26 @@ function savedDefault(configPath: string) {
   }
 }
 
+function latestMenuConfig(
+  agent: ModelMenuAgent,
+  ui: ModelMenuUi,
+  path: string,
+): ProvidersConfig | null {
+  const session = agent.getAvailableProvidersConfig?.();
+  const saved = existsSync(path) ? loadConfigForMenu(ui, path) : undefined;
+  if (saved === null) return null;
+  if (!saved) return session ?? loadConfigForMenu(ui, path);
+  return {
+    ...saved,
+    providers: [
+      ...saved.providers,
+      ...(session?.providers.filter(
+        (entry) => !saved.providers.some((disk) => disk.name === entry.name),
+      ) ?? []),
+    ],
+  };
+}
+
 type ModelMenuAgent = Parameters<typeof showModelMenu>[1];
 async function prepareSubscriptionSwitch(
   composer: PromptComposer,
@@ -392,10 +398,22 @@ async function prepareSubscriptionSwitch(
   model: Model,
 ): Promise<{ config: ProvidersConfig; transferTranscript: boolean } | null> {
   const id = subscriptionAccountId(provider);
-  if (!id) return { config, transferTranscript: false };
   try {
-    ui.info(await accessLabel(provider));
-    const transfer = await chooseTranscriptTransfer(composer, agent, ui, id);
+    if (id) ui.info(await accessLabel(provider));
+    const transfer = await chooseTranscriptTransfer(
+      async (prompt) => {
+        const result = await composer.compose({
+          mode: "menu",
+          promptText: ui.prompt(prompt),
+        });
+        return result.status === "closed"
+          ? null
+          : result.submission.displayText.trim();
+      },
+      (message) => ui.info(message),
+      agent.getActiveAccessBinding?.().accountId,
+      provider,
+    );
     if (transfer === null) return null;
     const resolved = {
       ...config,
@@ -426,22 +444,6 @@ async function prepareSubscriptionSwitch(
     return null;
   }
 }
-async function chooseTranscriptTransfer(
-  composer: PromptComposer,
-  agent: ModelMenuAgent,
-  ui: ModelMenuUi,
-  accountId: string,
-): Promise<boolean | null> {
-  if (accountId === agent.getActiveAccessBinding?.().accountId) return false;
-  ui.info(
-    "Changing ChatGPT registration starts a new conversation. Transcript transfer sends readable history to the destination account.",
-  );
-  const choice = await promptForNumber(
-    composer,
-    ui.prompt("1: New conversation, 2: Transfer transcript, blank: cancel: "),
-  );
-  return choice === 1 ? false : choice === 2 ? true : null;
-}
 function applySessionSwitch(
   agent: ModelMenuAgent,
   ui: ModelMenuUi,
@@ -466,7 +468,35 @@ function persistSubscriptionSelection(
   model: string,
 ): void {
   try {
-    writeProvidersConfig(path, { ...config, default: name });
+    const selected = config.providers.find((entry) => entry.name === name)!;
+    const latest = existsSync(path)
+      ? loadProvidersConfig(path)
+      : { providers: [] };
+    const saved = latest.providers.find((entry) => entry.name === name);
+    if (
+      saved &&
+      subscriptionAccountId(saved) !== subscriptionAccountId(selected)
+    )
+      throw new Error(
+        "Saved account binding changed. Reopen /model before saving.",
+      );
+    const chosenModel = selected.models.find((entry) => entry.key === model)!;
+    const merged = {
+      ...(saved ?? selected),
+      defaultModel: model,
+      models: [
+        ...(saved?.models.filter((entry) => entry.key !== model) ?? []),
+        chosenModel,
+      ],
+    };
+    writeProvidersConfig(path, {
+      ...latest,
+      default: name,
+      providers: [
+        ...latest.providers.filter((entry) => entry.name !== name),
+        merged,
+      ],
+    });
     ui.success(
       `Updated the default to ${formatSelection(name, model)} and switched the current session.`,
     );
@@ -506,7 +536,6 @@ async function selectNewModelBudget(
   ui: ModelMenuUi,
   provider: ProviderConfig,
   model: Model,
-  configPath: string,
   customize = false,
 ): Promise<boolean> {
   if (!subscriptionAccountId(provider)) return true;
@@ -530,11 +559,5 @@ async function selectNewModelBudget(
   );
   if (!budget) return false;
   model.contextWindowTokens = budget.contextWindowTokens;
-  await recordPromptBudget(
-    configPath,
-    subscriptionAccountId(provider)!,
-    model,
-    budget,
-  );
   return true;
 }

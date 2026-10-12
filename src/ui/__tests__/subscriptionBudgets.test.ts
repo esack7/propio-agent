@@ -1,5 +1,5 @@
 import { jest } from "@jest/globals";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -27,12 +27,14 @@ jest.unstable_mockModule("../../auth/openai/runtime.js", () => ({
   discoverAccountModels: catalog,
   prepareProviderRuntime: async () => ({}),
   accessLabel: async () => "Using ChatGPT plan · personal",
+  preflightSubscription: async () => {},
   subscriptionAccountId: (provider: ProviderConfig) =>
     provider.type === "openai" && provider.auth?.mode === "chatgpt"
       ? provider.auth.accountId
       : undefined,
 }));
 const { showModelMenu } = await import("../modelMenu.js");
+const { showAccountMenu } = await import("../accountMenu.js");
 const { guidedOpenAiSetup } = await import("../../auth/openai/setup.js");
 const { loadProvidersConfig } = await import("../../config/providersConfig.js");
 
@@ -66,18 +68,11 @@ beforeEach(async () => {
   await saveConfig();
 });
 afterEach(async () => {
+  expect(await readdir(directory)).toEqual(["providers.json"]);
   await rm(directory, { recursive: true, force: true });
 });
 async function saveConfig() {
   await writeFile(configPath, JSON.stringify(config));
-}
-async function metadata() {
-  return JSON.parse(
-    await readFile(
-      join(directory, "auth", "openai", `${accountId}.budget.json`),
-      "utf8",
-    ),
-  );
 }
 function menuAgent() {
   return {
@@ -91,6 +86,7 @@ function menuAgent() {
     }),
     switchProvider: jest.fn(),
     setPreparedProvidersConfig: jest.fn(),
+    cancelSubscriptionRequests: jest.fn(),
   };
 }
 async function setup(responses: string[]) {
@@ -104,7 +100,7 @@ async function setup(responses: string[]) {
   return { result, ask };
 }
 
-it("setup uses documented limits without a capacity question and records provenance", async () => {
+it("setup uses documented limits without a capacity question or budget sidecar", async () => {
   const { result, ask } = await setup(["2", "1", "1", "1"]);
   expect(result?.provider.models[0].contextWindowTokens).toBe(922000);
   expect(result?.persistent).toBe(false);
@@ -112,14 +108,7 @@ it("setup uses documented limits without a capacity question and records provena
     "enter verified tokens",
   );
   expect(loadProvidersConfig(configPath)).toEqual(config);
-  expect(await metadata()).toMatchObject({
-    source: "official-documentation",
-    capacity: {
-      sourceUrl: "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-      checkedAt: "2026-10-11",
-      maxOutputTokens: 128000,
-    },
-  });
+  expect(output.join("\n")).toContain("documented model limits");
 });
 
 it("setup preserves the saved budget for the selected registration and model", async () => {
@@ -131,10 +120,7 @@ it("setup preserves the saved budget for the selected registration and model", a
   await saveConfig();
   const { result } = await setup(["2", "1", "1", "2"]);
   expect(result?.provider.models[0].contextWindowTokens).toBe(200000);
-  expect(await metadata()).toMatchObject({
-    source: "saved-config",
-    contextWindowTokens: 200000,
-  });
+  expect(output.join("\n")).toContain("saved selection");
 });
 
 it("setup does not reuse a different registration's saved budget", async () => {
@@ -155,10 +141,6 @@ it("setup can adjust and persist a budget before applying the selection", async 
   expect(
     loadProvidersConfig(configPath).providers[0].models[0].contextWindowTokens,
   ).toBe(300000);
-  expect(await metadata()).toMatchObject({
-    source: "user-supplied-capacity",
-    contextWindowTokens: 300000,
-  });
 });
 
 it("cancelled setup adjustment leaves saved defaults unchanged", async () => {
@@ -199,7 +181,6 @@ it("model menu preserves a saved budget and can explicitly reset it to documente
       (model) => model.key === catalogKey,
     )?.contextWindowTokens,
   ).toBe(922000);
-  expect(await metadata()).toMatchObject({ source: "official-documentation" });
 });
 
 it("unknown model still requires an explicit conservative or verified budget", async () => {
@@ -211,10 +192,10 @@ it("unknown model still requires an explicit conservative or verified budget", a
     "openai-personal",
     catalogKey,
   );
-  expect(await metadata()).toMatchObject({
-    source: "user-selected-conservative",
-    contextWindowTokens: 128000,
-  });
+  expect(
+    agent.setPreparedProvidersConfig.mock.calls[0][0].providers[0].models.at(-1)
+      .contextWindowTokens,
+  ).toBe(128000);
 });
 
 it("cancelled model adjustment leaves the session and saved defaults unchanged", async () => {
@@ -225,3 +206,136 @@ it("cancelled model adjustment leaves the session and saved defaults unchanged",
   expect(agent.setPreparedProvidersConfig).not.toHaveBeenCalled();
   expect(loadProvidersConfig(configPath)).toEqual(config);
 });
+
+function apiProvider(name = "api"): ProviderConfig {
+  return {
+    name,
+    type: "openai",
+    defaultModel: "api-model",
+    models: [{ name: "API", key: "api-model", contextWindowTokens: 128000 }],
+  };
+}
+
+it.each(["", "1", "2"])(
+  "asks before switching from ChatGPT to API (%s)",
+  async (choice) => {
+    config.providers.push(apiProvider());
+    await saveConfig();
+    const agent = menuAgent();
+    const composer = new MockPromptComposer(["2", "1", choice]);
+    await showModelMenu(composer, agent, createMockMenuUi(output), configPath);
+    expect(composer.prompts.at(-1)).toContain("Transfer transcript");
+    if (!choice) {
+      expect(agent.switchProvider).not.toHaveBeenCalled();
+      expect(agent.setPreparedProvidersConfig).not.toHaveBeenCalled();
+    } else if (choice === "2") {
+      expect(agent.switchProvider).toHaveBeenCalledWith("api", "api-model", {
+        transferTranscript: true,
+      });
+    } else
+      expect(agent.switchProvider).toHaveBeenCalledWith("api", "api-model");
+    expect(loadProvidersConfig(configPath)).toEqual(config);
+  },
+);
+
+it("reloads disk providers and persists only the chosen subscription model", async () => {
+  const sessionOnly = apiProvider("session-only");
+  const stale = structuredClone(config);
+  const agent = {
+    ...menuAgent(),
+    getAvailableProvidersConfig: () => ({
+      ...stale,
+      providers: [...stale.providers, sessionOnly],
+    }),
+  };
+  config.providers.push(apiProvider("added-on-disk"));
+  await saveConfig();
+  const composer = new MockPromptComposer(["1", "2"]);
+  await showModelMenu(composer, agent, createMockMenuUi(output), configPath);
+  expect(output.join("\n")).toContain("added-on-disk");
+  expect(output.join("\n")).toContain("session-only");
+  const saved = loadProvidersConfig(configPath);
+  expect(saved.providers.map((entry) => entry.name)).toEqual([
+    "added-on-disk",
+    "openai-personal",
+  ]);
+  expect(
+    saved.providers.find((entry) => entry.name === "openai-personal")?.models,
+  ).toHaveLength(2);
+});
+
+it("preserves providers added while a model menu is open", async () => {
+  const agent = menuAgent();
+  const composer = new MockPromptComposer(["1", "2"]);
+  const original = composer.compose.bind(composer);
+  composer.compose = async (request) => {
+    if (request.promptText.includes("Enter 1, 2, 3")) {
+      config.providers.push(apiProvider("concurrent-addition"));
+      await saveConfig();
+    }
+    return original(request);
+  };
+  await showModelMenu(composer, agent, createMockMenuUi(output), configPath);
+  expect(
+    loadProvidersConfig(configPath).providers.some(
+      (entry) => entry.name === "concurrent-addition",
+    ),
+  ).toBe(true);
+});
+
+it("repeats API setup for an older entry without auth", async () => {
+  config = {
+    default: "openai-api",
+    providers: [
+      {
+        ...apiProvider("openai-api"),
+        type: "openai",
+        apiKey: "existing-api-key",
+      },
+    ],
+  };
+  await saveConfig();
+  const { result } = await setup(["1", "updated-api", "200000", "2"]);
+  expect(result?.persistent).toBe(true);
+  expect(loadProvidersConfig(configPath).providers[0].defaultModel).toBe(
+    "updated-api",
+  );
+  expect(loadProvidersConfig(configPath).providers[0]).toMatchObject({
+    apiKey: "existing-api-key",
+  });
+});
+
+it.each(["", "1", "2"])(
+  "account setup confirms a different registration before applying or saving (%s)",
+  async (choice) => {
+    const agent = {
+      ...menuAgent(),
+      getActiveAccessBinding: () => ({ accountId: "other-account" }),
+    };
+    const composer = new MockPromptComposer([
+      "setup",
+      "2",
+      "1",
+      "1",
+      "2",
+      choice,
+    ]);
+    await showAccountMenu(
+      composer,
+      agent,
+      createMockMenuUi(output),
+      configPath,
+    );
+    expect(composer.prompts.at(-1)).toContain("Transfer transcript");
+    if (!choice) {
+      expect(agent.switchProvider).not.toHaveBeenCalled();
+      expect(loadProvidersConfig(configPath)).toEqual(config);
+    } else {
+      expect(agent.switchProvider).toHaveBeenCalledWith(
+        "openai-personal",
+        catalogKey,
+        { transferTranscript: choice === "2" },
+      );
+    }
+  },
+);
