@@ -34,24 +34,18 @@ The optional same-host migration command is `propio auth import-poc openai --acc
 
 ## Local implementation testing
 
-Use Node 20+ with npm and native addon installation support. From the meta-repo:
+Use Node 20+ with npm and native addon installation support. The agent uses the published `@propio-ai/providers@0.6.0` package; no local provider link is required. From the meta-repo:
 
 ```sh
-cd specs/openai-subscription/repos/propio-providers
-npm ci
-npm run build
-cd ../propio-agent
-npm ci
-cd ../../../..
-sh .claude/skills/link-local-packages/scripts/link-local-packages.sh project-repositories.yaml link --spec openai-subscription
 cd specs/openai-subscription/repos/propio-agent
+npm ci
 npm run build
 node dist/index.js auth login openai --account personal
 node dist/index.js setup openai
 node dist/index.js
 ```
 
-Rerun the link helper after npm install/ci. The current dependency version is intentionally unchanged until provider publication. For local sandbox builds, pack the provider into a `.tmp-packages` directory inside the agent checkout, then build with `--build-arg PROPIO_LOCAL_PROVIDERS_TARBALL=.tmp-packages/<provider-tarball>.tgz`. For example, from the agent worktree:
+When changing the provider and agent together, build the provider worktree and use the meta-repo's link-local-packages helper with `--spec openai-subscription`. Rerun the helper after npm install/ci if you need the local checkout. For those local sandbox builds, pack the provider into a `.tmp-packages` directory inside the agent checkout, then build with `--build-arg PROPIO_LOCAL_PROVIDERS_TARBALL=.tmp-packages/<provider-tarball>.tgz`. For example, from the agent worktree:
 
 ```sh
 mkdir -p .tmp-packages
@@ -60,7 +54,7 @@ docker compose -f docker-compose.yml build --build-arg PROPIO_LOCAL_PROVIDERS_TA
 ./bin/propio-sandbox
 ```
 
-This builds the local sandbox image used by the wrapper; it may replace your previous local image with the same compose service tag. Normal release builds require the future compatible published provider.
+This builds the local sandbox image used by the wrapper; it may replace your previous local image with the same compose service tag. Normal builds use the published provider and need no local tarball override.
 
 Sandbox integration is a macOS transport preview, exercised with Colima and dummy access tokens. The host wrapper keeps refresh/ID tokens outside mounts, renews through a scoped broker and gives a filtered configuration view to the container. Choose the intended subscription as the saved default before starting the sandbox. Manage accounts on the host and restart to change scope. Native Linux/Windows subscription sandbox startup is blocked; Docker Desktop and real expiry/long-session acceptance are pending. API sandbox remains available.
 
