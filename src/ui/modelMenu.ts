@@ -380,7 +380,11 @@ function latestMenuConfig(
   return {
     ...saved,
     providers: [
-      ...saved.providers,
+      // Session settings remain authoritative; persistence separately reloads disk.
+      ...saved.providers.map(
+        (disk) =>
+          session?.providers.find((entry) => entry.name === disk.name) ?? disk,
+      ),
       ...(session?.providers.filter(
         (entry) => !saved.providers.some((disk) => disk.name === entry.name),
       ) ?? []),
@@ -478,7 +482,7 @@ function persistSubscriptionSelection(
       subscriptionAccountId(saved) !== subscriptionAccountId(selected)
     )
       throw new Error(
-        "Saved account binding changed. Reopen /model before saving.",
+        "Saved account binding changed. Restart to load the saved account before saving.",
       );
     const chosenModel = selected.models.find((entry) => entry.key === model)!;
     const merged = {

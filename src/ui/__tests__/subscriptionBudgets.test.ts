@@ -264,6 +264,84 @@ it("reloads disk providers and persists only the chosen subscription model", asy
   ).toHaveLength(2);
 });
 
+it.each(["1", "2"])(
+  "retains an account setup session budget in later model menus (apply %s)",
+  async (applyMode) => {
+    let session = structuredClone(config);
+    const agent = {
+      ...menuAgent(),
+      getAvailableProvidersConfig: () => session,
+    };
+    agent.setPreparedProvidersConfig.mockImplementation(
+      (prepared: ProvidersConfig) => {
+        session = prepared;
+      },
+    );
+    await showAccountMenu(
+      new MockPromptComposer(["setup", "2", "1", "1", "3", "300000", "1"]),
+      agent,
+      createMockMenuUi(output),
+      configPath,
+    );
+    expect(session.providers[0].models[0].contextWindowTokens).toBe(300000);
+    expect(loadProvidersConfig(configPath)).toEqual(config);
+
+    // A disk addition must remain visible without replacing this session's budget.
+    config.providers.push(apiProvider("added-on-disk"));
+    await saveConfig();
+    await showModelMenu(
+      new MockPromptComposer(["1", applyMode]),
+      agent,
+      createMockMenuUi(output),
+      configPath,
+    );
+    expect(output.join("\n")).toContain("added-on-disk");
+    expect(
+      session.providers[0].models.find((model) => model.key === catalogKey)
+        ?.contextWindowTokens,
+    ).toBe(300000);
+    expect(agent.switchProvider).toHaveBeenLastCalledWith(
+      "openai-personal",
+      catalogKey,
+    );
+    const saved = loadProvidersConfig(configPath);
+    if (applyMode === "1") expect(saved).toEqual(config);
+    else {
+      expect(
+        saved.providers
+          .find((entry) => entry.name === "openai-personal")
+          ?.models.find((model) => model.key === catalogKey)
+          ?.contextWindowTokens,
+      ).toBe(300000);
+      expect(
+        saved.providers.find((entry) => entry.name === "added-on-disk"),
+      ).toEqual(apiProvider("added-on-disk"));
+    }
+  },
+);
+
+it("retains the session account when its disk binding changes and refuses to overwrite it", async () => {
+  const session = structuredClone(config);
+  const agent = {
+    ...menuAgent(),
+    getAvailableProvidersConfig: () => session,
+  };
+  if (config.providers[0].type === "openai")
+    config.providers[0].auth = { mode: "chatgpt", accountId: randomUUID() };
+  await saveConfig();
+  await showModelMenu(
+    new MockPromptComposer(["1", "2"]),
+    agent,
+    createMockMenuUi(output),
+    configPath,
+  );
+  expect(
+    agent.setPreparedProvidersConfig.mock.calls[0][0].providers[0].auth,
+  ).toEqual({ mode: "chatgpt", accountId });
+  expect(output.join("\n")).toContain("Saved account binding changed");
+  expect(loadProvidersConfig(configPath)).toEqual(config);
+});
+
 it("preserves providers added while a model menu is open", async () => {
   const agent = menuAgent();
   const composer = new MockPromptComposer(["1", "2"]);

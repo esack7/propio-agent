@@ -6,6 +6,27 @@ import { loadProvidersConfig, resolveProvider } from "@propio-ai/providers";
 import { authForAccount, subscriptionAccountId } from "./runtime.js";
 import { startCredentialBroker } from "./broker.js";
 
+class SandboxConfigurationError extends Error {}
+
+function loadSandboxConfig(path: string) {
+  try {
+    return loadProvidersConfig(path);
+  } catch (error) {
+    // Only expose the default name, never raw JSON or other validation details.
+    const missingDefault =
+      error instanceof Error
+        ? /^Default provider "(.*)" not found in providers list\./s.exec(
+            error.message,
+          )?.[1]
+        : undefined;
+    throw new SandboxConfigurationError(
+      missingDefault !== undefined
+        ? `Default provider ${JSON.stringify(missingDefault)} is missing from ~/.propio/providers.json. Correct its "default" field or add that provider.`
+        : "Invalid host ~/.propio/providers.json. Check its JSON and provider settings.",
+    );
+  }
+}
+
 /** A config view excludes both renewable production secrets and legacy POC tokens. */
 export async function createSandboxConfigView(source: string): Promise<string> {
   const view = await mkdtemp(join(homedir(), ".propio-sandbox-config-"));
@@ -46,7 +67,7 @@ async function run(): Promise<void> {
   };
   try {
     const path = join(view, "providers.json");
-    const config = existsSync(path) ? loadProvidersConfig(path) : undefined;
+    const config = existsSync(path) ? loadSandboxConfig(path) : undefined;
     const accountId = config?.default
       ? subscriptionAccountId(resolveProvider(config))
       : undefined;
@@ -100,9 +121,13 @@ export async function waitForSandboxOwner(): Promise<void> {
 }
 
 if (/\/sandboxHost\.(?:js|ts)$/.test(process.argv[1] ?? ""))
-  run().catch(() => {
+  run().catch((error: unknown) => {
+    const message =
+      error instanceof SandboxConfigurationError
+        ? error.message
+        : "Check host sign-in and configuration.";
     process.stderr.write(
-      "Sandbox credential startup failed. Check host sign-in and configuration; no credentials were mounted.\n",
+      `Sandbox credential startup failed. ${message} No credentials were mounted.\n`,
     );
     process.exitCode = 1;
   });
