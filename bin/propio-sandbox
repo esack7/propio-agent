@@ -78,6 +78,54 @@ ensure_sandbox_image_current() {
 
 ensure_sandbox_image_current
 
+# An ancestor workspace (for example the home directory) would defeat the
+# filtered config mount by exposing renewable credentials through /workspace.
+if ! node - "$(pwd -P)" "$HOME/.propio" "$HOME/.local/share/propio/openai-secrets" <<'NODE'
+const { relative, isAbsolute } = require('node:path');
+const [workspace, ...protectedPaths] = process.argv.slice(2);
+if (protectedPaths.some((path) => {
+  const part = relative(workspace, path);
+  return part === '' || (!part.startsWith('..') && !isAbsolute(part));
+})) {
+  console.error('Error: choose a project directory that does not contain Propio credential directories.');
+  process.exit(1);
+}
+NODE
+then
+  exit 1
+fi
+
+# The host owns renewal. Containers receive a scoped capability and a filtered,
+# read-only configuration view; legacy POC and production auth files are excluded.
+CHANNEL_DIR="$(mktemp -d "$HOME/.propio-sandbox-channel.XXXXXX")"
+HOST_BROKER_PID=""
+cleanup_subscription_channel() {
+  if [ -n "$HOST_BROKER_PID" ]; then
+    kill "$HOST_BROKER_PID" 2>/dev/null || true
+    wait "$HOST_BROKER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$CHANNEL_DIR"
+}
+trap cleanup_subscription_channel EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+node "$PROPIO_DIR/dist/auth/openai/sandboxHost.js" "$CHANNEL_DIR" &
+HOST_BROKER_PID=$!
+for ((attempt=0; attempt<400; attempt++)); do
+  if [ -f "$CHANNEL_DIR/ready" ]; then break; fi
+  if ! kill -0 "$HOST_BROKER_PID" 2>/dev/null; then exit 1; fi
+  sleep 0.05
+done
+if [ ! -f "$CHANNEL_DIR/ready" ]; then
+  echo "Error: host credential startup timed out." >&2
+  exit 1
+fi
+CONFIG_VIEW="$(cat "$CHANNEL_DIR/config-path")"
+BROKER_FLAGS=()
+if [ -f "$CHANNEL_DIR/broker.json" ]; then
+  BROKER_FLAGS=(-v "$CHANNEL_DIR:/run/propio-subscription:ro" -e PROPIO_SUBSCRIPTION_BROKER_FILE=/run/propio-subscription/broker.json)
+fi
+
 # Build environment variable flags for provider credentials and terminal settings
 # Note: OLLAMA_HOST is intentionally excluded - sandbox mode uses smart host resolution
 ENV_FLAGS=()
@@ -90,6 +138,7 @@ done
 # Run agent in Docker container with dynamic volume mounts
 compose run --rm \
   "${ENV_FLAGS[@]}" \
+  "${BROKER_FLAGS[@]}" \
   -v "$(pwd):/workspace" \
-  -v "$HOME/.propio:/app/.propio:ro" \
+  -v "$CONFIG_VIEW:/app/.propio:ro" \
   agent node /app/dist/index.js "$@"

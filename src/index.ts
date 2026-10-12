@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
+import { runOpenAiAuthCommand, runOpenAiSetup } from "./auth/openai/cli.js";
+import { showAccountMenu } from "./ui/accountMenu.js";
+import type { ProvidersConfig } from "@propio-ai/providers";
+import {
+  prepareProviderRuntime,
+  preflightSubscription,
+  accessLabel,
+} from "./auth/openai/runtime.js";
+let setupProvidersConfig: ProvidersConfig | undefined;
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -100,6 +110,11 @@ import { WorkspaceTraceCapture } from "./trace/workspace.js";
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
 const HELP_TEXT = `Usage: propio [options]
+       propio auth <login|accounts|status|enable-plan|logout|import-poc> openai [--account <label>]
+       propio setup openai
+
+OpenAI setup explicitly chooses API billing or Continue with ChatGPT.
+/account manages registrations; /model selects account, access and model.
 
 Options:
   --sandbox           Run inside the Docker sandbox wrapper
@@ -595,7 +610,20 @@ async function handleModelSubmission(
   const { agent, composer, configPath, ui } = context;
 
   if (trimmedInput === "/model") {
-    await showModelMenu(composer, agent, ui, configPath);
+    await showModelMenu(
+      composer,
+      {
+        getActiveModelSelection: () => agent.getActiveModelSelection(),
+        getActiveAccessBinding: () => agent.getActiveAccessBinding(),
+        getAvailableProvidersConfig: () => agent.getAvailableProvidersConfig(),
+        setPreparedProvidersConfig: (config, runtime) =>
+          agent.setPreparedProvidersConfig(config, runtime),
+        switchProvider: (name, model, options) =>
+          agent.switchProvider(name, model, options),
+      },
+      ui,
+      configPath,
+    );
     return context.shouldExit() ? 130 : null;
   }
 
@@ -871,6 +899,16 @@ export async function handleInteractiveSubmission(
     handleToolsSubmission,
     handleMcpSubmission,
     handleModelSubmission,
+    async (text, context) => {
+      if (text !== "/account") return undefined;
+      await showAccountMenu(
+        context.composer,
+        context.agent,
+        context.ui,
+        context.configPath,
+      );
+      return null;
+    },
   ];
 
   for (const handler of handlers) {
@@ -1188,15 +1226,25 @@ async function createInitializedAgent(
   const [agentModule, providersConfig, mcpConfig, agentsMdContent] =
     await Promise.all([
       import("./agent.js"),
-      loadProvidersConfigAsync(configPath),
+      setupProvidersConfig
+        ? Promise.resolve(setupProvidersConfig)
+        : loadProvidersConfigAsync(configPath),
       loadMcpConfigAsync(mcpConfigPath),
       discoverAgentsMdFilesAsync().then((agentsMdFiles) =>
         loadAgentsMdContentAsync(agentsMdFiles),
       ),
     ]);
 
+  const selected = providersConfig.providers.find(
+    (entry) => entry.name === providersConfig.default,
+  )!;
+  const providerRuntimeOptions = await prepareProviderRuntime(providersConfig);
+  await preflightSubscription(selected, selected.defaultModel);
+  if (selected.type === "openai" && selected.auth?.mode === "chatgpt")
+    process.stderr.write(`${await accessLabel(selected)}\n`);
   const agent = new agentModule.Agent({
     providersConfig,
+    providerRuntimeOptions,
     mcpConfig,
     mcpConfigPath,
     agentsMdContent,
@@ -1351,8 +1399,33 @@ async function runConfiguredSession(options: {
   }
 }
 
+async function prepareStartupCommand(
+  args: string[],
+): Promise<{ args: string[]; exit?: number }> {
+  if (args[0] === "auth")
+    return { args, exit: await runOpenAiAuthCommand(args.slice(1)) };
+  if (args[0] !== "setup") return { args };
+  if (args[1] !== "openai" || args.length !== 2)
+    throw new Error("Usage: propio setup openai");
+  const setup = await runOpenAiSetup();
+  if (!setup) return { args, exit: 0 };
+  setupProvidersConfig = setup.config;
+  return { args: [] };
+}
+async function ensureStartupConfiguration(
+  interactive: boolean,
+): Promise<boolean> {
+  if (setupProvidersConfig || existsSync(getConfigPath()) || !interactive)
+    return true;
+  const setup = await runOpenAiSetup();
+  if (!setup) return false;
+  setupProvidersConfig = setup.config;
+  return true;
+}
 async function main(): Promise<number> {
-  const rawArgs = process.argv.slice(2);
+  const startup = await prepareStartupCommand(process.argv.slice(2));
+  if (startup.exit !== undefined) return startup.exit;
+  const rawArgs = startup.args;
   const parsedArgs = parseCliArgs(rawArgs);
 
   if (parsedArgs.flags.version) {
@@ -1372,6 +1445,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
+  if (!(await ensureStartupConfiguration(runtime.interactive))) return 0;
   setColorEnabled(runtime.colorEnabled);
 
   const { TerminalUi } = await import("./ui/terminal.js");

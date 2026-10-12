@@ -30,6 +30,8 @@ import type { AgentMode } from "../modes/types.js";
 // ---------------------------------------------------------------------------
 
 export interface SessionMetadata {
+  readonly accessMode?: "chatgpt" | "api-key";
+  readonly accountId?: string;
   readonly providerName: string;
   readonly modelKey: string;
   readonly systemPrompt: string;
@@ -279,6 +281,13 @@ function validateMetadata(metadata: unknown): void {
   const meta = metadata as Record<string, unknown>;
   assertString(meta.providerName, "metadata.providerName");
   assertString(meta.modelKey, "metadata.modelKey");
+  if (meta.accountId !== undefined)
+    assertString(meta.accountId, "metadata.accountId");
+  if (
+    meta.accessMode !== undefined &&
+    !["chatgpt", "api-key"].includes(String(meta.accessMode))
+  )
+    throw new SessionParseError("Invalid session access mode.");
   assertString(meta.systemPrompt, "metadata.systemPrompt");
   assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
   assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");

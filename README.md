@@ -1306,3 +1306,9 @@ unbuilt checkout. Newer Fallow releases can report additional inherited findings
 upgrading the auditor is a separate maintenance change. The `src/agent-core`
 directory matches its export subpath so the pinned auditor resolves the source
 without generated build files.
+
+## ChatGPT plan access (local preview)
+
+Use `propio setup openai` to explicitly choose API billing or Continue with ChatGPT, select an account/model and prompt budget, and choose session-only or persistent use. `propio auth login openai --account personal` signs in without changing defaults; `/model` and `/account` provide normal selection and account management. Existing API configurations retain their behavior. Plan access and background summaries consume the selected account's allowance or permitted credits; [Manage usage](https://chatgpt.com/settings/usage).
+
+See [OpenAI setup, storage, recovery, and local testing](docs/openai-subscription.md). This implementation has automated coverage and a macOS/Colima broker transport check; production live acceptance and other platform gates remain pending. Windows credential operations and native Linux/Windows subscription sandbox startup are currently unsupported. No new package version has been published.
