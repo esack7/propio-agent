@@ -1,4 +1,6 @@
 const SENSITIVE_VALUE_PATTERNS: ReadonlyArray<RegExp> = [
+  /https:\/\/auth\.openai\.com\/api\/accounts\/authorize[^\s"'<>]*/gi,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
   /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
   /\bAIza[A-Za-z0-9_-]{12,}\b/g,

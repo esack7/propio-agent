@@ -25,6 +25,10 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
     commands: [
       { command: "/help", description: "show this help menu" },
       { command: "?", description: "alias for /help" },
+      {
+        command: "/account",
+        description: "manage ChatGPT registrations and setup",
+      },
       { command: "/clear", description: "clear session context" },
       { command: "/skill <name>", description: "run an inline skill now" },
       { command: "/skills", description: "list loaded skills" },

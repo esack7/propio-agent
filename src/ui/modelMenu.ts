@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { chooseTranscriptTransfer } from "./subscriptionSwitch.js";
+import { choosePromptBudget } from "../auth/openai/setup.js";
 import type { Agent } from "../agent.js";
 import {
   type Model,
@@ -5,10 +8,17 @@ import {
   type ProvidersConfig,
   getDefaultProviderModelSelection,
   updateDefaultProviderModelSelectionInFile,
+  writeProvidersConfig,
 } from "@propio-ai/providers";
 import { loadProvidersConfig } from "../config/providersConfig.js";
 import type { PromptComposer } from "./promptComposer.js";
 import type { TerminalUi } from "./terminal.js";
+import {
+  discoverAccountModels,
+  prepareProviderRuntime,
+  subscriptionAccountId,
+  accessLabel,
+} from "../auth/openai/runtime.js";
 
 function formatSelection(providerName: string, modelKey: string): string {
   return `${providerName}/${modelKey}`;
@@ -60,7 +70,7 @@ function displayProviders(
   for (const [index, provider] of providers.entries()) {
     const modelCount = `${provider.models.length} model${provider.models.length === 1 ? "" : "s"}`;
     ui.command(
-      `  ${index + 1}. ${provider.name.padEnd(labelWidth)} - ${modelCount}`,
+      `  ${index + 1}. ${provider.name.padEnd(labelWidth)} - ${modelCount}${provider.type === "openai" ? (provider.auth?.mode === "chatgpt" ? " · ChatGPT plan" : " · API") : ""}`,
     );
   }
 }
@@ -93,14 +103,16 @@ function loadConfigForMenu(
 function displayCurrentSelections(
   ui: ModelMenuUi,
   currentSelection: { providerName: string; modelKey: string },
-  persistedSelection: { providerName: string; modelKey: string },
+  persistedSelection: { providerName: string; modelKey: string } | undefined,
 ): void {
   ui.section("Models");
   ui.info(
     `Current session: ${formatSelection(currentSelection.providerName, currentSelection.modelKey)}`,
   );
   ui.info(
-    `Default for future sessions: ${formatSelection(persistedSelection.providerName, persistedSelection.modelKey)}`,
+    persistedSelection
+      ? `Default for future sessions: ${formatSelection(persistedSelection.providerName, persistedSelection.modelKey)}`
+      : "No saved default is available; this session's selection has not been persisted.",
   );
 }
 
@@ -169,30 +181,33 @@ async function selectApplyMode(
   ui: Pick<TerminalUi, "command" | "error" | "info" | "prompt" | "section">,
   providerName: string,
   modelKey: string,
-): Promise<"session" | "persistent" | null> {
+  allowBudgetChange = false,
+): Promise<"session" | "persistent" | "budget" | null> {
   while (true) {
     ui.section("Apply Selection");
     ui.info(`Selected: ${formatSelection(providerName, modelKey)}`);
     ui.command("  1. This session only");
     ui.command("  2. Make default for future sessions too");
+    if (allowBudgetChange) ui.command("  3. Adjust prompt budget");
 
     const selection = await promptForNumber(
       composer,
-      ui.prompt("Enter 1, 2, or blank to cancel: "),
+      ui.prompt(
+        allowBudgetChange
+          ? "Enter 1, 2, 3, or blank to cancel: "
+          : "Enter 1, 2, or blank to cancel: ",
+      ),
     );
 
-    if (selection === "closed" || selection === null) {
-      return null;
-    }
-
-    if (selection === 1) {
-      return "session";
-    }
-    if (selection === 2) {
-      return "persistent";
-    }
-
-    ui.error("Invalid input. Please enter 1 or 2.\n");
+    if (selection === "closed" || selection === null) return null;
+    const modes = allowBudgetChange
+      ? (["session", "persistent", "budget"] as const)
+      : (["session", "persistent"] as const);
+    const mode = modes[selection - 1];
+    if (mode) return mode;
+    ui.error(
+      `Invalid input. Please enter ${allowBudgetChange ? "1, 2, or 3" : "1 or 2"}.\n`,
+    );
   }
 }
 
@@ -206,22 +221,32 @@ async function selectModelMenuChoice(
     return null;
   }
 
-  const model = await selectModel(composer, ui, provider);
-  if (!model) {
-    return null;
-  }
+  const eligibleProvider = await loadEligibleProvider(provider, ui);
+  if (!eligibleProvider) return null;
+  const model = await selectModel(composer, ui, eligibleProvider);
+  if (!model) return null;
+  if (!(await selectNewModelBudget(composer, ui, provider, model))) return null;
 
-  const applyMode = await selectApplyMode(
-    composer,
-    ui,
-    provider.name,
-    model.key,
-  );
+  let applyMode;
+  do {
+    applyMode = await selectApplyMode(
+      composer,
+      ui,
+      provider.name,
+      model.key,
+      Boolean(subscriptionAccountId(provider)),
+    );
+    if (
+      applyMode === "budget" &&
+      !(await selectNewModelBudget(composer, ui, provider, model, true))
+    )
+      return null;
+  } while (applyMode === "budget");
   if (!applyMode) {
     return null;
   }
 
-  return { provider, model, applyMode };
+  return { provider: eligibleProvider, model, applyMode };
 }
 
 function switchSessionModel(
@@ -266,11 +291,19 @@ function persistModelSelection(
 
 export async function showModelMenu(
   composer: PromptComposer,
-  agent: Pick<Agent, "getActiveModelSelection" | "switchProvider">,
+  agent: Pick<Agent, "getActiveModelSelection" | "switchProvider"> &
+    Partial<
+      Pick<
+        Agent,
+        | "getActiveAccessBinding"
+        | "setPreparedProvidersConfig"
+        | "getAvailableProvidersConfig"
+      >
+    >,
   ui: ModelMenuUi,
   configPath: string,
 ): Promise<void> {
-  const config = loadConfigForMenu(ui, configPath);
+  const config = latestMenuConfig(agent, ui, configPath);
   if (!config) {
     return;
   }
@@ -278,7 +311,7 @@ export async function showModelMenu(
   displayCurrentSelections(
     ui,
     agent.getActiveModelSelection(),
-    getDefaultProviderModelSelection(config),
+    savedDefault(configPath),
   );
 
   const selection = await selectModelMenuChoice(composer, ui, config.providers);
@@ -288,12 +321,36 @@ export async function showModelMenu(
   }
 
   const { provider, model, applyMode } = selection;
-  if (!switchSessionModel(agent, ui, provider.name, model.key)) {
+  const prepared = await prepareSubscriptionSwitch(
+    composer,
+    agent,
+    ui,
+    config,
+    provider,
+    model,
+  );
+  if (!prepared) return;
+  if (
+    !applySessionSwitch(
+      agent,
+      ui,
+      provider.name,
+      model.key,
+      prepared.transferTranscript,
+    )
+  )
     return;
-  }
 
   if (applyMode === "persistent") {
-    persistModelSelection(ui, configPath, provider.name, model.key);
+    if (subscriptionAccountId(provider))
+      persistSubscriptionSelection(
+        ui,
+        configPath,
+        prepared.config,
+        provider.name,
+        model.key,
+      );
+    else persistModelSelection(ui, configPath, provider.name, model.key);
   } else {
     ui.success(
       `Switched the current session to ${formatSelection(provider.name, model.key)}.`,
@@ -301,4 +358,210 @@ export async function showModelMenu(
   }
 
   ui.command("");
+}
+
+function savedDefault(configPath: string) {
+  try {
+    return getDefaultProviderModelSelection(loadProvidersConfig(configPath));
+  } catch {
+    return undefined;
+  }
+}
+
+function latestMenuConfig(
+  agent: ModelMenuAgent,
+  ui: ModelMenuUi,
+  path: string,
+): ProvidersConfig | null {
+  const session = agent.getAvailableProvidersConfig?.();
+  const saved = existsSync(path) ? loadConfigForMenu(ui, path) : undefined;
+  if (saved === null) return null;
+  if (!saved) return session ?? loadConfigForMenu(ui, path);
+  return {
+    ...saved,
+    providers: [
+      // Session settings remain authoritative; persistence separately reloads disk.
+      ...saved.providers.map(
+        (disk) =>
+          session?.providers.find((entry) => entry.name === disk.name) ?? disk,
+      ),
+      ...(session?.providers.filter(
+        (entry) => !saved.providers.some((disk) => disk.name === entry.name),
+      ) ?? []),
+    ],
+  };
+}
+
+type ModelMenuAgent = Parameters<typeof showModelMenu>[1];
+async function prepareSubscriptionSwitch(
+  composer: PromptComposer,
+  agent: ModelMenuAgent,
+  ui: ModelMenuUi,
+  config: ProvidersConfig,
+  provider: ProviderConfig,
+  model: Model,
+): Promise<{ config: ProvidersConfig; transferTranscript: boolean } | null> {
+  const id = subscriptionAccountId(provider);
+  try {
+    if (id) ui.info(await accessLabel(provider));
+    const transfer = await chooseTranscriptTransfer(
+      async (prompt) => {
+        const result = await composer.compose({
+          mode: "menu",
+          promptText: ui.prompt(prompt),
+        });
+        return result.status === "closed"
+          ? null
+          : result.submission.displayText.trim();
+      },
+      (message) => ui.info(message),
+      agent.getActiveAccessBinding?.().accountId,
+      provider,
+    );
+    if (transfer === null) return null;
+    const resolved = {
+      ...config,
+      providers: config.providers.map((entry) =>
+        entry.name === provider.name
+          ? {
+              ...provider,
+              models: [
+                ...(config.providers
+                  .find((configured) => configured.name === provider.name)
+                  ?.models.filter((entry) => entry.key !== model.key) ?? []),
+                model,
+              ],
+              defaultModel: model.key,
+            }
+          : entry,
+      ),
+    };
+    agent.setPreparedProvidersConfig?.(
+      resolved,
+      await prepareProviderRuntime(resolved),
+    );
+    return { config: resolved, transferTranscript: transfer };
+  } catch (error) {
+    ui.error(
+      error instanceof Error ? error.message : "ChatGPT selection failed.",
+    );
+    return null;
+  }
+}
+function applySessionSwitch(
+  agent: ModelMenuAgent,
+  ui: ModelMenuUi,
+  providerName: string,
+  modelKey: string,
+  transfer: boolean,
+): boolean {
+  if (!transfer) return switchSessionModel(agent, ui, providerName, modelKey);
+  try {
+    agent.switchProvider(providerName, modelKey, { transferTranscript: true });
+    return true;
+  } catch (error) {
+    ui.error(error instanceof Error ? error.message : "Account switch failed.");
+    return false;
+  }
+}
+function persistSubscriptionSelection(
+  ui: ModelMenuUi,
+  path: string,
+  config: ProvidersConfig,
+  name: string,
+  model: string,
+): void {
+  try {
+    const selected = config.providers.find((entry) => entry.name === name)!;
+    const latest = existsSync(path)
+      ? loadProvidersConfig(path)
+      : { providers: [] };
+    const saved = latest.providers.find((entry) => entry.name === name);
+    if (
+      saved &&
+      subscriptionAccountId(saved) !== subscriptionAccountId(selected)
+    )
+      throw new Error(
+        "Saved account binding changed. Restart to load the saved account before saving.",
+      );
+    const chosenModel = selected.models.find((entry) => entry.key === model)!;
+    const merged = {
+      ...(saved ?? selected),
+      defaultModel: model,
+      models: [
+        ...(saved?.models.filter((entry) => entry.key !== model) ?? []),
+        chosenModel,
+      ],
+    };
+    writeProvidersConfig(path, {
+      ...latest,
+      default: name,
+      providers: [
+        ...latest.providers.filter((entry) => entry.name !== name),
+        merged,
+      ],
+    });
+    ui.success(
+      `Updated the default to ${formatSelection(name, model)} and switched the current session.`,
+    );
+  } catch (error) {
+    ui.error(
+      `Switched the session, but failed to update defaults: ${error instanceof Error ? error.message : "Configuration write failed."}`,
+    );
+  }
+}
+
+async function loadEligibleProvider(
+  provider: ProviderConfig,
+  ui: ModelMenuUi,
+): Promise<ProviderConfig | null> {
+  const id = subscriptionAccountId(provider);
+  if (!id) return provider;
+  try {
+    const catalog = await discoverAccountModels(id, undefined, true);
+    if (!catalog.length)
+      throw new Error("No eligible models are visible for this account.");
+    return {
+      ...provider,
+      models: catalog.map((entry) => ({
+        ...entry,
+        contextWindowTokens:
+          provider.models.find((configured) => configured.key === entry.key)
+            ?.contextWindowTokens ?? 128000,
+      })),
+    };
+  } catch (error) {
+    ui.error(error instanceof Error ? error.message : "Catalog unavailable.");
+    return null;
+  }
+}
+async function selectNewModelBudget(
+  composer: PromptComposer,
+  ui: ModelMenuUi,
+  provider: ProviderConfig,
+  model: Model,
+  customize = false,
+): Promise<boolean> {
+  if (!subscriptionAccountId(provider)) return true;
+  const saved = provider.models.find((entry) => entry.key === model.key);
+  const budget = await choosePromptBudget(
+    {
+      info: (message) => ui.info(message),
+      ask: async (prompt) => {
+        const result = await composer.compose({
+          mode: "menu",
+          promptText: ui.prompt(prompt),
+        });
+        return result.status === "closed"
+          ? null
+          : result.submission.displayText.trim();
+      },
+    },
+    model.key,
+    customize ? model.contextWindowTokens : saved?.contextWindowTokens,
+    customize,
+  );
+  if (!budget) return false;
+  model.contextWindowTokens = budget.contextWindowTokens;
+  return true;
 }

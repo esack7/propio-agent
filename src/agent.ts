@@ -1,3 +1,6 @@
+import type { ProviderRuntimeOptions } from "@propio-ai/providers";
+import { subscriptionAccountId } from "./auth/openai/runtime.js";
+import { stripProviderContinuation } from "./auth/openai/continuation.js";
 import {
   type LLMProvider,
   type ChatMessage,
@@ -473,10 +476,12 @@ export class Agent {
   private lastTurnReasoningSummary: TurnReasoningSummary | null = null;
   private lastPromptPlanSnapshot: PromptPlanSnapshot | null = null;
   private summaryManager: SummaryManager;
+  private providerRuntimeOptions?: ProviderRuntimeOptions;
   private summaryPolicy: SummaryPolicy;
   private summaryRefreshRunning = false;
   private summaryDirty = false;
   private summaryGeneration = 0;
+  private summaryAbortController?: AbortController;
   private skillRegistry?: SkillRegistry;
   private skillDiagnostics: SkillLoadDiagnostic[] = [];
   private attachmentResolver?: AttachmentResolver;
@@ -515,6 +520,7 @@ export class Agent {
       providersConfig: ProvidersConfig | string;
       providerName?: string;
       modelKey?: string;
+      providerRuntimeOptions?: ProviderRuntimeOptions;
       mcpConfig?: McpConfigFile;
       mcpConfigPath?: string;
       systemPrompt?: string;
@@ -539,6 +545,7 @@ export class Agent {
       );
     }
 
+    this.providerRuntimeOptions = options.providerRuntimeOptions;
     this.baseRules = options.systemPrompt ?? DEFAULT_CORE_IDENTITY;
     this.agentsMdContent = options.agentsMdContent ?? "";
     this.systemPromptRegistry = new SystemPromptSectionRegistry();
@@ -641,6 +648,7 @@ export class Agent {
           maxRetries: this.runtimeConfig.maxRetries,
           consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
         },
+        this.providerRuntimeOptions,
       ),
     );
     this.model = resolvedModelKey;
@@ -765,7 +773,25 @@ export class Agent {
     };
   }
 
-  switchProvider(providerName: string, modelKey?: string): void {
+  setPreparedProvidersConfig(
+    config: ProvidersConfig,
+    runtimeOptions: ProviderRuntimeOptions,
+  ): void {
+    if (this.activeTurn)
+      throw new Error(
+        "Wait for the current turn before changing provider configuration.",
+      );
+    this.providersConfig = config;
+    this.providerRuntimeOptions = runtimeOptions;
+  }
+
+  switchProvider(
+    providerName: string,
+    modelKey?: string,
+    options?: { transferTranscript?: boolean },
+  ): void {
+    if (this.activeTurn)
+      throw new Error("Wait for the current turn before switching providers.");
     const resolvedProvider = resolveProvider(
       this.providersConfig,
       providerName,
@@ -781,9 +807,21 @@ export class Agent {
           maxRetries: this.runtimeConfig.maxRetries,
           consecutive529Limit: this.runtimeConfig.consecutive529FallbackLimit,
         },
+        this.providerRuntimeOptions,
       ),
     );
 
+    const previousAccount = subscriptionAccountId(this.resolvedProviderConfig);
+    const nextAccount = subscriptionAccountId(resolvedProvider);
+    this.summaryGeneration++;
+    this.summaryAbortController?.abort();
+    if (previousAccount !== nextAccount && (previousAccount || nextAccount)) {
+      if (options?.transferTranscript) {
+        this.contextManager.importState(
+          stripProviderContinuation(this.contextManager.getConversationState()),
+        );
+      } else this.clearContext();
+    }
     this.resolvedProviderConfig = resolvedProvider;
     this.provider = newProvider;
     this.model = resolvedModelKey;
@@ -1835,6 +1873,10 @@ export class Agent {
     this.summaryRefreshRunning = true;
     this.summaryDirty = false;
     const generation = this.summaryGeneration;
+    const controller = subscriptionAccountId(this.resolvedProviderConfig)
+      ? new AbortController()
+      : undefined;
+    this.summaryAbortController = controller;
     let summaryTrace: SummaryTraceContext | undefined;
 
     try {
@@ -1862,7 +1904,7 @@ export class Agent {
         eligibility.eligibleTurns,
         previousSummary,
         this.summaryPolicy,
-        undefined,
+        controller?.signal,
         this.buildSummaryGenerationHooks(
           reason,
           eligibility.eligibleTurns.length,
@@ -1894,16 +1936,28 @@ export class Agent {
         durationMs: Date.now() - startTime,
       });
     } catch (error) {
+      if (controller?.signal.aborted) {
+        this.recordDiscardedSummaryTrace(summaryTrace);
+        return;
+      }
       this.recordFailedSummaryTrace(summaryTrace, reason, error);
       this.contextManager.incrementCompactionFailures();
     } finally {
-      this.closeSummaryTrace(summaryTrace);
-      this.summaryRefreshRunning = false;
-
-      if (this.summaryDirty && this.summaryGeneration === generation) {
-        this.scheduleSummaryRefresh("turn_cadence");
-      }
+      this.finishSummaryRefresh(summaryTrace, generation, controller);
     }
+  }
+
+  private finishSummaryRefresh(
+    trace: SummaryTraceContext | undefined,
+    generation: number,
+    controller: AbortController | undefined,
+  ): void {
+    this.closeSummaryTrace(trace);
+    this.summaryRefreshRunning = false;
+    if (this.summaryAbortController === controller)
+      this.summaryAbortController = undefined;
+    if (this.summaryDirty && this.summaryGeneration === generation)
+      this.scheduleSummaryRefresh("turn_cadence");
   }
 
   /**
@@ -2152,6 +2206,7 @@ export class Agent {
   }
 
   private activeTurn = false;
+  private activeTurnController?: AbortController;
 
   // fallow-ignore-next-line complexity
   async streamChat(
@@ -2161,6 +2216,8 @@ export class Agent {
   ): Promise<string> {
     if (this.activeTurn) throw new Error("An agent turn is already running");
     this.activeTurn = true;
+    const controller = new AbortController();
+    this.activeTurnController = controller;
     this.lastTurnReasoningSummary = null;
     this.sessionsDir = null;
     this.turnScratchpadDir = undefined;
@@ -2172,6 +2229,11 @@ export class Agent {
       const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
+        abortSignal: subscriptionAccountId(this.resolvedProviderConfig)
+          ? options?.abortSignal
+            ? AbortSignal.any([options.abortSignal, controller.signal])
+            : controller.signal
+          : options?.abortSignal,
         onEvent: (event) => {
           if (event.type === "reasoning_summary")
             this.lastTurnReasoningSummary = {
@@ -2207,6 +2269,7 @@ export class Agent {
       if (this.activeTraceRun === traceRun) this.activeTraceRun = undefined;
       if (traceRun) this.lastTraceRunId = runId;
       this.activeTurn = false;
+      this.activeTurnController = undefined;
     }
   }
 
@@ -2444,6 +2507,23 @@ export class Agent {
   // fallow-ignore-next-line unused-class-member
   getRuntimeSessionId(): string {
     return this.sessionId;
+  }
+
+  getActiveAccessBinding(): { accountId?: string } {
+    return { accountId: subscriptionAccountId(this.resolvedProviderConfig) };
+  }
+
+  cancelSubscriptionRequests(accountId: string): void {
+    if (subscriptionAccountId(this.resolvedProviderConfig) !== accountId)
+      return;
+    this.summaryGeneration++;
+    this.summaryDirty = false;
+    this.activeTurnController?.abort();
+    this.summaryAbortController?.abort();
+  }
+
+  getAvailableProvidersConfig(): ProvidersConfig {
+    return this.providersConfig;
   }
 
   getActiveModelSelection(): ProviderModelSelection {
@@ -2738,6 +2818,12 @@ export class Agent {
     return {
       providerName: this.provider.name,
       modelKey: this.model,
+      ...(subscriptionAccountId(this.resolvedProviderConfig)
+        ? {
+            accessMode: "chatgpt" as const,
+            accountId: subscriptionAccountId(this.resolvedProviderConfig),
+          }
+        : {}),
       systemPrompt: this.baseRules,
       promptBudgetPolicy: DEFAULT_BUDGET_POLICY,
       summaryPolicy: this.summaryPolicy,
@@ -2854,8 +2940,19 @@ export class Agent {
    *
    * Throws SessionParseError on malformed or unsupported snapshots.
    */
+  private assertSessionAccount(accountId: string | undefined): void {
+    if (
+      accountId &&
+      accountId !== subscriptionAccountId(this.resolvedProviderConfig)
+    )
+      throw new Error(
+        "This session belongs to another ChatGPT registration. Select its configured account before resuming; no history was transferred.",
+      );
+  }
+
   importSession(json: string): void {
     const persisted = parseSession(json);
+    this.assertSessionAccount(persisted.metadata.accountId);
     const state = restoreConversationState(persisted);
     const previousSkillInvocationIds = this.getActiveSkillTraceSummaries().map(
       (skill) => skill.invocationId,
