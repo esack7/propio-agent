@@ -73,12 +73,9 @@ it.each(["missing-file", "api-default"])(
     const host = spawn(
       process.execPath,
       [
-        fileURLToPath(
-          new URL(
-            "../../../../dist/auth/openai/sandboxHost.js",
-            import.meta.url,
-          ),
-        ),
+        "--import",
+        "tsx",
+        fileURLToPath(new URL("../sandboxHost.ts", import.meta.url)),
         channel,
       ],
       {

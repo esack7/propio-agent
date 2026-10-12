@@ -99,7 +99,7 @@ export async function waitForSandboxOwner(): Promise<void> {
   });
 }
 
-if (process.argv[1]?.endsWith("/sandboxHost.js"))
+if (/\/sandboxHost\.(?:js|ts)$/.test(process.argv[1] ?? ""))
   run().catch(() => {
     process.stderr.write(
       "Sandbox credential startup failed. Check host sign-in and configuration; no credentials were mounted.\n",
