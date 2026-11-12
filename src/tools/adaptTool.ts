@@ -9,6 +9,8 @@ export function createExecutableTool(options: {
     args: Record<string, unknown>,
     context: ToolExecutionContext,
   ) => Promise<ToolExecutionResult>;
+  /** Replaces the registry's schema check; see ExecutableTool.validateArguments. */
+  validateArguments?: ExecutableTool["validateArguments"];
 }): ExecutableTool & Required<Pick<ExecutableTool, "executeWithStatus">> {
   const schema = structuredClone(options.schema);
   const invoke = options.invoke;
@@ -24,6 +26,9 @@ export function createExecutableTool(options: {
     description: schema.function.description ?? "",
     getSchema: () => structuredClone(schema),
     executeWithStatus,
+    ...(options.validateArguments
+      ? { validateArguments: options.validateArguments }
+      : {}),
     async execute(args, context) {
       const result = await executeWithStatus(args, context);
       if (result.status !== "success") throw new Error(result.content);

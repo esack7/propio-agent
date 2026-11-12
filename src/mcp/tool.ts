@@ -18,6 +18,13 @@ export class McpExecutableTool implements PresentedTool {
   readonly serverName: string;
   readonly remoteToolName: string;
   readonly title?: string;
+  /**
+   * Present only when a check was supplied. A registry that sees this property
+   * skips its own schema check, so it must never exist as a no-op.
+   */
+  readonly validateArguments?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => ToolExecutionResult | undefined;
   private readonly execution: ReturnType<typeof createExecutableTool>;
 
   constructor(options: {
@@ -29,6 +36,10 @@ export class McpExecutableTool implements PresentedTool {
       inputSchema: McpToolDescriptor["inputSchema"];
     };
     invoke: (args: Record<string, unknown>) => Promise<ToolExecutionResult>;
+    /** The connection manager's check, so MCP schema rules apply everywhere. */
+    validateArguments?: (
+      args: Readonly<Record<string, unknown>>,
+    ) => ToolExecutionResult | undefined;
   }) {
     this.serverName = options.serverName;
     this.remoteToolName = options.remoteTool.name;
@@ -49,7 +60,11 @@ export class McpExecutableTool implements PresentedTool {
     this.execution = createExecutableTool({
       schema,
       invoke: options.invoke,
+      validateArguments: options.validateArguments,
     });
+    if (options.validateArguments) {
+      this.validateArguments = options.validateArguments;
+    }
   }
 
   getSchema(): ChatTool {

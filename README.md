@@ -855,7 +855,10 @@ try {
   omitted `mcpServers` means an empty catalog. Repeated identical remote names
   (including overlapping discovery pages) retain the first descriptor.
 - Results are `{ status, content, outcome? }`, with `status` equal to `success`,
-  `error`, `tool_not_found`, or `tool_disabled`, and **content always a string**.
+  `error`, `tool_not_found`, `tool_disabled`, or `invalid_arguments`, and
+  **content always a string**. Arguments are checked against the tool's input
+  schema before dispatch; a mismatch returns `invalid_arguments` with each
+  failing path and no `outcome`, and the server is not called.
   A dispatched call includes an `mcp_call` outcome with its server and remote
   tool names, deadline, duration, and one of `succeeded`, `remote_error`,
   `timed_out`, or `transport_error`. A normal response, including an MCP
@@ -949,7 +952,27 @@ must be structured-cloneable; non-cloneable values fail closed with a clear erro
 There is no fallback to mutable references. Availability and cancellation are
 checked again after approval. The four existing statuses remain unchanged:
 `success`, `tool_not_found`, `tool_disabled` (including policy denial), and `error`
-(including cancellation). Shell nonzero exit codes remain in the JSON content,
+(including cancellation). A fifth, `invalid_arguments`, is returned when the
+arguments do not match the JSON Schema from the tool's `getSchema()`. The check
+runs before approval and execution, lists every failing path in `content` for
+the model to correct, and never coerces or defaults values. A schema that cannot
+be compiled fails closed with `error`. `format` keywords are not enforced. The
+dialect follows the schema's `$schema`, which must be the 2020-12, 2019-09, or
+draft-07 meta-schema URI (`http` or `https`, with or without an empty `#`). Any
+other declared dialect, including drafts 04 and 06, fails closed with `error`.
+A schema without `$schema` is read as 2020-12. For MCP tools that is final, as
+the MCP specification requires: a schema that is not valid 2020-12 makes the
+tool uncallable. Other tools are retried as draft-07 if they do not compile as
+2020-12. A tool can supply `validateArguments(args)`, also accepted by
+`createExecutableTool`, to replace the registry's check with its owner's rules;
+`McpConnectionManager.validateToolArguments(name, args)` is that check for MCP
+tools, so pass it when registering MCP tools in a `ToolRegistry`. The runtime
+uses an executor's optional `validateArguments(name, args)` the same way. Asynchronous (`$async`)
+schemas are refused. Without an approval callback the arguments are checked
+again at dispatch, so a change the caller makes while the call is pending
+cannot run unchecked. The agent runtime applies the same check after the tool
+scope check and before `authorizeTool`, so policy only reviews well-formed
+calls. Shell nonzero exit codes remain in the JSON content,
 matching CLI behavior; they do not by themselves change the registry status.
 The structured result now also carries an optional `outcome`: shell commands
 distinguish zero/nonzero exit, timeout, cancellation, launch failure, and output

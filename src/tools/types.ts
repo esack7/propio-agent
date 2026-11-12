@@ -1,5 +1,10 @@
 export type ToolExecutionStatus =
-  "success" | "tool_not_found" | "tool_disabled" | "error";
+  | "success"
+  | "tool_not_found"
+  | "tool_disabled"
+  /** Arguments did not match the advertised schema; the tool was not run. */
+  | "invalid_arguments"
+  | "error";
 
 export type CommandOutcomeClassification =
   | "succeeded"

@@ -57,6 +57,8 @@ export class McpManager extends McpConnectionManager {
               inputSchema: tool.inputSchema,
             },
             invoke: (args) => this.executeToolWithStatus(tool.name, args),
+            validateArguments: (args) =>
+              this.validateToolArguments(tool.name, args),
           }),
       );
     this.adapters = new Map(tools.map((tool) => [tool.name, tool]));

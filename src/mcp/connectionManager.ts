@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpServerEnabled, validateMcpConfig } from "./validation.js";
 import { buildMcpToolName, normalizeMcpNameSegment } from "./toolName.js";
+import { ToolArgumentValidator } from "../tools/argumentValidation.js";
 import type { McpServerRuntime } from "./internalTypes.js";
 import type {
   McpToolDescriptor,
@@ -197,6 +198,10 @@ export class McpConnectionManager {
   private readonly callTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
   private readonly persistConfig?: McpConnectionOptions["persistConfig"];
+  // MCP defines 2020-12 as the default dialect, so there is no fallback.
+  private readonly argumentValidator = new ToolArgumentValidator({
+    draft07Fallback: false,
+  });
   private startupPromise: Promise<void> | null = null;
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
@@ -622,6 +627,20 @@ export class McpConnectionManager {
     return this.getToolByName(name) !== undefined;
   }
 
+  /**
+   * Check arguments against a discovered tool's input schema without calling
+   * the server. Returns undefined for an unknown tool; execution reports it.
+   */
+  validateToolArguments(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+  ): McpToolResult | undefined {
+    const tool = this.getToolByName(name);
+    if (!tool) return undefined;
+    const invalid = this.argumentValidator.check(name, tool.inputSchema, args);
+    return invalid && { status: invalid.status, content: invalid.content };
+  }
+
   async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
@@ -639,10 +658,24 @@ export class McpConnectionManager {
       };
     }
 
+    // Checked locally so a malformed call never reaches the server. The
+    // snapshot is what is checked and sent, whatever the caller does next.
+    let snapshot: Record<string, unknown>;
+    try {
+      snapshot = structuredClone(args);
+    } catch {
+      return {
+        status: "invalid_arguments",
+        content: `Invalid arguments for ${name}. The tool was not run.\n- (arguments): must be structured-cloneable`,
+      };
+    }
+    const invalid = this.validateToolArguments(name, snapshot);
+    if (invalid) return invalid;
+
     return await this.callRemoteTool(
       tool.serverName,
       tool.remoteToolName,
-      args,
+      snapshot,
     );
   }
 

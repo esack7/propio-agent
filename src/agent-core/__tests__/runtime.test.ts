@@ -996,3 +996,193 @@ describe("runtime integration boundaries", () => {
     );
   });
 });
+
+describe("argument validation order", () => {
+  function validatingTools(
+    executeWithStatus: jest.Mock<
+      () => Promise<{ status: "success"; content: string }>
+    >,
+  ) {
+    return {
+      getEnabledSchemas: () => [
+        {
+          type: "function" as const,
+          function: {
+            name: "lookup",
+            description: "Lookup",
+            parameters: {
+              type: "object",
+              properties: { id: { type: "string" } },
+              required: ["id"],
+            },
+          },
+        },
+      ],
+      executeWithStatus,
+    };
+  }
+  const toolResults = (requests: ChatRequest[]) =>
+    JSON.stringify(requests[1]?.messages);
+
+  it("returns schema feedback without consulting argument-dependent policy", async () => {
+    const traceEvents: TraceEventInput[] = [];
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "should not run",
+    }));
+    const authorizeTool = jest.fn(() => ({
+      allowed: false,
+      actor: "application" as const,
+      rule: "fixture_denial",
+      reason: "Denied by fixture policy",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: validatingTools(executeWithStatus),
+      trace: {
+        identity: { sessionId: "session-1", runId: "run-1" },
+        record: (event) => traceEvents.push(event),
+      },
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(authorizeTool).not.toHaveBeenCalled();
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(toolResults(fixture.requests)).toContain(
+      "Invalid arguments for lookup",
+    );
+    expect(toolResults(fixture.requests)).toContain(
+      "must have required property 'id'",
+    );
+    expect(toolResults(fixture.requests)).not.toContain(
+      "Denied by fixture policy",
+    );
+    expect(
+      traceEvents
+        .filter((event) => event.type === "tool_policy_decision")
+        .map((event) => (event.payload as { rule?: string }).rule),
+    ).toEqual(["tool_scope"]);
+  });
+
+  it("keeps the tool scope check ahead of validation", async () => {
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "should not run",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: validatingTools(executeWithStatus),
+      policy: {
+        maxIterations: 5,
+        useNoProgressDetector: true,
+        streamIdleTimeoutMs: 0,
+        outputTokenRecoveryLimit: 1,
+        resolveToolScope: () => ({ allowedTools: new Set(["other"]) }),
+      },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(toolResults(fixture.requests)).toContain(
+      "Tool not available in the current mode or skill scope: lookup",
+    );
+    expect(toolResults(fixture.requests)).not.toContain("Invalid arguments");
+  });
+
+  it("consults policy for a well-formed call", async () => {
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "approved result",
+    }));
+    const authorizeTool = jest.fn(() => ({
+      allowed: true,
+      actor: "application" as const,
+      rule: "fixture_approval",
+    }));
+    const wellFormed: ChatStreamEvent = {
+      type: "tool_calls",
+      toolCalls: [
+        { id: "call-1", function: { name: "lookup", arguments: { id: "7" } } },
+      ],
+    };
+    const fixture = setup([[wellFormed], [answer]], {
+      tools: validatingTools(executeWithStatus),
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(authorizeTool).toHaveBeenCalledTimes(1);
+    expect(executeWithStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the executor's own check when it supplies one", async () => {
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "ran",
+    }));
+    const authorizeTool = jest.fn(() => ({
+      allowed: true,
+      actor: "application" as const,
+      rule: "fixture_approval",
+    }));
+    const validateArguments = jest.fn(
+      (_name: string, args: Readonly<Record<string, unknown>>) =>
+        args.key === "example"
+          ? {
+              status: "invalid_arguments" as const,
+              content: "executor says no",
+            }
+          : undefined,
+    );
+    const fixture = setup([[toolCall], [answer]], {
+      // The schema would accept the call; only the executor's answer counts.
+      tools: {
+        getEnabledSchemas: () => [],
+        validateArguments,
+        executeWithStatus,
+      },
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(validateArguments).toHaveBeenCalledWith("lookup", {
+      key: "example",
+    });
+    expect(authorizeTool).not.toHaveBeenCalled();
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(toolResults(fixture.requests)).toContain("executor says no");
+  });
+
+  it("reports a throwing argument check as a tool error and continues the turn", async () => {
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "should not run",
+    }));
+    const authorizeTool = jest.fn(() => ({
+      allowed: true,
+      actor: "application" as const,
+      rule: "fixture_approval",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: {
+        getEnabledSchemas: () => [],
+        validateArguments: () => {
+          throw new Error("validator crashed");
+        },
+        executeWithStatus,
+      },
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(authorizeTool).not.toHaveBeenCalled();
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(toolResults(fixture.requests)).toContain(
+      "Argument validation failed for lookup; the tool was not run: validator crashed",
+    );
+  });
+});

@@ -80,6 +80,15 @@ export interface AgentPromptTraceMetadata {
 
 export interface AgentToolExecutor {
   getEnabledSchemas(): ChatTool[];
+  /**
+   * Optional argument check owned by the executor, which knows each tool's
+   * schema rules. Without it the runtime checks against getEnabledSchemas()
+   * with the default rules. Returns a result to send instead of running.
+   */
+  validateArguments?(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined;
   executeWithStatus(
     name: string,
     args: Record<string, unknown>,

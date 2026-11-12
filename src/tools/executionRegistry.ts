@@ -5,6 +5,7 @@ import {
 } from "./execution.js";
 import { ChatTool } from "@propio-ai/providers";
 import { ToolExecutionResult } from "./types.js";
+import { ToolArgumentValidator } from "./argumentValidation.js";
 
 export interface ToolSummary {
   readonly name: string;
@@ -30,6 +31,9 @@ export class ToolRegistry {
 
   /** Tracks which tools are currently enabled */
   private enabledTools: Set<string> = new Set();
+
+  /** Per-registry so compiled schemas are never shared between instances. */
+  private readonly argumentValidator = new ToolArgumentValidator();
 
   /** Tracks built-in or registration-time default state for each tool. */
   private enabledByDefault: Map<string, boolean> = new Map();
@@ -177,10 +181,12 @@ export class ToolRegistry {
   /**
    * Execute a tool with comprehensive error handling.
    *
-   * Handles three error cases:
+   * Handles four error cases:
    * 1. Tool not registered: returns "Tool not found: {name}"
    * 2. Tool disabled: returns "Tool not available: {name}"
-   * 3. Execution error: catches and returns "Error executing {name}: {error.message}"
+   * 3. Arguments do not match the tool's schema: returns status
+   *    "invalid_arguments" listing each failing path, without running the tool
+   * 4. Execution error: catches and returns "Error executing {name}: {error.message}"
    *
    * @param name - The name of the tool to execute
    * @param args - The arguments to pass to the tool
@@ -209,6 +215,10 @@ export class ToolRegistry {
       const executionArgs = this.options.approve
         ? cloneApprovalArgs(args)
         : args;
+      // Before approval and execution: an invalid call is never reviewed or
+      // run. With approval the detached snapshot is what is checked and run.
+      const invalid = this.checkArguments(tool, executionArgs);
+      if (invalid) return invalid;
       const blocked = await this.checkExecutionPolicy(
         tool,
         executionArgs,
@@ -220,6 +230,31 @@ export class ToolRegistry {
     } catch (error) {
       return executionError(name, error, context);
     }
+  }
+
+  /**
+   * Check arguments for a registered, enabled tool without running it. Returns
+   * undefined for an unknown or disabled tool; execution reports those.
+   */
+  validateArguments(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined {
+    const tool = this.tools.get(name);
+    if (!tool || !this.enabledTools.has(name)) return undefined;
+    return this.checkArguments(tool, args);
+  }
+
+  private checkArguments(
+    tool: ExecutableTool,
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined {
+    if (tool.validateArguments) return tool.validateArguments(args);
+    return this.argumentValidator.check(
+      tool.name,
+      tool.getSchema().function.parameters,
+      args,
+    );
   }
 
   private async checkExecutionPolicy(
@@ -257,6 +292,11 @@ export class ToolRegistry {
         content: `Tool not available: ${tool.name}`,
       };
     }
+    // Without approval the caller's own object is passed on, and it may have
+    // changed during the await above. Check again with nothing awaited between
+    // this and the tool receiving its arguments.
+    const invalid = this.checkArguments(tool, args);
+    if (invalid) return invalid;
     return tool.executeWithStatus
       ? tool.executeWithStatus(args, context)
       : { status: "success", content: await tool.execute(args, context) };

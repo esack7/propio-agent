@@ -15,6 +15,14 @@ export interface ExecutableTool {
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
   ): Promise<string>;
+  /**
+   * Optional argument check that replaces the registry's own check against
+   * getSchema(), for tools whose schema rules the tool's owner defines (e.g.
+   * MCP). Returns a result to send instead of running, or undefined to run.
+   */
+  validateArguments?(
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined;
   /** Optional structured result, used by the registry when supplied (e.g. MCP). */
   executeWithStatus?(
     args: Record<string, unknown>,
