@@ -16,7 +16,8 @@ type CompiledSchema =
  * Checks tool arguments against the JSON Schema a tool advertises.
  *
  * Arguments are never coerced or defaulted: a call either matches the schema as
- * sent or is rejected. The dialect follows the schema's `$schema`. A schema
+ * sent or is rejected. The dialect follows the schema's `$schema`, and a
+ * declared dialect that is not supported makes the tool uncallable. A schema
  * that declares none is read as JSON Schema 2020-12, the MCP default, and as
  * draft-07 only if it does not compile as 2020-12. Compiled schemas are cached on the instance, so separate
  * registries share nothing.
@@ -78,18 +79,39 @@ const AJV_OPTIONS = {
   validateSchema: false,
 } as const;
 
-function declaredDialect(schema: Record<string, unknown>): Dialect | undefined {
+/**
+ * The meta-schema URIs this validator implements. Matching is exact, apart
+ * from an empty trailing fragment and the URI scheme, which published schemas
+ * write both ways.
+ */
+const SUPPORTED_DIALECTS: ReadonlyMap<string, Dialect> = new Map([
+  ["json-schema.org/draft/2020-12/schema", "2020-12"],
+  ["json-schema.org/draft/2019-09/schema", "2019-09"],
+  ["json-schema.org/draft-07/schema", "draft-07"],
+]);
+
+type DeclaredDialect =
+  { readonly dialect: Dialect } | { readonly unsupported: string } | undefined;
+
+function declaredDialect(schema: Record<string, unknown>): DeclaredDialect {
+  if (!("$schema" in schema)) return undefined;
   const uri = schema.$schema;
-  if (typeof uri !== "string") return undefined;
-  if (uri.includes("2020-12")) return "2020-12";
-  if (uri.includes("2019-09")) return "2019-09";
-  // Drafts 04 and 06 have no class of their own; draft-07 is the closest.
-  return "draft-07";
+  if (typeof uri !== "string") {
+    return { unsupported: `$schema must be a string URI` };
+  }
+  const match = /^https?:\/\/(.*?)#?$/.exec(uri);
+  const dialect = match ? SUPPORTED_DIALECTS.get(match[1]) : undefined;
+  return dialect
+    ? { dialect }
+    : { unsupported: `unsupported JSON Schema dialect '${uri}'` };
 }
 
 function compileForDialect(schema: Record<string, unknown>): CompiledSchema {
   const declared = declaredDialect(schema);
-  if (declared) return compileWith(declared, schema);
+  if (declared && "unsupported" in declared) {
+    return { schemaError: declared.unsupported };
+  }
+  if (declared) return compileWith(declared.dialect, schema);
   const current = compileWith("2020-12", schema);
   if ("validate" in current) return current;
   const legacy = compileWith("draft-07", schema);

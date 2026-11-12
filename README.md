@@ -957,9 +957,11 @@ arguments do not match the JSON Schema from the tool's `getSchema()`. The check
 runs before approval and execution, lists every failing path in `content` for
 the model to correct, and never coerces or defaults values. A schema that cannot
 be compiled fails closed with `error`. `format` keywords are not enforced. The
-dialect follows the schema's `$schema` (2020-12, 2019-09, or draft-07 for older
-drafts); a schema without one is read as 2020-12, the MCP default, and as
-draft-07 only if it does not compile as 2020-12. Asynchronous (`$async`)
+dialect follows the schema's `$schema`, which must be the 2020-12, 2019-09, or
+draft-07 meta-schema URI (`http` or `https`, with or without an empty `#`). Any
+other declared dialect, including drafts 04 and 06, fails closed with `error`.
+A schema without `$schema` is read as 2020-12, the MCP default, and as draft-07
+only if it does not compile as 2020-12. Asynchronous (`$async`)
 schemas are refused. Without an approval callback the arguments are checked
 again at dispatch, so a change the caller makes while the call is pending
 cannot run unchecked. The agent runtime applies the same check after the tool

@@ -343,6 +343,50 @@ describe("ToolArgumentValidator", () => {
     );
   });
 
+  it.each([
+    ["draft-07 without a fragment", "http://json-schema.org/draft-07/schema"],
+    ["draft-07 over https", "https://json-schema.org/draft-07/schema#"],
+    [
+      "2020-12 with an empty fragment",
+      "https://json-schema.org/draft/2020-12/schema#",
+    ],
+    ["2019-09 over http", "http://json-schema.org/draft/2019-09/schema"],
+  ])("accepts %s", (_label, $schema) => {
+    const validator = new ToolArgumentValidator();
+    const schema = { $schema, type: "object", required: ["a"] };
+
+    expect(validator.check("t", schema, { a: 1 })).toBeUndefined();
+    expect(validator.check("t", schema, {})?.status).toBe("invalid_arguments");
+  });
+
+  it.each([
+    ["an unknown dialect", "https://example.com/my-dialect/schema"],
+    ["draft-04", "http://json-schema.org/draft-04/schema#"],
+    ["draft-06", "http://json-schema.org/draft-06/schema#"],
+    [
+      "a supported dialect named inside another URI",
+      "https://example.com/draft/2020-12/schema",
+    ],
+    [
+      "a non-empty fragment",
+      "https://json-schema.org/draft/2020-12/schema#meta",
+    ],
+    ["a relative reference", "draft-07/schema"],
+    ["an empty string", ""],
+    ["a non-string value", 7],
+  ])("fails closed on %s", (_label, $schema) => {
+    const validator = new ToolArgumentValidator();
+    const schema = { $schema, type: "object" };
+
+    const result = validator.check("t", schema, {});
+
+    expect(result?.status).toBe("error");
+    expect(result?.content).toContain("argument schema is not usable");
+    expect(result?.content).toMatch(
+      /unsupported JSON Schema dialect|\$schema must be a string/,
+    );
+  });
+
   it("does not fall back to another dialect when one is declared", () => {
     const validator = new ToolArgumentValidator();
     const schema = {
