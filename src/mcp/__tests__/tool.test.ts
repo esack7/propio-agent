@@ -46,4 +46,28 @@ describe("McpExecutableTool", () => {
       content: "manager says no",
     });
   });
+
+  it("keeps the registry's schema check when no argument check is supplied", async () => {
+    const { ToolRegistry } = await import("../../tools/index.js");
+    const invoke = jest.fn(async () => ({
+      status: "success" as const,
+      content: "ok",
+    }));
+    const tool = new McpExecutableTool({
+      serverName: "fixture",
+      remoteTool: {
+        name: "navigate",
+        inputSchema: { type: "object", required: ["url"] },
+      },
+      invoke,
+    });
+    const registry = new ToolRegistry();
+    registry.register(tool, true);
+
+    expect("validateArguments" in tool).toBe(false);
+    expect((await registry.executeWithStatus(tool.name, {})).status).toBe(
+      "invalid_arguments",
+    );
+    expect(invoke).not.toHaveBeenCalled();
+  });
 });

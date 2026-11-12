@@ -1299,8 +1299,27 @@ export class AgentRuntime {
     );
   }
 
-  /** An unknown tool is left for execution to report as not found. */
+  /**
+   * An unknown tool is left for execution to report as not found. A check that
+   * throws becomes a tool error for the model; the call is neither authorized
+   * nor run, and the turn continues.
+   */
   private validateToolArguments(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): ToolExecutionResult | undefined {
+    try {
+      return this.checkToolArguments(toolName, args);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        status: "error",
+        content: `Argument validation failed for ${toolName}; the tool was not run: ${detail}`,
+      };
+    }
+  }
+
+  private checkToolArguments(
     toolName: string,
     args: Record<string, unknown>,
   ): ToolExecutionResult | undefined {

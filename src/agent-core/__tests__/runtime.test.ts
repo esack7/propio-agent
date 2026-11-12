@@ -1155,4 +1155,34 @@ describe("argument validation order", () => {
     expect(executeWithStatus).not.toHaveBeenCalled();
     expect(toolResults(fixture.requests)).toContain("executor says no");
   });
+
+  it("reports a throwing argument check as a tool error and continues the turn", async () => {
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "should not run",
+    }));
+    const authorizeTool = jest.fn(() => ({
+      allowed: true,
+      actor: "application" as const,
+      rule: "fixture_approval",
+    }));
+    const fixture = setup([[toolCall], [answer]], {
+      tools: {
+        getEnabledSchemas: () => [],
+        validateArguments: () => {
+          throw new Error("validator crashed");
+        },
+        executeWithStatus,
+      },
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(authorizeTool).not.toHaveBeenCalled();
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(toolResults(fixture.requests)).toContain(
+      "Argument validation failed for lookup; the tool was not run: validator crashed",
+    );
+  });
 });

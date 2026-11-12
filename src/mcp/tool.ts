@@ -18,6 +18,13 @@ export class McpExecutableTool implements PresentedTool {
   readonly serverName: string;
   readonly remoteToolName: string;
   readonly title?: string;
+  /**
+   * Present only when a check was supplied. A registry that sees this property
+   * skips its own schema check, so it must never exist as a no-op.
+   */
+  readonly validateArguments?: (
+    args: Readonly<Record<string, unknown>>,
+  ) => ToolExecutionResult | undefined;
   private readonly execution: ReturnType<typeof createExecutableTool>;
 
   constructor(options: {
@@ -55,16 +62,13 @@ export class McpExecutableTool implements PresentedTool {
       invoke: options.invoke,
       validateArguments: options.validateArguments,
     });
+    if (options.validateArguments) {
+      this.validateArguments = options.validateArguments;
+    }
   }
 
   getSchema(): ChatTool {
     return this.execution.getSchema();
-  }
-
-  validateArguments(
-    args: Readonly<Record<string, unknown>>,
-  ): ToolExecutionResult | undefined {
-    return this.execution.validateArguments?.(args);
   }
 
   getInvocationLabel(): string {
