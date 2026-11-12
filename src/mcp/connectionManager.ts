@@ -198,7 +198,10 @@ export class McpConnectionManager {
   private readonly callTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
   private readonly persistConfig?: McpConnectionOptions["persistConfig"];
-  private readonly argumentValidator = new ToolArgumentValidator();
+  // MCP defines 2020-12 as the default dialect, so there is no fallback.
+  private readonly argumentValidator = new ToolArgumentValidator({
+    draft07Fallback: false,
+  });
   private startupPromise: Promise<void> | null = null;
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
@@ -624,6 +627,20 @@ export class McpConnectionManager {
     return this.getToolByName(name) !== undefined;
   }
 
+  /**
+   * Check arguments against a discovered tool's input schema without calling
+   * the server. Returns undefined for an unknown tool; execution reports it.
+   */
+  validateToolArguments(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+  ): McpToolResult | undefined {
+    const tool = this.getToolByName(name);
+    if (!tool) return undefined;
+    const invalid = this.argumentValidator.check(name, tool.inputSchema, args);
+    return invalid && { status: invalid.status, content: invalid.content };
+  }
+
   async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
@@ -652,12 +669,8 @@ export class McpConnectionManager {
         content: `Invalid arguments for ${name}. The tool was not run.\n- (arguments): must be structured-cloneable`,
       };
     }
-    const invalid = this.argumentValidator.check(
-      name,
-      tool.inputSchema,
-      snapshot,
-    );
-    if (invalid) return { status: invalid.status, content: invalid.content };
+    const invalid = this.validateToolArguments(name, snapshot);
+    if (invalid) return invalid;
 
     return await this.callRemoteTool(
       tool.serverName,

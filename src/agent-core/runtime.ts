@@ -1304,6 +1304,8 @@ export class AgentRuntime {
     toolName: string,
     args: Record<string, unknown>,
   ): ToolExecutionResult | undefined {
+    const tools = this.dependencies.tools;
+    if (tools.validateArguments) return tools.validateArguments(toolName, args);
     const schema = this.dependencies.tools
       .getEnabledSchemas()
       .find((tool) => tool.function.name === toolName);

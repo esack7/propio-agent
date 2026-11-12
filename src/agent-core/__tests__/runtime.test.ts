@@ -1116,4 +1116,43 @@ describe("argument validation order", () => {
     expect(authorizeTool).toHaveBeenCalledTimes(1);
     expect(executeWithStatus).toHaveBeenCalledTimes(1);
   });
+
+  it("uses the executor's own check when it supplies one", async () => {
+    const executeWithStatus = jest.fn(async () => ({
+      status: "success" as const,
+      content: "ran",
+    }));
+    const authorizeTool = jest.fn(() => ({
+      allowed: true,
+      actor: "application" as const,
+      rule: "fixture_approval",
+    }));
+    const validateArguments = jest.fn(
+      (_name: string, args: Readonly<Record<string, unknown>>) =>
+        args.key === "example"
+          ? {
+              status: "invalid_arguments" as const,
+              content: "executor says no",
+            }
+          : undefined,
+    );
+    const fixture = setup([[toolCall], [answer]], {
+      // The schema would accept the call; only the executor's answer counts.
+      tools: {
+        getEnabledSchemas: () => [],
+        validateArguments,
+        executeWithStatus,
+      },
+      integrations: { authorizeTool },
+    });
+
+    await expect(fixture.run()).resolves.toBe("Finished.");
+
+    expect(validateArguments).toHaveBeenCalledWith("lookup", {
+      key: "example",
+    });
+    expect(authorizeTool).not.toHaveBeenCalled();
+    expect(executeWithStatus).not.toHaveBeenCalled();
+    expect(toolResults(fixture.requests)).toContain("executor says no");
+  });
 });

@@ -9,6 +9,15 @@ interface ToolArgumentIssue {
   readonly message: string;
 }
 
+export interface ToolArgumentValidatorOptions {
+  /**
+   * Retry a schema without `$schema` as draft-07 when it does not compile as
+   * 2020-12. Default true. MCP defines 2020-12 as the default, so its tools
+   * turn this off and such a schema makes the tool uncallable.
+   */
+  readonly draft07Fallback?: boolean;
+}
+
 type CompiledSchema =
   { readonly validate: ValidateFunction } | { readonly schemaError: string };
 
@@ -19,11 +28,16 @@ type CompiledSchema =
  * sent or is rejected. The dialect follows the schema's `$schema`, and a
  * declared dialect that is not supported makes the tool uncallable. A schema
  * that declares none is read as JSON Schema 2020-12, the MCP default, and as
- * draft-07 only if it does not compile as 2020-12. Compiled schemas are cached on the instance, so separate
+ * draft-07 only if it does not compile as 2020-12 and the fallback is enabled. Compiled schemas are cached on the instance, so separate
  * registries share nothing.
  */
 export class ToolArgumentValidator {
   private readonly compiled = new Map<string, CompiledSchema>();
+  private readonly draft07Fallback: boolean;
+
+  constructor(options: ToolArgumentValidatorOptions = {}) {
+    this.draft07Fallback = options.draft07Fallback ?? true;
+  }
 
   /** Returns a result to send to the model when the call must not run. */
   check(
@@ -63,7 +77,10 @@ export class ToolArgumentValidator {
     } else {
       // Compile a detached copy so later changes to the caller's object
       // cannot alter a cached validator.
-      entry = compileForDialect(JSON.parse(key) as Record<string, unknown>);
+      entry = compileForDialect(
+        JSON.parse(key) as Record<string, unknown>,
+        this.draft07Fallback,
+      );
     }
     this.compiled.set(key, entry);
     return entry;
@@ -106,14 +123,17 @@ function declaredDialect(schema: Record<string, unknown>): DeclaredDialect {
     : { unsupported: `unsupported JSON Schema dialect '${uri}'` };
 }
 
-function compileForDialect(schema: Record<string, unknown>): CompiledSchema {
+function compileForDialect(
+  schema: Record<string, unknown>,
+  draft07Fallback: boolean,
+): CompiledSchema {
   const declared = declaredDialect(schema);
   if (declared && "unsupported" in declared) {
     return { schemaError: declared.unsupported };
   }
   if (declared) return compileWith(declared.dialect, schema);
   const current = compileWith("2020-12", schema);
-  if ("validate" in current) return current;
+  if ("validate" in current || !draft07Fallback) return current;
   const legacy = compileWith("draft-07", schema);
   return "validate" in legacy ? legacy : current;
 }

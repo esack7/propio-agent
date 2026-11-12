@@ -2289,6 +2289,10 @@ export class Agent {
       },
       tools: {
         getEnabledSchemas: () => this.getMergedToolSchemas(),
+        validateArguments: (name, args) =>
+          this.toolRegistry.hasTool(name)
+            ? this.toolRegistry.validateArguments(name, args)
+            : this.mcpManager.validateToolArguments(name, args),
         executeWithStatus: (name, args, context) =>
           this.executeToolWithStatus(name, args, context?.signal),
       },

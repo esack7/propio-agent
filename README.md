@@ -960,8 +960,14 @@ be compiled fails closed with `error`. `format` keywords are not enforced. The
 dialect follows the schema's `$schema`, which must be the 2020-12, 2019-09, or
 draft-07 meta-schema URI (`http` or `https`, with or without an empty `#`). Any
 other declared dialect, including drafts 04 and 06, fails closed with `error`.
-A schema without `$schema` is read as 2020-12, the MCP default, and as draft-07
-only if it does not compile as 2020-12. Asynchronous (`$async`)
+A schema without `$schema` is read as 2020-12. For MCP tools that is final, as
+the MCP specification requires: a schema that is not valid 2020-12 makes the
+tool uncallable. Other tools are retried as draft-07 if they do not compile as
+2020-12. A tool can supply `validateArguments(args)`, also accepted by
+`createExecutableTool`, to replace the registry's check with its owner's rules;
+`McpConnectionManager.validateToolArguments(name, args)` is that check for MCP
+tools, so pass it when registering MCP tools in a `ToolRegistry`. The runtime
+uses an executor's optional `validateArguments(name, args)` the same way. Asynchronous (`$async`)
 schemas are refused. Without an approval callback the arguments are checked
 again at dispatch, so a change the caller makes while the call is pending
 cannot run unchecked. The agent runtime applies the same check after the tool

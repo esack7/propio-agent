@@ -33,6 +33,7 @@ if (mode === "connect-hang") {
     fs.writeFileSync(readyFile, "listing");
     if (mode === "list-hang") return await new Promise(() => {});
     if (mode === "collision") return { tools: [tool("a-b"), tool("a_b")] };
+    if (mode === "legacy-schema") return { tools: [{ name: "legacy", description: "Fixture tool", inputSchema: { type: "object", properties: { point: { type: "array", items: [{ type: "string" }], additionalItems: false } } } }] };
     if (mode === "duplicate") {
       if (!request.params?.cursor) return { tools: [tool("same"), tool("same")], nextCursor: "overlap" };
       return { tools: [{ ...tool("same"), description: "Later duplicate" }] };
@@ -42,6 +43,7 @@ if (mode === "connect-hang") {
   });
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = request.params.arguments ?? {};
+    if (mode === "legacy-schema") fs.appendFileSync(pidFile + ".effect", "ran\\n");
     if (args.hang) return await new Promise(() => {});
     if (args.invalidTimeout) throw new McpError(ErrorCode.InvalidParams, "invalid timeout argument");
     if (args.throw) throw new Error("fixture failure");
@@ -538,6 +540,8 @@ it("adapts live MCP calls and local tools through the public tools registry", as
           },
         },
         invoke: (args) => manager.executeToolWithStatus(descriptor.name, args),
+        validateArguments: (args) =>
+          manager.validateToolArguments(descriptor.name, args),
       }),
       true,
     );
@@ -585,5 +589,28 @@ it("rejects schema-invalid arguments without calling the server", async () => {
   expect(wrongType.status).toBe("invalid_arguments");
   expect(wrongType.content).toContain("/message: must be string");
   // The fixture records a side effect whenever invalid-output actually runs.
+  expect(fs.existsSync(`${pidFile}.effect`)).toBe(false);
+});
+
+it("reads a schema without $schema as 2020-12 and never falls back", async () => {
+  const { manager, pidFile } = fixture("legacy-schema");
+  await manager.initialize();
+
+  const expected = {
+    status: "error",
+    content: expect.stringContaining("argument schema is not usable"),
+  };
+  // A draft-07 tuple is not valid 2020-12; other tools would retry as draft-07.
+  expect(
+    manager.validateToolArguments("mcp__fixture__legacy", { point: ["a"] }),
+  ).toEqual(expected);
+  expect(
+    await manager.executeToolWithStatus("mcp__fixture__legacy", {
+      point: ["a"],
+    }),
+  ).toEqual(expected);
+  expect(manager.validateToolArguments("mcp__fixture__missing", {})).toBe(
+    undefined,
+  );
   expect(fs.existsSync(`${pidFile}.effect`)).toBe(false);
 });

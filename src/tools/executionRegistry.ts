@@ -217,11 +217,7 @@ export class ToolRegistry {
         : args;
       // Before approval and execution: an invalid call is never reviewed or
       // run. With approval the detached snapshot is what is checked and run.
-      const invalid = this.argumentValidator.check(
-        name,
-        tool.getSchema().function.parameters,
-        executionArgs,
-      );
+      const invalid = this.checkArguments(tool, executionArgs);
       if (invalid) return invalid;
       const blocked = await this.checkExecutionPolicy(
         tool,
@@ -234,6 +230,31 @@ export class ToolRegistry {
     } catch (error) {
       return executionError(name, error, context);
     }
+  }
+
+  /**
+   * Check arguments for a registered, enabled tool without running it. Returns
+   * undefined for an unknown or disabled tool; execution reports those.
+   */
+  validateArguments(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined {
+    const tool = this.tools.get(name);
+    if (!tool || !this.enabledTools.has(name)) return undefined;
+    return this.checkArguments(tool, args);
+  }
+
+  private checkArguments(
+    tool: ExecutableTool,
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined {
+    if (tool.validateArguments) return tool.validateArguments(args);
+    return this.argumentValidator.check(
+      tool.name,
+      tool.getSchema().function.parameters,
+      args,
+    );
   }
 
   private async checkExecutionPolicy(
@@ -274,11 +295,7 @@ export class ToolRegistry {
     // Without approval the caller's own object is passed on, and it may have
     // changed during the await above. Check again with nothing awaited between
     // this and the tool receiving its arguments.
-    const invalid = this.argumentValidator.check(
-      tool.name,
-      tool.getSchema().function.parameters,
-      args,
-    );
+    const invalid = this.checkArguments(tool, args);
     if (invalid) return invalid;
     return tool.executeWithStatus
       ? tool.executeWithStatus(args, context)

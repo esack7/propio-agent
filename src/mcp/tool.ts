@@ -29,6 +29,10 @@ export class McpExecutableTool implements PresentedTool {
       inputSchema: McpToolDescriptor["inputSchema"];
     };
     invoke: (args: Record<string, unknown>) => Promise<ToolExecutionResult>;
+    /** The connection manager's check, so MCP schema rules apply everywhere. */
+    validateArguments?: (
+      args: Readonly<Record<string, unknown>>,
+    ) => ToolExecutionResult | undefined;
   }) {
     this.serverName = options.serverName;
     this.remoteToolName = options.remoteTool.name;
@@ -49,11 +53,18 @@ export class McpExecutableTool implements PresentedTool {
     this.execution = createExecutableTool({
       schema,
       invoke: options.invoke,
+      validateArguments: options.validateArguments,
     });
   }
 
   getSchema(): ChatTool {
     return this.execution.getSchema();
+  }
+
+  validateArguments(
+    args: Readonly<Record<string, unknown>>,
+  ): ToolExecutionResult | undefined {
+    return this.execution.validateArguments?.(args);
   }
 
   getInvocationLabel(): string {

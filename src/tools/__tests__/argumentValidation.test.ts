@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatTool } from "@propio-ai/providers";
 import {
+  createExecutableTool,
   createLocalTools,
   ToolRegistry,
   type ExecutableTool,
@@ -213,6 +214,72 @@ describe("ToolRegistry argument validation", () => {
   });
 });
 
+describe("tool-owned argument checks", () => {
+  it("replace the registry's schema check", async () => {
+    const execute = jest.fn(async () => "ran");
+    const validateArguments = jest.fn(
+      (args: Readonly<Record<string, unknown>>) =>
+        args.allowed === true
+          ? undefined
+          : { status: "invalid_arguments" as const, content: "owner says no" },
+    );
+    const registry = new ToolRegistry();
+    registry.register(
+      {
+        ...spyTool({ type: "object", required: ["path"] }).tool,
+        execute,
+        validateArguments,
+      },
+      true,
+    );
+
+    // The schema would reject both calls; only the owner's answer counts.
+    await expect(
+      registry.executeWithStatus("spy", { allowed: false }),
+    ).resolves.toEqual({
+      status: "invalid_arguments",
+      content: "owner says no",
+    });
+    await expect(
+      registry.executeWithStatus("spy", { allowed: true }),
+    ).resolves.toMatchObject({ status: "success" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(registry.validateArguments("spy", { allowed: false })).toEqual({
+      status: "invalid_arguments",
+      content: "owner says no",
+    });
+  });
+
+  it("are carried through createExecutableTool", () => {
+    const validateArguments = () => ({
+      status: "invalid_arguments" as const,
+      content: "owner says no",
+    });
+    const tool = createExecutableTool({
+      schema: {
+        type: "function",
+        function: {
+          name: "t",
+          description: "",
+          parameters: { type: "object" },
+        },
+      },
+      invoke: async () => ({ status: "success", content: "ran" }),
+      validateArguments,
+    });
+
+    expect(tool.validateArguments?.({})).toEqual(validateArguments());
+  });
+
+  it("report nothing for unknown or disabled tools", () => {
+    const registry = new ToolRegistry();
+    registry.register(spyTool(strictSchema).tool, false);
+
+    expect(registry.validateArguments("missing", {})).toBeUndefined();
+    expect(registry.validateArguments("spy", {})).toBeUndefined();
+  });
+});
+
 describe("ToolRegistry validates the arguments that run", () => {
   function capturingTool() {
     const received: unknown[] = [];
@@ -385,6 +452,23 @@ describe("ToolArgumentValidator", () => {
     expect(result?.content).toMatch(
       /unsupported JSON Schema dialect|\$schema must be a string/,
     );
+  });
+
+  it("treats an undeclared dialect as 2020-12 only when the fallback is off", () => {
+    const strict = new ToolArgumentValidator({ draft07Fallback: false });
+
+    expect(strict.check("t", legacyTuple, { point: ["a", 1] })).toMatchObject({
+      status: "error",
+      content: expect.stringContaining("argument schema is not usable"),
+    });
+    expect(strict.check("t", tuple, { point: ["a", 1] })).toBeUndefined();
+    expect(
+      strict.check(
+        "t",
+        { $schema: "http://json-schema.org/draft-07/schema#", ...legacyTuple },
+        { point: ["a", 1] },
+      ),
+    ).toBeUndefined();
   });
 
   it("does not fall back to another dialect when one is declared", () => {
