@@ -956,7 +956,15 @@ checked again after approval. The four existing statuses remain unchanged:
 arguments do not match the JSON Schema from the tool's `getSchema()`. The check
 runs before approval and execution, lists every failing path in `content` for
 the model to correct, and never coerces or defaults values. A schema that cannot
-be compiled fails closed with `error`. `format` keywords are not enforced. Shell nonzero exit codes remain in the JSON content,
+be compiled fails closed with `error`. `format` keywords are not enforced. The
+dialect follows the schema's `$schema` (2020-12, 2019-09, or draft-07 for older
+drafts); a schema without one is read as 2020-12, the MCP default, and as
+draft-07 only if it does not compile as 2020-12. Asynchronous (`$async`)
+schemas are refused. Without an approval callback the arguments are checked
+again at dispatch, so a change the caller makes while the call is pending
+cannot run unchecked. The agent runtime applies the same check after the tool
+scope check and before `authorizeTool`, so policy only reviews well-formed
+calls. Shell nonzero exit codes remain in the JSON content,
 matching CLI behavior; they do not by themselves change the registry status.
 The structured result now also carries an optional `outcome`: shell commands
 distinguish zero/nonzero exit, timeout, cancellation, launch failure, and output

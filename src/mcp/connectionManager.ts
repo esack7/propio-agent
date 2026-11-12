@@ -641,14 +641,28 @@ export class McpConnectionManager {
       };
     }
 
-    // Checked locally so a malformed call never reaches the server.
-    const invalid = this.argumentValidator.check(name, tool.inputSchema, args);
+    // Checked locally so a malformed call never reaches the server. The
+    // snapshot is what is checked and sent, whatever the caller does next.
+    let snapshot: Record<string, unknown>;
+    try {
+      snapshot = structuredClone(args);
+    } catch {
+      return {
+        status: "invalid_arguments",
+        content: `Invalid arguments for ${name}. The tool was not run.\n- (arguments): must be structured-cloneable`,
+      };
+    }
+    const invalid = this.argumentValidator.check(
+      name,
+      tool.inputSchema,
+      snapshot,
+    );
     if (invalid) return { status: invalid.status, content: invalid.content };
 
     return await this.callRemoteTool(
       tool.serverName,
       tool.remoteToolName,
-      args,
+      snapshot,
     );
   }
 

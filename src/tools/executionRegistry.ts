@@ -212,16 +212,17 @@ export class ToolRegistry {
 
     try {
       context.signal?.throwIfAborted();
-      // Before approval and execution: an invalid call is never reviewed or run.
-      const invalid = this.argumentValidator.check(
-        name,
-        tool.getSchema().function.parameters,
-        args,
-      );
-      if (invalid) return invalid;
       const executionArgs = this.options.approve
         ? cloneApprovalArgs(args)
         : args;
+      // Before approval and execution: an invalid call is never reviewed or
+      // run. With approval the detached snapshot is what is checked and run.
+      const invalid = this.argumentValidator.check(
+        name,
+        tool.getSchema().function.parameters,
+        executionArgs,
+      );
+      if (invalid) return invalid;
       const blocked = await this.checkExecutionPolicy(
         tool,
         executionArgs,
@@ -270,6 +271,15 @@ export class ToolRegistry {
         content: `Tool not available: ${tool.name}`,
       };
     }
+    // Without approval the caller's own object is passed on, and it may have
+    // changed during the await above. Check again with nothing awaited between
+    // this and the tool receiving its arguments.
+    const invalid = this.argumentValidator.check(
+      tool.name,
+      tool.getSchema().function.parameters,
+      args,
+    );
+    if (invalid) return invalid;
     return tool.executeWithStatus
       ? tool.executeWithStatus(args, context)
       : { status: "success", content: await tool.execute(args, context) };

@@ -213,7 +213,158 @@ describe("ToolRegistry argument validation", () => {
   });
 });
 
+describe("ToolRegistry validates the arguments that run", () => {
+  function capturingTool() {
+    const received: unknown[] = [];
+    const { tool } = spyTool(strictSchema);
+    tool.execute = async (args) => {
+      // Copy at dispatch: the caller may change its object afterwards.
+      received.push(structuredClone(args));
+      return "ran";
+    };
+    return { tool, received };
+  }
+
+  it("does not run arguments the caller made invalid after the first check", async () => {
+    const { tool, received } = capturingTool();
+    const registry = new ToolRegistry();
+    registry.register(tool, true);
+    const args: Record<string, unknown> = { path: "a" };
+
+    const pending = registry.executeWithStatus("spy", args);
+    args.path = 7;
+
+    await expect(pending).resolves.toMatchObject({
+      status: "invalid_arguments",
+      content: expect.stringContaining("/path: must be string"),
+    });
+    expect(received).toEqual([]);
+  });
+
+  it("runs the arguments as they stand at dispatch when they are still valid", async () => {
+    const { tool, received } = capturingTool();
+    const registry = new ToolRegistry();
+    registry.register(tool, true);
+    const args: Record<string, unknown> = { path: "a" };
+
+    const pending = registry.executeWithStatus("spy", args);
+    args.path = "b";
+
+    await expect(pending).resolves.toMatchObject({ status: "success" });
+    expect(received).toEqual([{ path: "b" }]);
+  });
+
+  it("validates and runs the approval snapshot", async () => {
+    const { tool, received } = capturingTool();
+    const args: Record<string, unknown> = { path: "a" };
+    const registry = new ToolRegistry({
+      approve: () => {
+        args.path = 7;
+        return true;
+      },
+    });
+    registry.register(tool, true);
+
+    await expect(
+      registry.executeWithStatus("spy", args),
+    ).resolves.toMatchObject({ status: "success" });
+    expect(received).toEqual([{ path: "a" }]);
+  });
+});
+
 describe("ToolArgumentValidator", () => {
+  const tuple = {
+    type: "object",
+    properties: {
+      point: {
+        type: "array",
+        prefixItems: [{ type: "string" }, { type: "number" }],
+        items: false,
+      },
+    },
+  };
+
+  it.each([
+    ["no $schema", tuple],
+    [
+      "an explicit 2020-12 $schema",
+      { $schema: "https://json-schema.org/draft/2020-12/schema", ...tuple },
+    ],
+  ])("applies 2020-12 tuple rules with %s", (_label, schema) => {
+    const validator = new ToolArgumentValidator();
+
+    expect(validator.check("t", schema, { point: ["a", 1] })).toBeUndefined();
+    expect(validator.check("t", schema, { point: [1, 1] })?.status).toBe(
+      "invalid_arguments",
+    );
+    expect(validator.check("t", schema, { point: ["a", 1, 2] })?.status).toBe(
+      "invalid_arguments",
+    );
+  });
+
+  it("applies 2019-09 rules when the schema declares them", () => {
+    const validator = new ToolArgumentValidator();
+    const schema = {
+      $schema: "https://json-schema.org/draft/2019-09/schema",
+      type: "object",
+      dependentRequired: { a: ["b"] },
+    };
+
+    expect(validator.check("t", schema, { a: 1, b: 2 })).toBeUndefined();
+    expect(validator.check("t", schema, { a: 1 })?.status).toBe(
+      "invalid_arguments",
+    );
+  });
+
+  const legacyTuple = {
+    type: "object",
+    properties: {
+      point: {
+        type: "array",
+        items: [{ type: "string" }, { type: "number" }],
+        additionalItems: false,
+      },
+    },
+  };
+
+  it.each([
+    ["a draft-07 $schema", "http://json-schema.org/draft-07/schema#"],
+    ["no $schema, which does not compile as 2020-12", undefined],
+  ])("applies draft-07 tuple rules with %s", (_label, $schema) => {
+    const validator = new ToolArgumentValidator();
+    const schema = $schema ? { $schema, ...legacyTuple } : legacyTuple;
+
+    expect(validator.check("t", schema, { point: ["a", 1] })).toBeUndefined();
+    expect(validator.check("t", schema, { point: [1, 1] })?.status).toBe(
+      "invalid_arguments",
+    );
+    expect(validator.check("t", schema, { point: ["a", 1, 2] })?.status).toBe(
+      "invalid_arguments",
+    );
+  });
+
+  it("does not fall back to another dialect when one is declared", () => {
+    const validator = new ToolArgumentValidator();
+    const schema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      ...legacyTuple,
+    };
+
+    expect(validator.check("t", schema, { point: ["a", 1] })?.status).toBe(
+      "error",
+    );
+  });
+
+  it("refuses an asynchronous schema instead of treating its promise as valid", () => {
+    const validator = new ToolArgumentValidator();
+    const schema = { $async: true, type: "object", required: ["a"] };
+
+    const result = validator.check("t", schema, {});
+
+    expect(result?.status).toBe("error");
+    expect(result?.content).toContain("asynchronous schemas");
+  });
+
   it("accepts different schemas that declare the same $id", () => {
     const validator = new ToolArgumentValidator();
     const $id = "https://example.com/tool.json";

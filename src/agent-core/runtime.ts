@@ -21,6 +21,7 @@ import type {
   TurnEntry,
 } from "../context/coreTypes.js";
 import type { ToolExecutionResult } from "../tools/types.js";
+import { ToolArgumentValidator } from "../tools/argumentValidation.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { PromptSubmission } from "./input.js";
 import type {
@@ -116,6 +117,7 @@ export class AgentRuntime {
   private currentPolicyRevisionId: string | undefined;
   private currentToolScopeRevisionId: string | undefined;
   private currentToolScope: AgentToolScope | undefined;
+  private readonly argumentValidator = new ToolArgumentValidator();
   private readonly toolOperationIds = new Map<string, string>();
   private readonly toolArgumentFingerprintKey = randomBytes(32);
   constructor(private readonly dependencies: AgentRuntimeOptions) {}
@@ -1283,12 +1285,33 @@ export class AgentRuntime {
       };
     }
 
+    // Argument-dependent policy only ever reviews a well-formed call, and a
+    // malformed one returns schema feedback rather than a policy denial.
+    const invalid = this.validateToolArguments(toolName, args);
+    if (invalid) return invalid;
+
     return await this.authorizeApplicationToolExecution(
       toolName,
       toolCallId,
       args,
       allowedTools,
       abortSignal,
+    );
+  }
+
+  /** An unknown tool is left for execution to report as not found. */
+  private validateToolArguments(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): ToolExecutionResult | undefined {
+    const schema = this.dependencies.tools
+      .getEnabledSchemas()
+      .find((tool) => tool.function.name === toolName);
+    if (!schema) return undefined;
+    return this.argumentValidator.check(
+      toolName,
+      schema.function.parameters,
+      args,
     );
   }
 

@@ -1,4 +1,6 @@
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
+import { Ajv2019 } from "ajv/dist/2019.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ToolExecutionResult } from "./types.js";
 
 interface ToolArgumentIssue {
@@ -14,7 +16,9 @@ type CompiledSchema =
  * Checks tool arguments against the JSON Schema a tool advertises.
  *
  * Arguments are never coerced or defaulted: a call either matches the schema as
- * sent or is rejected. Compiled schemas are cached on the instance, so separate
+ * sent or is rejected. The dialect follows the schema's `$schema`. A schema
+ * that declares none is read as JSON Schema 2020-12, the MCP default, and as
+ * draft-07 only if it does not compile as 2020-12. Compiled schemas are cached on the instance, so separate
  * registries share nothing.
  */
 export class ToolArgumentValidator {
@@ -33,7 +37,9 @@ export class ToolArgumentValidator {
         content: `Tool ${toolName} cannot be called: its argument schema is not usable (${compiled.schemaError}).`,
       };
     }
-    if (compiled.validate(args)) return undefined;
+    // Anything but a literal true is a failure, so a validator that returned
+    // a promise or another truthy value could never pass a call through.
+    if (compiled.validate(args) === true) return undefined;
     return {
       status: "invalid_arguments",
       content: formatIssues(toolName, toIssues(compiled.validate.errors)),
@@ -54,30 +60,67 @@ export class ToolArgumentValidator {
     if (!isSchemaObject(schema)) {
       entry = { schemaError: "schema must be an object" };
     } else {
-      try {
-        // Compile a detached copy so later changes to the caller's object
-        // cannot alter a cached validator.
-        entry = { validate: newAjv().compile(JSON.parse(key)) };
-      } catch (error) {
-        entry = { schemaError: errorMessage(error) };
-      }
+      // Compile a detached copy so later changes to the caller's object
+      // cannot alter a cached validator.
+      entry = compileForDialect(JSON.parse(key) as Record<string, unknown>);
     }
     this.compiled.set(key, entry);
     return entry;
   }
 }
 
+type Dialect = "draft-07" | "2019-09" | "2020-12";
+
+const AJV_OPTIONS = {
+  allErrors: true,
+  strict: false,
+  validateFormats: false,
+  validateSchema: false,
+} as const;
+
+function declaredDialect(schema: Record<string, unknown>): Dialect | undefined {
+  const uri = schema.$schema;
+  if (typeof uri !== "string") return undefined;
+  if (uri.includes("2020-12")) return "2020-12";
+  if (uri.includes("2019-09")) return "2019-09";
+  // Drafts 04 and 06 have no class of their own; draft-07 is the closest.
+  return "draft-07";
+}
+
+function compileForDialect(schema: Record<string, unknown>): CompiledSchema {
+  const declared = declaredDialect(schema);
+  if (declared) return compileWith(declared, schema);
+  const current = compileWith("2020-12", schema);
+  if ("validate" in current) return current;
+  const legacy = compileWith("draft-07", schema);
+  return "validate" in legacy ? legacy : current;
+}
+
 /**
- * One instance per schema. Ajv registers every `$id` it compiles, so a shared
- * instance would refuse a second tool, or a changed tool, that reuses an id.
+ * One Ajv instance per schema. Ajv registers every `$id` it compiles, so a
+ * shared instance would refuse a second tool, or a changed tool, that reuses
+ * an id.
  */
-function newAjv(): Ajv {
-  return new Ajv({
-    allErrors: true,
-    strict: false,
-    validateFormats: false,
-    validateSchema: false,
-  });
+function compileWith(
+  dialect: Dialect,
+  schema: Record<string, unknown>,
+): CompiledSchema {
+  try {
+    const ajv =
+      dialect === "2020-12"
+        ? new Ajv2020(AJV_OPTIONS)
+        : dialect === "2019-09"
+          ? new Ajv2019(AJV_OPTIONS)
+          : new Ajv(AJV_OPTIONS);
+    const validate = ajv.compile(schema);
+    // An async validator returns a promise, which would read as "valid".
+    if ("$async" in validate && validate.$async) {
+      return { schemaError: "asynchronous schemas ($async) are not supported" };
+    }
+    return { validate };
+  } catch (error) {
+    return { schemaError: errorMessage(error) };
+  }
 }
 
 function isSchemaObject(schema: unknown): schema is Record<string, unknown> {
