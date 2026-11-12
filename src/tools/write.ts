@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import type { ToolExecutionResult } from "./types.js";
@@ -16,6 +17,11 @@ import {
 
 export class WriteTool implements PresentedTool {
   readonly name = "write";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["workspace_write"],
+    readOnly: false,
+    concurrencySafe: false,
+  };
   readonly description = "Write a file atomically.";
 
   constructor(private readonly options: PathToolOptions = {}) {}

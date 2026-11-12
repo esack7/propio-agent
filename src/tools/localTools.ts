@@ -87,6 +87,7 @@ function executionOnly(tool: PresentedTool): ExecutableTool {
     name: tool.name,
     description: tool.description,
     getSchema: () => tool.getSchema(),
+    ...(tool.metadata ? { metadata: tool.metadata } : {}),
     execute: (args, context) => tool.execute(args, context),
     ...(tool.executeWithStatus
       ? { executeWithStatus: tool.executeWithStatus.bind(tool) }

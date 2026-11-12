@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import { PresentedTool } from "./interface.js";
@@ -53,6 +54,11 @@ async function collectFileMatches(
 
 export class GrepTool implements PresentedTool {
   readonly name = "grep";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["read"],
+    readOnly: true,
+    concurrencySafe: true,
+  };
   readonly description = "Search file contents recursively.";
   private readonly outputInlineLimit: number;
 

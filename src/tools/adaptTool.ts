@@ -11,6 +11,8 @@ export function createExecutableTool(options: {
   ) => Promise<ToolExecutionResult>;
   /** Replaces the registry's schema check; see ExecutableTool.validateArguments. */
   validateArguments?: ExecutableTool["validateArguments"];
+  /** Omit for a tool with unknown external effects, such as an MCP tool. */
+  metadata?: ExecutableTool["metadata"];
 }): ExecutableTool & Required<Pick<ExecutableTool, "executeWithStatus">> {
   const schema = structuredClone(options.schema);
   const invoke = options.invoke;
@@ -26,6 +28,7 @@ export function createExecutableTool(options: {
     description: schema.function.description ?? "",
     getSchema: () => structuredClone(schema),
     executeWithStatus,
+    ...(options.metadata ? { metadata: options.metadata } : {}),
     ...(options.validateArguments
       ? { validateArguments: options.validateArguments }
       : {}),

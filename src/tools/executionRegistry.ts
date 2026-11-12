@@ -6,6 +6,10 @@ import {
 import { ChatTool } from "@propio-ai/providers";
 import { ToolExecutionResult } from "./types.js";
 import { ToolArgumentValidator } from "./argumentValidation.js";
+import {
+  resolveToolMetadata,
+  type ToolMetadata,
+} from "../policy/capabilities.js";
 
 export interface ToolSummary {
   readonly name: string;
@@ -156,6 +160,15 @@ export class ToolRegistry {
     }
 
     return summaries;
+  }
+
+  /**
+   * What a registered tool can touch. A tool that declares nothing, such as
+   * an MCP tool, reports unknown external effects. Undefined when unregistered.
+   */
+  getToolMetadata(name: string): ToolMetadata | undefined {
+    const tool = this.tools.get(name);
+    return tool ? resolveToolMetadata(tool.metadata) : undefined;
   }
 
   /**

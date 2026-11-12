@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { ToolExecutionResult } from "./types.js";
 import type { CommandOutcomeClassification } from "./types.js";
 import type { PathToolOptions } from "./localOptions.js";
@@ -80,6 +81,11 @@ function formatBashToolResult(parsed: BashToolResult): string {
 
 export class BashTool implements PresentedTool {
   readonly name = "bash";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["process"],
+    readOnly: false,
+    concurrencySafe: false,
+  };
   readonly description = "Run a shell command.";
   private readonly defaultTimeoutMs: number;
   private readonly maxTimeoutMs: number;

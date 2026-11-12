@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
@@ -38,6 +39,11 @@ function throwReadFileSystemError(
 
 export class ReadTool implements PresentedTool {
   readonly name = "read";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["read"],
+    readOnly: true,
+    concurrencySafe: true,
+  };
   readonly description = "Read a text file.";
   private readonly outputInlineLimit: number;
 

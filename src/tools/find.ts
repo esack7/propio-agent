@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import fg from "fast-glob";
@@ -17,6 +18,11 @@ function recursivePattern(pattern: string): string {
 
 export class FindTool implements PresentedTool {
   readonly name = "find";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["read"],
+    readOnly: true,
+    concurrencySafe: true,
+  };
   readonly description = "Find files by name or glob.";
 
   private readonly resolvePath: (rawPath: unknown) => string;
