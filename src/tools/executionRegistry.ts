@@ -5,6 +5,7 @@ import {
 } from "./execution.js";
 import { ChatTool } from "@propio-ai/providers";
 import { ToolExecutionResult } from "./types.js";
+import { ToolArgumentValidator } from "./argumentValidation.js";
 
 export interface ToolSummary {
   readonly name: string;
@@ -30,6 +31,9 @@ export class ToolRegistry {
 
   /** Tracks which tools are currently enabled */
   private enabledTools: Set<string> = new Set();
+
+  /** Per-registry so compiled schemas are never shared between instances. */
+  private readonly argumentValidator = new ToolArgumentValidator();
 
   /** Tracks built-in or registration-time default state for each tool. */
   private enabledByDefault: Map<string, boolean> = new Map();
@@ -177,10 +181,12 @@ export class ToolRegistry {
   /**
    * Execute a tool with comprehensive error handling.
    *
-   * Handles three error cases:
+   * Handles four error cases:
    * 1. Tool not registered: returns "Tool not found: {name}"
    * 2. Tool disabled: returns "Tool not available: {name}"
-   * 3. Execution error: catches and returns "Error executing {name}: {error.message}"
+   * 3. Arguments do not match the tool's schema: returns status
+   *    "invalid_arguments" listing each failing path, without running the tool
+   * 4. Execution error: catches and returns "Error executing {name}: {error.message}"
    *
    * @param name - The name of the tool to execute
    * @param args - The arguments to pass to the tool
@@ -206,6 +212,13 @@ export class ToolRegistry {
 
     try {
       context.signal?.throwIfAborted();
+      // Before approval and execution: an invalid call is never reviewed or run.
+      const invalid = this.argumentValidator.check(
+        name,
+        tool.getSchema().function.parameters,
+        args,
+      );
+      if (invalid) return invalid;
       const executionArgs = this.options.approve
         ? cloneApprovalArgs(args)
         : args;

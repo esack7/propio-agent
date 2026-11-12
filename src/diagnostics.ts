@@ -59,7 +59,12 @@ export type AgentDiagnosticEvent =
       toolCallId: string;
       resultChars: number;
       truncatedForContext: boolean;
-      status: "success" | "tool_not_found" | "tool_disabled" | "error";
+      status:
+        | "success"
+        | "tool_not_found"
+        | "tool_disabled"
+        | "invalid_arguments"
+        | "error";
     }
   | {
       type: "iteration_finished";

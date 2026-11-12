@@ -855,7 +855,10 @@ try {
   omitted `mcpServers` means an empty catalog. Repeated identical remote names
   (including overlapping discovery pages) retain the first descriptor.
 - Results are `{ status, content, outcome? }`, with `status` equal to `success`,
-  `error`, `tool_not_found`, or `tool_disabled`, and **content always a string**.
+  `error`, `tool_not_found`, `tool_disabled`, or `invalid_arguments`, and
+  **content always a string**. Arguments are checked against the tool's input
+  schema before dispatch; a mismatch returns `invalid_arguments` with each
+  failing path and no `outcome`, and the server is not called.
   A dispatched call includes an `mcp_call` outcome with its server and remote
   tool names, deadline, duration, and one of `succeeded`, `remote_error`,
   `timed_out`, or `transport_error`. A normal response, including an MCP
@@ -949,7 +952,11 @@ must be structured-cloneable; non-cloneable values fail closed with a clear erro
 There is no fallback to mutable references. Availability and cancellation are
 checked again after approval. The four existing statuses remain unchanged:
 `success`, `tool_not_found`, `tool_disabled` (including policy denial), and `error`
-(including cancellation). Shell nonzero exit codes remain in the JSON content,
+(including cancellation). A fifth, `invalid_arguments`, is returned when the
+arguments do not match the JSON Schema from the tool's `getSchema()`. The check
+runs before approval and execution, lists every failing path in `content` for
+the model to correct, and never coerces or defaults values. A schema that cannot
+be compiled fails closed with `error`. `format` keywords are not enforced. Shell nonzero exit codes remain in the JSON content,
 matching CLI behavior; they do not by themselves change the registry status.
 The structured result now also carries an optional `outcome`: shell commands
 distinguish zero/nonzero exit, timeout, cancellation, launch failure, and output

@@ -28,7 +28,7 @@ if (mode === "connect-hang") {
   setInterval(() => {}, 1000);
 } else {
   const server = new Server({ name: "fixture", version: "1" }, { capabilities: { tools: {} }, instructions: "Fixture instructions" });
-  const tool = (name) => ({ name, description: "Fixture tool", inputSchema: { type: "object", additionalProperties: false } });
+  const tool = (name) => ({ name, description: "Fixture tool", inputSchema: { type: "object", properties: { hang: {}, invalidTimeout: {}, throw: {}, result: {}, message: { type: "string" } }, additionalProperties: false } });
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
     fs.writeFileSync(readyFile, "listing");
     if (mode === "list-hang") return await new Promise(() => {});
@@ -565,4 +565,25 @@ it("adapts live MCP calls and local tools through the public tools registry", as
       sideEffect: "unknown",
     },
   });
+});
+
+it("rejects schema-invalid arguments without calling the server", async () => {
+  const { manager, pidFile } = fixture();
+  await manager.initialize();
+
+  const unexpected = await manager.executeToolWithStatus("mcp__fixture__echo", {
+    notDeclared: true,
+  });
+  expect(unexpected).toEqual({
+    status: "invalid_arguments",
+    content: expect.stringContaining("unexpected property 'notDeclared'"),
+  });
+  const wrongType = await manager.executeToolWithStatus(
+    "mcp__fixture__invalid_output",
+    { message: 7 },
+  );
+  expect(wrongType.status).toBe("invalid_arguments");
+  expect(wrongType.content).toContain("/message: must be string");
+  // The fixture records a side effect whenever invalid-output actually runs.
+  expect(fs.existsSync(`${pidFile}.effect`)).toBe(false);
 });

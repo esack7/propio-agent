@@ -58,7 +58,12 @@ export interface McpCallOutcome {
 
 /** Text representation; media are described rather than decoded. */
 export interface McpToolResult {
-  status: "success" | "tool_not_found" | "tool_disabled" | "error";
+  status:
+    | "success"
+    | "tool_not_found"
+    | "tool_disabled"
+    | "invalid_arguments"
+    | "error";
   content: string;
   outcome?: McpCallOutcome;
 }

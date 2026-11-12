@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { isMcpServerEnabled, validateMcpConfig } from "./validation.js";
 import { buildMcpToolName, normalizeMcpNameSegment } from "./toolName.js";
+import { ToolArgumentValidator } from "../tools/argumentValidation.js";
 import type { McpServerRuntime } from "./internalTypes.js";
 import type {
   McpToolDescriptor,
@@ -197,6 +198,7 @@ export class McpConnectionManager {
   private readonly callTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
   private readonly persistConfig?: McpConnectionOptions["persistConfig"];
+  private readonly argumentValidator = new ToolArgumentValidator();
   private startupPromise: Promise<void> | null = null;
   private closed = false;
   private shutdownPromise: Promise<void> | null = null;
@@ -638,6 +640,10 @@ export class McpConnectionManager {
         content: `Tool not available: ${name}`,
       };
     }
+
+    // Checked locally so a malformed call never reaches the server.
+    const invalid = this.argumentValidator.check(name, tool.inputSchema, args);
+    if (invalid) return { status: invalid.status, content: invalid.content };
 
     return await this.callRemoteTool(
       tool.serverName,
