@@ -134,6 +134,56 @@ describe("shell command process group", () => {
     await waitUntilDead(pid);
   });
 
+  // A descendant that redirected its output does not hold the command's pipes
+  // open, so the shell's output closing says nothing about whether it is gone.
+  const redirected = () => `${idleChild(true)} >/dev/null 2>&1 & wait`;
+
+  it("kills a SIGTERM-ignoring child with redirected output on cancel", async () => {
+    const controller = new AbortController();
+    const pending = runShellCommand({
+      command: redirected(),
+      abortSignal: controller.signal,
+      killGraceMs: 200,
+    });
+    const pid = await childPid();
+
+    controller.abort();
+    const result = await pending;
+
+    expect(result.aborted).toBe(true);
+    expect(isAlive(pid)).toBe(false);
+  });
+
+  it("kills a SIGTERM-ignoring child with redirected output on timeout", async () => {
+    const pending = runShellCommand({
+      command: redirected(),
+      abortSignal: new AbortController().signal,
+      timeoutMs: 1500,
+      killGraceMs: 200,
+    });
+    const pid = await childPid();
+
+    const result = await pending;
+
+    expect(result.timedOut).toBe(true);
+    expect(isAlive(pid)).toBe(false);
+  });
+
+  it("kills a SIGTERM-ignoring child with redirected output at the output cap", async () => {
+    const pending = runShellCommand({
+      command: `${idleChild(true)} >/dev/null 2>&1 & while [ ! -s ${quote(pidFile)} ]; do sleep 0.05; done; ${node} -e 'process.stdout.write("x".repeat(4096))'; wait`,
+      abortSignal: new AbortController().signal,
+      maxBuffer: 16,
+      killGraceMs: 200,
+    });
+    const pid = await childPid();
+
+    const result = await pending;
+
+    expect(result.maxBufferExceeded).toBe(true);
+    expect(isAlive(pid)).toBe(false);
+  });
+
   it("terminates the group when the command times out", async () => {
     const pending = runShellCommand({
       command: `${idleChild(false)} & wait`,

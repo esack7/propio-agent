@@ -50,6 +50,7 @@ import {
 } from "./ui/slashCommands.js";
 import { processBashCommand } from "./ui/processBashCommand.js";
 import { createShellRunOptionsFromRuntimeConfig } from "./tools/runShellCommand.js";
+import { exitAfterShellCleanup } from "./cli/exit.js";
 import type { InputMode } from "./ui/inputModes.js";
 import {
   createPlainSubmission,
@@ -1550,13 +1551,11 @@ const isDirectExecution =
 
 if (isDirectExecution) {
   main()
-    .then((exitCode) => {
-      process.exit(exitCode);
-    })
+    .then((exitCode) => exitAfterShellCleanup(exitCode))
     .catch((error) => {
       process.stderr.write(
         `${error instanceof Error ? error.message : String(error)}\n`,
       );
-      process.exit(1);
+      return exitAfterShellCleanup(1);
     });
 }

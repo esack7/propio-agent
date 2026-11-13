@@ -1152,9 +1152,14 @@ Cancellation is cooperative. Pre-cancelled calls do not execute. Shell calls pas
 the signal to the executor. The Node adapter runs each cancellable command in its
 own process group and, on cancellation, timeout, or exceeding the output cap,
 sends the group `SIGTERM` and then `SIGKILL` to whatever is left two seconds
-later, so processes the command started are stopped with it. A command run
-without a cancellation signal is not grouped. Because the command has no
-controlling terminal, it cannot prompt on `/dev/tty`.
+later, so processes the command started are stopped with it. The group is
+tracked until it has no members, not until the shell's output closes, and the
+result is reported only then. On exit the CLI first waits for every group it
+started to finish this sequence; a second Ctrl+C while it waits, or an exit
+that skips the wait, sends `SIGKILL` to what is left. A command run without a
+cancellation signal is not grouped. Because the command has no controlling
+terminal, it cannot prompt on `/dev/tty`, and the terminal's Ctrl+C reaches it
+only through the CLI.
 Filesystem tools check before starting, writes/edits also check before atomic
 replacement begins, and grep checks between files. In-flight I/O, glob traversal,
 completed writes, and an approval callback that ignores its signal cannot be

@@ -177,40 +177,71 @@ describe("runShellCommand", () => {
     });
   });
 
-  it("escalates to SIGKILL only while the command is still open", async () => {
+  it("escalates to SIGKILL only while the group still has members", async () => {
     jest.useFakeTimers();
+    const signals: Array<[number, NodeJS.Signals | number | undefined]> = [];
+    let groupAlive = true;
+    const kill = jest.spyOn(process, "kill").mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal === 0) {
+        if (groupAlive) return true;
+        throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+      }
+      signals.push([pid, signal]);
+      return true;
+    }) as typeof process.kill);
     try {
-      const stubborn = createMockChildProcess();
-      jest.mocked(spawn).mockReturnValue(stubborn as never);
-      const stubbornController = new AbortController();
-      const stubbornResult = runShellCommand({
+      // The shell exits on SIGTERM, but a descendant keeps the group alive.
+      const child = Object.assign(createMockChildProcess(), { pid: 4242 });
+      jest.mocked(spawn).mockReturnValue(child as never);
+      const controller = new AbortController();
+      let settled = false;
+      const pending = runShellCommand({
         command: "stubborn",
-        abortSignal: stubbornController.signal,
+        abortSignal: controller.signal,
         killGraceMs: 500,
+      }).then((result) => {
+        settled = true;
+        return result;
       });
-      stubbornController.abort();
-      jest.advanceTimersByTime(499);
-      expect(stubborn.kill).toHaveBeenCalledTimes(1);
-      jest.advanceTimersByTime(1);
-      expect(stubborn.kill).toHaveBeenLastCalledWith("SIGKILL");
-      stubborn.emit("close", null);
-      await stubbornResult;
+      controller.abort();
+      child.emit("close", null, "SIGTERM");
+      await jest.advanceTimersByTimeAsync(400);
+      expect(signals).toEqual([[-4242, "SIGTERM"]]);
+      expect(settled).toBe(false);
 
-      const prompt = createMockChildProcess();
-      jest.mocked(spawn).mockReturnValue(prompt as never);
-      const promptController = new AbortController();
-      const promptResult = runShellCommand({
-        command: "prompt",
-        abortSignal: promptController.signal,
+      await jest.advanceTimersByTimeAsync(200);
+      expect(signals).toEqual([
+        [-4242, "SIGTERM"],
+        [-4242, "SIGKILL"],
+      ]);
+      expect(settled).toBe(false);
+
+      groupAlive = false;
+      await jest.advanceTimersByTimeAsync(50);
+      await expect(pending).resolves.toMatchObject({ aborted: true });
+
+      // A group that empties within the grace period is never sent SIGKILL.
+      signals.length = 0;
+      groupAlive = true;
+      const quick = Object.assign(createMockChildProcess(), { pid: 4343 });
+      jest.mocked(spawn).mockReturnValue(quick as never);
+      const quickController = new AbortController();
+      const quickPending = runShellCommand({
+        command: "quick",
+        abortSignal: quickController.signal,
         killGraceMs: 500,
       });
-      promptController.abort();
-      prompt.emit("close", null);
-      await promptResult;
-      jest.advanceTimersByTime(1000);
-      expect(prompt.kill).toHaveBeenCalledTimes(1);
-      expect(prompt.kill).toHaveBeenCalledWith("SIGTERM");
+      quickController.abort();
+      groupAlive = false;
+      quick.emit("close", null, "SIGTERM");
+      await jest.advanceTimersByTimeAsync(1000);
+      await quickPending;
+      expect(signals).toEqual([[-4343, "SIGTERM"]]);
     } finally {
+      kill.mockRestore();
       jest.useRealTimers();
     }
   });
