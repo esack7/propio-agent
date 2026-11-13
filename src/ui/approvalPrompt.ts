@@ -48,22 +48,34 @@ export function formatApprovalRequest(request: ApprovalRequest): string[] {
   ];
 }
 
-function choiceLines(request: ApprovalRequest): string[] {
-  const grants = request.suggestions.length > 0;
+/** `savingUnavailable` is why always-allow cannot be offered, if it cannot. */
+function choiceLines(
+  request: ApprovalRequest,
+  savingUnavailable: string | undefined,
+): string[] {
+  if (request.suggestions.length === 0) {
+    return ["  y  allow once", DENY_LINE];
+  }
   return [
     "  y  allow once",
-    ...(grants
-      ? [
-          "  s  allow for this session",
-          "  a  always allow (saved to your settings)",
-        ]
-      : []),
-    '  n  deny; a reason for the model may follow, as in "n use staging"',
+    "  s  allow for this session",
+    savingUnavailable === undefined
+      ? "  a  always allow (saved to your settings)"
+      : `     (always allow is unavailable: ${visibleText(savingUnavailable)})`,
+    DENY_LINE,
   ];
 }
 
+const DENY_LINE =
+  '  n  deny; a reason for the model may follow, as in "n use staging"';
+
 function grantLine(suggestion: GrantSuggestion, index: number): string {
   return `  ${index + 1}. ${visibleText(suggestion.description)}  [${visibleText(suggestion.rule)}]`;
+}
+
+export interface ApprovalPromptOptions {
+  /** Why a rule cannot be saved, or undefined when it can. */
+  readonly savingUnavailableReason?: () => Promise<string | undefined>;
 }
 
 /** How the prompt reaches the operator; the terminal in the CLI. */
@@ -147,34 +159,58 @@ export async function askOperator(
   request: ApprovalRequest,
   io: ApprovalPromptIo,
   signal?: AbortSignal,
+  options: ApprovalPromptOptions = {},
 ): Promise<ApprovalAnswer> {
   const requestId = request.id;
-  io.show([...formatApprovalRequest(request), "", ...choiceLines(request)]);
+  // Always-allow is offered only where the rule can actually be saved.
+  const savingUnavailable = await options.savingUnavailableReason?.();
+  const choices = choiceLines(request, savingUnavailable);
+  const question =
+    savingUnavailable === undefined ? "Allow? [y/s/a/N] " : "Allow? [y/s/N] ";
+  io.show([...formatApprovalRequest(request), "", ...choices]);
   for (;;) {
-    const line = await io.readLine("Allow? [y/s/a/N] ", signal);
+    const line = await io.readLine(question, signal);
     if (line === null) return denial(requestId);
     const choice = readChoice(line);
     if (choice.kind === "once") return { requestId, decision: "allow_once" };
     if (choice.kind === "deny") return denial(requestId, choice.reason);
-    if (choice.kind === "unknown") {
-      io.show(["Enter y, s, a, or n."]);
+    const refusal = grantRefusal(choice, savingUnavailable);
+    if (refusal !== undefined) {
+      io.show([refusal]);
       continue;
     }
-    const chosen = await chooseGrant(request, choice.scope, io, signal);
+    const grant = choice as Extract<Choice, { kind: "grant" }>;
+    const chosen = await chooseGrant(request, grant.scope, io, signal);
     if (chosen === "closed") return denial(requestId);
     if (chosen !== "back") {
-      return { requestId, decision: choice.decision, rule: chosen.rule };
+      return { requestId, decision: grant.decision, rule: chosen.rule };
     }
-    io.show(choiceLines(request));
+    io.show(choices);
   }
+}
+
+/** Why a typed choice cannot be followed, or undefined when it can. */
+function grantRefusal(
+  choice: Choice,
+  savingUnavailable: string | undefined,
+): string | undefined {
+  if (choice.kind !== "grant") {
+    return savingUnavailable === undefined
+      ? "Enter y, s, a, or n."
+      : "Enter y, s, or n.";
+  }
+  return choice.decision === "allow_always" && savingUnavailable !== undefined
+    ? `Always allow is unavailable: ${visibleText(savingUnavailable)}.`
+    : undefined;
 }
 
 /** The terminal channel: allow once, for the session, always, or deny. */
 export function createApprovalPromptChannel(
   io: ApprovalPromptIo,
+  options: ApprovalPromptOptions = {},
 ): ApprovalChannel {
   return {
-    request: (request, signal) => askOperator(request, io, signal),
+    request: (request, signal) => askOperator(request, io, signal, options),
   };
 }
 

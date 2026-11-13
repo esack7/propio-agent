@@ -545,7 +545,8 @@ the reason, and takes one of:
 | `a`    | Always allow. You pick what it covers, and it is saved as a rule in settings.   |
 | `n`    | Deny. Text after it is given to the model as the reason, as in `n use staging`. |
 
-Enter alone denies. After `s` or `a` the prompt lists the grants that cover
+Enter alone denies. `a` is offered only where a rule can be saved. After `s`
+or `a` the prompt lists the grants that cover
 the call, narrowest first: this exact command or file, every call to the
 tool, every tool of the MCP server, or every call with the capability. No
 exact grant is offered for a compound command or for one that runs outside
@@ -588,6 +589,18 @@ command pattern never covers a compound command (`;`, `&&`, `|`, redirections,
 substitutions), so approving one command cannot approve what is chained after
 it; a whole-tool rule such as `bash` does. Rules are user-wide for now.
 
+Saving a rule replaces the settings file with one only you can read (mode
+`0600`, or stricter if the file already was). Saving needs the optional
+`os-lock` package to lock the file against other running sessions; where it is
+not installed, "always allow" is not offered and `/permissions` says why, and
+you can still edit the file by hand.
+
+In sandbox mode the container reads your host rules from a read-only copy of
+`~/.propio`, so host deny rules apply there too, including under
+`--permissions bypass`. Rules cannot be saved from inside the sandbox: the
+prompt offers once and session grants only, and `/permissions allow`, `ask`,
+`deny`, and `remove` report why. Edit `~/.propio/settings.json` on the host.
+
 A settings file that cannot be read, or that holds a rule or preset that
 cannot be understood, stops startup with the file and field named. It is
 never ignored, because ignoring it would drop its deny rules. Rules are read
@@ -623,8 +636,9 @@ decision is recorded with rule `mode:bypass`. `accept-edits` is shown in the
 footer too.
 
 Non-interactive runs (`--no-interactive`, `--json`, piped input, CI) have no one
-to ask, so a call that would ask is denied at once with a message naming the
-rule and the flag that would allow it. Scripts that relied on the agent
+to ask, so a call that would ask is denied at once. When no rule matched, the
+message names the allow rule and the flag that would let it run; when an ask
+rule matched, it names that rule, since nothing but changing it helps. Scripts that relied on the agent
 writing files or running commands need an allow rule in settings,
 `--permissions accept-edits`, or `--permissions bypass`.
 

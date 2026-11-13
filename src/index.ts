@@ -1022,7 +1022,10 @@ export async function runInteractiveSession(
   });
   abortState.setActiveComposer(composer);
   agent.setApprovalChannel(
-    createApprovalPromptChannel(createTerminalApprovalIo(ui, inputStream)),
+    createApprovalPromptChannel(createTerminalApprovalIo(ui, inputStream), {
+      savingUnavailableReason: () =>
+        agent.permissions.savingUnavailableReason(),
+    }),
     "application",
   );
 
@@ -1262,6 +1265,9 @@ async function createInitializedAgent(
   const { providerRuntimeOptions, label } =
     await prepareProviderStartup(providersConfig);
   if (label) process.stderr.write(`${label}\n`);
+  const permissionStore = new FilePermissionStore({
+    owner: LOCAL_PERMISSION_OWNER,
+  });
   const agent = new agentModule.Agent({
     providersConfig,
     providerRuntimeOptions,
@@ -1275,7 +1281,8 @@ async function createInitializedAgent(
     runtimeConfigOrigins,
     permissions: {
       preset: parsedArgs.flags.permissions,
-      store: new FilePermissionStore({ owner: LOCAL_PERMISSION_OWNER }),
+      store: permissionStore,
+      savingUnavailableReason: () => permissionStore.savingUnavailableReason(),
     },
     configurationOrigins: {
       providersConfig: "settings",

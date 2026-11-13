@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ChatRequest } from "@propio-ai/providers";
 import { Agent } from "../agent.js";
+import { withFileLock } from "../config/fileLock.js";
 import { FilePermissionStore } from "../config/permissionStore.js";
 import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import { LOCAL_PERMISSION_OWNER } from "../permissions/toolPermissions.js";
@@ -575,6 +576,51 @@ describe("tool permissions in the agent", () => {
         ask: [],
         deny: ["write"],
       });
+    });
+
+    it("a turn cancelled while an always-allow waits for the settings lock saves nothing", async () => {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      const controller = new AbortController();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holder: Promise<void> | undefined;
+      const { agent } = agentFor(write(), {
+        permissions: {
+          store: fileStore(),
+          approvalChannel: {
+            request: async (request) => {
+              // Another writer takes the lock just before the answer arrives.
+              await new Promise<void>((taken) => {
+                holder = withFileLock(`${settingsPath()}.lock`, async () => {
+                  taken();
+                  await held;
+                });
+              });
+              // While the save is queued behind it, the turn is cancelled.
+              setTimeout(() => {
+                controller.abort("escape");
+                release();
+              }, 50);
+              return allowAlways(request);
+            },
+          },
+        },
+      });
+
+      await expect(
+        agent.streamChat(userSubmission("Change"), () => {}, {
+          abortSignal: controller.signal,
+        }),
+      ).rejects.toThrow();
+      await holder;
+      // Give a save that wrongly survived the cancellation time to land.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(notes()).toBe("original");
+      expect(fs.existsSync(settingsPath())).toBe(false);
+      expect(agent.permissions.listSessionGrants()).toEqual([]);
     });
 
     it("picks up a rule edited between turns", async () => {

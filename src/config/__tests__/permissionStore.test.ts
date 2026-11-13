@@ -5,9 +5,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PolicyEngine } from "../../policy/index.js";
+import { withFileLock } from "../fileLock.js";
 import {
   FilePermissionStore,
   PermissionSettingsError,
+  resolveSettingsLocation,
 } from "../permissionStore.js";
 
 const OWNER = "local";
@@ -89,6 +91,10 @@ describe("loading", () => {
       /permissions\.preset/,
     ],
     ["permissions that is not an object", { permissions: [] }, /permissions/],
+    // An explicit null is not an absent key: reading it as "no rules" would
+    // start with no deny rules.
+    ["permissions that is null", { permissions: null }, /permissions: /],
+    ["permissions that is a string", { permissions: "ask" }, /permissions: /],
   ])("fails on %s, naming the file", async (_label, content, detail) => {
     writeSettings(content);
 
@@ -300,4 +306,135 @@ describe("concurrent updates", () => {
     // The file is whole JSON after every write.
     expect(readSettings().permissions).toMatchObject({ allow: [], ask: [] });
   }, 60_000);
+});
+
+describe("the mode of the settings file", () => {
+  const modeOf = () => fs.statSync(filePath).mode & 0o777;
+  let previousUmask: number;
+
+  beforeEach(() => {
+    // The common default, under which a new file would be world-readable.
+    previousUmask = process.umask(0o022);
+  });
+
+  afterEach(() => {
+    process.umask(previousUmask);
+  });
+
+  const addRule = () =>
+    store().update(OWNER, (current) => ({ ...current, deny: ["bash"] }));
+
+  it("is private when the store creates the file", async () => {
+    await addRule();
+
+    expect(modeOf()).toBe(0o600);
+  });
+
+  it.each([
+    ["stays private", 0o600, 0o600],
+    ["keeps a stricter mode", 0o400, 0o400],
+    ["loses access for other users", 0o644, 0o600],
+    ["loses access for other users and the group", 0o664, 0o600],
+  ])("%s when a %s file is replaced", async (_label, before, after) => {
+    writeSettings({ runtime: {} });
+    fs.chmodSync(filePath, before);
+
+    await addRule();
+
+    expect(modeOf()).toBe(after);
+    expect(readSettings().permissions).toMatchObject({ deny: ["bash"] });
+  });
+});
+
+describe("a store that cannot save", () => {
+  it("in sandbox mode reads the mounted settings, not the container home", () => {
+    const mount = path.join(directory, "app-propio");
+    fs.mkdirSync(mount);
+
+    expect(resolveSettingsLocation(mount)).toEqual({
+      filePath: path.join(mount, "settings.json"),
+      readOnlyReason: expect.stringContaining(
+        "edit ~/.propio/settings.json on the host",
+      ),
+    });
+    expect(resolveSettingsLocation(path.join(directory, "absent"))).toEqual({
+      filePath: path.join(os.homedir(), ".propio", "settings.json"),
+    });
+  });
+
+  it("applies the rules it reads, refuses to save, and says why", async () => {
+    writeSettings({ permissions: { deny: ["bash(git push:*)"] } });
+    const before = fs.readFileSync(filePath, "utf8");
+    const readOnly = new FilePermissionStore({
+      filePath,
+      owner: OWNER,
+      readOnlyReason: "sandbox mode reads your settings from a read-only copy",
+    });
+
+    await expect(readOnly.load(OWNER)).resolves.toMatchObject({
+      deny: ["bash(git push:*)"],
+    });
+    await expect(readOnly.savingUnavailableReason()).resolves.toMatch(
+      /read-only copy/,
+    );
+    const failure = await readOnly
+      .update(OWNER, (current) => ({ ...current, allow: ["bash"] }))
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PermissionSettingsError);
+    expect((failure as Error).message).toBe(
+      `Cannot save permissions to ${filePath}: rules cannot be saved: sandbox mode reads your settings from a read-only copy`,
+    );
+    expect(fs.readFileSync(filePath, "utf8")).toBe(before);
+    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
+  });
+
+  it("can save where the file is writable and locking works", async () => {
+    await expect(store().savingUnavailableReason()).resolves.toBeUndefined();
+  });
+});
+
+describe("an update withdrawn while it waits for the lock", () => {
+  it("stores nothing, and a later update still works", async () => {
+    writeSettings({ permissions: { deny: ["bash(git push:*)"] } });
+    const before = fs.readFileSync(filePath, "utf8");
+    const controller = new AbortController();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let lockTaken!: () => void;
+    const taken = new Promise<void>((resolve) => {
+      lockTaken = resolve;
+    });
+    // Another writer holds the lock, as a second process or a slow save would.
+    const holder = withFileLock(`${filePath}.lock`, async () => {
+      lockTaken();
+      await held;
+    });
+    await taken;
+
+    const queued = store().update(
+      OWNER,
+      (current) => ({ ...current, allow: ["bash"] }),
+      { signal: controller.signal },
+    );
+    const outcome = queued.catch((error: unknown) => error);
+    controller.abort(new Error("turn cancelled"));
+    release();
+    await holder;
+
+    expect(await outcome).toEqual(new Error("turn cancelled"));
+    expect(fs.readFileSync(filePath, "utf8")).toBe(before);
+    await store().update(OWNER, (current) => ({ ...current, allow: ["read"] }));
+    expect(readSettings().permissions).toMatchObject({ allow: ["read"] });
+  });
+
+  it("does not start for a signal that is already aborted", async () => {
+    await expect(
+      store().update(OWNER, (current) => ({ ...current, allow: ["bash"] }), {
+        signal: AbortSignal.abort(new Error("already cancelled")),
+      }),
+    ).rejects.toThrow("already cancelled");
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
 });

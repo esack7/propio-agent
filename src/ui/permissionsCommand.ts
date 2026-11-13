@@ -67,6 +67,11 @@ function showOverview(overview: PermissionsOverview, ui: PermissionsUi): void {
   ui.command(`  preset: ${overview.preset}    mode: ${overview.mode}`);
   ui.section("Rules");
   for (const line of ruleLines(overview)) ui.command(line);
+  if (overview.savingUnavailableReason !== undefined) {
+    ui.command(
+      `  Rules cannot be saved here: ${visibleText(overview.savingUnavailableReason)}.`,
+    );
+  }
   ui.section("Session grants");
   if (overview.sessionGrants.length === 0) ui.command("  (none)");
   for (const grant of overview.sessionGrants) {

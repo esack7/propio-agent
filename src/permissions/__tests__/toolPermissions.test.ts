@@ -305,6 +305,40 @@ describe("without an approval channel (a8)", () => {
     );
   });
 
+  it.each([
+    ["a whole-tool ask rule", "bash"],
+    ["an ask rule for the command", "bash(npm test)"],
+    ["a capability ask rule", "capability:process"],
+  ])(
+    "for %s, names the rule to change and suggests nothing that would not help",
+    async (_label, rule) => {
+      const policy = permissions({}, { ask: [rule] });
+
+      const decision = await policy.authorize(call.bash());
+
+      expect(decision).toMatchObject({
+        allowed: false,
+        rule: NON_INTERACTIVE_RULE,
+      });
+      expect(decision.reason).toContain(
+        `change or remove the ask rule ${JSON.stringify(rule)} (permissions.ask in ~/.propio/settings.json)`,
+      );
+      // An ask rule beats allow rules and presets, so neither is offered.
+      expect(decision.reason).not.toContain("permissions.allow");
+      expect(decision.reason).not.toContain("--permissions");
+    },
+  );
+
+  it("what the ask-rule guidance rules out really does not help", async () => {
+    // The allow rule and the bypass preset the mode-default message suggests.
+    const policy = permissions(
+      { preset: "bypass" },
+      { ask: ["bash"], allow: ["bash(npm test)"] },
+    );
+
+    expect((await policy.authorize(call.bash())).allowed).toBe(false);
+  });
+
   it("still runs what needs no approval, and what a rule allows", async () => {
     const policy = permissions({}, { allow: ["bash(npm test)"] });
 
@@ -974,5 +1008,72 @@ describe("what /permissions reads and edits", () => {
     await policy.revokeSessionGrant("bash");
     await expect(policy.addRule("allow", "bash(")).rejects.toThrow();
     expect(changes).toBe(5);
+  });
+});
+
+describe("saving that is not available", () => {
+  it("is reported in the overview, and is undefined where saving works", async () => {
+    const readOnly = permissions({
+      savingUnavailableReason: async () => "settings are read-only here",
+    });
+
+    expect(await readOnly.savingUnavailableReason()).toBe(
+      "settings are read-only here",
+    );
+    expect((await readOnly.overview()).savingUnavailableReason).toBe(
+      "settings are read-only here",
+    );
+    expect(await permissions().savingUnavailableReason()).toBeUndefined();
+    expect(await permissions().overview()).not.toHaveProperty(
+      "savingUnavailableReason",
+    );
+  });
+});
+
+describe("a turn cancelled while an answer is being applied", () => {
+  it("hands the turn's signal to the store with an always-allow answer", async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    const inner = new InMemoryPermissionStore();
+    const controller = new AbortController();
+    const policy = permissions({
+      store: {
+        load: (owner) => inner.load(owner),
+        update: (owner, change, options) => {
+          signals.push(options?.signal);
+          return inner.update(owner, change, options);
+        },
+      },
+      approvalChannel: scriptedChannel("allow_always"),
+    });
+
+    await policy.authorize({ ...call.bash(), signal: controller.signal });
+
+    expect(signals).toEqual([controller.signal]);
+  });
+
+  it("saves nothing and does not run the call when the store sees the cancellation", async () => {
+    const inner = new InMemoryPermissionStore();
+    const controller = new AbortController();
+    const policy = permissions({
+      store: {
+        load: (owner) => inner.load(owner),
+        // The save waits, as for a lock; the turn is cancelled meanwhile.
+        update: async (owner, change, options) => {
+          controller.abort(new Error("turn cancelled"));
+          return await inner.update(owner, change, options);
+        },
+      },
+      approvalChannel: scriptedChannel("allow_always"),
+    });
+
+    await expect(
+      policy.authorize({ ...call.bash(), signal: controller.signal }),
+    ).rejects.toThrow("turn cancelled");
+
+    expect((await inner.load(LOCAL_PERMISSION_OWNER)).allow).toEqual([]);
+    expect(policy.listSessionGrants()).toEqual([]);
+    // The request was dropped, and the next call asks afresh.
+    policy.setApprovalChannel(scriptedChannel("deny"));
+    expect((await policy.authorize(call.bash())).allowed).toBe(false);
   });
 });

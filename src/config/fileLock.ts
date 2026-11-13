@@ -7,6 +7,38 @@ const WAIT_MS = 25;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const BUSY_CODES = new Set(["EACCES", "EAGAIN", "EBUSY"]);
 
+/** Thrown when this installation has no way to lock a file across processes. */
+export class FileLockUnavailableError extends Error {
+  constructor() {
+    super(
+      "File locking is unavailable: the optional os-lock package is not installed " +
+        "or could not be built for this platform. Reinstall with optional " +
+        "dependencies and a native build toolchain.",
+    );
+    this.name = "FileLockUnavailableError";
+  }
+}
+
+type OsLock = typeof import("os-lock");
+
+async function loadOsLock(): Promise<OsLock> {
+  try {
+    return await import("os-lock");
+  } catch {
+    throw new FileLockUnavailableError();
+  }
+}
+
+/** Whether `withFileLock` can work here; it never creates or locks anything. */
+export async function isFileLockAvailable(): Promise<boolean> {
+  try {
+    await loadOsLock();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Operating-system locks belong to the process, so callers in it queue here first. */
 const queues = new Map<string, Promise<void>>();
 
@@ -51,7 +83,7 @@ async function lockedAcrossProcesses<T>(
   operation: () => Promise<T>,
   timeoutMs: number,
 ): Promise<T> {
-  const { lock, unlock } = await import("os-lock");
+  const { lock, unlock } = await loadOsLock();
   await mkdir(dirname(lockPath), { recursive: true });
   const file = await open(
     lockPath,

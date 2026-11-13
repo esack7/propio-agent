@@ -226,6 +226,59 @@ describe("/permissions", () => {
     expect(changes).toBe(0);
   });
 
+  describe("where rules cannot be saved", () => {
+    const reason = "sandbox mode reads your settings from a read-only copy";
+
+    beforeEach(() => {
+      permissions = new ToolPermissions({
+        workspaceRoot: workspace,
+        homeDir: workspace,
+        savingUnavailableReason: async () => reason,
+        store: {
+          load: (owner) => store.load(owner),
+          update: async () => {
+            throw new Error(
+              `Cannot save permissions to /app/.propio/settings.json: rules cannot be saved: ${reason}`,
+            );
+          },
+        },
+      });
+    });
+
+    it("says so beside the rules, which still apply", async () => {
+      const lines = await run("/permissions");
+
+      expect(lines).toContain("  deny  bash(git push:*)  (settings)");
+      expect(lines).toContain(`  Rules cannot be saved here: ${reason}.`);
+    });
+
+    it.each([
+      "/permissions allow bash(ls)",
+      "/permissions deny bash(ls)",
+      "/permissions remove bash(npm test)",
+    ])("reports why %j did nothing", async (input) => {
+      const before = await stored();
+
+      const lines = await run(input);
+
+      expect(lines).toEqual([
+        `[error] Cannot save permissions to /app/.propio/settings.json: rules cannot be saved: ${reason}`,
+        "",
+      ]);
+      expect(await stored()).toEqual(before);
+    });
+
+    it("still changes what lasts only for the session", async () => {
+      expect((await run("/permissions mode accept-edits"))[0]).toMatch(
+        /^\[success\]/,
+      );
+      permissions.restoreSessionGrants(["write"]);
+      expect((await run("/permissions revoke write"))[0]).toMatch(
+        /^\[success\]/,
+      );
+    });
+  });
+
   it("shows rule text from the settings file with control characters escaped", async () => {
     await store.update(LOCAL_PERMISSION_OWNER, (current) => ({
       ...current,

@@ -30,6 +30,7 @@ import type {
   PermissionSettings,
   PermissionSettingsChange,
   PermissionStore,
+  PermissionUpdateOptions,
 } from "./store.js";
 
 export type RuleSource = "preset" | "user" | "session";
@@ -315,8 +316,15 @@ export class PolicyEngine {
    * before anything is awaited, so a second answer cannot also decide it; it
    * is reopened if this answer fails. An allow is checked again against the
    * current deny rules, which may have changed while the request waited.
+   *
+   * `options.signal` withdraws the answer: if it aborts before a grant is
+   * recorded, nothing is stored or granted and the call rejects with the
+   * signal's reason. The request is reopened, as for any failed answer.
    */
-  async answer(answer: ApprovalAnswer): Promise<PolicyDecision> {
+  async answer(
+    answer: ApprovalAnswer,
+    options: PermissionUpdateOptions = {},
+  ): Promise<PolicyDecision> {
     const requestId = answer?.requestId;
     const request = this.pending.get(requestId);
     if (!request) {
@@ -326,7 +334,7 @@ export class PolicyEngine {
     }
     this.pending.delete(requestId);
     try {
-      return await this.decide(answer, request);
+      return await this.decide(answer, request, options);
     } catch (error) {
       this.pending.set(requestId, request);
       throw error;
@@ -336,6 +344,7 @@ export class PolicyEngine {
   private async decide(
     answer: ApprovalAnswer,
     request: PolicyRequest,
+    options: PermissionUpdateOptions,
   ): Promise<PolicyDecision> {
     if (answer.decision === "deny") return operatorDenial(answer.reason);
     const decision = allowDecision(answer.decision);
@@ -349,9 +358,16 @@ export class PolicyEngine {
     await this.reload();
     if (decision === "allow_always" && grant) {
       const text = grant.text;
-      await this.update((current) =>
-        this.denyFor(request, current) ? current : withGrant(current, text),
+      // The store checks the signal as it commits, after any wait for a
+      // lock. Once the rule is stored the answer stands.
+      await this.update(
+        (current) =>
+          this.denyFor(request, current) ? current : withGrant(current, text),
+        options,
       );
+    } else {
+      // Nothing is awaited from here on: a withdrawn answer grants nothing.
+      options.signal?.throwIfAborted();
     }
     const denied = this.denyFor(request, this.settings);
     if (denied) return refusedApproval(denied);
@@ -447,10 +463,13 @@ export class PolicyEngine {
   }
 
   /** Write through the store's atomic update, then use what it stored. */
-  private async update(change: PermissionSettingsChange): Promise<void> {
+  private async update(
+    change: PermissionSettingsChange,
+    options: PermissionUpdateOptions = {},
+  ): Promise<void> {
     // A failed write throws here and leaves the rules in use unchanged.
     await this.serialized(async () =>
-      this.adopt(await this.store.update(this.owner, change)),
+      this.adopt(await this.store.update(this.owner, change, options)),
     );
   }
 

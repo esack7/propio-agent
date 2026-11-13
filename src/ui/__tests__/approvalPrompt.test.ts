@@ -311,6 +311,66 @@ describe("askOperator", () => {
     expect(answer).toMatchObject({ rule });
   });
 
+  describe("where rules cannot be saved", () => {
+    const options = {
+      savingUnavailableReason: async () =>
+        "sandbox mode reads your settings from a read-only copy",
+    };
+    const ask = async (lines: Array<string | null>) => {
+      const io = scriptedIo(lines);
+      return {
+        answer: await askOperator(withGrants, io, undefined, options),
+        io,
+      };
+    };
+
+    it("does not offer always allow, and says why", async () => {
+      const { io } = await ask(["y"]);
+
+      expect(io.shown).toContain("  s  allow for this session");
+      expect(io.shown).not.toContain(
+        "  a  always allow (saved to your settings)",
+      );
+      expect(io.shown).toContain(
+        "     (always allow is unavailable: sandbox mode reads your settings from a read-only copy)",
+      );
+      expect(io.asked).toEqual(["Allow? [y/s/N] "]);
+    });
+
+    it("explains instead of saving when a is typed anyway, and never answers always", async () => {
+      const { answer, io } = await ask(["a", "always", "s", "1"]);
+
+      expect(
+        io.shown.filter(
+          (line) =>
+            line ===
+            "Always allow is unavailable: sandbox mode reads your settings from a read-only copy.",
+        ),
+      ).toHaveLength(2);
+      expect(answer).toEqual({
+        requestId: "approval-1",
+        decision: "allow_session",
+        rule: "bash(npm test)",
+      });
+    });
+
+    it("names only the choices it offers when the answer is not understood", async () => {
+      const { io } = await ask(["maybe", "n"]);
+
+      expect(io.shown).toContain("Enter y, s, or n.");
+    });
+  });
+
+  it("offers always allow where no reason against it is given", async () => {
+    const io = scriptedIo(["a", "1"]);
+
+    const answer = await askOperator(withGrants, io, undefined, {
+      savingUnavailableReason: async () => undefined,
+    });
+
+    expect(answer).toMatchObject({ decision: "allow_always" });
+  });
+
   it("hands the turn's signal to every question", async () => {
     const signal = new AbortController().signal;
     const signals: Array<AbortSignal | undefined> = [];

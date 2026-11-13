@@ -46,6 +46,11 @@ export interface ToolPermissionsOptions {
   readonly allowGlobalInstallsWithoutPrompt?: boolean;
   /** Called after the preset, mode, rules, or session grants are edited. */
   readonly onChange?: () => void;
+  /**
+   * Why the store cannot save rules, or undefined when it can. Without this
+   * saving is assumed to work.
+   */
+  readonly savingUnavailableReason?: () => Promise<string | undefined>;
 }
 
 /** The outcome of the most recent call that reached the rules. */
@@ -60,6 +65,8 @@ export interface LastPermissionDecision {
 /** Everything `/permissions` shows. */
 export interface PermissionsOverview extends PolicyDescription {
   readonly sessionGrants: readonly string[];
+  /** Set when rules cannot be saved from here. */
+  readonly savingUnavailableReason?: string;
   readonly lastDecision?: LastPermissionDecision;
 }
 
@@ -107,12 +114,31 @@ function denied(
   };
 }
 
-/** Names the narrowest rule that would allow the call, when there is one. */
-function nonInteractiveRuleHint(request: ApprovalRequest): string {
+/**
+ * What would let the call run without anyone to ask. An ask rule beats every
+ * allow rule and every preset, so when one matched, only changing that rule
+ * helps; allow rules and presets are suggested only for a mode default.
+ */
+function nonInteractiveGuidance(
+  request: ApprovalRequest,
+  askRule: string | undefined,
+): string {
+  if (askRule !== undefined) {
+    return (
+      "Run interactively to approve it, or change or remove the ask rule " +
+      `${JSON.stringify(askRule)} (permissions.ask in ~/.propio/settings.json); ` +
+      "an allow rule or a preset does not override an ask rule."
+    );
+  }
   const grant = request.suggestions[0]?.rule;
-  return grant
-    ? `add ${JSON.stringify(grant)} to permissions.allow in ~/.propio/settings.json, `
-    : "";
+  return (
+    "Run interactively to approve it, " +
+    (grant
+      ? `add ${JSON.stringify(grant)} to permissions.allow in ~/.propio/settings.json, `
+      : "") +
+    "or start with --permissions accept-edits (workspace edits) or " +
+    "--permissions bypass (every call)."
+  );
 }
 
 /**
@@ -176,11 +202,20 @@ export class ToolPermissions {
   /** The preset, mode, rules by source, session grants, and last decision. */
   async overview(): Promise<PermissionsOverview> {
     const engine = await this.loadEngine();
+    const unavailable = await this.savingUnavailableReason();
     return {
       ...engine.describe(),
       sessionGrants: engine.listSessionGrants(),
+      ...(unavailable === undefined
+        ? {}
+        : { savingUnavailableReason: unavailable }),
       ...(this.lastDecision ? { lastDecision: this.lastDecision } : {}),
     };
+  }
+
+  /** Why an always-allow or a rule edit cannot be saved; undefined when it can. */
+  async savingUnavailableReason(): Promise<string | undefined> {
+    return await this.options.savingUnavailableReason?.();
   }
 
   /** Store a rule for the owner, moving it out of the other lists. */
@@ -232,7 +267,41 @@ export class ToolPermissions {
     input: ToolAuthorizationInput,
   ): Promise<AgentToolPolicyDecision> {
     const engine = await this.loadEngine();
-    const request: PolicyRequest = {
+    const request = this.policyRequest(input);
+    const decision = engine.evaluate(request);
+    const mode = engine.mode;
+    if (decision.outcome !== "ask") {
+      return decision.outcome === "allow"
+        ? allowed(decision, mode)
+        : denied(input.name, decision, mode);
+    }
+    // An explicit ask rule always reaches the operator.
+    if (decision.source !== "mode") {
+      return await this.ask(engine, input, decision.request, decision.rule);
+    }
+    // Only a mode default may be replaced by one of the application's own
+    // approvals, or explained by the global-install classifier.
+    const standing = this.standingApproval(input, request);
+    if (standing) {
+      engine.abandon(decision.request.id);
+      return allowed(
+        { ...standing, actor: "application", source: "mode" },
+        mode,
+      );
+    }
+    return await this.ask(
+      engine,
+      input,
+      {
+        ...decision.request,
+        reason: this.globalInstallReason(request) ?? decision.request.reason,
+      },
+      undefined,
+    );
+  }
+
+  private policyRequest(input: ToolAuthorizationInput): PolicyRequest {
+    return {
       toolName: input.name,
       args: input.args as JsonObject,
       metadata: input.metadata,
@@ -247,34 +316,6 @@ export class ToolPermissions {
         ? {}
         : { toolCallId: input.toolCallId }),
     };
-    const decision = engine.evaluate(request);
-    const mode = engine.mode;
-    if (decision.outcome !== "ask") {
-      return decision.outcome === "allow"
-        ? allowed(decision, mode)
-        : denied(input.name, decision, mode);
-    }
-
-    // Only a mode default may be replaced by one of the application's own
-    // approvals; an explicit ask rule always reaches the operator.
-    const standing =
-      decision.source === "mode"
-        ? this.standingApproval(input, request)
-        : undefined;
-    if (standing) {
-      engine.abandon(decision.request.id);
-      return allowed(
-        { ...standing, actor: "application", source: "mode" },
-        mode,
-      );
-    }
-    return await this.ask(engine, input, {
-      ...decision.request,
-      reason:
-        decision.source === "mode"
-          ? (this.globalInstallReason(request) ?? decision.request.reason)
-          : decision.request.reason,
-    });
   }
 
   private standingApproval(
@@ -331,6 +372,8 @@ export class ToolPermissions {
     engine: PolicyEngine,
     input: ToolAuthorizationInput,
     request: ApprovalRequest,
+    /** The ask rule that matched, when a rule and not the mode default asked. */
+    askRule: string | undefined,
   ): Promise<AgentToolPolicyDecision> {
     const channel = this.channel;
     if (!channel) {
@@ -341,10 +384,7 @@ export class ToolPermissions {
           rule: NON_INTERACTIVE_RULE,
           reason:
             `approval required (${request.reason}); not available in non-interactive mode. ` +
-            "Run interactively to approve it, " +
-            nonInteractiveRuleHint(request) +
-            "or start with --permissions accept-edits (workspace edits) or " +
-            "--permissions bypass (every call).",
+            nonInteractiveGuidance(request, askRule),
           actor: "application",
           source: "mode",
         },
@@ -361,7 +401,9 @@ export class ToolPermissions {
       // Stopped while the question was open: an answer that arrives anyway
       // must not run the call or record a grant.
       input.signal?.throwIfAborted();
-      const decision = await engine.answer(answer);
+      // The answer may wait on the settings lock; a turn cancelled meanwhile
+      // must not leave a saved or session grant behind.
+      const decision = await engine.answer(answer, { signal: input.signal });
       return decision.outcome === "allow"
         ? allowed(decision, engine.mode)
         : denied(input.name, decision, engine.mode);

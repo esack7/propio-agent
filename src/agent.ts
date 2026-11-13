@@ -554,7 +554,12 @@ export class Agent {
        */
       permissions?: Pick<
         ToolPermissionsOptions,
-        "store" | "owner" | "preset" | "mode" | "approvalChannel"
+        | "store"
+        | "owner"
+        | "preset"
+        | "mode"
+        | "approvalChannel"
+        | "savingUnavailableReason"
       >;
     } = {} as any,
   ) {
