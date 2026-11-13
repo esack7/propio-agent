@@ -54,6 +54,9 @@ describe("isUnambiguousGlobalInstall", () => {
     "npm -g install eslint",
     "npm i --global eslint",
     "npm install --location=global eslint",
+    "npm install --location global eslint",
+    "npm install -g --global=true eslint",
+    "npm install -g --save-exact eslint",
     "pnpm add -g eslint",
     "yarn global add eslint",
     "brew install ripgrep",
@@ -90,6 +93,28 @@ describe("isUnambiguousGlobalInstall", () => {
       "npm --prefix /x install -g eslint",
     ],
     ["a manager whose syntax is not recognized", "pacman -S ripgrep"],
+    // npm reads options in order; a later one can make the install local.
+    [
+      "a global flag undone by --no-global",
+      "npm install -g --no-global eslint",
+    ],
+    [
+      "--global undone by --no-global",
+      "npm install --global eslint --no-global",
+    ],
+    ["--no-global before --global", "npm install --no-global --global eslint"],
+    ["--global=false", "npm install --global=false eslint"],
+    [
+      "a non-global location after -g",
+      "npm install -g --location=project eslint",
+    ],
+    [
+      "a non-global location with a space",
+      "npm install -g --location user eslint",
+    ],
+    ["combined short flags", "npm install -gD eslint"],
+    ["--no-location", "npm install -g --no-location eslint"],
+    ["pnpm undone by --no-global", "pnpm add -g --no-global eslint"],
     ["more than one command", "npm install -g a; npm install -g b"],
     ["an unknown program", "installer install -g x"],
     ["an empty command", ""],

@@ -471,6 +471,52 @@ export function classifyGlobalInstallCommand(
   return { matched: false };
 }
 
+type ScopeReading = "global" | "local" | "unclear" | undefined;
+
+/** Options whose meaning for npm's install scope is fixed. */
+const EXACT_SCOPE_OPTIONS: Readonly<Record<string, ScopeReading>> = {
+  "-g": "global",
+  "--global": "global",
+  "--global=true": "global",
+  "--location=global": "global",
+  "--no-global": "local",
+};
+
+/**
+ * Other spellings that name the scope, including combined short flags such
+ * as -gD, which npm's option parser may expand. They are not interpreted.
+ */
+const UNCLEAR_SCOPE_OPTION =
+  /^(--global=|--location=|--no-(global|location)\b|-[^-]*g)/;
+
+/** What one argument says about npm's install scope, if anything. */
+function readScopeOption(
+  token: string,
+  next: string | undefined,
+): ScopeReading {
+  if (Object.prototype.hasOwnProperty.call(EXACT_SCOPE_OPTIONS, token)) {
+    return EXACT_SCOPE_OPTIONS[token];
+  }
+  if (token === "--location") return next === "global" ? "global" : "unclear";
+  return UNCLEAR_SCOPE_OPTION.test(token) ? "unclear" : undefined;
+}
+
+/**
+ * Whether npm's effective scope is global beyond doubt. npm lets a later
+ * option override an earlier one (`--global --no-global` installs locally),
+ * so every option that names the scope must say global and at least one
+ * must be present; any other reading is left to the operator.
+ */
+function hasOnlyGlobalScope(words: readonly string[]): boolean {
+  let global = false;
+  for (let index = 0; index < words.length; index += 1) {
+    const reading = readScopeOption(words[index]!, words[index + 1]);
+    if (reading === "local" || reading === "unclear") return false;
+    if (reading === "global") global = true;
+  }
+  return global;
+}
+
 /**
  * The subcommand that installs, for package managers whose syntax makes it
  * unambiguous. A manager not listed here (pacman's -S family, for one) is
@@ -527,6 +573,6 @@ export function isUnambiguousGlobalInstall(command: string): boolean {
     subcommand !== undefined &&
     !subcommand.quoted &&
     known.verbs.includes(subcommand.value) &&
-    (known.global !== true || hasGlobalNpmFlag(words))
+    (known.global !== true || hasOnlyGlobalScope(words))
   );
 }
