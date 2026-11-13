@@ -135,10 +135,17 @@ for var in GEMINI_API_KEY GOOGLE_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY XAI_A
   fi
 done
 
+# Permission rules are written on the host, with host paths. The container
+# sees the project at /workspace, so it is told the project's and the home
+# directory's host paths to judge files by the names the rules use.
+HOST_WORKSPACE="$(pwd -P)"
+
 # Run agent in Docker container with dynamic volume mounts
 compose run --rm \
   "${ENV_FLAGS[@]}" \
   "${BROKER_FLAGS[@]}" \
+  -e "PROPIO_SANDBOX_HOST_WORKSPACE=$HOST_WORKSPACE" \
+  -e "PROPIO_SANDBOX_HOST_HOME=$HOME" \
   -v "$(pwd):/workspace" \
   -v "$CONFIG_VIEW:/app/.propio:ro" \
   agent node /app/dist/index.js "$@"

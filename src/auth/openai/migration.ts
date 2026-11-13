@@ -11,6 +11,7 @@ import {
   readPrivateFile,
 } from "./secureFiles.js";
 import { withCredentialLock } from "./lock.js";
+import { defaultOpenAiSecretDirectory } from "./auth.js";
 
 const pocAccountSchema = z.object({
   clientId: z.string().min(1),
@@ -75,9 +76,7 @@ export async function importPocAccount(options: {
     directory,
     profile: options.account,
     storage: options.storage,
-    secretDirectory:
-      options.secretDirectory ??
-      join(homedir(), ".local", "share", "propio", "openai-secrets"),
+    secretDirectory: options.secretDirectory ?? defaultOpenAiSecretDirectory(),
   });
   await privateDirectory(source);
   // The POC uses exclusive-create, never a native advisory lock. Participate in its exact protocol.

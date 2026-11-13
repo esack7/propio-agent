@@ -23,6 +23,15 @@ export type PermissionSettingsChange = (
   current: PermissionSettings,
 ) => PermissionSettings;
 
+export interface PermissionUpdateOptions {
+  /**
+   * Whoever asked for the update may withdraw it. A store must check this
+   * at the last moment before it commits, after any wait for a lock, and
+   * reject with the signal's reason without storing anything.
+   */
+  readonly signal?: AbortSignal;
+}
+
 /** Where rules live is the application's concern; policy only asks for them. */
 export interface PermissionStore {
   /** Resolves to the settings as of the latest update that has completed. */
@@ -36,6 +45,7 @@ export interface PermissionStore {
   update(
     owner: OwnerScope,
     change: PermissionSettingsChange,
+    options?: PermissionUpdateOptions,
   ): Promise<PermissionSettings>;
 }
 
@@ -65,7 +75,9 @@ export class InMemoryPermissionStore implements PermissionStore {
   async update(
     owner: OwnerScope,
     change: PermissionSettingsChange,
+    options: PermissionUpdateOptions = {},
   ): Promise<PermissionSettings> {
+    options.signal?.throwIfAborted();
     // Read, change, and write with nothing awaited in between.
     const current = this.settings.get(owner) ?? EMPTY_PERMISSION_SETTINGS;
     const next = copySettings(change(copySettings(current)));

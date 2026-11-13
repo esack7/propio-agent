@@ -95,7 +95,17 @@ import {
   type AbortStateController,
 } from "./ui/abortState.js";
 import { createTurnCancelListener } from "./ui/turnCancelListener.js";
-import { createConfirmApprovalChannel } from "./ui/approvalPrompt.js";
+import {
+  createApprovalPromptChannel,
+  createTerminalApprovalIo,
+} from "./ui/approvalPrompt.js";
+import { handlePermissionsCommand } from "./ui/permissionsCommand.js";
+import {
+  FilePermissionStore,
+  resolveSettingsLocation,
+} from "./config/permissionStore.js";
+import { readHostPaths } from "./permissions/sandboxPaths.js";
+import { LOCAL_PERMISSION_OWNER } from "./permissions/toolPermissions.js";
 import {
   JsonlTraceJournal,
   RunTraceRecorder,
@@ -592,6 +602,25 @@ async function handleToolsSubmission(
   return context.shouldExit() ? 130 : null;
 }
 
+async function handlePermissionsSubmission(
+  trimmedInput: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (
+    trimmedInput !== "/permissions" &&
+    !trimmedInput.startsWith("/permissions ")
+  ) {
+    return undefined;
+  }
+
+  await handlePermissionsCommand(
+    trimmedInput,
+    context.agent.permissions,
+    context.ui,
+  );
+  return context.shouldExit() ? 130 : null;
+}
+
 async function handleMcpSubmission(
   trimmedInput: string,
   context: InteractiveSubmissionContext,
@@ -898,6 +927,7 @@ export async function handleInteractiveSubmission(
     handleContextSubmission,
     handleSessionSubmission,
     handleToolsSubmission,
+    handlePermissionsSubmission,
     handleMcpSubmission,
     handleModelSubmission,
     async (text, context) => {
@@ -930,6 +960,7 @@ function buildFooterVisibility(
   return {
     ...snapshot,
     agentMode: agent.getAgentMode?.() ?? "execute",
+    permissionMode: agent.permissions?.describe()?.mode,
   };
 }
 
@@ -995,14 +1026,10 @@ export async function runInteractiveSession(
   });
   abortState.setActiveComposer(composer);
   agent.setApprovalChannel(
-    createConfirmApprovalChannel(
-      async (promptText, signal) =>
-        await composer.confirm({
-          promptText: ui.prompt(promptText),
-          defaultValue: false,
-          signal,
-        }),
-    ),
+    createApprovalPromptChannel(createTerminalApprovalIo(ui, inputStream), {
+      savingUnavailableReason: () =>
+        agent.permissions.savingUnavailableReason(),
+    }),
     "application",
   );
 
@@ -1242,6 +1269,12 @@ async function createInitializedAgent(
   const { providerRuntimeOptions, label } =
     await prepareProviderStartup(providersConfig);
   if (label) process.stderr.write(`${label}\n`);
+  const settingsLocation = resolveSettingsLocation();
+  const permissionStore = new FilePermissionStore({
+    owner: LOCAL_PERMISSION_OWNER,
+    filePath: settingsLocation.filePath,
+    readOnlyReason: settingsLocation.readOnlyReason,
+  });
   const agent = new agentModule.Agent({
     providersConfig,
     providerRuntimeOptions,
@@ -1253,7 +1286,18 @@ async function createInitializedAgent(
     onRecoveryCheckpointFailure,
     runtimeConfig,
     runtimeConfigOrigins,
-    permissions: { preset: parsedArgs.flags.permissions },
+    permissions: {
+      preset: parsedArgs.flags.permissions,
+      store: permissionStore,
+      // The settings are a mounted copy exactly when this is a sandbox run.
+      sandbox: settingsLocation.sandbox
+        ? {
+            hostPaths: readHostPaths(process.env),
+            configMount: path.dirname(settingsLocation.filePath),
+          }
+        : undefined,
+      savingUnavailableReason: () => permissionStore.savingUnavailableReason(),
+    },
     configurationOrigins: {
       providersConfig: "settings",
       provider: "settings",
@@ -1291,6 +1335,14 @@ async function createInitializedAgent(
     },
   });
   await agent.initialize();
+  // Read the stored rules now: a settings file that cannot be used stops
+  // startup with the file and field, rather than failing the first turn.
+  try {
+    await agent.permissions.refresh();
+  } catch (error) {
+    await agent.close();
+    throw error;
+  }
 
   if (parsedArgs.flags.mode) {
     agent.setAgentMode(parsedArgs.flags.mode, { source: "cli" });

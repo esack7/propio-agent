@@ -28,7 +28,9 @@ export { EMPTY_PERMISSION_SETTINGS, InMemoryPermissionStore } from "./store.js";
 export type {
   OwnerScope,
   PermissionSettings,
+  PermissionSettingsChange,
   PermissionStore,
+  PermissionUpdateOptions,
 } from "./store.js";
 export { PolicyEngine } from "./engine.js";
 export type {

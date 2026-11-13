@@ -536,11 +536,109 @@ plain words with no quoting, escapes, variables, or globs, and with no
 `sudo`, `env`, or shell wrapper; anything else asks.
 
 When a call asks, the prompt shows the tool, the command or resolved path, and
-the reason. Answer `y` to allow that one call; anything else denies it. A
-denial is returned to the model as the tool's result and the turn continues.
-Pressing Escape cancels the turn as usual.
+the reason, and takes one of:
 
-`--permissions <preset>` selects a preset for the run:
+| Answer | Effect                                                                          |
+| ------ | ------------------------------------------------------------------------------- |
+| `y`    | Allow this one call.                                                            |
+| `s`    | Allow for this session. You then pick what the grant covers.                    |
+| `a`    | Always allow. You pick what it covers, and it is saved as a rule in settings.   |
+| `n`    | Deny. Text after it is given to the model as the reason, as in `n use staging`. |
+
+Enter alone denies. `a` is offered only where a rule can be saved. After `s`
+or `a` the prompt lists the grants that cover
+the call, narrowest first: this exact command or file, every call to the
+tool, every tool of the MCP server, or every call with the capability. No
+exact grant is offered for a compound command or for one that runs outside
+the workspace or sets environment variables. A denial is returned to the
+model as the tool's result and the turn continues. Pressing Escape cancels
+the turn as usual.
+
+A session grant lasts until the session ends. It is saved with the session
+and restored by `/session load`; a new session starts with none.
+
+#### Rules
+
+Rules live in the `permissions` object of `~/.propio/settings.json` and can be
+edited by hand:
+
+```json
+{
+  "permissions": {
+    "preset": "ask",
+    "allow": ["bash(npm run test:*)", "edit(src/**)"],
+    "ask": ["bash(git commit:*)"],
+    "deny": ["read(~/.ssh/**)", "bash(git push:*)"]
+  }
+}
+```
+
+| Rule                 | Matches                                                         |
+| -------------------- | --------------------------------------------------------------- |
+| `bash`               | every call to that tool                                         |
+| `edit(src/**)`       | a path glob; relative to the workspace, or `/abs/**`, or `~/**` |
+| `bash(npm test)`     | that exact command                                              |
+| `bash(git status:*)` | the prefix, followed by a space or the end                      |
+| `mcp__github`        | every tool of that MCP server                                   |
+| `capability:process` | every tool declaring the capability                             |
+
+A deny rule beats an ask rule, and an ask rule beats an allow rule, whichever
+list, preset, or session grant they come from. Nothing overrides a deny rule:
+not an allow rule, not a session grant, not `bypass`. An allow rule with a
+command pattern never covers a compound command (`;`, `&&`, `|`, redirections,
+substitutions), so approving one command cannot approve what is chained after
+it; a whole-tool rule such as `bash` does. Rules are user-wide for now.
+
+Saving a rule replaces the settings file with one only you can read (mode
+`0600`, or stricter if the file already was). Saving needs the optional
+`os-lock` package to lock the file against other running sessions; where it is
+not installed, "always allow" is not offered and `/permissions` says why, and
+you can still edit the file by hand.
+
+In sandbox mode the container reads your host rules from a read-only copy of
+`~/.propio`, so host deny rules apply there too, including under
+`--permissions bypass`. The project is mounted at `/workspace`, so the sandbox
+judges each file by the path it has on the host: a rule written with an
+absolute host path or with `~/` matches the same file in the sandbox, and
+prompts and grants show host paths. The same holds for the copy of
+`~/.propio` mounted at `/app/.propio`: a rule such as `read(~/.propio/**)`
+covers it. Rules cannot be saved from inside the
+sandbox: the prompt offers once and session grants only, and
+`/permissions allow`, `ask`, `deny`, and `remove` report why. Edit
+`~/.propio/settings.json` on the host. If the image is started some other way
+than `propio --sandbox`, without being told the host paths, it refuses to run
+with a deny or ask rule that uses one, since that rule would match nothing.
+
+`settings.json` may be a symbolic link, for example into a dotfiles checkout.
+It is read through the link, and saving rewrites the file it points to and
+keeps the link. Sandbox mode copies in only its `permissions` object, and
+refuses to start if the link leads into a directory that holds credentials
+(`~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
+or to something that is not a settings object, is an error natively and stops
+the sandbox before it starts.
+
+A settings file that cannot be read, or that holds a rule or preset that
+cannot be understood, stops startup with the file and field named. It is
+never ignored, because ignoring it would drop its deny rules. Rules are read
+again at the start of each turn, so an edit applies without restarting.
+
+`/permissions` shows and edits what is in force:
+
+| Command                                             | Effect                                                               |
+| --------------------------------------------------- | -------------------------------------------------------------------- |
+| `/permissions`                                      | Preset, mode, rules by source, session grants, and the last decision |
+| `/permissions allow <rule>` (also `ask`, `deny`)    | Save a rule, moving it out of the other lists                        |
+| `/permissions remove <rule>`                        | Remove a saved rule                                                  |
+| `/permissions revoke <grant>`                       | Revoke a session grant                                               |
+| `/permissions preset <name>`                        | Use a preset for this session; the saved preset is unchanged         |
+| `/permissions mode <ask \| accept-edits \| bypass>` | Set what happens to calls no rule matches, for this session          |
+
+#### Presets
+
+A preset is a mode, which decides calls no rule matched, plus rules.
+`--permissions <preset>` selects one for the run; otherwise
+`permissions.preset` in settings applies, and otherwise `ask`. Your own rules
+apply on top of any preset.
 
 | Preset         | Effect                                                           |
 | -------------- | ---------------------------------------------------------------- |
@@ -549,10 +647,16 @@ Pressing Escape cancels the turn as usual.
 | `accept-edits` | `write` and `edit` inside the workspace also run without asking. |
 | `bypass`       | Every call runs without asking, as before permissions existed.   |
 
+While the mode is `bypass` the footer shows `permissions: BYPASS`, and each
+decision is recorded with rule `mode:bypass`. `accept-edits` is shown in the
+footer too.
+
 Non-interactive runs (`--no-interactive`, `--json`, piped input, CI) have no one
-to ask, so a call that would ask is denied at once with a message naming this
-flag. Scripts that relied on the agent writing files or running commands need
-`--permissions accept-edits` or `--permissions bypass`.
+to ask, so a call that would ask is denied at once. When no rule matched, the
+message names the allow rule and the flag that would let it run; when an ask
+rule matched, it names that rule, since nothing but changing it helps. Scripts that relied on the agent
+writing files or running commands need an allow rule in settings,
+`--permissions accept-edits`, or `--permissions bypass`.
 
 Plan and discover modes keep their own restrictions, which apply in every
 preset. The read-only commands they permit, and writes to the approved plan
@@ -571,9 +675,6 @@ reason shown in the prompt. `PROPIO_ALLOW_GLOBAL_INSTALLS=1` and
 `runtime.allowGlobalInstallsWithoutPrompt` still let them run without a prompt
 but are deprecated and print a warning.
 
-Saved rules, session-wide approvals from the prompt, and a `/permissions`
-command are not available yet.
-
 ### Session commands
 
 | Command              | Description                                          |
@@ -585,6 +686,7 @@ command are not available yet.
 | `/context prompt`    | Show the latest prompt plan                          |
 | `/context memory`    | Show rolling summary and pinned memory               |
 | `/tools`             | Enable or disable tools at runtime                   |
+| `/permissions`       | Show or edit tool permission rules and grants        |
 | `/session list`      | List saved sessions and recovery checkpoints         |
 | `/session load`      | Load the latest saved session snapshot               |
 | `/session load <id>` | Load a specific saved session snapshot               |

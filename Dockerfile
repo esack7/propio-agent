@@ -2,8 +2,17 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
+# os-lock (file locking for saved settings) is an optional dependency with
+# no prebuilt binary for Alpine, and npm skips an optional dependency that
+# fails to build without saying so. It needs a toolchain, and its source
+# passes a `long long *` where N-API declares `int64_t *`; the two are the
+# same size on every 64-bit target, but GCC 14 makes the mismatch an error.
+RUN apk add --no-cache python3 make g++
+
 COPY package.json npm-shrinkwrap.json tsconfig.json ./
-RUN npm install
+RUN CFLAGS="-Wno-error=incompatible-pointer-types" npm install
+# Fail the build rather than ship an image that cannot lock.
+RUN node -e "require('os-lock')"
 
 # Optional development artifact; normal release builds use the published dependency.
 ARG PROPIO_LOCAL_PROVIDERS_TARBALL=""

@@ -3,7 +3,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ChatRequest } from "@propio-ai/providers";
 import { Agent } from "../agent.js";
+import { withFileLock } from "../config/fileLock.js";
+import { FilePermissionStore } from "../config/permissionStore.js";
 import type { ApprovalChannel } from "../permissions/approvalChannel.js";
+import { LOCAL_PERMISSION_OWNER } from "../permissions/toolPermissions.js";
+import {
+  createApprovalPromptChannel,
+  type ApprovalPromptIo,
+} from "../ui/approvalPrompt.js";
 import type { ApprovalAnswer, ApprovalRequest } from "../policy/index.js";
 import {
   createMockTool,
@@ -417,6 +424,294 @@ describe("tool permissions in the agent", () => {
       );
       expect(JSON.parse(agent.exportSession()).metadata.sessionId).toBe(
         sessionId,
+      );
+    });
+  });
+
+  describe("rules saved in the settings file (a4)", () => {
+    const settingsPath = () =>
+      path.join(path.dirname(workspace), "home", "settings.json");
+    const fileStore = () =>
+      new FilePermissionStore({
+        filePath: settingsPath(),
+        owner: LOCAL_PERMISSION_OWNER,
+      });
+    const savedPermissions = () =>
+      JSON.parse(fs.readFileSync(settingsPath(), "utf8")).permissions;
+    const allowAlways: Reply = (request) => ({
+      requestId: request.id,
+      decision: "allow_always",
+      rule: request.toolName,
+    });
+
+    it("an always-allow answer is saved and suppresses the prompt in a new session", async () => {
+      const first = channel(allowAlways);
+      const original = agentFor(write(), {
+        permissions: { store: fileStore(), approvalChannel: first },
+      });
+      await original.agent.streamChat(userSubmission("Change"), () => {});
+      expect(first.requests).toHaveLength(1);
+      expect(savedPermissions()).toEqual({
+        allow: ["write"],
+        ask: [],
+        deny: [],
+      });
+
+      // A new process: a new agent, a new store, no session to resume.
+      fs.writeFileSync(path.join(workspace, "notes.txt"), "original");
+      const later = channel(deny);
+      const next = agentFor(write(), {
+        permissions: { store: fileStore(), approvalChannel: later },
+      });
+      await next.agent.streamChat(userSubmission("Change"), () => {});
+
+      expect(later.requests).toHaveLength(0);
+      expect(notes()).toBe("changed");
+      expect(next.policyEvents.at(-1)).toMatchObject({
+        decision: "allowed",
+        actor: "application",
+        rule: "write",
+      });
+      expect(
+        JSON.parse(next.agent.exportSession()).metadata,
+      ).not.toHaveProperty("sessionGrants");
+    });
+
+    it("a hand-written allow rule suppresses the prompt, also without anyone to ask", async () => {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      fs.writeFileSync(
+        settingsPath(),
+        JSON.stringify({ permissions: { allow: ["write(notes.txt)"] } }),
+      );
+      const { agent } = agentFor(write(), {
+        permissions: { store: fileStore() },
+      });
+
+      await agent.streamChat(userSubmission("Change"), () => {});
+
+      expect(notes()).toBe("changed");
+    });
+
+    it.each([
+      ["an allow rule", { allow: ["write", "write(notes.txt)"] }, {}],
+      ["the bypass preset in settings", { preset: "bypass" }, {}],
+      ["the bypass preset for the run", {}, { preset: "bypass" }],
+      ["bypass mode", {}, { mode: "bypass" as const }],
+    ])(
+      "a deny rule is not overridden by %s",
+      async (_label, settings, options) => {
+        fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+        fs.writeFileSync(
+          settingsPath(),
+          JSON.stringify({
+            permissions: { deny: ["write(notes.txt)"], ...settings },
+          }),
+        );
+        const asked = channel(allowOnce);
+        const { agent, policyEvents } = agentFor(write(), {
+          permissions: {
+            store: fileStore(),
+            approvalChannel: asked,
+            ...options,
+          },
+        });
+
+        await agent.streamChat(userSubmission("Change"), () => {});
+
+        expect(notes()).toBe("original");
+        expect(asked.requests).toHaveLength(0);
+        expect(policyEvents.at(-1)).toMatchObject({
+          decision: "denied",
+          actor: "application",
+          rule: "write(notes.txt)",
+        });
+      },
+    );
+
+    it("a deny rule is not overridden by a session grant, restored or given at the prompt", async () => {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      fs.writeFileSync(
+        settingsPath(),
+        JSON.stringify({ permissions: { deny: ["write(notes.txt)"] } }),
+      );
+      const { agent } = agentFor(write(), {
+        permissions: {
+          store: fileStore(),
+          approvalChannel: channel(allowOnce),
+        },
+      });
+      agent.permissions.restoreSessionGrants([
+        "write",
+        "capability:workspace_write",
+      ]);
+
+      await agent.streamChat(userSubmission("Change"), () => {});
+
+      expect(notes()).toBe("original");
+    });
+
+    it("a deny rule added while the question is open refuses an always-allow answer and is kept", async () => {
+      const store = fileStore();
+      const { agent } = agentFor(write(), {
+        permissions: {
+          store,
+          approvalChannel: {
+            request: async (request) => {
+              // Another process edits the settings while the prompt waits.
+              await fileStore().update(LOCAL_PERMISSION_OWNER, (current) => ({
+                ...current,
+                deny: ["write"],
+              }));
+              return allowAlways(request);
+            },
+          },
+        },
+      });
+
+      await agent.streamChat(userSubmission("Change"), () => {});
+
+      expect(notes()).toBe("original");
+      expect(savedPermissions()).toEqual({
+        allow: [],
+        ask: [],
+        deny: ["write"],
+      });
+    });
+
+    it("a turn cancelled while an always-allow waits for the settings lock saves nothing", async () => {
+      fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+      const controller = new AbortController();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holder: Promise<void> | undefined;
+      const { agent } = agentFor(write(), {
+        permissions: {
+          store: fileStore(),
+          approvalChannel: {
+            request: async (request) => {
+              // Another writer takes the lock just before the answer arrives.
+              await new Promise<void>((taken) => {
+                holder = withFileLock(`${settingsPath()}.lock`, async () => {
+                  taken();
+                  await held;
+                });
+              });
+              // While the save is queued behind it, the turn is cancelled.
+              setTimeout(() => {
+                controller.abort("escape");
+                release();
+              }, 50);
+              return allowAlways(request);
+            },
+          },
+        },
+      });
+
+      await expect(
+        agent.streamChat(userSubmission("Change"), () => {}, {
+          abortSignal: controller.signal,
+        }),
+      ).rejects.toThrow();
+      await holder;
+      // Give a save that wrongly survived the cancellation time to land.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(notes()).toBe("original");
+      expect(fs.existsSync(settingsPath())).toBe(false);
+      expect(agent.permissions.listSessionGrants()).toEqual([]);
+    });
+
+    it("picks up a rule edited between turns", async () => {
+      const asked = channel(deny);
+      const { agent } = agentFor(write(), {
+        permissions: { store: fileStore(), approvalChannel: asked },
+      });
+      await agent.streamChat(userSubmission("Change"), () => {});
+      expect(asked.requests).toHaveLength(1);
+
+      await agent.permissions.addRule("allow", "write(notes.txt)");
+      (agent as unknown as { provider: unknown }).provider = write();
+      await agent.streamChat(userSubmission("Again"), () => {});
+
+      expect(asked.requests).toHaveLength(1);
+      expect(notes()).toBe("changed");
+    });
+  });
+
+  describe("the terminal prompt", () => {
+    /** An operator typing lines at the CLI's own prompt. */
+    function operator(lines: string[]): ApprovalPromptIo & { shown: string[] } {
+      const shown: string[] = [];
+      return {
+        shown,
+        show: (text) => shown.push(...text),
+        readLine: async () => {
+          if (lines.length === 0) throw new Error("asked more than scripted");
+          return lines.shift() as string;
+        },
+      };
+    }
+
+    it("shows the exact operation and runs it once on y (a2)", async () => {
+      const io = operator(["y"]);
+      const { agent, policyEvents } = agentFor(write(), {
+        permissions: { approvalChannel: createApprovalPromptChannel(io) },
+      });
+
+      await agent.streamChat(userSubmission("Change"), () => {});
+
+      expect(io.shown.slice(0, 3)).toEqual([
+        "write needs approval.",
+        `Path: ${path.join(workspace, "notes.txt")}`,
+        "Reason: Workspace writes need approval in ask mode",
+      ]);
+      expect(notes()).toBe("changed");
+      expect(policyEvents.at(-1)).toMatchObject({
+        actor: "user",
+        rule: "approval:allow_once",
+      });
+    });
+
+    it("a session grant chosen at the prompt stops further prompts and is saved with the session (a5)", async () => {
+      // "s", then the second grant offered: every call to write.
+      const io = operator(["s", "2"]);
+      const { agent, policyEvents } = agentFor(write(), {
+        permissions: { approvalChannel: createApprovalPromptChannel(io) },
+      });
+
+      await agent.streamChat(userSubmission("Change"), () => {});
+      (agent as unknown as { provider: unknown }).provider = write();
+      await agent.streamChat(userSubmission("Again"), () => {});
+
+      expect(io.shown).toContain("  2. every call to write  [write]");
+      expect(policyEvents.map((event) => event.rule)).toEqual([
+        "tool_scope",
+        "approval:allow_session:write",
+        "tool_scope",
+        "session_grant:write",
+      ]);
+      expect(JSON.parse(agent.exportSession()).metadata.sessionGrants).toEqual([
+        "write",
+      ]);
+    });
+
+    it("returns the operator's reason to the model on n (a3)", async () => {
+      const provider = write();
+      const { agent } = agentFor(provider, {
+        permissions: {
+          approvalChannel: createApprovalPromptChannel(
+            operator(["n keep the notes as they are"]),
+          ),
+        },
+      });
+
+      await agent.streamChat(userSubmission("Change"), () => {});
+
+      expect(notes()).toBe("original");
+      expect(toolResult(provider.streamChatCalls[1])).toBe(
+        "Permission denied for write: keep the notes as they are",
       );
     });
   });

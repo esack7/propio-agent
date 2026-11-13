@@ -14,8 +14,29 @@ describe("slashCommands", () => {
       "Context",
       "Sessions",
       "Tools",
+      "Permissions",
       "MCP",
     ]);
+  });
+
+  it.each([
+    [undefined, ""],
+    ["ask", ""],
+    ["accept-edits", " | permissions: accept-edits"],
+    ["bypass", " | permissions: BYPASS"],
+  ])("labels permission mode %s in both footers as %j", (mode, label) => {
+    const visibility = {
+      showToolCalls: true,
+      showThinking: true,
+      permissionMode: mode,
+    };
+
+    expect(getIdleFooterText(visibility)).toBe(
+      `Enter to send | ? help | mode: execute | tools: shown | thinking: shown${label}`,
+    );
+    expect(getBashFooterText(visibility)).toBe(
+      `Enter to run | mode: execute | tools: shown | thinking: shown${label}`,
+    );
   });
 
   it("includes all available commands and shortcuts", () => {

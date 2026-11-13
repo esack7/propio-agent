@@ -1404,3 +1404,70 @@ describe("exact grants stay exact", () => {
     expect(outcome("echo label other")).toBe("ask");
   });
 });
+
+describe("an answer withdrawn before it takes effect", () => {
+  const withdrawn = () => AbortSignal.abort(new Error("turn cancelled"));
+
+  it.each(["allow_once", "allow_session", "allow_always"] as const)(
+    "grants and stores nothing for %s, and leaves the request answerable",
+    async (decision) => {
+      const { engine: policy, store } = await engine();
+      const request = asked(policy.evaluate(CALLS.bash));
+      const answer =
+        decision === "allow_once"
+          ? { requestId: request.id, decision }
+          : { requestId: request.id, decision, rule: "bash" };
+
+      await expect(
+        policy.answer(answer, { signal: withdrawn() }),
+      ).rejects.toThrow("turn cancelled");
+
+      expect(policy.listSessionGrants()).toEqual([]);
+      expect((await store.load(OWNER)).allow).toEqual([]);
+      expect(policy.evaluate(CALLS.bash).outcome).toBe("ask");
+      // The failed answer reopened the request, as any failed answer does.
+      await expect(
+        policy.answer({ requestId: request.id, decision: "deny" }),
+      ).resolves.toMatchObject({ outcome: "deny" });
+    },
+  );
+
+  it("hands the signal to the store, which decides at the moment it commits", async () => {
+    const received: Array<AbortSignal | undefined> = [];
+    const inner = new InMemoryPermissionStore();
+    const store: PermissionStore = {
+      load: (owner) => inner.load(owner),
+      update: (owner, change, options) => {
+        received.push(options?.signal);
+        return inner.update(owner, change, options);
+      },
+    };
+    const policy = await PolicyEngine.create({
+      store,
+      owner: OWNER,
+      workspaceRoot: WORKSPACE,
+    });
+    const signal = new AbortController().signal;
+    const request = asked(policy.evaluate(CALLS.bash));
+
+    await policy.answer(
+      { requestId: request.id, decision: "allow_always", rule: "bash" },
+      { signal },
+    );
+
+    expect(received).toEqual([signal]);
+    expect((await inner.load(OWNER)).allow).toEqual(["bash"]);
+  });
+
+  it("still denies with a withdrawn signal: a denial needs nothing recorded", async () => {
+    const { engine: policy } = await engine();
+    const request = asked(policy.evaluate(CALLS.bash));
+
+    await expect(
+      policy.answer(
+        { requestId: request.id, decision: "deny" },
+        { signal: withdrawn() },
+      ),
+    ).resolves.toMatchObject({ outcome: "deny" });
+  });
+});

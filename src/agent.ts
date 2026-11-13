@@ -554,7 +554,13 @@ export class Agent {
        */
       permissions?: Pick<
         ToolPermissionsOptions,
-        "store" | "owner" | "preset" | "mode" | "approvalChannel"
+        | "store"
+        | "owner"
+        | "preset"
+        | "mode"
+        | "approvalChannel"
+        | "sandbox"
+        | "savingUnavailableReason"
       >;
     } = {} as any,
   ) {
@@ -600,6 +606,8 @@ export class Agent {
     );
     this.toolPermissions = new ToolPermissions({
       ...options.permissions,
+      onChange: () =>
+        this.recordConfigurationChange("permissions_changed", "approval"),
       homeDir: this.skillContext.homeDir,
       allowGlobalInstallsWithoutPrompt:
         this.runtimeConfig.allowGlobalInstallsWithoutPrompt,
@@ -3131,6 +3139,11 @@ export class Agent {
     this.systemPromptRegistry.invalidateCoreIdentity();
     this.configurationOrigins.systemPrompt = "runtime_change";
     this.recordConfigurationChange("system_prompt_changed", "system_prompt");
+  }
+
+  /** The rules, grants, preset, and mode in front of this agent's tools. */
+  get permissions(): ToolPermissions {
+    return this.toolPermissions;
   }
 
   /**
