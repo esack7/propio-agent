@@ -75,6 +75,10 @@ function serializeTurnForSummary(
   for (const entry of turn.entries) {
     if (entry.kind === "assistant") {
       appendAssistantSummary(lines, entry);
+    } else if (entry.kind === "guidance") {
+      lines.push(
+        `User (while the work was in progress): ${entry.message.content}`,
+      );
     } else if (entry.kind === "tool") {
       const isRecent =
         toolEntryIndex >= totalToolEntries - keepFullToolSummaries;

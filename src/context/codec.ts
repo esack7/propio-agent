@@ -41,7 +41,7 @@ export interface PersistedChatMessage {
 }
 
 export interface PersistedTurnEntry {
-  readonly kind: "assistant" | "tool";
+  readonly kind: "assistant" | "tool" | "guidance";
   readonly createdAt: string;
   readonly estimatedTokens?: number;
   readonly message: PersistedChatMessage;
@@ -241,7 +241,7 @@ function validateBase64(content: string, label: string): void {
 }
 
 const VALID_ROLES = new Set(["user", "assistant", "system", "tool"]);
-const VALID_ENTRY_KINDS = new Set(["assistant", "tool"]);
+const VALID_ENTRY_KINDS = new Set(["assistant", "tool", "guidance"]);
 const VALID_IMPORTANCE = new Set(["low", "normal", "high"]);
 const VALID_CONTENT_ENCODING = new Set(["utf8", "base64"]);
 const VALID_MEMORY_KINDS = new Set<MemoryKind>([
@@ -387,55 +387,61 @@ function validateMessage(msg: unknown, label: string): void {
   validateMessageImages(record, label);
 }
 
+/** The message role each entry kind must carry. */
+const ENTRY_MESSAGE_ROLES: Readonly<Record<string, string>> = {
+  assistant: "assistant",
+  tool: "tool",
+  guidance: "user",
+};
+
+function validateToolInvocations(
+  entry: Record<string, unknown>,
+  label: string,
+): void {
+  if (entry.toolInvocations === undefined) {
+    throw new SessionParseError(
+      `${label} has kind "tool" but is missing required toolInvocations`,
+    );
+  }
+  assertArray(entry.toolInvocations, `${label}.toolInvocations`);
+  (entry.toolInvocations as unknown[]).forEach((inv, i) => {
+    const invLabel = `${label}.toolInvocations[${i}]`;
+    assertObject(inv, invLabel);
+    for (const field of [
+      "toolCallId",
+      "toolName",
+      "status",
+      "resultSummary",
+      "artifactId",
+    ]) {
+      assertString(
+        (inv as Record<string, unknown>)[field],
+        `${invLabel}.${field}`,
+      );
+    }
+  });
+}
+
 function validateEntry(entry: unknown, label: string): void {
   assertObject(entry, label);
   assertString(entry.kind, `${label}.kind`);
   if (!VALID_ENTRY_KINDS.has(entry.kind as string)) {
-    throw new SessionParseError(`${label}.kind must be "assistant" or "tool"`);
+    throw new SessionParseError(
+      `${label}.kind must be "assistant", "tool", or "guidance"`,
+    );
   }
   assertString(entry.createdAt, `${label}.createdAt`);
   validateMessage(entry.message, `${label}.message`);
 
+  const kind = entry.kind as string;
   const msgRole = (entry.message as Record<string, unknown>).role as string;
-
-  if (entry.kind === "tool") {
-    if (msgRole !== "tool") {
-      throw new SessionParseError(
-        `${label} has kind "tool" but message.role is "${msgRole}"; expected "tool"`,
-      );
-    }
-
-    if (entry.toolInvocations === undefined) {
-      throw new SessionParseError(
-        `${label} has kind "tool" but is missing required toolInvocations`,
-      );
-    }
-
-    assertArray(entry.toolInvocations, `${label}.toolInvocations`);
-    for (let i = 0; i < (entry.toolInvocations as unknown[]).length; i++) {
-      const inv = (entry.toolInvocations as unknown[])[i];
-      assertObject(inv, `${label}.toolInvocations[${i}]`);
-      const invObj = inv as Record<string, unknown>;
-      assertString(
-        invObj.toolCallId,
-        `${label}.toolInvocations[${i}].toolCallId`,
-      );
-      assertString(invObj.toolName, `${label}.toolInvocations[${i}].toolName`);
-      assertString(invObj.status, `${label}.toolInvocations[${i}].status`);
-      assertString(
-        invObj.resultSummary,
-        `${label}.toolInvocations[${i}].resultSummary`,
-      );
-      assertString(
-        invObj.artifactId,
-        `${label}.toolInvocations[${i}].artifactId`,
-      );
-    }
-  } else if (entry.kind === "assistant" && msgRole !== "assistant") {
+  const expectedRole = ENTRY_MESSAGE_ROLES[kind];
+  if (msgRole !== expectedRole) {
     throw new SessionParseError(
-      `${label} has kind "assistant" but message.role is "${msgRole}"; expected "assistant"`,
+      `${label} has kind "${kind}" but message.role is "${msgRole}"; expected "${expectedRole}"`,
     );
   }
+  if (kind === "tool") validateToolInvocations(entry, label);
 }
 
 function validateTurn(turn: unknown, label: string): void {

@@ -1,9 +1,10 @@
 import { describe, expect, it, jest } from "@jest/globals";
-import type {
-  ChatMessage,
-  ChatRequest,
-  ChatStreamEvent,
-  LLMProvider,
+import {
+  ProviderContextLengthError,
+  type ChatMessage,
+  type ChatRequest,
+  type ChatStreamEvent,
+  type LLMProvider,
 } from "@propio-ai/providers";
 import {
   AgentRuntime,
@@ -51,12 +52,16 @@ function createQueue(): GuidanceSource & {
   };
 }
 
-function setup(rounds: Round[], overrides: Partial<AgentRuntimeOptions> = {}) {
+function setup(
+  rounds: Round[],
+  overrides: Partial<AgentRuntimeOptions> = {},
+  contextWindowTokens = 32000,
+) {
   const requests: ChatRequest[] = [];
   const context = new ConversationManager();
   const provider: LLMProvider = {
     name: "test",
-    getCapabilities: () => ({ contextWindowTokens: 32000 }),
+    getCapabilities: () => ({ contextWindowTokens }),
     async *streamChat(request) {
       const round = rounds[requests.length] ?? [text("Finished.")];
       requests.push(request);
@@ -267,7 +272,148 @@ describe("operator guidance (a1)", () => {
   });
 });
 
+describe("guidance stays with the task it steers (a1)", () => {
+  // A task that fits a small window on its own, and a tool result that,
+  // with the task, leaves little room. Guidance must not push the task out.
+  const task = `Audit these records: ${"r".repeat(7300)}`;
+  const longResult = `RESULT ${"x".repeat(1800)}`;
+
+  it("keeps the task, the tool exchange, and the guidance under budget pressure", async () => {
+    const fixture = setup([[calls("a")], [text("Done.")]], {}, 4096);
+    fixture.execute.mockImplementation(async () => {
+      fixture.queue.push("g1", "Skip archived records.");
+      return longResult;
+    });
+
+    await fixture.run(undefined, task);
+
+    const second = conversation(fixture.requests[1]!);
+    expect(second.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    expect(second[0]!.content).toBe(task);
+    expect(second[3]).toMatchObject(guidance("Skip archived records."));
+    expectWellFormed(fixture.requests[1]!);
+  });
+
+  it("keeps the task and every guidance message in the minimal recovery prompt", async () => {
+    const tooLong = () => {
+      throw new ProviderContextLengthError("too long", "test");
+    };
+    const fixture = setup([
+      [calls("a")],
+      tooLong,
+      tooLong,
+      tooLong,
+      [text("Done.")],
+    ]);
+    fixture.execute.mockImplementation(async () => {
+      fixture.queue.push("g1", "Skip archived records.");
+      fixture.queue.push("g2", "Report totals only.");
+      return "result of a";
+    });
+
+    await expect(fixture.run()).resolves.toBe("Done.");
+
+    const plans = fixture.events.flatMap((event) =>
+      event.type === "prompt_plan_built" ? [event.snapshot.plan] : [],
+    );
+    expect(plans.at(-1)?.retryLevel).toBe(3);
+    const last = conversation(fixture.requests.at(-1)!);
+    expect(last[0]).toMatchObject({
+      role: "user",
+      content: "Find the records",
+    });
+    expect(last.slice(-2)).toMatchObject([
+      guidance("Skip archived records."),
+      guidance("Report totals only."),
+    ]);
+    expectWellFormed(fixture.requests.at(-1)!);
+  });
+
+  it("reopens a finished turn rather than starting another", async () => {
+    const fixture = setup([
+      () => {
+        fixture.queue.push("g1", "Also list the owners.");
+        return [text("Here are the records.")];
+      },
+      [text("With owners.")],
+    ]);
+    await fixture.run();
+    const turns = fixture.context.getConversationState().turns;
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.entries.map((entry) => entry.kind)).toEqual([
+      "assistant",
+      "guidance",
+      "assistant",
+    ]);
+    expect(turns[0]!.completedAt).toEqual(expect.any(String));
+  });
+});
+
 describe("interrupting a turn (a2)", () => {
+  it("keeps delivered guidance when the next model step is interrupted", async () => {
+    const controller = new AbortController();
+    const fixture = setup([
+      [calls("a")],
+      () => {
+        controller.abort("interrupt");
+        return [text("Half an ans")];
+      },
+      [text("Carrying on.")],
+    ]);
+    fixture.execute.mockImplementation(async () => {
+      fixture.queue.push("g1", "Do not modify production.");
+      fixture.queue.push("g2", "Use the staging copy.");
+      return "result of a";
+    });
+
+    await expect(fixture.run(controller.signal)).rejects.toThrow("cancelled");
+    // Both were announced as delivered, so both must still be in context.
+    expect(
+      fixture.events.filter((event) => event.type === "guidance_delivered"),
+    ).toHaveLength(2);
+    expect(fixture.queue.waiting).toEqual([]);
+
+    await fixture.run(undefined, "Continue");
+    const next = conversation(fixture.requests[2]!);
+    expect(next.filter((message) => message.role === "user")).toMatchObject([
+      { content: "Find the records" },
+      guidance("Do not modify production."),
+      guidance("Use the staging copy."),
+      { content: "Continue" },
+    ]);
+    expectWellFormed(fixture.requests[2]!);
+  });
+
+  it("keeps guidance delivered before the first request when that request is interrupted", async () => {
+    const controller = new AbortController();
+    const fixture = setup([
+      () => {
+        controller.abort("interrupt");
+        return [text("Never finished")];
+      },
+      [text("Carrying on.")],
+    ]);
+    fixture.queue.push("g1", "Be brief.");
+
+    await expect(fixture.run(controller.signal)).rejects.toThrow("cancelled");
+    await fixture.run(undefined, "Continue");
+
+    expect(
+      conversation(fixture.requests[1]!).filter(
+        (message) => message.role === "user",
+      ),
+    ).toMatchObject([
+      { content: "Find the records" },
+      guidance("Be brief."),
+      { content: "Continue" },
+    ]);
+  });
+
   it("keeps completed results, resolves the rest, and replays nothing", async () => {
     const fixture = setup([[calls("a", "b", "c")], [text("Carrying on.")]]);
     const controller = new AbortController();

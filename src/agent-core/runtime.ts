@@ -1279,9 +1279,9 @@ export class AgentRuntime {
   ): number {
     const waiting = options?.guidance?.drain() ?? [];
     for (const message of waiting) {
-      this.contextManager.beginUserTurn(formatOperatorGuidance(message.text));
-      const turns = this.contextManager.getConversationState().turns;
-      this.currentTurnId = turns[turns.length - 1]?.id;
+      this.contextManager.appendOperatorGuidance(
+        formatOperatorGuidance(message.text),
+      );
       const trace = this.dependencies.trace;
       trace?.record(
         {

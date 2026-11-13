@@ -68,6 +68,13 @@ export type ConversationRecoveryChange =
     }
   | { kind: "assistant_removed"; turnId: string }
   | {
+      kind: "guidance_added";
+      turnId: string;
+      entry: TurnEntry;
+      /** The turn had a final answer and is open again. */
+      reopened: boolean;
+    }
+  | {
       kind: "tool_results_added";
       turnId: string;
       entry: TurnEntry;
@@ -131,7 +138,7 @@ interface MutableArtifact {
 }
 
 interface MutableTurnEntry {
-  kind: "assistant" | "tool";
+  kind: "assistant" | "tool" | "guidance";
   createdAt: string;
   estimatedTokens?: number;
   message: ChatMessage;
@@ -440,6 +447,36 @@ export class ConversationManager {
       turnId: turn.id,
       artifactIds,
     });
+  }
+
+  /**
+   * Add operator guidance to the turn in progress. If the model had already
+   * given its final answer, the turn is reopened: it continues with the
+   * guidance, and stays the protected current turn in prompt selection.
+   */
+  appendOperatorGuidance(content: string): void {
+    const turn = this.currentTurn();
+    if (!turn) throw new Error("Operator guidance needs a turn in progress");
+    const message: ChatMessage = { role: "user", content };
+    turn.entries.push({
+      kind: "guidance",
+      createdAt: new Date().toISOString(),
+      estimatedTokens: this.tokenEstimator.estimateMessages([message]),
+      message,
+    });
+    const reopened = turn.completedAt != null;
+    if (reopened) {
+      turn.completedAt = undefined;
+      turn.estimatedTokens = undefined;
+    }
+    if (this.recoveryChangeListener) {
+      this.emitRecoveryChange({
+        kind: "guidance_added",
+        turnId: turn.id,
+        entry: cloneEntry(turn.entries[turn.entries.length - 1]!),
+        reopened,
+      });
+    }
   }
 
   commitAssistantResponse(

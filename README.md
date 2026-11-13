@@ -1611,10 +1611,14 @@ incompatible changes require explicit migration notes.
   the final answer continues the turn. The runtime emits `guidance_delivered`
   for each message and records `operator_guidance` in the trace with actor
   `user`, the message id, and its length; the text is captured only at full
-  capture. Each guidance message starts a new turn record in the conversation
-  store, so the saved-session format is unchanged. Messages still waiting
-  when a turn ends or is cancelled stay in the source. File mentions in
-  guidance are not expanded.
+  capture. Guidance is stored inside the turn it steers, as a `guidance`
+  entry, so prompt selection keeps it with the task as the protected current
+  turn, and a cancelled step does not remove it. Guidance after a final
+  answer reopens that turn. Saved sessions and recovery journals that contain
+  guidance cannot be read by earlier versions. Messages still waiting when a
+  turn ends or is cancelled stay in the source. File mentions in guidance are
+  not expanded. A custom `AgentContextStore` must implement
+  `appendOperatorGuidance`.
 
 Compatibility fixes accompanying the boundary: cancellation in a tool-start
 callback prevents dispatch, idle-timeout cleanup no longer blocks on a stalled

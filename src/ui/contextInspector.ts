@@ -211,6 +211,12 @@ function formatTurnEntrySummary(entries: ReadonlyArray<TurnEntry>): string {
   if (assistantCount > 0) {
     parts.push(`${assistantCount} ${plural(assistantCount, "response")}`);
   }
+  const guidanceCount = entries.filter(
+    (entry) => entry.kind === "guidance",
+  ).length;
+  if (guidanceCount > 0) {
+    parts.push(`${guidanceCount} guidance`);
+  }
 
   const toolSummary = formatToolEntrySummary(toolNames, statusCounts);
   if (toolSummary) {

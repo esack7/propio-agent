@@ -147,6 +147,8 @@ export interface AgentContextStore {
     options?: { reasoningContent?: string },
   ): void;
   recordToolResults(results: ArtifactToolResult[]): void;
+  /** Add an operator message to the turn in progress, reopening it if it had ended. */
+  appendOperatorGuidance(text: string): void;
   removeLastUnresolvedAssistantMessage(): void;
   abandonIncompleteTurn(): void;
 }
