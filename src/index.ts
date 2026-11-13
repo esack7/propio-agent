@@ -100,7 +100,11 @@ import {
   createTerminalApprovalIo,
 } from "./ui/approvalPrompt.js";
 import { handlePermissionsCommand } from "./ui/permissionsCommand.js";
-import { FilePermissionStore } from "./config/permissionStore.js";
+import {
+  FilePermissionStore,
+  resolveSettingsLocation,
+} from "./config/permissionStore.js";
+import { readHostPaths } from "./permissions/sandboxPaths.js";
 import { LOCAL_PERMISSION_OWNER } from "./permissions/toolPermissions.js";
 import {
   JsonlTraceJournal,
@@ -1265,8 +1269,11 @@ async function createInitializedAgent(
   const { providerRuntimeOptions, label } =
     await prepareProviderStartup(providersConfig);
   if (label) process.stderr.write(`${label}\n`);
+  const settingsLocation = resolveSettingsLocation();
   const permissionStore = new FilePermissionStore({
     owner: LOCAL_PERMISSION_OWNER,
+    filePath: settingsLocation.filePath,
+    readOnlyReason: settingsLocation.readOnlyReason,
   });
   const agent = new agentModule.Agent({
     providersConfig,
@@ -1282,6 +1289,10 @@ async function createInitializedAgent(
     permissions: {
       preset: parsedArgs.flags.permissions,
       store: permissionStore,
+      // The settings are a mounted copy exactly when this is a sandbox run.
+      sandbox: settingsLocation.sandbox
+        ? { hostPaths: readHostPaths(process.env) }
+        : undefined,
       savingUnavailableReason: () => permissionStore.savingUnavailableReason(),
     },
     configurationOrigins: {

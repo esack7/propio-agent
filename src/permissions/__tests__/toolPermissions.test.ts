@@ -1077,3 +1077,173 @@ describe("a turn cancelled while an answer is being applied", () => {
     expect((await policy.authorize(call.bash())).allowed).toBe(false);
   });
 });
+
+describe("in the sandbox, where the project is mounted under another path", () => {
+  // The test workspace stands for the container's /workspace.
+  const HOST = { workspace: "/Users/me/proj", home: "/Users/me" };
+  const sandboxed = (
+    settings: Partial<PermissionSettings>,
+    options: ToolPermissionsOptions = {},
+  ) => permissions({ sandbox: { hostPaths: HOST }, ...options }, settings);
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join(workspace, "secrets"));
+    fs.writeFileSync(path.join(workspace, "secrets/key.pem"), "key");
+  });
+
+  it.each([
+    ["an absolute host path", "write(/Users/me/proj/secrets/**)"],
+    ["the host home", "write(~/proj/secrets/**)"],
+    ["a workspace-relative path", "write(secrets/**)"],
+    ["an exact host file", "write(/Users/me/proj/secrets/key.pem)"],
+  ])(
+    "a deny rule written with %s holds, also under bypass",
+    async (_label, rule) => {
+      const policy = sandboxed({ deny: [rule] }, { preset: "bypass" });
+
+      expect(
+        await policy.authorize(call.write("secrets/key.pem")),
+      ).toMatchObject({ allowed: false, rule });
+      // Reached by an absolute container path, it is the same file.
+      expect(
+        (
+          await policy.authorize(
+            call.write(path.join(workspace, "secrets/key.pem")),
+          )
+        ).allowed,
+      ).toBe(false);
+      expect((await policy.authorize(call.write("src/a.ts"))).allowed).toBe(
+        true,
+      );
+    },
+  );
+
+  it("an allow rule written with a host path applies too", async () => {
+    const policy = sandboxed({ allow: ["write(/Users/me/proj/src/**)"] });
+
+    expect(await policy.authorize(call.write("src/a.ts"))).toMatchObject({
+      allowed: true,
+      rule: "write(/Users/me/proj/src/**)",
+    });
+  });
+
+  it("treats the mounted project as the workspace, and shows the operator the host path", async () => {
+    const channel = scriptedChannel("deny");
+    const policy = sandboxed({}, { approvalChannel: channel });
+
+    expect(await policy.authorize(call.read("src/a.ts"))).toMatchObject({
+      allowed: true,
+      rule: "mode:ask",
+    });
+    await policy.authorize(call.write("src/a.ts"));
+
+    expect(channel.requests[0]).toMatchObject({
+      target: { kind: "path", path: "/Users/me/proj/src/a.ts" },
+      suggestions: expect.arrayContaining([
+        expect.objectContaining({ rule: "write(/Users/me/proj/src/a.ts)" }),
+      ]),
+    });
+  });
+
+  it("a grant given in the sandbox is in host terms, so it means the same when resumed on the host", async () => {
+    const policy = sandboxed(
+      {},
+      {
+        approvalChannel: scriptedChannel((request) => ({
+          requestId: request.id,
+          decision: "allow_session",
+          rule: request.suggestions.find((s) => s.scope === "exact")!.rule,
+        })),
+      },
+    );
+
+    await policy.authorize(call.write("src/a.ts"));
+
+    expect(policy.listSessionGrants()).toEqual([
+      "write(/Users/me/proj/src/a.ts)",
+    ]);
+  });
+
+  it("still asks about a container path outside the mounted project", async () => {
+    const channel = scriptedChannel("deny");
+    const policy = sandboxed({}, { approvalChannel: channel });
+
+    await policy.authorize(call.read(path.join(outside, "secret.txt")));
+
+    expect(channel.requests[0]?.reason).toBe(
+      "The path is outside the workspace",
+    );
+  });
+
+  it("does not treat a command run in the mounted project as detached", async () => {
+    const policy = sandboxed({ allow: ["bash(npm test)"] });
+
+    expect(
+      (await policy.authorize(call.bash("npm test", { cwd: "src" }))).allowed,
+    ).toBe(true);
+  });
+
+  describe("when the sandbox was not told the host's paths", () => {
+    const untold = (settings: Partial<PermissionSettings>) =>
+      permissions({ sandbox: {}, preset: "bypass" }, settings);
+
+    it.each([
+      ["deny", "write(/Users/me/proj/secrets/**)"],
+      ["deny", "read(~/.ssh/**)"],
+      ["ask", "edit(/Users/me/proj/config/**)"],
+    ] as const)(
+      "refuses to run with the %s rule %s, which would match nothing",
+      async (effect, rule) => {
+        const policy = untold({ [effect]: [rule] });
+
+        await expect(policy.refresh()).rejects.toThrow(
+          `Cannot apply the ${effect} rule ${JSON.stringify(rule)} in sandbox mode`,
+        );
+        await expect(
+          policy.authorize(call.write("secrets/key.pem")),
+        ).rejects.toThrow(/Cannot apply the/);
+      },
+    );
+
+    it("runs with rules that need no host path, which still hold", async () => {
+      const policy = untold({
+        deny: ["write(secrets/**)", "bash(git push:*)"],
+        allow: ["read(/Users/me/notes/**)"],
+      });
+
+      await policy.refresh();
+      expect(
+        (await policy.authorize(call.write("secrets/key.pem"))).allowed,
+      ).toBe(false);
+      expect((await policy.authorize(call.write("src/a.ts"))).allowed).toBe(
+        true,
+      );
+    });
+
+    it("stops a later turn when such a rule is added to the settings meanwhile", async () => {
+      const store = new InMemoryPermissionStore();
+      const policy = permissions({ sandbox: {}, store });
+      await policy.refresh();
+
+      await store.update(LOCAL_PERMISSION_OWNER, (current) => ({
+        ...current,
+        deny: ["read(~/.ssh/**)"],
+      }));
+
+      await expect(policy.refresh()).rejects.toThrow(
+        /Cannot apply the deny rule/,
+      );
+    });
+  });
+
+  it("outside the sandbox, host-path rules need nothing special", async () => {
+    const policy = permissions(
+      { preset: "bypass" },
+      { deny: [`write(${workspace}/secrets/**)`] },
+    );
+
+    expect(
+      (await policy.authorize(call.write("secrets/key.pem"))).allowed,
+    ).toBe(false);
+  });
+});

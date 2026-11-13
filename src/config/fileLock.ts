@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
-import { mkdir, open } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, open, realpath } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const WAIT_MS = 25;
@@ -58,6 +58,9 @@ export async function withFileLock<T>(
   operation: () => Promise<T>,
   options: { timeoutMs?: number } = {},
 ): Promise<T> {
+  // Operating-system locks do not exclude within one process, so the queue
+  // must: and it can only do that if every name for a file is one key.
+  lockPath = await canonicalLockPath(lockPath);
   const previous = queues.get(lockPath) ?? Promise.resolve();
   let release!: () => void;
   const turn = new Promise<void>((resolve) => {
@@ -78,13 +81,18 @@ export async function withFileLock<T>(
   }
 }
 
+/** The lock's path with links in its directory resolved; creates the directory. */
+async function canonicalLockPath(lockPath: string): Promise<string> {
+  await mkdir(dirname(lockPath), { recursive: true });
+  return join(await realpath(dirname(lockPath)), basename(lockPath));
+}
+
 async function lockedAcrossProcesses<T>(
   lockPath: string,
   operation: () => Promise<T>,
   timeoutMs: number,
 ): Promise<T> {
   const { lock, unlock } = await loadOsLock();
-  await mkdir(dirname(lockPath), { recursive: true });
   const file = await open(
     lockPath,
     constants.O_RDWR | constants.O_CREAT,

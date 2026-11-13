@@ -597,9 +597,21 @@ you can still edit the file by hand.
 
 In sandbox mode the container reads your host rules from a read-only copy of
 `~/.propio`, so host deny rules apply there too, including under
-`--permissions bypass`. Rules cannot be saved from inside the sandbox: the
-prompt offers once and session grants only, and `/permissions allow`, `ask`,
-`deny`, and `remove` report why. Edit `~/.propio/settings.json` on the host.
+`--permissions bypass`. The project is mounted at `/workspace`, so the sandbox
+judges each file by the path it has on the host: a rule written with an
+absolute host path or with `~/` matches the same file in the sandbox, and
+prompts and grants show host paths. Rules cannot be saved from inside the
+sandbox: the prompt offers once and session grants only, and
+`/permissions allow`, `ask`, `deny`, and `remove` report why. Edit
+`~/.propio/settings.json` on the host. If the image is started some other way
+than `propio --sandbox`, without being told the host paths, it refuses to run
+with a deny or ask rule that uses one, since that rule would match nothing.
+
+`settings.json` may be a symbolic link, for example into a dotfiles checkout.
+It is read through the link, saving rewrites the file it points to and keeps
+the link, and sandbox mode copies its contents in. A link that leads nowhere,
+or to something that is not a settings object, is an error natively and stops
+the sandbox before it starts.
 
 A settings file that cannot be read, or that holds a rule or preset that
 cannot be understood, stops startup with the file and field named. It is

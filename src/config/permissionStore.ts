@@ -33,6 +33,8 @@ export interface SettingsLocation {
   readonly filePath: string;
   /** Set when rules cannot be saved here; says why and what to do instead. */
   readonly readOnlyReason?: string;
+  /** True when the file is the sandbox's mounted copy of the host's. */
+  readonly sandbox?: boolean;
 }
 
 /**
@@ -48,12 +50,36 @@ export function resolveSettingsLocation(
   if (fs.existsSync(sandboxConfigDirectory)) {
     return {
       filePath: path.join(sandboxConfigDirectory, "settings.json"),
+      sandbox: true,
       readOnlyReason:
         "sandbox mode reads your settings from a read-only copy; edit " +
         "~/.propio/settings.json on the host and restart",
     };
   }
   return { filePath: path.join(os.homedir(), ".propio", "settings.json") };
+}
+
+/**
+ * The file a settings path really names: itself, or what a symbolic link at
+ * that path leads to. Throws for a link whose destination is missing.
+ */
+function resolveSettingsTarget(filePath: string): string {
+  let isLink: boolean;
+  try {
+    isLink = fs.lstatSync(filePath).isSymbolicLink();
+  } catch {
+    // Nothing there yet: the file will be created at this path.
+    return filePath;
+  }
+  if (!isLink) return filePath;
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    throw new PermissionSettingsError(
+      filePath,
+      "it is a symbolic link to a file that does not exist",
+    );
+  }
 }
 
 /** A settings file that cannot be used, named with the field at fault. */
@@ -113,7 +139,18 @@ export class FilePermissionStore implements PermissionStore {
 
   async load(owner: OwnerScope): Promise<PermissionSettings> {
     this.assertOwner(owner);
-    return this.permissionsOf(await this.readFile());
+    return this.permissionsOf(await this.readFile(this.targetPath()));
+  }
+
+  /**
+   * The file that is read and replaced. A settings file may be a symbolic
+   * link (a dotfiles checkout, say): the link is followed, so a save rewrites
+   * the file it points to and leaves the link in place, and two paths to one
+   * file share one lock. A link to nothing is an error, not an empty file:
+   * the rules it was meant to supply are missing.
+   */
+  private targetPath(): string {
+    return resolveSettingsTarget(this.filePath);
   }
 
   async update(
@@ -130,15 +167,16 @@ export class FilePermissionStore implements PermissionStore {
         "Cannot save permissions to",
       );
     }
-    return await withFileLock(`${this.filePath}.lock`, async () => {
+    const target = this.targetPath();
+    return await withFileLock(`${target}.lock`, async () => {
       // Read inside the lock: the latest completed update is what changes.
-      const file = await this.readFile();
+      const file = await this.readFile(target);
       const next = this.validate(change(this.permissionsOf(file)));
       // The wait for the lock may have outlasted whoever asked: this is the
       // last moment the update can still be withdrawn.
       options.signal?.throwIfAborted();
       writeJsonFileAtomic(
-        this.filePath,
+        target,
         "settings",
         { ...file, permissions: next },
         { private: true },
@@ -155,10 +193,10 @@ export class FilePermissionStore implements PermissionStore {
     }
   }
 
-  private async readFile(): Promise<Record<string, unknown>> {
+  private async readFile(target: string): Promise<Record<string, unknown>> {
     let content: unknown;
     try {
-      content = await readJsonFileAsync(this.filePath, {
+      content = await readJsonFileAsync(target, {
         onMissing: () => ({}),
         readErrorPrefix: "cannot read the file",
         invalidJsonPrefix: "the file is not valid JSON",

@@ -353,6 +353,7 @@ describe("a store that cannot save", () => {
 
     expect(resolveSettingsLocation(mount)).toEqual({
       filePath: path.join(mount, "settings.json"),
+      sandbox: true,
       readOnlyReason: expect.stringContaining(
         "edit ~/.propio/settings.json on the host",
       ),
@@ -436,5 +437,86 @@ describe("an update withdrawn while it waits for the lock", () => {
       }),
     ).rejects.toThrow("already cancelled");
     expect(fs.existsSync(filePath)).toBe(false);
+  });
+});
+
+describe("a settings file that is a symbolic link", () => {
+  let target: string;
+
+  beforeEach(() => {
+    // As a dotfiles checkout would have it: the real file lives elsewhere.
+    target = path.join(directory, "dotfiles", "propio-settings.json");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      target,
+      JSON.stringify({
+        runtime: { maxIterations: 4 },
+        permissions: { deny: ["bash(git push:*)"] },
+      }),
+    );
+    fs.symlinkSync(target, filePath);
+  });
+
+  const isLink = () => fs.lstatSync(filePath).isSymbolicLink();
+
+  it("is read through the link", async () => {
+    await expect(store().load(OWNER)).resolves.toMatchObject({
+      deny: ["bash(git push:*)"],
+    });
+  });
+
+  it("is saved through the link: the target changes and the link stays", async () => {
+    await store().update(OWNER, (current) => ({
+      ...current,
+      allow: ["bash(npm test)"],
+    }));
+
+    expect(isLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(target, "utf8"))).toEqual({
+      runtime: { maxIterations: 4 },
+      permissions: {
+        allow: ["bash(npm test)"],
+        ask: [],
+        deny: ["bash(git push:*)"],
+      },
+    });
+    // Read back by either name, it is one file.
+    await expect(store().load(OWNER)).resolves.toMatchObject({
+      allow: ["bash(npm test)"],
+    });
+    await expect(
+      new FilePermissionStore({ filePath: target, owner: OWNER }).load(OWNER),
+    ).resolves.toMatchObject({ allow: ["bash(npm test)"] });
+  });
+
+  it("shares one lock with the file it points to", async () => {
+    const direct = new FilePermissionStore({ filePath: target, owner: OWNER });
+
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        (index % 2 === 0 ? store() : direct).update(OWNER, (current) => ({
+          ...current,
+          ask: [...current.ask, `bash(rule-${index})`],
+        })),
+      ),
+    );
+
+    expect((await store().load(OWNER)).ask).toHaveLength(20);
+    expect(fs.existsSync(`${target}.lock`)).toBe(true);
+    expect(fs.existsSync(`${filePath}.lock`)).toBe(false);
+  });
+
+  it("is an error when the link leads nowhere, for reading and for saving", async () => {
+    fs.rmSync(target);
+
+    await expect(store().load(OWNER)).rejects.toThrow(
+      /symbolic link to a file that does not exist/,
+    );
+    await expect(
+      store().update(OWNER, (current) => ({ ...current, allow: ["bash"] })),
+    ).rejects.toThrow(/symbolic link to a file that does not exist/);
+    expect(isLink()).toBe(true);
+    expect(fs.existsSync(target)).toBe(false);
   });
 });

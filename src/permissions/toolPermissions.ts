@@ -23,6 +23,11 @@ import {
 } from "../tools/globalInstallGuard.js";
 import { resolveToolPath } from "../tools/shared.js";
 import type { ApprovalChannel } from "./approvalChannel.js";
+import {
+  createHostPathTranslator,
+  unappliableHostRule,
+  type SandboxPaths,
+} from "./sandboxPaths.js";
 import { resolvePolicyTarget } from "./targets.js";
 
 /** The single owner of rules in the CLI. A server would pass its own. */
@@ -46,6 +51,12 @@ export interface ToolPermissionsOptions {
   readonly allowGlobalInstallsWithoutPrompt?: boolean;
   /** Called after the preset, mode, rules, or session grants are edited. */
   readonly onChange?: () => void;
+  /**
+   * Set when running inside the sandbox, where the project is mounted under
+   * another path than it has on the host. Rules are written in host terms,
+   * so file paths are judged by their host names.
+   */
+  readonly sandbox?: SandboxPaths;
   /**
    * Why the store cannot save rules, or undefined when it can. Without this
    * saving is assumed to work.
@@ -152,6 +163,7 @@ export class ToolPermissions {
   private readonly store: PermissionStore;
   private readonly workspaceRoot: string;
   private readonly toolWorkspaceRoot: string;
+  private readonly translatePath?: (resolvedPath: string) => string;
   private channel?: ApprovalChannel;
   private enginePromise?: Promise<PolicyEngine>;
   private engine?: PolicyEngine;
@@ -164,6 +176,10 @@ export class ToolPermissions {
     this.store = options.store ?? new InMemoryPermissionStore();
     this.toolWorkspaceRoot = options.workspaceRoot ?? process.cwd();
     this.workspaceRoot = fs.realpathSync(this.toolWorkspaceRoot);
+    const hostPaths = options.sandbox?.hostPaths;
+    this.translatePath = hostPaths
+      ? createHostPathTranslator(this.workspaceRoot, hostPaths.workspace)
+      : undefined;
     this.channel = options.approvalChannel;
   }
 
@@ -184,8 +200,22 @@ export class ToolPermissions {
 
   /** Read the stored rules again; called once at the start of each turn. */
   async refresh(): Promise<void> {
-    if (this.engine) await this.engine.reload();
-    else await this.loadEngine();
+    if (!this.engine) {
+      await this.loadEngine();
+      return;
+    }
+    await this.engine.reload();
+    this.assertRulesApply(this.engine);
+  }
+
+  /**
+   * In a sandbox that was not told the host's paths, a deny or ask rule
+   * written with one would match nothing. Stop rather than run without it.
+   */
+  private assertRulesApply(engine: PolicyEngine): void {
+    if (!this.options.sandbox || this.options.sandbox.hostPaths) return;
+    const problem = unappliableHostRule(engine.describe().rules);
+    if (problem !== undefined) throw new Error(problem);
   }
 
   listSessionGrants(): readonly string[] {
@@ -310,6 +340,7 @@ export class ToolPermissions {
         resolvePath: (rawPath) =>
           resolveToolPath(rawPath, this.toolWorkspaceRoot),
         mcpServerName: input.mcpServerName,
+        translatePath: this.translatePath,
       }),
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       ...(input.toolCallId === undefined
@@ -418,12 +449,19 @@ export class ToolPermissions {
     this.enginePromise ??= PolicyEngine.create({
       store: this.store,
       owner: this.options.owner ?? LOCAL_PERMISSION_OWNER,
-      workspaceRoot: this.workspaceRoot,
-      homeDir: this.options.homeDir ?? os.homedir(),
+      // In the sandbox the engine reasons in host paths throughout, so host
+      // rules, grants, and what the operator is shown all agree.
+      workspaceRoot:
+        this.options.sandbox?.hostPaths?.workspace ?? this.workspaceRoot,
+      homeDir:
+        this.options.sandbox?.hostPaths?.home ??
+        this.options.homeDir ??
+        os.homedir(),
       preset: this.options.preset,
       mode: this.options.mode,
     }).then(
       (engine) => {
+        this.assertRulesApply(engine);
         if (this.restoredGrants) {
           engine.restoreSessionGrants(this.restoredGrants);
           this.restoredGrants = undefined;

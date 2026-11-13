@@ -559,6 +559,7 @@ export class Agent {
         | "preset"
         | "mode"
         | "approvalChannel"
+        | "sandbox"
         | "savingUnavailableReason"
       >;
     } = {} as any,

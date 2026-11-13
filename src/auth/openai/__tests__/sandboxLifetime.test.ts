@@ -1,10 +1,12 @@
 import { jest } from "@jest/globals";
 import {
+  lstat,
   mkdtemp,
   mkdir,
   readdir,
   rm,
   readFile,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -50,6 +52,93 @@ it("creates an empty private configuration view when the source is absent", asyn
     await rm(view, { recursive: true, force: true });
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+describe("a settings file that is a symbolic link on the host", () => {
+  let directory: string;
+  let source: string;
+  let views: string[];
+
+  beforeEach(async () => {
+    directory = await mkdtemp(join(tmpdir(), "propio-linked-settings-"));
+    source = join(directory, ".propio");
+    await mkdir(source);
+    await writeFile(join(source, "providers.json"), "{}");
+    views = [];
+  });
+
+  afterEach(async () => {
+    for (const view of views) await rm(view, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  async function viewOf(): Promise<string> {
+    const view = await createSandboxConfigView(source);
+    views.push(view);
+    return view;
+  }
+
+  it("reaches the sandbox with its rules, as a plain file", async () => {
+    const target = join(directory, "dotfiles-settings.json");
+    await writeFile(
+      target,
+      JSON.stringify({ permissions: { deny: ["bash(git push:*)"] } }),
+    );
+    await symlink(target, join(source, "settings.json"));
+
+    const view = await viewOf();
+
+    const copied = join(view, "settings.json");
+    expect((await lstat(copied)).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(await readFile(copied, "utf8"))).toEqual({
+      permissions: { deny: ["bash(git push:*)"] },
+    });
+  });
+
+  it("still leaves every other link out of the view", async () => {
+    const secret = join(directory, "secret.txt");
+    await writeFile(secret, "secret");
+    await symlink(secret, join(source, "notes.txt"));
+    await writeFile(join(source, "settings.json"), "{}");
+
+    const view = await viewOf();
+
+    expect((await readdir(view)).sort()).toEqual([
+      "providers.json",
+      "settings.json",
+    ]);
+  });
+
+  it.each([
+    ["leads nowhere", undefined, /could not be read as JSON/],
+    [
+      "leads to something that is not JSON",
+      "secret key material",
+      /could not be read as JSON/,
+    ],
+    ["leads to JSON that is not an object", '["a"]', /not a settings object/],
+  ])(
+    "stops the sandbox before it starts when the link %s",
+    async (_label, content, message) => {
+      const target = join(directory, "elsewhere.json");
+      if (content !== undefined) await writeFile(target, content);
+      await symlink(target, join(source, "settings.json"));
+
+      await expect(createSandboxConfigView(source)).rejects.toThrow(message);
+    },
+  );
+
+  it("never copies what a bad link points to into an error message", async () => {
+    const target = join(directory, "elsewhere.json");
+    await writeFile(target, "secret key material");
+    await symlink(target, join(source, "settings.json"));
+
+    const failure = await createSandboxConfigView(source).catch(
+      (error: Error) => error,
+    );
+
+    expect((failure as Error).message).not.toContain("secret key material");
+  });
 });
 
 it("keeps the channel alive beyond eight hours while its owner remains alive", async () => {

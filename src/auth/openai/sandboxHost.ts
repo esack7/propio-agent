@@ -1,4 +1,12 @@
-import { cp, mkdtemp, writeFile, rm, lstat, chmod } from "node:fs/promises";
+import {
+  cp,
+  mkdtemp,
+  readFile,
+  writeFile,
+  rm,
+  lstat,
+  chmod,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
@@ -27,6 +35,54 @@ function loadSandboxConfig(path: string) {
   }
 }
 
+const SETTINGS_FILE = "settings.json";
+
+/**
+ * Links are left out of the view so that one cannot carry an arbitrary host
+ * file into the container. A linked settings file is the exception that has
+ * to be handled: natively its permission rules apply, and a sandbox run
+ * without them would have no deny rules. Its contents are copied in, and only
+ * if they are a JSON object as a settings file must be; otherwise the sandbox
+ * does not start.
+ */
+async function includeLinkedSettings(
+  source: string,
+  view: string,
+): Promise<void> {
+  const linked = join(source, SETTINGS_FILE);
+  const isLink = await lstat(linked).then(
+    (stats) => stats.isSymbolicLink(),
+    () => false,
+  );
+  if (!isLink) return;
+  let settings: unknown;
+  try {
+    settings = JSON.parse(await readFile(linked, "utf8"));
+  } catch {
+    throw new SandboxConfigurationError(
+      "~/.propio/settings.json is a symbolic link that could not be read as JSON. " +
+        "Fix the link or its target; the sandbox will not start without your permission rules.",
+    );
+  }
+  if (
+    typeof settings !== "object" ||
+    settings === null ||
+    Array.isArray(settings)
+  ) {
+    throw new SandboxConfigurationError(
+      "~/.propio/settings.json is a symbolic link to something that is not a settings object. " +
+        "The sandbox will not start without your permission rules.",
+    );
+  }
+  await writeFile(
+    join(view, SETTINGS_FILE),
+    `${JSON.stringify(settings, null, 2)}\n`,
+    {
+      mode: 0o600,
+    },
+  );
+}
+
 /** A config view excludes both renewable production secrets and legacy POC tokens. */
 export async function createSandboxConfigView(source: string): Promise<string> {
   const view = await mkdtemp(join(homedir(), ".propio-sandbox-config-"));
@@ -46,6 +102,7 @@ export async function createSandboxConfigView(source: string): Promise<string> {
           );
         },
       });
+    await includeLinkedSettings(source, view);
     await chmod(view, 0o700);
     return view;
   } catch (error) {

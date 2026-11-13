@@ -4,7 +4,7 @@ import type { PolicyTarget } from "../policy/index.js";
 import { normalizeMcpNameSegment } from "../mcp/toolName.js";
 
 /** Built-in tools that act on the file named by their `path` argument. */
-const PATH_TOOLS: ReadonlySet<string> = new Set([
+export const PATH_TOOLS: ReadonlySet<string> = new Set([
   "read",
   "write",
   "edit",
@@ -20,6 +20,11 @@ export interface PolicyTargetContext {
   readonly resolvePath: (rawPath: unknown) => string;
   /** Set for an MCP tool: the configured name of its server. */
   readonly mcpServerName?: string;
+  /**
+   * Renames a resolved path into the terms the rules are written in, when
+   * those differ from this process's own (a sandbox mount, for example).
+   */
+  readonly translatePath?: (resolvedPath: string) => string;
 }
 
 /**
@@ -108,9 +113,10 @@ export function resolvePolicyTarget(
   }
   if (toolName === "bash") return commandTarget(args, context);
   if (PATH_TOOLS.has(toolName)) {
+    const resolved = resolveSymbolicLinks(context.resolvePath(args.path));
     return {
       kind: "path",
-      path: resolveSymbolicLinks(context.resolvePath(args.path)),
+      path: context.translatePath?.(resolved) ?? resolved,
     };
   }
   return undefined;
