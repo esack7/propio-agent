@@ -660,21 +660,27 @@ export class PolicyEngine {
   private exactSuggestion(request: PolicyRequest): GrantSuggestion[] {
     const { toolName, target } = request;
     if (target?.kind === "path") {
-      const shown = this.workspaceRelative(target.path);
-      // A relative "~" or "~/..." would be read as the home directory.
-      const path = /^~(\/|$)/.test(shown) ? target.path : shown;
+      // Absolute, so a grant saved for the owner covers this file only, not
+      // the same relative path in every workspace the owner opens.
       return [
         {
-          rule: `${toolName}(${literalPathPattern(path)})`,
+          rule: `${toolName}(${literalPathPattern(target.path)})`,
           scope: "exact",
-          description: `${toolName} on ${shown}`,
+          description: `${toolName} on ${this.workspaceRelative(target.path)}`,
         },
       ];
     }
     if (target?.kind === "command") {
       const command = target.command.trim();
-      // A compound command can never be covered by an allow rule.
-      if (command.length === 0 || isCompoundCommand(command)) return [];
+      // A compound command can never be covered by an allow rule, and a
+      // trailing ":*" would turn the rule into a prefix match.
+      if (
+        command.length === 0 ||
+        isCompoundCommand(command) ||
+        command.endsWith(":*")
+      ) {
+        return [];
+      }
       return [
         {
           rule: `${toolName}(${command})`,

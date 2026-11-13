@@ -1110,8 +1110,11 @@ if (decision.outcome === "ask") {
   completed update. An engine runs its own reads and writes one at a time, so
   a slow read cannot undo a later write. It caches what it last read or
   wrote; `reload()` reads again.
-- **Exact path grants** escape glob characters, so approving a file named
-  `notes*.txt` does not approve `notes-2.txt`. The workspace root and home
+- **Exact grants** cover only the call approved. Path grants are absolute,
+  so an always-allow saved for the owner does not apply to the same relative
+  path in another workspace, and they escape glob characters, so approving a
+  file named `notes*.txt` does not approve `notes-2.txt`. No exact grant is
+  offered for a command ending in `:*`, which the syntax reads as a prefix. The workspace root and home
   directory are matched literally, even if their names contain glob
   characters. Path patterns never negate.
 

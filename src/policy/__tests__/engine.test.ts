@@ -382,7 +382,7 @@ describe("approval", () => {
       rule: "mode:ask",
       suggestions: [
         {
-          rule: "edit(src/a.ts)",
+          rule: `edit(${WORKSPACE}/src/a.ts)`,
           scope: "exact",
           description: expect.any(String),
         },
@@ -1094,7 +1094,7 @@ describe("exact path grants", () => {
     }
   });
 
-  it("use the absolute path for a workspace directory named ~", async () => {
+  it("are absolute even for a workspace directory named ~", async () => {
     const { engine: policy } = await engine();
     const target = `${WORKSPACE}/~/notes.txt`;
     const request = asked(policy.evaluate(fileCall("edit", WRITE, target)));
@@ -1298,5 +1298,84 @@ describe("a workspace root with glob characters", () => {
       policy.evaluate(fileCall("edit", WRITE, "/work/draft[1]/example.txt"))
         .outcome,
     ).toBe("deny");
+  });
+});
+
+describe("exact grants stay exact", () => {
+  it("do not carry a path grant into another workspace for the owner", async () => {
+    const store = new InMemoryPermissionStore();
+    const create = (workspaceRoot: string) =>
+      PolicyEngine.create({ store, owner: OWNER, workspaceRoot });
+    const one = await create("/work/one");
+    const request = asked(
+      one.evaluate(fileCall("edit", WRITE, "/work/one/src/file.txt")),
+    );
+    const exact = request.suggestions.find((s) => s.scope === "exact")!;
+
+    expect(exact).toMatchObject({
+      rule: "edit(/work/one/src/file.txt)",
+      description: "edit on src/file.txt",
+    });
+    await one.answer({
+      requestId: request.id,
+      decision: "allow_always",
+      rule: exact.rule,
+    });
+    const two = await create("/work/two");
+
+    expect(
+      one.evaluate(fileCall("edit", WRITE, "/work/one/src/file.txt")).outcome,
+    ).toBe("allow");
+    expect(
+      two.evaluate(fileCall("edit", WRITE, "/work/two/src/file.txt")).outcome,
+    ).toBe("ask");
+  });
+
+  it.each(["echo label :*", "echo label:*", "printf :*"])(
+    "offer no exact grant for %j, which the rule syntax reads as a prefix",
+    async (command) => {
+      const { engine: policy } = await engine();
+      const request = asked(
+        policy.evaluate({
+          ...CALLS.bash,
+          args: { command },
+          target: { kind: "command", command },
+        }),
+      );
+
+      expect(request.suggestions.map((s) => s.scope)).not.toContain("exact");
+      expect(request.suggestions.map((s) => s.rule)).toEqual([
+        "bash",
+        "capability:process",
+      ]);
+    },
+  );
+
+  it("offer an exact grant that covers only the approved command", async () => {
+    const { engine: policy } = await engine();
+    const command = "echo label";
+    const request = asked(
+      policy.evaluate({
+        ...CALLS.bash,
+        args: { command },
+        target: { kind: "command", command },
+      }),
+    );
+    const exact = request.suggestions.find((s) => s.scope === "exact")!;
+
+    await policy.answer({
+      requestId: request.id,
+      decision: "allow_session",
+      rule: exact.rule,
+    });
+
+    const outcome = (value: string) =>
+      policy.evaluate({
+        ...CALLS.bash,
+        args: { command: value },
+        target: { kind: "command", command: value },
+      }).outcome;
+    expect(outcome("echo label")).toBe("allow");
+    expect(outcome("echo label other")).toBe("ask");
   });
 });
