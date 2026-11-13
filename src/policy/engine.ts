@@ -18,6 +18,7 @@ import {
 } from "./presets.js";
 import {
   isCompoundCommand,
+  literalPathPattern,
   parseRule,
   ruleMatches,
   type PolicyRule,
@@ -27,6 +28,7 @@ import {
 import type {
   OwnerScope,
   PermissionSettings,
+  PermissionSettingsChange,
   PermissionStore,
 } from "./store.js";
 
@@ -97,6 +99,88 @@ function isAbsolutePath(path: unknown): path is string {
   return typeof path === "string" && path.startsWith("/");
 }
 
+type AllowDecision = "allow_once" | "allow_session" | "allow_always";
+
+function allowDecision(value: unknown): AllowDecision {
+  if (
+    value === "allow_once" ||
+    value === "allow_session" ||
+    value === "allow_always"
+  ) {
+    return value;
+  }
+  throw new ApprovalAnswerError(`Unknown approval decision ${String(value)}`);
+}
+
+function operatorDenial(reason: string | undefined): PolicyDecision {
+  return {
+    outcome: "deny",
+    rule: "approval:deny",
+    reason: reason?.trim() || "Denied by the operator",
+    actor: "user",
+    source: "approval",
+  };
+}
+
+function refusedApproval(denied: SourcedRule): PolicyDecision {
+  return {
+    outcome: "deny",
+    rule: denied.rule.text,
+    reason: `Matched ${denied.source} deny rule ${denied.rule.text}; the approval was not applied`,
+    actor: "application",
+    source: denied.source,
+  };
+}
+
+function approvalDecision(
+  decision: AllowDecision,
+  grant: string | undefined,
+): PolicyDecision {
+  const reasons: Record<AllowDecision, string> = {
+    allow_once: "Allowed once",
+    allow_session: `Allowed for this session by ${grant}`,
+    allow_always: `Always allowed by ${grant}`,
+  };
+  return {
+    outcome: "allow",
+    rule:
+      decision === "allow_once"
+        ? "approval:allow_once"
+        : `approval:${decision}:${grant}`,
+    reason: reasons[decision],
+    actor: "user",
+    source: "approval",
+  };
+}
+
+function withoutRule(
+  settings: PermissionSettings,
+  text: string,
+): PermissionSettings {
+  const keep = (rules: readonly string[]) =>
+    rules.filter((rule) => rule.trim() !== text);
+  return {
+    ...settings,
+    allow: keep(settings.allow),
+    ask: keep(settings.ask),
+    deny: keep(settings.deny),
+  };
+}
+
+/** An approved grant: added to allow, taken out of ask, never out of deny. */
+function withGrant(
+  settings: PermissionSettings,
+  text: string,
+): PermissionSettings {
+  const keep = (rules: readonly string[]) =>
+    rules.filter((rule) => rule.trim() !== text);
+  return {
+    ...settings,
+    allow: [...keep(settings.allow), text],
+    ask: keep(settings.ask),
+  };
+}
+
 /**
  * Decides whether a tool call may run. All state is on the instance: two
  * engines in one process share nothing unless they are given the same store
@@ -136,8 +220,8 @@ export class PolicyEngine {
     this.createRequestId =
       options.createRequestId ?? (() => `approval-${crypto.randomUUID()}`);
     this.settings = settings;
-    this.preset = this.resolvePreset();
-    this.rebuildRules();
+    this.preset = this.presetFor(settings);
+    this.adopt(settings);
   }
 
   /** Loads the owner's settings. A rule that cannot be read fails the load. */
@@ -226,52 +310,59 @@ export class PolicyEngine {
   }
 
   /**
-   * Apply an answer to a request this engine raised. A grant is recorded
-   * first, so the decision already reflects it; a deny rule still wins.
+   * Apply an answer to a request this engine raised. The request is claimed
+   * before anything is awaited, so a second answer cannot also decide it; it
+   * is reopened if this answer fails. An allow is checked again against the
+   * current deny rules, which may have changed while the request waited.
    */
   async answer(answer: ApprovalAnswer): Promise<PolicyDecision> {
-    const request = this.pending.get(answer?.requestId);
+    const requestId = answer?.requestId;
+    const request = this.pending.get(requestId);
     if (!request) {
       throw new ApprovalAnswerError(
-        `No pending approval request with id ${String(answer?.requestId)}`,
+        `No pending approval request with id ${String(requestId)}`,
       );
     }
-    switch (answer.decision) {
-      case "deny":
-        this.pending.delete(answer.requestId);
-        return {
-          outcome: "deny",
-          rule: "approval:deny",
-          reason: answer.reason?.trim() || "Denied by the operator",
-          actor: "user",
-          source: "approval",
-        };
-      case "allow_once":
-        this.pending.delete(answer.requestId);
-        return this.approved("approval:allow_once", "Allowed once");
-      case "allow_session": {
-        const rule = this.grantableRule(answer.rule, request);
-        this.pending.delete(answer.requestId);
-        this.addSessionGrant(rule.text);
-        return this.approved(
-          `approval:allow_session:${rule.text}`,
-          `Allowed for this session by ${rule.text}`,
-        );
-      }
-      case "allow_always": {
-        const rule = this.grantableRule(answer.rule, request);
-        await this.addRule("allow", rule.text);
-        this.pending.delete(answer.requestId);
-        return this.approved(
-          `approval:allow_always:${rule.text}`,
-          `Always allowed by ${rule.text}`,
-        );
-      }
-      default:
-        throw new ApprovalAnswerError(
-          `Unknown approval decision ${String((answer as { decision?: unknown }).decision)}`,
-        );
+    this.pending.delete(requestId);
+    try {
+      return await this.decide(answer, request);
+    } catch (error) {
+      this.pending.set(requestId, request);
+      throw error;
     }
+  }
+
+  private async decide(
+    answer: ApprovalAnswer,
+    request: PolicyRequest,
+  ): Promise<PolicyDecision> {
+    if (answer.decision === "deny") return operatorDenial(answer.reason);
+    const decision = allowDecision(answer.decision);
+    const grant =
+      decision === "allow_once"
+        ? undefined
+        : this.grantableRule((answer as { rule?: unknown }).rule, request);
+
+    // Pick up rules written while the request waited, by this engine or by
+    // another engine for the same owner.
+    await this.reload();
+    if (decision === "allow_always" && grant) {
+      const text = grant.text;
+      await this.update((current) =>
+        this.denyFor(request, current) ? current : withGrant(current, text),
+      );
+    }
+    const denied = this.denyFor(request, this.settings);
+    if (denied) return refusedApproval(denied);
+    if (decision === "allow_session" && grant) {
+      this.addSessionGrant(grant.text);
+    }
+    return approvalDecision(decision, grant?.text);
+  }
+
+  /** Read the owner's stored settings again, replacing the cached copy. */
+  async reload(): Promise<void> {
+    this.adopt(await this.store.load(this.owner));
   }
 
   /** Drop a request that will not be answered, such as on cancellation. */
@@ -310,20 +401,28 @@ export class PolicyEngine {
     );
   }
 
-  /** Add a rule to the owner's stored settings, replacing it in other lists. */
+  /**
+   * Add a rule to the owner's stored settings, removing it from the other
+   * lists. This is an explicit edit, so it may move a rule out of `deny`.
+   */
   async addRule(effect: RuleEffect, ruleText: string): Promise<void> {
     const text = this.checkedRule(ruleText).text;
-    const without = this.settingsWithout(text);
-    await this.persist({ ...without, [effect]: [...without[effect], text] });
+    await this.update((current) => {
+      const without = withoutRule(current, text);
+      return { ...without, [effect]: [...without[effect], text] };
+    });
   }
 
   async removeRule(ruleText: string): Promise<boolean> {
     const text = ruleText.trim();
-    const without = this.settingsWithout(text);
-    const removed = EFFECTS.some(
-      (effect) => without[effect].length !== this.settings[effect].length,
-    );
-    if (removed) await this.persist(without);
+    let removed = false;
+    await this.update((current) => {
+      const without = withoutRule(current, text);
+      removed = EFFECTS.some(
+        (effect) => without[effect].length !== current[effect].length,
+      );
+      return without;
+    });
     return removed;
   }
 
@@ -334,45 +433,45 @@ export class PolicyEngine {
   ): Promise<void> {
     if (!getPreset(name))
       throw new Error(`Unknown permission preset "${name}"`);
-    if (options.persist) await this.persist({ ...this.settings, preset: name });
+    if (options.persist) {
+      await this.update((current) => ({ ...current, preset: name }));
+    }
     this.presetOverride = name;
     this.modeOverride = undefined;
-    this.preset = this.resolvePreset();
-    this.rebuildRules();
+    this.adopt(this.settings);
   }
 
   setMode(mode: PermissionMode): void {
     this.modeOverride = mode;
   }
 
-  private async persist(settings: PermissionSettings): Promise<void> {
-    // Save first: a failed write leaves the rules in use unchanged.
-    await this.store.save(this.owner, settings);
+  /** Write through the store's atomic update, then use what it stored. */
+  private async update(change: PermissionSettingsChange): Promise<void> {
+    // A failed write throws here and leaves the rules in use unchanged.
+    this.adopt(await this.store.update(this.owner, change));
+  }
+
+  /** Validate everything before replacing any state, so bad settings change nothing. */
+  private adopt(settings: PermissionSettings): void {
+    const preset = this.presetFor(settings);
+    const { userRules, presetRules } = this.rulesFor(settings, preset);
     this.settings = settings;
-    this.preset = this.resolvePreset();
-    this.rebuildRules();
+    this.preset = preset;
+    this.userRules = userRules;
+    this.presetRules = presetRules;
   }
 
-  private settingsWithout(text: string): PermissionSettings {
-    const keep = (rules: readonly string[]) =>
-      rules.filter((rule) => rule.trim() !== text);
-    return {
-      ...this.settings,
-      allow: keep(this.settings.allow),
-      ask: keep(this.settings.ask),
-      deny: keep(this.settings.deny),
-    };
-  }
-
-  private resolvePreset(): PermissionPreset {
-    const name =
-      this.presetOverride ?? this.settings.preset ?? DEFAULT_PRESET_NAME;
+  private presetFor(settings: PermissionSettings): PermissionPreset {
+    const name = this.presetOverride ?? settings.preset ?? DEFAULT_PRESET_NAME;
     const preset = getPreset(name);
     if (!preset) throw new Error(`Unknown permission preset "${name}"`);
     return preset;
   }
 
-  private rebuildRules(): void {
+  private rulesFor(
+    settings: PermissionSettings,
+    preset: PermissionPreset,
+  ): { userRules: SourcedRule[]; presetRules: SourcedRule[] } {
     const collect = (
       lists: Pick<PermissionSettings, RuleEffect>,
       source: RuleSource,
@@ -388,10 +487,35 @@ export class PolicyEngine {
           source,
         }));
       });
-    const userRules = collect(this.settings, "user");
-    const presetRules = collect(this.preset, "preset");
-    this.userRules = userRules;
-    this.presetRules = presetRules;
+    return {
+      userRules: collect(settings, "user"),
+      presetRules: collect(preset, "preset"),
+    };
+  }
+
+  /** The first deny rule from the preset or the given settings that matches. */
+  private denyFor(
+    request: PolicyRequest,
+    settings: PermissionSettings,
+  ): SourcedRule | undefined {
+    const { userRules, presetRules } = this.rulesFor(
+      settings,
+      this.presetFor(settings),
+    );
+    return [...presetRules, ...userRules].find(
+      (candidate) =>
+        candidate.effect === "deny" &&
+        ruleMatches(
+          candidate.rule,
+          "deny",
+          {
+            toolName: request.toolName,
+            capabilities: request.metadata.capabilities,
+            target: request.target,
+          },
+          { workspaceRoot: this.workspaceRoot, homeDir: this.homeDir },
+        ),
+    );
   }
 
   private checkedRule(text: unknown): PolicyRule {
@@ -517,12 +641,14 @@ export class PolicyEngine {
   private exactSuggestion(request: PolicyRequest): GrantSuggestion[] {
     const { toolName, target } = request;
     if (target?.kind === "path") {
-      const pattern = this.workspaceRelative(target.path);
+      const shown = this.workspaceRelative(target.path);
+      // A relative "~" or "~/..." would be read as the home directory.
+      const path = /^~(\/|$)/.test(shown) ? target.path : shown;
       return [
         {
-          rule: `${toolName}(${pattern})`,
+          rule: `${toolName}(${literalPathPattern(path)})`,
           scope: "exact",
-          description: `${toolName} on ${pattern}`,
+          description: `${toolName} on ${shown}`,
         },
       ];
     }

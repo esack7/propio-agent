@@ -1,4 +1,4 @@
-import { minimatch } from "minimatch";
+import { escape, minimatch } from "minimatch";
 import { isCapability, type Capability } from "./capabilities.js";
 
 export type RuleEffect = "allow" | "ask" | "deny";
@@ -144,7 +144,12 @@ function pathMatches(
 ): boolean {
   const absolute = absolutePattern(pattern, context);
   if (absolute === undefined) return false;
-  return minimatch(path, absolute, { dot: true, nocomment: true });
+  // The syntax has no negation, so a leading "!" is never read as one.
+  return minimatch(path, absolute, {
+    dot: true,
+    nocomment: true,
+    nonegate: true,
+  });
 }
 
 function absolutePattern(
@@ -199,4 +204,12 @@ function simpleCommandMatches(pattern: string, command: string): boolean {
 
 export function isCompoundCommand(command: string): boolean {
   return SHELL_OPERATOR.test(command);
+}
+
+/**
+ * A pattern that matches exactly one path. minimatch's escape leaves braces,
+ * which would otherwise expand, so those are escaped here as well.
+ */
+export function literalPathPattern(path: string): string {
+  return escape(path).replace(/[{}]/g, "\\$&");
 }

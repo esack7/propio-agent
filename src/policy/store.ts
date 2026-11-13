@@ -15,10 +15,27 @@ export const EMPTY_PERMISSION_SETTINGS: PermissionSettings = Object.freeze({
   deny: Object.freeze([]),
 });
 
+/**
+ * Computes new settings from the owner's current stored settings. It must be
+ * pure: a store may call it more than once, for example to retry a write.
+ */
+export type PermissionSettingsChange = (
+  current: PermissionSettings,
+) => PermissionSettings;
+
 /** Where rules live is the application's concern; policy only asks for them. */
 export interface PermissionStore {
   load(owner: OwnerScope): Promise<PermissionSettings>;
-  save(owner: OwnerScope, settings: PermissionSettings): Promise<void>;
+  /**
+   * Apply `change` to the owner's current stored settings and store the
+   * result atomically: no other update for the same owner may land between
+   * the read and the write, so concurrent edits never drop each other's rules.
+   * Resolves to the settings now stored.
+   */
+  update(
+    owner: OwnerScope,
+    change: PermissionSettingsChange,
+  ): Promise<PermissionSettings>;
 }
 
 function copySettings(settings: PermissionSettings): PermissionSettings {
@@ -44,7 +61,14 @@ export class InMemoryPermissionStore implements PermissionStore {
     return copySettings(this.settings.get(owner) ?? EMPTY_PERMISSION_SETTINGS);
   }
 
-  async save(owner: OwnerScope, settings: PermissionSettings): Promise<void> {
-    this.settings.set(owner, copySettings(settings));
+  async update(
+    owner: OwnerScope,
+    change: PermissionSettingsChange,
+  ): Promise<PermissionSettings> {
+    // Read, change, and write with nothing awaited in between.
+    const current = this.settings.get(owner) ?? EMPTY_PERMISSION_SETTINGS;
+    const next = copySettings(change(copySettings(current)));
+    this.settings.set(owner, next);
+    return copySettings(next);
   }
 }

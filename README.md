@@ -1100,7 +1100,16 @@ if (decision.outcome === "ask") {
   call, or `deny` with an optional reason for the model. Session grants are
   held on the engine (`listSessionGrants`, `restoreSessionGrants`,
   `revokeSessionGrant`); `allow_always` saves through the store. A grant never
-  overrides a deny rule.
+  overrides a deny rule: an answer re-reads the stored rules and is refused if
+  a deny written while the request waited now matches. Only the first answer
+  to a request counts.
+- **Store.** `PermissionStore` has `load(owner)` and `update(owner, change)`.
+  `update` must apply the pure `change` function to the owner's current stored
+  settings atomically, so concurrent edits from one engine or several never
+  drop each other's rules. An engine caches what it last read or wrote;
+  `reload()` reads again.
+- **Exact path grants** escape glob characters, so approving a file named
+  `notes*.txt` does not approve `notes-2.txt`. Path patterns never negate.
 
 Run `npm run build && npm run example:policy` for a complete consumer.
 

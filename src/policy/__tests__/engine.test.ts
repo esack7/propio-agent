@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 import {
   ApprovalAnswerError,
+  getPreset,
   InMemoryPermissionStore,
   PolicyEngine,
   PolicyRuleError,
@@ -8,6 +9,7 @@ import {
   listPresets,
   type ApprovalRequest,
   type PermissionSettings,
+  type PermissionSettingsChange,
   type PermissionStore,
   type PolicyDecision,
   type PolicyEngineOptions,
@@ -722,7 +724,7 @@ describe("editing stored rules", () => {
   it("keeps the rules in use when saving fails", async () => {
     const failing: PermissionStore = {
       load: async () => ({ allow: [], ask: [], deny: [] }),
-      save: async () => {
+      update: async () => {
         throw new Error("disk full");
       },
     };
@@ -751,6 +753,10 @@ describe("editing stored rules", () => {
       rules: [],
     });
     expect(policy.evaluate(CALLS.bash).outcome).toBe("ask");
+    // The failed always-allow reopened the request.
+    await expect(
+      policy.answer({ requestId: request.id, decision: "allow_once" }),
+    ).resolves.toMatchObject({ outcome: "allow" });
   });
 
   it("switches preset for the instance, and stores it only when asked", async () => {
@@ -820,7 +826,7 @@ describe("owner scopes", () => {
   it("does not let a caller change stored settings through a returned object", async () => {
     const store = new InMemoryPermissionStore();
     const initial = { allow: ["bash"], ask: [], deny: [] };
-    await store.save("alice", initial);
+    await store.update("alice", () => initial);
     initial.allow.push("edit");
     const loaded = await store.load("alice");
     (loaded.allow as string[]).push("write");
@@ -832,3 +838,299 @@ describe("owner scopes", () => {
     });
   });
 });
+
+/** Delays each update until released, applying it atomically on release. */
+function gatedStore(inner: InMemoryPermissionStore) {
+  const gates: Array<() => void> = [];
+  const store: PermissionStore = {
+    load: (owner) => inner.load(owner),
+    update: async (owner, change: PermissionSettingsChange) => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return inner.update(owner, change);
+    },
+  };
+  const releaseAll = async () => {
+    while (gates.length > 0) {
+      gates.shift()?.();
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  const waitForGate = async () => {
+    while (gates.length === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  return { store, releaseAll, waitForGate };
+}
+
+describe("answers checked against rules that changed while waiting", () => {
+  it.each([
+    ["allow_once", undefined],
+    ["allow_session", "bash"],
+    ["allow_always", "bash"],
+  ] as const)(
+    "%s is refused when this engine added a matching deny",
+    async (decision, rule) => {
+      const { engine: policy, store } = await engine();
+      const request = asked(policy.evaluate(CALLS.bash));
+      await policy.addRule("deny", "bash");
+
+      const result = await policy.answer({
+        requestId: request.id,
+        decision,
+        ...(rule ? { rule } : {}),
+      } as never);
+
+      expect(result).toMatchObject({
+        outcome: "deny",
+        rule: "bash",
+        source: "user",
+        actor: "application",
+      });
+      expect(policy.listSessionGrants()).toEqual([]);
+      // Choosing the same text as the deny must not move it out of deny.
+      expect(await store.load(OWNER)).toEqual({
+        allow: [],
+        ask: [],
+        deny: ["bash"],
+      });
+      await expect(
+        policy.answer({ requestId: request.id, decision: "allow_once" }),
+      ).rejects.toThrow(ApprovalAnswerError);
+    },
+  );
+
+  it.each(["allow_once", "allow_session", "allow_always"] as const)(
+    "%s is refused when another engine for the owner added a deny",
+    async (decision) => {
+      const { engine: policy, store } = await engine();
+      const other = await PolicyEngine.create({
+        store,
+        owner: OWNER,
+        workspaceRoot: WORKSPACE,
+      });
+      const request = asked(policy.evaluate(CALLS.bash));
+      await other.addRule("deny", "bash(npm:*)");
+
+      const result = await policy.answer({
+        requestId: request.id,
+        decision,
+        ...(decision === "allow_once" ? {} : { rule: "bash(npm test)" }),
+      } as never);
+
+      expect(result).toMatchObject({ outcome: "deny", rule: "bash(npm:*)" });
+      expect(await store.load(OWNER)).toEqual({
+        allow: [],
+        ask: [],
+        deny: ["bash(npm:*)"],
+      });
+    },
+  );
+
+  it("is refused when a preset deny now applies", async () => {
+    const { engine: policy } = await engine();
+    const request = asked(policy.evaluate(CALLS.bash));
+    await policy.setPreset("read-only");
+
+    await expect(
+      policy.answer({ requestId: request.id, decision: "allow_once" }),
+    ).resolves.toMatchObject({
+      outcome: "deny",
+      rule: "capability:process",
+      source: "preset",
+    });
+  });
+
+  it("removes an always-allowed rule from ask but leaves unrelated denies", async () => {
+    const { engine: policy, store } = await engine({
+      ask: ["bash"],
+      deny: ["edit"],
+    });
+    const request = asked(policy.evaluate(CALLS.bash));
+
+    await policy.answer({
+      requestId: request.id,
+      decision: "allow_always",
+      rule: "bash",
+    });
+
+    expect(await store.load(OWNER)).toEqual({
+      allow: ["bash"],
+      ask: [],
+      deny: ["edit"],
+    });
+    expect(policy.evaluate(CALLS.bash).outcome).toBe("allow");
+  });
+});
+
+describe("concurrent answers and writes", () => {
+  it("lets only the first answer decide while a permanent grant is saving", async () => {
+    const inner = new InMemoryPermissionStore();
+    const { store, releaseAll, waitForGate } = gatedStore(inner);
+    const policy = await PolicyEngine.create({
+      store,
+      owner: OWNER,
+      workspaceRoot: WORKSPACE,
+    });
+    const request = asked(policy.evaluate(CALLS.bash));
+
+    const first = policy.answer({
+      requestId: request.id,
+      decision: "allow_always",
+      rule: "bash",
+    });
+    await waitForGate();
+    await expect(
+      policy.answer({ requestId: request.id, decision: "deny" }),
+    ).rejects.toThrow(ApprovalAnswerError);
+    await releaseAll();
+
+    await expect(first).resolves.toMatchObject({ outcome: "allow" });
+    expect((await inner.load(OWNER)).allow).toEqual(["bash"]);
+  });
+
+  it("keeps every rule when one engine writes concurrently", async () => {
+    const inner = new InMemoryPermissionStore();
+    const { store, releaseAll, waitForGate } = gatedStore(inner);
+    const policy = await PolicyEngine.create({
+      store,
+      owner: OWNER,
+      workspaceRoot: WORKSPACE,
+    });
+
+    const writes = Promise.all([
+      policy.addRule("deny", "bash(git push:*)"),
+      policy.addRule("deny", "edit(secrets/**)"),
+      policy.addRule("allow", "read"),
+    ]);
+    await waitForGate();
+    await releaseAll();
+    await writes;
+
+    const stored = await inner.load(OWNER);
+    expect([...stored.deny].sort()).toEqual([
+      "bash(git push:*)",
+      "edit(secrets/**)",
+    ]);
+    expect(stored.allow).toEqual(["read"]);
+    expect(
+      [...policy.describe().rules].map((rule) => rule.rule).sort(),
+    ).toEqual(["bash(git push:*)", "edit(secrets/**)", "read"]);
+  });
+
+  it("keeps another engine's deny when an engine with stale settings writes", async () => {
+    const store = new InMemoryPermissionStore();
+    const create = () =>
+      PolicyEngine.create({ store, owner: OWNER, workspaceRoot: WORKSPACE });
+    const first = await create();
+    const second = await create();
+
+    await first.addRule("deny", "bash(git push:*)");
+    await second.addRule("allow", "bash");
+    await second.removeRule("edit");
+    await second.setPreset("accept-edits", { persist: true });
+
+    expect(await store.load(OWNER)).toEqual({
+      preset: "accept-edits",
+      allow: ["bash"],
+      ask: [],
+      deny: ["bash(git push:*)"],
+    });
+    // The writing engine now uses the stored rules, including the other deny.
+    expect(
+      second.evaluate({
+        ...CALLS.bash,
+        target: { kind: "command", command: "git push" },
+      }).outcome,
+    ).toBe("deny");
+  });
+
+  it("picks up another engine's rules on reload", async () => {
+    const store = new InMemoryPermissionStore();
+    const create = () =>
+      PolicyEngine.create({ store, owner: OWNER, workspaceRoot: WORKSPACE });
+    const first = await create();
+    const second = await create();
+    await first.addRule("deny", "bash");
+
+    expect(second.evaluate(CALLS.bash).outcome).toBe("ask");
+    await second.reload();
+    expect(second.evaluate(CALLS.bash).outcome).toBe("deny");
+  });
+});
+
+describe("exact path grants", () => {
+  it.each([
+    ["notes*.txt", ["notes-2.txt", "notes.txt"]],
+    ["file?.md", ["file1.md"]],
+    ["x[ab].ts", ["xa.ts"]],
+    ["{a,b}.json", ["a.json", "b.json"]],
+    ["p(1).txt", ["p1.txt"]],
+    ["+(a|b)", ["a"]],
+    ["!draft", ["draft", "other"]],
+  ])("cover only the file literally named %s", async (name, others) => {
+    const { engine: policy } = await engine();
+    const target = `${WORKSPACE}/${name}`;
+    const request = asked(policy.evaluate(fileCall("edit", WRITE, target)));
+    const exact = request.suggestions.find((s) => s.scope === "exact");
+
+    expect(exact?.description).toBe(`edit on ${name}`);
+    await policy.answer({
+      requestId: request.id,
+      decision: "allow_session",
+      rule: exact!.rule,
+    });
+
+    expect(policy.evaluate(fileCall("edit", WRITE, target)).outcome).toBe(
+      "allow",
+    );
+    for (const other of others) {
+      expect({
+        other,
+        outcome: policy.evaluate(
+          fileCall("edit", WRITE, `${WORKSPACE}/${other}`),
+        ).outcome,
+      }).toEqual({ other, outcome: "ask" });
+    }
+  });
+
+  it("use the absolute path for a workspace directory named ~", async () => {
+    const { engine: policy } = await engine();
+    const target = `${WORKSPACE}/~/notes.txt`;
+    const request = asked(policy.evaluate(fileCall("edit", WRITE, target)));
+
+    const exact = request.suggestions.find((s) => s.scope === "exact");
+    expect(exact?.rule).toBe(`edit(${target})`);
+    expect(exact?.description).toBe("edit on ~/notes.txt");
+  });
+});
+
+describe("built-in presets", () => {
+  it("cannot be changed through the objects callers receive", async () => {
+    const listed = listPresets();
+    const readOnly = getPreset("read-only")!;
+
+    expect(() => (listed as PermissionPresetLike[]).push(readOnly)).toThrow(
+      TypeError,
+    );
+    expect(() => {
+      (readOnly as PermissionPresetLike).mode = "bypass";
+    }).toThrow(TypeError);
+    expect(() => (readOnly.deny as string[]).splice(0)).toThrow(TypeError);
+    expect(() => (getPreset("ask")!.allow as string[]).push("bash")).toThrow(
+      TypeError,
+    );
+
+    const fresh = await PolicyEngine.create({
+      store: new InMemoryPermissionStore(),
+      owner: "someone-else",
+      workspaceRoot: WORKSPACE,
+      preset: "read-only",
+    });
+    expect(fresh.mode).toBe("ask");
+    expect(fresh.evaluate(CALLS.bash).outcome).toBe("deny");
+    expect(listPresets()).toHaveLength(4);
+  });
+});
+
+type PermissionPresetLike = { mode: string };
