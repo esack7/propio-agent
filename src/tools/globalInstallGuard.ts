@@ -1,8 +1,3 @@
-export interface GlobalInstallApprovalRequest {
-  readonly command: string;
-  readonly reason: string;
-}
-
 export interface GlobalInstallClassification {
   readonly matched: boolean;
   readonly reason?: string;
@@ -476,5 +471,167 @@ export function classifyGlobalInstallCommand(
   return { matched: false };
 }
 
-export const GLOBAL_INSTALL_DENIED_MESSAGE =
-  "Global software install blocked. Set PROPIO_ALLOW_GLOBAL_INSTALLS=1 or approve the install in interactive mode.";
+/** The only spellings read as a global install; npm reads each the same way. */
+const GLOBAL_SCOPE_OPTIONS: ReadonlySet<string> = new Set([
+  "-g",
+  "--global",
+  "--location=global",
+]);
+
+/**
+ * Whether an npm or pnpm argument list is, beyond doubt, a global install
+ * with one of `verbs`. npm's option parser reads options in order, takes a
+ * separate `true` or `false` as a boolean option's value, expands
+ * abbreviations (`--no-glob`), and stops at `--`, so a list is accepted only
+ * when every argument is the subcommand, a global option spelled exactly as
+ * above, `--location global`, `--`, or a package. Any other option, and a
+ * bare `true` or `false`, sends the call to the operator.
+ */
+function isAllowlistedGlobalInstall(
+  args: readonly ShellToken[],
+  verbs: readonly string[],
+): boolean {
+  let global = false;
+  let endOfOptions = false;
+  const positionals: Array<{ token: ShellToken; afterEnd: boolean }> = [];
+  for (let index = 0; index < args.length;) {
+    const { kind, span } = readArgument(args, index, endOfOptions);
+    if (kind === "reject") return false;
+    if (kind === "end") endOfOptions = true;
+    if (kind === "global") global = true;
+    if (kind === "positional") {
+      positionals.push({ token: args[index]!, afterEnd: endOfOptions });
+    }
+    index += span;
+  }
+  return global && isInstallSubcommand(positionals[0], verbs);
+}
+
+/**
+ * The first positional is the subcommand; after `--` npm would read it as a
+ * package instead, and a quoted one is not taken at its word.
+ */
+function isInstallSubcommand(
+  first: { token: ShellToken; afterEnd: boolean } | undefined,
+  verbs: readonly string[],
+): boolean {
+  return (
+    first !== undefined &&
+    !first.afterEnd &&
+    !first.token.quoted &&
+    verbs.includes(first.token.value)
+  );
+}
+
+type ArgumentKind = "end" | "global" | "positional" | "reject";
+
+/** What the argument at `index` is, and how many arguments it spans. */
+function readArgument(
+  args: readonly ShellToken[],
+  index: number,
+  endOfOptions: boolean,
+): { kind: ArgumentKind; span: number } {
+  const value = args[index]!.value;
+  if (!endOfOptions && value === "--") return { kind: "end", span: 1 };
+  if (!endOfOptions && value.startsWith("-")) {
+    const span = globalOptionLength(args, index);
+    return span > 0 ? { kind: "global", span } : { kind: "reject", span: 1 };
+  }
+  return { kind: isPlainPositional(value) ? "positional" : "reject", span: 1 };
+}
+
+/** How many arguments a global option at `index` spans; 0 if it is not one. */
+function globalOptionLength(
+  args: readonly ShellToken[],
+  index: number,
+): number {
+  const value = args[index]!.value;
+  if (GLOBAL_SCOPE_OPTIONS.has(value)) return 1;
+  return value === "--location" && args[index + 1]?.value === "global" ? 2 : 0;
+}
+
+/** A bare `true` or `false` may be the value of the option before it. */
+function isPlainPositional(value: string): boolean {
+  return value !== "true" && value !== "false";
+}
+
+/**
+ * The subcommand that installs, for package managers whose syntax makes it
+ * unambiguous. A manager not listed here (pacman's -S family, for one) is
+ * never recognized.
+ */
+const INSTALL_SUBCOMMANDS: Readonly<
+  Record<
+    string,
+    { readonly verbs: readonly string[]; readonly global?: boolean }
+  >
+> = {
+  npm: { verbs: ["install", "i", "add"], global: true },
+  pnpm: { verbs: ["add"], global: true },
+  brew: { verbs: ["install", "upgrade"] },
+  apt: { verbs: ["install"] },
+  "apt-get": { verbs: ["install"] },
+  dnf: { verbs: ["install"] },
+  yum: { verbs: ["install"] },
+  apk: { verbs: ["add"] },
+  zypper: { verbs: ["install"] },
+  pipx: { verbs: ["install"] },
+  cargo: { verbs: ["install"] },
+  gem: { verbs: ["install"] },
+};
+
+/**
+ * A word made only of characters every POSIX shell passes through unchanged:
+ * no quoting, escapes, expansions, globs, braces, tildes, comments, history
+ * or job syntax, operators, or redirections.
+ */
+const LITERAL_SHELL_WORD = /^[A-Za-z0-9@._/:=+,%-]+$/;
+
+/**
+ * The arguments the shell will pass, when that is beyond doubt: the command
+ * is whitespace-separated literal words, so each word reaches the program
+ * exactly as written. Anything else returns undefined. The heuristic
+ * tokenizer above joins or splits quoted text differently from the shell
+ * (`-'g'x` is one argument to `sh`), so it explains prompts but never decides
+ * an approval.
+ */
+function literalShellWords(command: string): ShellToken[] | undefined {
+  const words = command.trim().split(/[ \t]+/);
+  if (words.length === 0 || words[0] === "") return undefined;
+  if (!words.every((word) => LITERAL_SHELL_WORD.test(word))) return undefined;
+  return words.map((value) => ({ value, quoted: false }));
+}
+
+/**
+ * Whether a command is, beyond doubt, one package manager installing
+ * globally: literal words only (see `literalShellWords`), no wrapper (`sudo`,
+ * `env`, a shell), and the manager's own install subcommand.
+ * `classifyGlobalInstallCommand` flags likely installs for review; this
+ * stricter test decides what a blanket approval may cover, so any doubt
+ * answers no.
+ */
+export function isUnambiguousGlobalInstall(command: string): boolean {
+  const tokens = literalShellWords(command);
+  if (!tokens) return false;
+  const [manager, ...rest] = tokens;
+  if (!manager) return false;
+  const words = rest.map((token) => token.value);
+  if (manager.value === "yarn") {
+    const [first, second] = words.filter((word) => !word.startsWith("-"));
+    return first === "global" && second === "add";
+  }
+  const known = Object.prototype.hasOwnProperty.call(
+    INSTALL_SUBCOMMANDS,
+    manager.value,
+  )
+    ? INSTALL_SUBCOMMANDS[manager.value]
+    : undefined;
+  if (!known) return false;
+  if (known.global) return isAllowlistedGlobalInstall(rest, known.verbs);
+  const subcommand = rest.find((token) => !token.value.startsWith("-"));
+  return (
+    subcommand !== undefined &&
+    !subcommand.quoted &&
+    known.verbs.includes(subcommand.value)
+  );
+}

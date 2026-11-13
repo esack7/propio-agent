@@ -20,8 +20,4 @@ export type {
   ShellExecutionOptions,
   ShellExecutionResult,
 } from "./nodeShell.js";
-export type {
-  BashGlobalInstallGateConfig,
-  GlobalInstallApprovalRequest,
-} from "./bash.js";
 export type { Capability, ToolMetadata } from "../policy/capabilities.js";

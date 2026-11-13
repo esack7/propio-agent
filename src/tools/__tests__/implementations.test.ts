@@ -17,10 +17,7 @@ jest.unstable_mockModule("fs/promises", () => ({
   rename: jest.fn(),
   stat: jest.fn(),
   open: jest.fn(),
-}));
-
-jest.unstable_mockModule("fast-glob", () => ({
-  default: jest.fn(),
+  realpath: jest.fn(async (value: string) => value),
 }));
 
 jest.unstable_mockModule("child_process", () => ({
@@ -41,12 +38,13 @@ let GrepTool: any;
 let FindTool: any;
 let LsTool: any;
 let mockFsPromises: jest.Mocked<any>;
-let mockFg: jest.MockedFunction<any>;
 const mockExecFileAsync = jest.fn();
 
 function mockFileStat(isDirectory: boolean): void {
+  // The search root is the directory; every entry beneath it is a file.
   jest.mocked(mockFsPromises.stat).mockResolvedValue({
     isDirectory: () => isDirectory,
+    isFile: () => true,
   } as any);
 }
 
@@ -74,13 +72,24 @@ function mockOpenFileContents(contents: string): void {
   });
 }
 
+/** One directory of plain files, as the search walk lists it. */
+function mockGlobFiles(paths: string[]): void {
+  jest.mocked(mockFsPromises.readdir).mockResolvedValue(
+    paths.map((filePath) => ({
+      name: filePath.slice(filePath.lastIndexOf("/") + 1),
+      isFile: () => true,
+      isDirectory: () => false,
+      isSymbolicLink: () => false,
+    })) as any,
+  );
+}
+
 function mockDirectoryEntries(entries: unknown[]): void {
   jest.mocked(mockFsPromises.readdir).mockResolvedValue(entries as any);
 }
 
 beforeAll(async () => {
   mockFsPromises = (await import("fs/promises")) as jest.Mocked<any>;
-  mockFg = (await import("fast-glob")).default as jest.MockedFunction<any>;
   await import("child_process");
   const util = await import("util");
   jest.mocked(util.promisify).mockReturnValue(mockExecFileAsync as any);
@@ -139,9 +148,7 @@ describe("Tool Implementations", () => {
 
     it("rejects directories", async () => {
       const tool = new ReadTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
+      mockFileStat(true);
 
       await expect(tool.execute({ path: "/test/dir" })).rejects.toThrow(
         "Path is a directory, not a file",
@@ -488,33 +495,8 @@ describe("Tool Implementations", () => {
       expect(parsed.stdout.length).toBe(60 * 1024);
     });
 
-    it("runs normal commands without approval", async () => {
-      const requestGlobalInstallApproval = jest.fn();
-      const tool = new BashTool({
-        globalInstallGate: {
-          allowGlobalInstallsWithoutPrompt: false,
-          requestGlobalInstallApproval,
-        },
-      });
-      mockExecFileAsync.mockResolvedValue({
-        stdout: "ok\n",
-        stderr: "",
-      });
-
-      await tool.execute({ command: "echo ok" });
-
-      expect(requestGlobalInstallApproval).not.toHaveBeenCalled();
-      expect(mockExecFileAsync).toHaveBeenCalled();
-    });
-
-    it("prompts and runs when approval returns true", async () => {
-      const requestGlobalInstallApproval = jest.fn().mockResolvedValue(true);
-      const tool = new BashTool({
-        globalInstallGate: {
-          allowGlobalInstallsWithoutPrompt: false,
-          requestGlobalInstallApproval,
-        },
-      });
+    it("leaves global installs to policy and runs what it is given", async () => {
+      const tool = new BashTool();
       mockExecFileAsync.mockResolvedValue({
         stdout: "",
         stderr: "",
@@ -522,59 +504,6 @@ describe("Tool Implementations", () => {
 
       await tool.execute({ command: "npm install -g eslint" });
 
-      expect(requestGlobalInstallApproval).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: "npm install -g eslint",
-          reason: expect.stringMatching(/npm/i),
-        }),
-      );
-      expect(mockExecFileAsync).toHaveBeenCalled();
-    });
-
-    it("throws and does not run when approval returns false", async () => {
-      const requestGlobalInstallApproval = jest.fn().mockResolvedValue(false);
-      const tool = new BashTool({
-        globalInstallGate: {
-          allowGlobalInstallsWithoutPrompt: false,
-          requestGlobalInstallApproval,
-        },
-      });
-
-      await expect(
-        tool.execute({ command: "npm install -g eslint" }),
-      ).rejects.toThrow(/Global software install blocked/);
-      expect(mockExecFileAsync).not.toHaveBeenCalled();
-    });
-
-    it("throws and does not run when no approval callback is available", async () => {
-      const tool = new BashTool({
-        globalInstallGate: {
-          allowGlobalInstallsWithoutPrompt: false,
-        },
-      });
-
-      await expect(
-        tool.execute({ command: "brew install ripgrep" }),
-      ).rejects.toThrow(/Global software install blocked/);
-      expect(mockExecFileAsync).not.toHaveBeenCalled();
-    });
-
-    it("runs without prompting when allowGlobalInstallsWithoutPrompt is true", async () => {
-      const requestGlobalInstallApproval = jest.fn();
-      const tool = new BashTool({
-        globalInstallGate: {
-          allowGlobalInstallsWithoutPrompt: true,
-          requestGlobalInstallApproval,
-        },
-      });
-      mockExecFileAsync.mockResolvedValue({
-        stdout: "",
-        stderr: "",
-      });
-
-      await tool.execute({ command: "npm install -g eslint" });
-
-      expect(requestGlobalInstallApproval).not.toHaveBeenCalled();
       expect(mockExecFileAsync).toHaveBeenCalled();
     });
   });
@@ -596,7 +525,7 @@ describe("Tool Implementations", () => {
     it("finds regex matches recursively", async () => {
       const tool = new GrepTool();
       mockFileStat(true);
-      mockFg.mockResolvedValue(["/test/dir/a.txt", "/test/dir/b.txt"]);
+      mockGlobFiles(["/test/dir/a.txt", "/test/dir/b.txt"]);
       mockFileContents("match 123");
 
       const result = await tool.execute({
@@ -612,7 +541,7 @@ describe("Tool Implementations", () => {
     it("reads recursive matches sequentially to bound open files", async () => {
       const tool = new GrepTool();
       mockFileStat(true);
-      mockFg.mockResolvedValue(["/test/dir/a.txt", "/test/dir/b.txt"]);
+      mockGlobFiles(["/test/dir/a.txt", "/test/dir/b.txt"]);
 
       let resolveFirstRead: (() => void) | undefined;
       let signalFirstReadStarted: (() => void) | undefined;
@@ -658,10 +587,8 @@ describe("Tool Implementations", () => {
   describe("FindTool", () => {
     it("finds matching files under a directory", async () => {
       const tool = new FindTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
-      mockFg.mockResolvedValue(["/test/src/a.ts", "/test/src/b.ts"]);
+      mockFileStat(true);
+      mockGlobFiles(["/test/src/a.ts", "/test/src/b.ts"]);
 
       const result = await tool.execute({
         path: "/test/src",
@@ -673,10 +600,8 @@ describe("Tool Implementations", () => {
 
     it("returns a no matches message", async () => {
       const tool = new FindTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
-      mockFg.mockResolvedValue([]);
+      mockFileStat(true);
+      mockGlobFiles([]);
 
       const result = await tool.execute({
         path: "/test/src",

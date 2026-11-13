@@ -394,8 +394,6 @@ export class PolicyEngine {
   }
 
   /** Replace the grants, as when a session is resumed. All must be readable. */
-  // Public API for consumers that persist sessions.
-  // fallow-ignore-next-line unused-class-member
   restoreSessionGrants(ruleTexts: readonly string[]): void {
     const restored = ruleTexts.map((text) => this.checkedRule(text));
     this.sessionGrants = restored.filter(
@@ -672,10 +670,11 @@ export class PolicyEngine {
     }
     if (target?.kind === "command") {
       const command = target.command.trim();
-      // A compound command can never be covered by an allow rule, and a
-      // trailing ":*" would turn the rule into a prefix match.
+      // A compound or detached command can never be covered by a command
+      // pattern, and a trailing ":*" would turn the rule into a prefix match.
       if (
         command.length === 0 ||
+        target.detached === true ||
         isCompoundCommand(command) ||
         command.endsWith(":*")
       ) {

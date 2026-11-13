@@ -41,6 +41,8 @@ export interface AgentToolScope {
 
 export interface AgentToolAuthorizationRequest {
   readonly name: string;
+  /** The model's identifier for this call, for correlating an approval. */
+  readonly toolCallId?: string;
   readonly args: Readonly<Record<string, unknown>>;
   /** The exact scope selected before the provider request was dispatched. */
   readonly scope: AgentToolScope;

@@ -1,3 +1,5 @@
+import { getPreset, listPresets } from "../policy/index.js";
+
 const CLI_FLAG_SANDBOX = "--sandbox";
 const CLI_FLAG_JSON = "--json";
 const CLI_FLAG_PLAIN = "--plain";
@@ -18,6 +20,7 @@ const CLI_FLAG_MAX_RETRIES = "--max-retries";
 const CLI_FLAG_BASH_TIMEOUT_MS = "--bash-timeout-ms";
 const CLI_FLAG_STREAM_IDLE_TIMEOUT_MS = "--stream-idle-timeout-ms";
 const CLI_FLAG_MODE = "--mode";
+const CLI_FLAG_PERMISSIONS = "--permissions";
 
 export type CliAgentMode = "execute" | "plan" | "discover";
 
@@ -41,6 +44,8 @@ export interface ParsedCliArgs {
     bashTimeoutMs?: number;
     streamIdleTimeoutMs?: number;
     mode?: CliAgentMode;
+    /** A permission preset name; overrides the stored preset for this run. */
+    permissions?: string;
   };
   forwardedArgs: string[];
   parseErrors: string[];
@@ -160,6 +165,33 @@ function matchAndApplyIntFlag(
   return { matched: false };
 }
 
+type PermissionsArgResult =
+  | { preset: string; consumed: boolean }
+  | { preset: undefined; error: string; consumed: boolean };
+
+function parsePermissionsArg(
+  arg: string,
+  nextArg: string | undefined,
+): PermissionsArgResult | null {
+  const inline = arg.startsWith(`${CLI_FLAG_PERMISSIONS}=`);
+  if (!inline && arg !== CLI_FLAG_PERMISSIONS) return null;
+  const value = inline
+    ? arg.substring(CLI_FLAG_PERMISSIONS.length + 1)
+    : (nextArg ?? "");
+  const known = getPreset(value) !== undefined;
+  // A following flag is not this flag's value, so it is left to be parsed.
+  const consumed = !inline && known;
+  if (known) return { preset: value, consumed };
+  const names = listPresets()
+    .map((preset) => preset.name)
+    .join(", ");
+  return {
+    preset: undefined,
+    error: `${CLI_FLAG_PERMISSIONS} requires one of: ${names}`,
+    consumed,
+  };
+}
+
 // fallow-ignore-next-line complexity
 export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const forwardedArgs: string[] = [];
@@ -183,6 +215,7 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
     bashTimeoutMs: undefined,
     streamIdleTimeoutMs: undefined,
     mode: undefined,
+    permissions: undefined,
   };
 
   const intFlagDefs: Array<[string, number, string, (v: number) => void]> = [
@@ -225,6 +258,18 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
 
     if (arg === CLI_FLAG_SANDBOX) {
       flags.sandbox = true;
+      continue;
+    }
+
+    const permissions = parsePermissionsArg(arg, args[i + 1]);
+    if (permissions) {
+      if (permissions.preset === undefined) {
+        parseErrors.push(permissions.error);
+      } else {
+        flags.permissions = permissions.preset;
+        forwardedArgs.push(CLI_FLAG_PERMISSIONS, permissions.preset);
+      }
+      if (permissions.consumed) i++;
       continue;
     }
 

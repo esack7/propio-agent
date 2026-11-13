@@ -1,6 +1,7 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import { listContainedFiles } from "./containedFiles.js";
 
 const DEFAULT_OUTPUT_LIMIT = 50 * 1024;
 const DEFAULT_TRUNCATION_MARKER = "[output truncated]";
@@ -161,13 +162,7 @@ export async function collectFilesForSearch(
     return [rootPath];
   }
 
-  const fg = (await import("fast-glob")).default;
-  return await fg("**/*", {
-    cwd: rootPath,
-    absolute: true,
-    onlyFiles: true,
-    dot: false,
-  });
+  return await listContainedFiles(rootPath);
 }
 
 export function formatFileType(

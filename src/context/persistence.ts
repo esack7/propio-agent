@@ -43,6 +43,8 @@ export interface SessionMetadata {
   /** A tool-boundary checkpoint from an interrupted run. */
   readonly recoveryCheckpoint?: boolean;
   readonly agentMode?: AgentMode;
+  /** Permission rules the operator approved for this session only. */
+  readonly sessionGrants?: ReadonlyArray<string>;
   readonly planFilePath?: string;
   readonly planSaveApproved?: boolean;
   readonly planDraftSearchStartTurnIndex?: number;
@@ -307,6 +309,7 @@ function validateMetadata(metadata: unknown): void {
     );
   }
   validateAgentModeMetadata(meta);
+  validateStringArrayField(meta, "sessionGrants", "metadata");
   validatePlanMetadata(meta);
   validatePlanDraftMetadata(meta);
 }

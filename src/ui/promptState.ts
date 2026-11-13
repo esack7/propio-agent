@@ -29,6 +29,8 @@ export interface PromptRequest {
   bashFooter?: string;
   defaultValue?: string;
   history?: readonly string[];
+  /** Closes the prompt unanswered when aborted. Not used by chat prompts. */
+  signal?: AbortSignal;
 }
 
 export function clampPromptCursor(

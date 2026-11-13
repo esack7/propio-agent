@@ -9,7 +9,17 @@ export type RuleEffect = "allow" | "ask" | "deny";
  */
 export type PolicyTarget =
   | { readonly kind: "path"; readonly path: string }
-  | { readonly kind: "command"; readonly command: string }
+  | {
+      readonly kind: "command";
+      readonly command: string;
+      /**
+       * The call does not run where and how the command text implies: its
+       * working directory is outside the workspace, or it sets environment
+       * variables. A command pattern then never allows it, as for a compound
+       * command, because the approved text no longer describes the call.
+       */
+      readonly detached?: boolean;
+    }
   | { readonly kind: "mcp"; readonly serverPrefix: string };
 
 export type ParsedRule =
@@ -130,6 +140,7 @@ export function ruleMatches(
     return pathMatches(parsed.pattern, input.target.path, context);
   }
   if (input.target?.kind === "command") {
+    if (effect === "allow" && input.target.detached === true) return false;
     return commandMatches(parsed.pattern, input.target.command, effect);
   }
   // No target to compare against. A deny or ask rule still applies, so a

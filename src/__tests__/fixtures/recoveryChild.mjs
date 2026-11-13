@@ -34,6 +34,7 @@ const config = {
 
 const agent = new Agent({
   providersConfig: config,
+  permissions: { preset: "bypass" },
   sessionsDir,
   onRecoveryCheckpointFailure: (error) => {
     fs.appendFileSync(failuresPath, `${error.message}\n`);

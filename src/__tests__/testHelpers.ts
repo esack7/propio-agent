@@ -98,11 +98,19 @@ export function createMockWriteStream(): NodeJS.WriteStream & {
   } as unknown as NodeJS.WriteStream & { chunks: string[] };
 }
 
+/** For tests about something other than permissions: every call runs. */
+export const BYPASS_PERMISSIONS = { preset: "bypass" } as const;
+
+/** Runs every tool call unasked unless `config.permissions` says otherwise. */
 export function createTestAgent(
   provider: LLMProvider,
   config?: Partial<ConstructorParameters<typeof Agent>[0]>,
 ): Agent {
-  const agent = new Agent({ providersConfig: testProvidersConfig, ...config });
+  const agent = new Agent({
+    providersConfig: testProvidersConfig,
+    permissions: BYPASS_PERMISSIONS,
+    ...config,
+  });
   (agent as any).provider = provider;
   return agent;
 }

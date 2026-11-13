@@ -49,6 +49,8 @@ export interface PromptConfirmRequest {
   promptText: string;
   defaultValue?: boolean;
   footer?: string;
+  /** Aborting closes the prompt and resolves to the default value. */
+  signal?: AbortSignal;
 }
 
 export interface PromptComposer {
@@ -147,6 +149,8 @@ export function createPromptComposer(
   let closed = false;
   let closeReason: PromptCloseReason | null = null;
   let pendingResolve: ((result: PromptResult) => void) | null = null;
+  /** Releases what the pending prompt holds, however the prompt ends. */
+  let pendingCleanup: (() => void) | null = null;
   let currentState: PromptState | null = null;
   let activeChatSession: ChatPromptSession | null = null;
   let activePrompt: ActivePromptContext | null = null;
@@ -241,6 +245,8 @@ export function createPromptComposer(
 
     const resolve = pendingResolve;
     pendingResolve = null;
+    pendingCleanup?.();
+    pendingCleanup = null;
 
     if (activeChatSession) {
       activeChatSession.cleanup();
@@ -335,7 +341,7 @@ export function createPromptComposer(
       }
 
       inputStream.resume();
-      rl.question(request.promptText, (answer) => {
+      const onAnswer = (answer: string): void => {
         settlePending({
           status: "submitted",
           submission: createPlainSubmission(
@@ -343,7 +349,29 @@ export function createPromptComposer(
             request.inputMode ?? "prompt",
           ),
         });
-      });
+      };
+      const signal = request.signal;
+      if (!signal) {
+        rl.question(request.promptText, onAnswer);
+        return;
+      }
+      if (signal.aborted) {
+        settlePending({ status: "closed" });
+        return;
+      }
+      // Aborting withdraws the question from readline and releases whoever
+      // is waiting on this prompt. One turn's signal serves many prompts, so
+      // the listener goes when this prompt ends, not only when it aborts.
+      // Readline gets a signal of its own, since it does not always remove
+      // what it adds (closing mid-question leaves its listener behind).
+      const question = new AbortController();
+      const onAbort = (): void => {
+        question.abort(signal.reason);
+        settlePending({ status: "closed" });
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      pendingCleanup = () => signal.removeEventListener("abort", onAbort);
+      rl.question(request.promptText, { signal: question.signal }, onAnswer);
     });
   };
 
@@ -355,6 +383,7 @@ export function createPromptComposer(
         mode: "confirm",
         promptText: request.promptText,
         footer: request.footer,
+        signal: request.signal,
       });
 
       if (result.status === "closed") {

@@ -1,11 +1,11 @@
 import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
-import fg from "fast-glob";
 import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
+import { listContainedFiles } from "./containedFiles.js";
 import { normalizeToolPath, throwDirectoryOperationError } from "./shared.js";
 
 function recursivePattern(pattern: string): string {
@@ -116,12 +116,10 @@ export class FindTool implements PresentedTool {
         throw new Error(`Path is not a directory: ${rawPath}`);
       }
 
-      const matches = await fg(recursivePattern(rawPattern), {
-        cwd: path,
-        absolute: true,
-        onlyFiles: true,
-        dot: false,
-      });
+      const matches = await listContainedFiles(
+        path,
+        recursivePattern(rawPattern),
+      );
 
       if (matches.length === 0) {
         return `No files found matching pattern: ${rawPattern}`;

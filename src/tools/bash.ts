@@ -8,21 +8,7 @@ import { normalizeToolPath } from "./shared.js";
 import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
-import {
-  classifyGlobalInstallCommand,
-  GLOBAL_INSTALL_DENIED_MESSAGE,
-  type GlobalInstallApprovalRequest,
-} from "./globalInstallGuard.js";
 import { runShellCommand } from "./runShellCommand.js";
-
-export type { GlobalInstallApprovalRequest } from "./globalInstallGuard.js";
-
-export interface BashGlobalInstallGateConfig {
-  requestGlobalInstallApproval?: (
-    request: GlobalInstallApprovalRequest,
-  ) => Promise<boolean>;
-  allowGlobalInstallsWithoutPrompt: boolean;
-}
 
 export interface BashToolConfig extends PathToolOptions {
   readonly workspaceRoot?: string;
@@ -30,7 +16,6 @@ export interface BashToolConfig extends PathToolOptions {
   readonly defaultTimeoutMs?: number;
   readonly maxTimeoutMs?: number;
   readonly outputInlineLimit?: number;
-  readonly globalInstallGate?: BashGlobalInstallGateConfig;
 }
 
 interface BashToolResult {
@@ -90,13 +75,11 @@ export class BashTool implements PresentedTool {
   private readonly defaultTimeoutMs: number;
   private readonly maxTimeoutMs: number;
   private readonly outputInlineLimit: number;
-  private readonly globalInstallGate?: BashGlobalInstallGateConfig;
 
   constructor(private readonly config?: BashToolConfig) {
     this.defaultTimeoutMs = config?.defaultTimeoutMs ?? 120000;
     this.maxTimeoutMs = config?.maxTimeoutMs ?? 600000;
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
-    this.globalInstallGate = config?.globalInstallGate;
   }
 
   getDisplayAdapter(): ToolDisplayAdapter {
@@ -166,7 +149,6 @@ export class BashTool implements PresentedTool {
     context.signal?.throwIfAborted();
     const command = args.command as string;
     const executionOptions = this.resolveExecutionOptions(args);
-    await this.assertGlobalInstallAllowed(command);
 
     context.signal?.throwIfAborted();
     const result = await (this.config?.shellExecutor ?? runShellCommand)({
@@ -228,34 +210,5 @@ export class BashTool implements PresentedTool {
     context?: ToolExecutionContext,
   ): Promise<string> {
     return (await this.executeWithStatus(args, context)).content;
-  }
-
-  private async assertGlobalInstallAllowed(command: string): Promise<void> {
-    const classification = classifyGlobalInstallCommand(command);
-    if (!classification.matched) {
-      return;
-    }
-
-    const gate = this.globalInstallGate;
-    if (gate?.allowGlobalInstallsWithoutPrompt) {
-      return;
-    }
-
-    const reason =
-      classification.reason ??
-      "This command would install software globally on the system.";
-
-    if (gate?.requestGlobalInstallApproval) {
-      const approved = await gate.requestGlobalInstallApproval({
-        command,
-        reason,
-      });
-      if (!approved) {
-        throw new Error(`${GLOBAL_INSTALL_DENIED_MESSAGE} Command: ${command}`);
-      }
-      return;
-    }
-
-    throw new Error(`${GLOBAL_INSTALL_DENIED_MESSAGE} Command: ${command}`);
   }
 }

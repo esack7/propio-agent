@@ -93,7 +93,7 @@ function createMockAgent() {
   return {
     streamChat: jest.fn(),
     listUserInvocableSkills: () => [],
-    setGlobalInstallApprovalCallback: jest.fn(),
+    setApprovalChannel: jest.fn(),
     getConversationState: () => ({
       preamble: [],
       turns: [],

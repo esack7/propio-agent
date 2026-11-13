@@ -430,6 +430,31 @@ describe("approval", () => {
     ]);
   });
 
+  it("asks about a detached command an exact rule would allow, and offers no exact grant", async () => {
+    const { engine: policy } = await engine({ allow: ["bash(npm test)"] });
+    policy.addSessionGrant("bash(npm:*)");
+    expect(policy.evaluate(CALLS.bash).outcome).toBe("allow");
+    const detached: PolicyRequest = {
+      ...CALLS.bash,
+      args: { command: "npm test", cwd: "/elsewhere" },
+      target: { kind: "command", command: "npm test", detached: true },
+    };
+
+    const request = asked(policy.evaluate(detached));
+
+    expect(request.suggestions.map((s) => s.rule)).toEqual([
+      "bash",
+      "capability:process",
+    ]);
+    await expect(
+      policy.answer({
+        requestId: request.id,
+        decision: "allow_session",
+        rule: "bash(npm test)",
+      }),
+    ).rejects.toThrow(ApprovalAnswerError);
+  });
+
   it("survives a JSON round trip, and the answer may come back as JSON", async () => {
     const { engine: policy } = await engine();
     const request = asked(policy.evaluate(CALLS.bash));

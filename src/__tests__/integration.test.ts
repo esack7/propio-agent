@@ -1,5 +1,5 @@
 import { Agent } from "../agent.js";
-import { userSubmission } from "./testHelpers.js";
+import { BYPASS_PERMISSIONS, userSubmission } from "./testHelpers.js";
 import { LLMProvider } from "@propio-ai/providers";
 import {
   ChatRequest,
@@ -51,7 +51,10 @@ function createAgentWithProvider(
   provider: LLMProvider,
   providersConfig = defaultTestProvidersConfig,
 ): Agent {
-  const agent = new Agent({ providersConfig });
+  const agent = new Agent({
+    providersConfig,
+    permissions: BYPASS_PERMISSIONS,
+  });
   (agent as unknown as { provider: LLMProvider }).provider = provider;
   return agent;
 }
