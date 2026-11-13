@@ -49,6 +49,8 @@ export interface PromptConfirmRequest {
   promptText: string;
   defaultValue?: boolean;
   footer?: string;
+  /** Aborting closes the prompt and resolves to the default value. */
+  signal?: AbortSignal;
 }
 
 export interface PromptComposer {
@@ -335,7 +337,7 @@ export function createPromptComposer(
       }
 
       inputStream.resume();
-      rl.question(request.promptText, (answer) => {
+      const onAnswer = (answer: string): void => {
         settlePending({
           status: "submitted",
           submission: createPlainSubmission(
@@ -343,7 +345,24 @@ export function createPromptComposer(
             request.inputMode ?? "prompt",
           ),
         });
-      });
+      };
+      const signal = request.signal;
+      if (!signal) {
+        rl.question(request.promptText, onAnswer);
+        return;
+      }
+      if (signal.aborted) {
+        settlePending({ status: "closed" });
+        return;
+      }
+      // Aborting withdraws the question from readline and releases whoever
+      // is waiting on this prompt.
+      signal.addEventListener(
+        "abort",
+        () => settlePending({ status: "closed" }),
+        { once: true },
+      );
+      rl.question(request.promptText, { signal }, onAnswer);
     });
   };
 
@@ -355,6 +374,7 @@ export function createPromptComposer(
         mode: "confirm",
         promptText: request.promptText,
         footer: request.footer,
+        signal: request.signal,
       });
 
       if (result.status === "closed") {

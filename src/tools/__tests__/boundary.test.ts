@@ -392,30 +392,11 @@ describe("shell execution dependencies", () => {
     await expect(readFile(join(workspace, "no.txt"))).rejects.toThrow();
   });
 
-  it("enforces the existing global-install gate before invoking the shell", async () => {
+  it("does not gate global installs itself; that decision belongs to policy", async () => {
     const shell = jest
       .fn<ShellExecutor>()
       .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
     const registry = localRegistry(shell);
-    expect(
-      (
-        await registry.executeWithStatus("bash", {
-          command: "npm install -g example",
-        })
-      ).status,
-    ).toBe("error");
-    expect(shell).not.toHaveBeenCalled();
-    const approved = createLocalTools({
-      workspaceRoot: workspace,
-      shellExecutor: shell,
-      shell: {
-        globalInstallGate: {
-          allowGlobalInstallsWithoutPrompt: false,
-          requestGlobalInstallApproval: async () => true,
-        },
-      },
-    });
-    registry.register(approved[3].tool, true);
     expect(
       (
         await registry.executeWithStatus("bash", {

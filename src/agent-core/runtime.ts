@@ -1350,6 +1350,7 @@ export class AgentRuntime {
         Promise.resolve(
           authorize({
             name: toolName,
+            toolCallId,
             args: structuredClone(args),
             scope: this.currentToolScope ?? { allowedTools },
             signal: abortSignal,

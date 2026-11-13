@@ -210,6 +210,21 @@ describe("command patterns", () => {
     );
   });
 
+  it("a command pattern never allows a detached call", () => {
+    const detached: PolicyTarget = {
+      kind: "command",
+      command: "npm test",
+      detached: true,
+    };
+    expect(matches("bash(npm test)", "allow", "bash", detached)).toBe(false);
+    expect(matches("bash(npm:*)", "allow", "bash", detached)).toBe(false);
+    // A whole-tool rule names no command, so it still applies.
+    expect(matches("bash", "allow", "bash", detached)).toBe(true);
+    // Deny and ask rules keep matching the command text.
+    expect(matches("bash(npm test)", "deny", "bash", detached)).toBe(true);
+    expect(matches("bash(npm test)", "ask", "bash", detached)).toBe(true);
+  });
+
   it("a deny rule does not match an unrelated command", () => {
     expect(
       matches("bash(git push:*)", "deny", "bash", command("git pull && ls")),

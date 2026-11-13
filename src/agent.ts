@@ -37,8 +37,12 @@ import {
 import { loadProvidersConfig } from "./config/providersConfig.js";
 import { ToolRegistry } from "./tools/registry.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
-import type { BashGlobalInstallGateConfig } from "./tools/bash.js";
-import type { GlobalInstallApprovalRequest } from "./tools/globalInstallGuard.js";
+import type { ApprovalChannel } from "./permissions/approvalChannel.js";
+import {
+  ToolPermissions,
+  type ToolPermissionsOptions,
+} from "./permissions/toolPermissions.js";
+import { UNDECLARED_TOOL_METADATA } from "./policy/index.js";
 import { PresentedTool } from "./tools/interface.js";
 import type { ToolSummary } from "./tools/registry.js";
 import type {
@@ -181,7 +185,7 @@ export interface AgentConfigurationOrigins {
   readonly mcp: AgentConfigurationValueSource;
   readonly workspace: AgentConfigurationValueSource;
   readonly planApproval: AgentConfigurationValueSource;
-  readonly globalInstallApproval: AgentConfigurationValueSource;
+  readonly approvalChannel: AgentConfigurationValueSource;
 }
 
 type ConfigurationChangeScope =
@@ -346,6 +350,12 @@ type MutableAgentConfigurationOrigins = {
   ]: AgentConfigurationOrigins[K];
 };
 
+function approvalChannelOrigin(permissions?: {
+  approvalChannel?: ApprovalChannel;
+}): AgentConfigurationValueSource {
+  return permissions?.approvalChannel ? "application" : "default";
+}
+
 function resolveInitialConfigurationOrigins(
   options: {
     providersConfig: ProvidersConfig | string;
@@ -356,6 +366,7 @@ function resolveInitialConfigurationOrigins(
     systemPrompt?: string;
     agentsMdContent?: string;
     cwd?: string;
+    permissions?: { approvalChannel?: ApprovalChannel };
   },
   overrides: Partial<AgentConfigurationOrigins> = {},
 ): MutableAgentConfigurationOrigins {
@@ -373,7 +384,7 @@ function resolveInitialConfigurationOrigins(
     mcp: options.mcpConfig || options.mcpConfigPath ? "application" : "default",
     workspace: options.cwd === undefined ? "workspace" : "application",
     planApproval: "default",
-    globalInstallApproval: "default",
+    approvalChannel: approvalChannelOrigin(options.permissions),
   };
   return applyConfigurationOriginOverrides(origins, overrides);
 }
@@ -493,7 +504,7 @@ export class Agent {
   private readonly runtimeConfig: RuntimeConfig;
   private readonly runtimeConfigOrigins: RuntimeConfigOrigins;
   private readonly configurationOrigins: MutableAgentConfigurationOrigins;
-  private readonly bashGlobalInstallGate: BashGlobalInstallGateConfig;
+  private readonly toolPermissions: ToolPermissions;
   private sessionsDir: string | null = null;
   private readonly configuredSessionsDir?: string;
   private turnScratchpadDir: string | undefined;
@@ -537,6 +548,14 @@ export class Agent {
       /** Application-owned trace storage. Omit to keep the Agent free of trace I/O. */
       createTraceRun?: AgentTraceRunFactory;
       onRecoveryCheckpointFailure?: (error: Error) => void;
+      /**
+       * Tool permissions. Defaults to the `ask` preset with no approval
+       * channel, so calls that need approval are denied until one is set.
+       */
+      permissions?: Pick<
+        ToolPermissionsOptions,
+        "store" | "owner" | "preset" | "mode" | "approvalChannel"
+      >;
     } = {} as any,
   ) {
     if (!options.providersConfig) {
@@ -579,10 +598,12 @@ export class Agent {
       options,
       options.configurationOrigins,
     );
-    this.bashGlobalInstallGate = {
+    this.toolPermissions = new ToolPermissions({
+      ...options.permissions,
+      homeDir: this.skillContext.homeDir,
       allowGlobalInstallsWithoutPrompt:
         this.runtimeConfig.allowGlobalInstallsWithoutPrompt,
-    };
+    });
     this.initializeProvider(
       this.providersConfig,
       options.providerName,
@@ -597,7 +618,6 @@ export class Agent {
     });
     this.toolRegistry = createDefaultToolRegistry({
       runtimeConfig: this.runtimeConfig,
-      bashGlobalInstallGate: this.bashGlobalInstallGate,
       skillToolInvoker: {
         invokeSkill: async (
           name: string,
@@ -748,11 +768,13 @@ export class Agent {
     return { status: "tool_not_found", content: `Tool not found: ${name}` };
   }
 
-  private authorizeToolExecution(
+  private async authorizeToolExecution(
     name: string,
     args: Readonly<Record<string, unknown>>,
     scope: AgentToolScope,
-  ): AgentToolPolicyDecision {
+    toolCallId?: string,
+    signal?: AbortSignal,
+  ): Promise<AgentToolPolicyDecision> {
     const mode = resolveScopeMode(scope, this.modeState.mode);
     const planDecision = authorizePlanTool(
       name,
@@ -764,13 +786,41 @@ export class Agent {
     const bashDecision = authorizeBashTool(name, args, mode);
     if (bashDecision) return bashDecision;
 
-    return {
-      allowed: true,
-      actor: "agent",
-      rule: "mode_policy",
-      reason: `Tool is allowed in ${mode} mode`,
-      metadata: { mode },
-    };
+    const mcpServerName = this.mcpServerNameOf(name);
+    if (!this.toolRegistry.hasTool(name) && mcpServerName === undefined) {
+      // Nothing would run: execution reports the tool as not found, and the
+      // operator is not asked to approve a call that cannot happen.
+      return {
+        allowed: true,
+        actor: "application",
+        rule: "unknown_tool",
+        reason: "No such tool; execution reports it as not found",
+        metadata: { mode },
+      };
+    }
+    const decision = await this.toolPermissions.authorize({
+      name,
+      args,
+      metadata:
+        this.toolRegistry.getToolMetadata(name) ?? UNDECLARED_TOOL_METADATA,
+      mcpServerName,
+      // The checks above passed: in plan and discover that means a read-only
+      // command, or a write to the approved plan file.
+      agentModeApproval:
+        mode !== "execute" && ["bash", "write", "edit"].includes(name)
+          ? mode
+          : undefined,
+      sessionId: this.sessionId,
+      toolCallId,
+      signal,
+    });
+    return { ...decision, metadata: { ...decision.metadata, mode } };
+  }
+
+  private mcpServerNameOf(toolName: string): string | undefined {
+    if (this.toolRegistry.hasTool(toolName)) return undefined;
+    return this.mcpManager.listTools().find((tool) => tool.name === toolName)
+      ?.serverName;
   }
 
   setPreparedProvidersConfig(
@@ -1303,9 +1353,9 @@ export class Agent {
         planFileRevisionId: this.modeState.planFilePath
           ? createTraceRevisionId(this.modeState.planFilePath)
           : undefined,
-        globalInstallApprovalCallbackConfigured: Boolean(
-          this.bashGlobalInstallGate.requestGlobalInstallApproval,
-        ),
+        approvalChannelConfigured: this.toolPermissions.hasApprovalChannel(),
+        permissionPreset: this.toolPermissions.describe()?.preset,
+        permissionMode: this.toolPermissions.describe()?.mode,
         allowGlobalInstallsWithoutPrompt:
           this.runtimeConfig.allowGlobalInstallsWithoutPrompt,
       },
@@ -1329,7 +1379,7 @@ export class Agent {
         model: this.configurationOrigins.model,
         mode: this.configurationOrigins.mode,
         planApproval: this.configurationOrigins.planApproval,
-        globalInstallApproval: this.configurationOrigins.globalInstallApproval,
+        approvalChannel: this.configurationOrigins.approvalChannel,
         systemPrompt: this.configurationOrigins.systemPrompt,
         agentsMd: this.configurationOrigins.agentsMd,
         tools: this.configurationOrigins.tools,
@@ -2304,7 +2354,11 @@ export class Agent {
       trace: this.createRuntimeTraceRecorder(),
       integrations: {
         prepareTurn: (submission) => this.attachFileMentions(submission.text),
-        startTurn: () => this.startLocalTurn(),
+        startTurn: async () => {
+          this.startLocalTurn();
+          // Rules edited since the last turn apply from this one.
+          await this.toolPermissions.refresh();
+        },
         completeTurn: () => {
           this.checkAndScheduleSummary();
           this.finishLocalTurn();
@@ -2320,8 +2374,8 @@ export class Agent {
         buildPlan: (instruction, retry, iteration, allowed) =>
           this.buildPlan(instruction, retry, iteration, allowed),
         describePromptPlan: (plan) => this.describePromptPlan(plan),
-        authorizeTool: ({ name, args, scope }) =>
-          this.authorizeToolExecution(name, args, scope),
+        authorizeTool: ({ name, args, scope, toolCallId, signal }) =>
+          this.authorizeToolExecution(name, args, scope, toolCallId, signal),
         shrinkContext: (plan) => this.attemptSynchronousShrink(plan),
         onAssistantResponse: (content) =>
           this.recordPlanModeAssistantDraft(content),
@@ -2836,6 +2890,9 @@ export class Agent {
       lastTraceRunId:
         this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
       agentMode: this.modeState.mode,
+      ...(this.toolPermissions.listSessionGrants().length > 0
+        ? { sessionGrants: [...this.toolPermissions.listSessionGrants()] }
+        : {}),
       ...(approvedPlan ?? {}),
       ...(this.modeState.mode === "plan" &&
       this.planDraftSearchStartTurnIndex !== undefined
@@ -2958,6 +3015,9 @@ export class Agent {
     const persisted = parseSession(json);
     this.assertSessionAccount(persisted.metadata.accountId);
     const state = restoreConversationState(persisted);
+    // A resumed session keeps its approvals; any other session starts with
+    // none. Checked before anything is replaced, so a bad grant changes nothing.
+    this.toolPermissions.restoreSessionGrants(persisted.metadata.sessionGrants);
     const previousSkillInvocationIds = this.getActiveSkillTraceSummaries().map(
       (skill) => skill.invocationId,
     );
@@ -3073,20 +3133,18 @@ export class Agent {
     this.recordConfigurationChange("system_prompt_changed", "system_prompt");
   }
 
-  setGlobalInstallApprovalCallback(
-    callback?: (request: GlobalInstallApprovalRequest) => Promise<boolean>,
+  /**
+   * Who answers approval requests. Without a channel, a call that needs
+   * approval is denied, which is what a non-interactive run wants.
+   */
+  setApprovalChannel(
+    channel?: ApprovalChannel,
     source: AgentConfigurationValueSource = "runtime_change",
   ): void {
-    if (callback) {
-      this.bashGlobalInstallGate.requestGlobalInstallApproval = callback;
-    } else {
-      delete this.bashGlobalInstallGate.requestGlobalInstallApproval;
-    }
-    this.configurationOrigins.globalInstallApproval = source;
+    this.toolPermissions.setApprovalChannel(channel);
+    this.configurationOrigins.approvalChannel = source;
     this.recordConfigurationChange(
-      callback
-        ? "global_install_approval_callback_configured"
-        : "global_install_approval_callback_removed",
+      channel ? "approval_channel_configured" : "approval_channel_removed",
       "approval",
     );
   }

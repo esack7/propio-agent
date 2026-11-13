@@ -15,6 +15,40 @@ describe("cli args parsing", () => {
     expect(parsed.forwardedArgs).toEqual(["--foo", "bar", "--baz", "qux"]);
   });
 
+  it.each([
+    [["--permissions", "bypass"], "bypass"],
+    [["--permissions=read-only"], "read-only"],
+    [["--permissions", "accept-edits", "--json"], "accept-edits"],
+  ])("parses %j as a permission preset and forwards it", (args, preset) => {
+    const parsed = parseCliArgs(args);
+
+    expect(parsed.parseErrors).toEqual([]);
+    expect(parsed.flags.permissions).toBe(preset);
+    expect(parsed.forwardedArgs.slice(0, 2)).toEqual(["--permissions", preset]);
+  });
+
+  it("leaves the permission preset unset when the flag is absent", () => {
+    expect(parseCliArgs(["--json"]).flags.permissions).toBeUndefined();
+  });
+
+  it.each([
+    [["--permissions", "everything"]],
+    [["--permissions=nope"]],
+    [["--permissions"]],
+    [["--permissions", "--json"]],
+  ])("rejects %j, naming the presets", (args) => {
+    const parsed = parseCliArgs(args);
+
+    expect(parsed.flags.permissions).toBeUndefined();
+    expect(parsed.parseErrors).toEqual([
+      "--permissions requires one of: read-only, ask, accept-edits, bypass",
+    ]);
+  });
+
+  it("still parses a flag that follows a missing preset name", () => {
+    expect(parseCliArgs(["--permissions", "--json"]).flags.json).toBe(true);
+  });
+
   it("keeps sandbox false when flag is absent", () => {
     const parsed = parseCliArgs(["--help", "--verbose"]);
 

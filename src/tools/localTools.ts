@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { BashTool, type BashGlobalInstallGateConfig } from "./bash.js";
+import { BashTool } from "./bash.js";
 import { ReadTool } from "./read.js";
 import { WriteTool } from "./write.js";
 import { EditTool } from "./edit.js";
@@ -20,7 +20,6 @@ export interface LocalToolOptions {
   readonly shell?: {
     readonly defaultTimeoutMs?: number;
     readonly maxTimeoutMs?: number;
-    readonly globalInstallGate?: BashGlobalInstallGateConfig;
   };
 }
 

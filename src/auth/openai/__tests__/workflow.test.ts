@@ -63,6 +63,7 @@ it("runs a real client-side MCP function through the ordinary Agent tool loop", 
   const agent = new Agent({
     providersConfig: config,
     providerRuntimeOptions: runtime,
+    permissions: { preset: "bypass" },
     cwd: directory,
     homeDir: directory,
     sessionsDir: join(directory, "sessions"),
@@ -145,6 +146,7 @@ it("runs a real built-in read tool through Agent, replays its result and preserv
   const agent = new Agent({
     providersConfig: config,
     providerRuntimeOptions: runtime,
+    permissions: { preset: "bypass" },
     cwd: directory,
     homeDir: directory,
     sessionsDir: join(directory, "sessions"),
@@ -205,6 +207,7 @@ it("refuses a failed stream before dispatching a pending built-in write", async 
   const agent = new Agent({
     providersConfig: config,
     providerRuntimeOptions: runtime,
+    permissions: { preset: "bypass" },
     cwd: directory,
     homeDir: directory,
     sessionsDir: join(directory, "sessions"),
@@ -351,6 +354,7 @@ it("pins a pending background summary to the original account and discards it af
   const agent = new Agent({
     providersConfig: config,
     providerRuntimeOptions: runtime,
+    permissions: { preset: "bypass" },
     cwd: directory,
     homeDir: directory,
     sessionsDir: join(directory, "sessions"),
@@ -418,6 +422,7 @@ it("cancels only the selected account's local requests when signing out", async 
   const agent = new Agent({
     providersConfig: config,
     providerRuntimeOptions: runtime,
+    permissions: { preset: "bypass" },
     cwd: directory,
     homeDir: directory,
     sessionsDir: join(directory, "sessions"),

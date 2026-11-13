@@ -1,8 +1,3 @@
-export interface GlobalInstallApprovalRequest {
-  readonly command: string;
-  readonly reason: string;
-}
-
 export interface GlobalInstallClassification {
   readonly matched: boolean;
   readonly reason?: string;
@@ -475,6 +470,3 @@ export function classifyGlobalInstallCommand(
 
   return { matched: false };
 }
-
-export const GLOBAL_INSTALL_DENIED_MESSAGE =
-  "Global software install blocked. Set PROPIO_ALLOW_GLOBAL_INSTALLS=1 or approve the install in interactive mode.";

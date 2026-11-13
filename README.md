@@ -490,6 +490,7 @@ Start the agent and type messages at the prompt. Session context is maintained a
 | `--json`                   | Read one prompt from stdin, print JSON to stdout     |
 | `--plain`                  | Disable ANSI colors and spinner                      |
 | `--no-interactive`         | Disable prompts/spinners, read one prompt from stdin |
+| `--permissions <preset>`   | Tool permissions for this run; see below             |
 | `--show-status`            | Show high-level agent status updates                 |
 | `--show-reasoning-summary` | Show the turn reasoning summary after each response  |
 | `--show-trace`             | Enable status and reasoning summary output           |
@@ -508,6 +509,62 @@ echo "List top-level files." | propio --json
 # Persist diagnostics
 propio --debug-llm-file /tmp/propio-debug.log
 ```
+
+### Tool permissions
+
+The agent asks before a tool changes anything. With no configuration it starts
+in `ask`:
+
+| Call                                                     | In `ask` |
+| -------------------------------------------------------- | -------- |
+| `read`, `grep`, `find`, `ls` inside the workspace        | runs     |
+| the same tools on a path outside the workspace           | asks     |
+| `write`, `edit`                                          | asks     |
+| `bash`                                                   | asks     |
+| any MCP tool, and any tool that declares no capabilities | asks     |
+
+The workspace is the directory the agent was started in. Paths are checked
+after symbolic links are resolved, so a link inside the workspace that points
+outside it counts as outside.
+
+When a call asks, the prompt shows the tool, the command or resolved path, and
+the reason. Answer `y` to allow that one call; anything else denies it. A
+denial is returned to the model as the tool's result and the turn continues.
+Pressing Escape cancels the turn as usual.
+
+`--permissions <preset>` selects a preset for the run:
+
+| Preset         | Effect                                                           |
+| -------------- | ---------------------------------------------------------------- |
+| `read-only`    | Reads only. Writes, commands, and MCP tools are denied.          |
+| `ask`          | The default, as in the table above.                              |
+| `accept-edits` | `write` and `edit` inside the workspace also run without asking. |
+| `bypass`       | Every call runs without asking, as before permissions existed.   |
+
+Non-interactive runs (`--no-interactive`, `--json`, piped input, CI) have no one
+to ask, so a call that would ask is denied at once with a message naming this
+flag. Scripts that relied on the agent writing files or running commands need
+`--permissions accept-edits` or `--permissions bypass`.
+
+Plan and discover modes keep their own restrictions, which apply in every
+preset. The read-only commands they permit, and writes to the approved plan
+file, run without a prompt.
+
+Each decision is recorded in the trace as a `tool_policy_decision` with the
+rule that decided (`mode:ask`, `approval:allow_once`, `non_interactive`, …) and
+the actor (`user` when you answered, `application` otherwise).
+
+Permissions guard against unintended actions. They are not a sandbox: a command
+you approve can do anything your account can. Use sandbox mode for isolation.
+
+Commands that would install software globally (`npm install -g`, `brew install`,
+…) are no longer handled separately: they ask like any other command, with the
+reason shown in the prompt. `PROPIO_ALLOW_GLOBAL_INSTALLS=1` and
+`runtime.allowGlobalInstallsWithoutPrompt` still let them run without a prompt
+but are deprecated and print a warning.
+
+Saved rules, session-wide approvals from the prompt, and a `/permissions`
+command are not available yet.
 
 ### Session commands
 
@@ -602,7 +659,7 @@ agent.enableTool("find");
 agent.enableTool("ls");
 ```
 
-The filesystem tools validate paths by rejecting malformed input and resolving relative paths from the current working directory. To confine filesystem access to the workspace, run the agent in sandbox mode.
+The filesystem tools validate paths by rejecting malformed input and resolving relative paths from the current working directory. Calls that write, run commands, or reach outside the workspace need approval; see [Tool permissions](#tool-permissions). To confine filesystem access to the workspace regardless of approvals, run the agent in sandbox mode.
 
 ---
 
@@ -1006,10 +1063,10 @@ overrides. Forwarding the CLI turn signal selects the cancellable spawn backend.
 Both backends enforce per-stream byte limits; the spawn backend now decodes UTF-8
 across chunk boundaries and preserves the execFile empty-stderr failure message.
 At a byte cap, an incomplete UTF-8 suffix is discarded rather than corrupted. Consumers can inject
-a different executor for stronger lifecycle or isolation guarantees. The built-in
-global-install classifier continues to deny matched commands unless the supplied
-`shell.globalInstallGate` approves them or explicitly allows them without a prompt.
-It is a heuristic, not comprehensive shell policy or process isolation. Workspace
+a different executor for stronger lifecycle or isolation guarantees. The `bash`
+tool no longer refuses global installs itself and `shell.globalInstallGate` has
+been removed: deciding whether a call may run belongs to the policy API below,
+which a consumer places in front of tool dispatch. Workspace
 resolution is not a sandbox: absolute paths, traversal and symlinks can access
 outside the workspace; shell commands can access whatever the host permits.
 Process-tree termination and cross-process filesystem coordination are not
@@ -1030,8 +1087,8 @@ version and remains provisional until a real second consumer validates it.
 `@propio-ai/agent/policy` decides whether a tool call may run. It imports nothing
 else from this package, performs no I/O, and keeps no module-level state: rules
 come from a store the caller supplies, and paths, the workspace root, and the
-home directory are passed in. **The CLI does not enforce it yet**; this release
-adds the primitive and tool metadata only.
+home directory are passed in. The CLI enforces it on every tool call; see
+[Tool permissions](#tool-permissions).
 
 ```ts
 import { InMemoryPermissionStore, PolicyEngine } from "@propio-ai/agent/policy";
@@ -1068,7 +1125,10 @@ if (decision.outcome === "ask") {
   value.
 - **Targets.** The caller says what a call acts on: `{ kind: "path", path }`
   (absolute, normalized, symbolic links resolved), `{ kind: "command", command }`,
-  or `{ kind: "mcp", serverPrefix }`. Policy never inspects arguments by tool
+  or `{ kind: "mcp", serverPrefix }`. A command target may set `detached: true`
+  when the call does not run where and how its text implies; the CLI sets it
+  when a `bash` call's working directory is outside the workspace or the call
+  sets environment variables. Policy never inspects arguments by tool
   name. Paths are POSIX paths.
 - **Rules.** Strings in `allow`, `ask`, and `deny` lists:
 
@@ -1113,11 +1173,12 @@ if (decision.outcome === "ask") {
 - **Exact grants.** Exact file grants match one absolute path, so an
   always-allow saved for the owner does not apply to the same relative path in
   another workspace. They escape glob characters, so approving a file named
-  `notes*.txt` does not approve `notes-2.txt`. Exact command grants match the
-  command text regardless of working directory or environment overrides:
-  approving `npm test` in one directory also allows it in another. No exact
-  grant is offered for a command ending in `:*`, which the syntax reads as a
-  prefix. The workspace root and home
+  `notes*.txt` does not approve `notes-2.txt`. Command patterns, exact or
+  prefix, match the command text only, so they never allow a `detached`
+  command: such a call asks, as a compound command does, and is offered no
+  exact grant. A whole-tool rule such as `bash` names no command and still
+  covers it. No exact grant is offered for a command ending in `:*`, which the
+  syntax reads as a prefix. The workspace root and home
   directory are matched literally, even if their names contain glob
   characters. Path patterns never negate.
 

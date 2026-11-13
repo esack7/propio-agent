@@ -95,6 +95,7 @@ import {
   type AbortStateController,
 } from "./ui/abortState.js";
 import { createTurnCancelListener } from "./ui/turnCancelListener.js";
+import { createConfirmApprovalChannel } from "./ui/approvalPrompt.js";
 import {
   JsonlTraceJournal,
   RunTraceRecorder,
@@ -117,6 +118,10 @@ Options:
   --json              Emit only JSON response payloads on stdout
   --plain             Disable ANSI color styling and spinner animation
   --no-interactive    Disable prompts/spinners and read one prompt from stdin
+  --permissions <preset>
+                      Tool permissions: read-only, ask (default), accept-edits,
+                      or bypass. Without a terminal, calls that would ask are
+                      denied.
   --show-status       Show high-level agent lifecycle status updates
   --show-reasoning-summary
                       Show a concise reasoning summary after each turn
@@ -989,14 +994,17 @@ export async function runInteractiveSession(
     },
   });
   abortState.setActiveComposer(composer);
-  agent.setGlobalInstallApprovalCallback(async (request) => {
-    return await composer.confirm({
-      promptText: ui.prompt(
-        `${request.reason}\n\nCommand: ${request.command}\n\nAllow this global install?`,
-      ),
-      defaultValue: false,
-    });
-  }, "application");
+  agent.setApprovalChannel(
+    createConfirmApprovalChannel(
+      async (promptText, signal) =>
+        await composer.confirm({
+          promptText: ui.prompt(promptText),
+          defaultValue: false,
+          signal,
+        }),
+    ),
+    "application",
+  );
 
   try {
     ui.command("Type /help or ? to view available commands.");
@@ -1245,6 +1253,7 @@ async function createInitializedAgent(
     onRecoveryCheckpointFailure,
     runtimeConfig,
     runtimeConfigOrigins,
+    permissions: { preset: parsedArgs.flags.permissions },
     configurationOrigins: {
       providersConfig: "settings",
       provider: "settings",
@@ -1348,6 +1357,14 @@ async function runConfiguredSession(options: {
   const { config: runtimeConfig, origins: runtimeConfigOrigins } =
     resolvedRuntimeConfig;
   pruneStaleSessionStorage(sessionsDir, runtimeConfig.artifactRetentionDays);
+  if (
+    runtimeConfig.allowGlobalInstallsWithoutPrompt &&
+    !options.ui.isJsonMode()
+  ) {
+    options.ui.warn(
+      "PROPIO_ALLOW_GLOBAL_INSTALLS and runtime.allowGlobalInstallsWithoutPrompt are deprecated: global installs run without a prompt for this session. Use a permissions allow rule instead.",
+    );
+  }
 
   const { agent, configPath } = await createInitializedAgent(
     options.parsedArgs,

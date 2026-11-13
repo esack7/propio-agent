@@ -19,6 +19,7 @@ import { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { AgentVisibilityEvent } from "../agent.js";
 import {
   testProvidersConfig as sharedTestProvidersConfig,
+  BYPASS_PERMISSIONS,
   createTestAgent,
   createMockTool,
   ToolCallMockProvider,
@@ -173,6 +174,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     const events: AgentDiagnosticEvent[] = [];
     const agent = new Agent({
       providersConfig: testProvidersConfig,
+      permissions: BYPASS_PERMISSIONS,
       diagnosticsEnabled: true,
       onDiagnosticEvent: (event) => {
         events.push(event);
@@ -193,6 +195,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     const diagnosticEvents: AgentDiagnosticEvent[] = [];
     const agent = new Agent({
       providersConfig: testProvidersConfig,
+      permissions: BYPASS_PERMISSIONS,
       diagnosticsEnabled: true,
       onDiagnosticEvent: (event) => diagnosticEvents.push(event),
     });
@@ -207,12 +210,18 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should accept ProvidersConfig object", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect(agent).toBeDefined();
     });
 
     it("should accept ProvidersConfig with default provider", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect(agent).toBeDefined();
       expect((agent as any).provider).toBeDefined();
     });
@@ -220,6 +229,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should accept optional providerName to override default", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         providerName: "bedrock",
       });
       expect(agent).toBeDefined();
@@ -228,6 +238,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should accept optional modelKey to override defaultModel", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         modelKey: "llama3.2:90b",
       });
       expect(agent).toBeDefined();
@@ -249,6 +260,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         cwd: cwdDir,
         homeDir,
       });
@@ -262,6 +274,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(() => {
         new Agent({
           providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
           providerName: "nonexistent",
         });
       }).toThrow(/unknown.*provider|not found/i);
@@ -271,6 +284,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       expect(() => {
         new Agent({
           providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
           modelKey: "nonexistent-model",
         });
       }).toThrow(/invalid.*model|not found|unknown model/i);
@@ -325,6 +339,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     function createMentionsAgent(workspaceName: string): Agent {
       return new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         cwd: createMentionsWorkspace(workspaceName),
       });
     }
@@ -449,7 +464,10 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("Provider Resolution", () => {
     it("should use default provider when not specified", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       // Default is 'local-ollama'
       expect(agent).toBeDefined();
       expect((agent as any).provider).toBeDefined();
@@ -458,13 +476,17 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should use specified provider when providerName provided", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         providerName: "bedrock",
       });
       expect(agent).toBeDefined();
     });
 
     it("should store providersConfig for runtime switching", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect((agent as any).providersConfig).toBeDefined();
       expect((agent as any).providersConfig).toEqual(testProvidersConfig);
     });
@@ -472,13 +494,17 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("Model Resolution", () => {
     it("should use defaultModel when modelKey not provided", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect((agent as any).model).toBe("llama3.2:3b");
     });
 
     it("should use specified modelKey when provided", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         modelKey: "llama3.2:90b",
       });
       expect((agent as any).model).toBe("llama3.2:90b");
@@ -510,7 +536,10 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("switchProvider() method", () => {
     it("should accept providerName to switch providers", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       const originalProvider = (agent as any).provider;
 
       expect(() => {
@@ -522,7 +551,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should accept optional modelKey to override provider defaultModel", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
 
       expect(() => {
         agent.switchProvider("local-ollama", "llama3.2:90b");
@@ -534,6 +566,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should use provider defaultModel when modelKey not provided", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         modelKey: "llama3.2:90b",
       });
 
@@ -559,7 +592,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should throw error for invalid provider name", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
 
       expect(() => {
         agent.switchProvider("nonexistent");
@@ -567,7 +603,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should throw error for invalid modelKey in target provider", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
 
       expect(() => {
         agent.switchProvider("bedrock", "invalid-model");
@@ -575,7 +614,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should not modify provider on validation error", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       const originalProvider = (agent as any).provider;
 
       try {
@@ -588,7 +630,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should expose the active provider/model selection", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
 
       expect(agent.getActiveModelSelection()).toEqual({
         providerName: "local-ollama",
@@ -611,6 +656,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       await withSpiedDirs(cwdDir, homeDir, () => {
         const agent = new Agent({
           providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
           cwd: cwdDir,
           homeDir,
         });
@@ -899,7 +945,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       await withSpiedDirs(cwdDir, homeDir, async () => {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const agent = new Agent({
+          providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
+        });
         await agent.invokeSkill("scope-lock", undefined, {
           source: "user",
         });
@@ -950,7 +999,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
 
       await withSpiedDirs(cwdDir, homeDir, async () => {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const agent = new Agent({
+          providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
+        });
         await agent.invokeSkill("model-skill", undefined, {
           source: "user",
         });
@@ -992,7 +1044,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
 
       await withSpiedDirs(cwdDir, homeDir, async () => {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const agent = new Agent({
+          providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
+        });
         await agent.invokeSkill("matching-model-skill", undefined, {
           source: "user",
         });
@@ -1028,7 +1083,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
 
       await withSpiedDirs(cwdDir, homeDir, async () => {
-        const agent = new Agent({ providersConfig: testProvidersConfig });
+        const agent = new Agent({
+          providersConfig: testProvidersConfig,
+          permissions: BYPASS_PERMISSIONS,
+        });
         expect(
           agent
             .getSkillDiagnostics()
@@ -1069,6 +1127,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const mockProvider = new MockProvider();
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         modelKey: "llama3.2:90b",
       });
       (agent as any).provider = mockProvider;
@@ -1368,7 +1427,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("records configuration lineage for an imported session mode", async () => {
-      const source = new Agent({ providersConfig: testProvidersConfig });
+      const source = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       source.setAgentMode("plan");
       const session = source.exportSession();
       const mockProvider = new MockProvider();
@@ -1459,7 +1521,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
       expect(
         policyEvents.map((event) => (event.payload as { rule?: string }).rule),
-      ).toEqual(["tool_scope", "mode_policy"]);
+      ).toEqual(["tool_scope", "mode:bypass"]);
       for (const event of policyEvents) {
         expect(event.identity.policyRevisionId).toBe(
           scope?.identity.policyRevisionId,
@@ -1537,21 +1599,30 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should keep context management methods unchanged", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect(typeof agent.clearContext).toBe("function");
       expect(typeof agent.getContext).toBe("function");
       expect(typeof agent.setSystemPrompt).toBe("function");
     });
 
     it("should keep tool management methods unchanged", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect(typeof agent.getTools).toBe("function");
     });
   });
 
   describe("Tool Introspection Methods", () => {
     it("should return all registered tool names via getToolNames()", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       const toolNames = agent.getToolNames();
 
       expect(Array.isArray(toolNames)).toBe(true);
@@ -1562,14 +1633,20 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should return true for enabled tools via isToolEnabled()", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       // read and write are enabled by default
       expect(agent.isToolEnabled("read")).toBe(true);
       expect(agent.isToolEnabled("write")).toBe(true);
     });
 
     it("should return false for disabled tools via isToolEnabled()", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       // grep/find/ls are disabled by default
       expect(agent.isToolEnabled("grep")).toBe(false);
       expect(agent.isToolEnabled("find")).toBe(false);
@@ -1577,12 +1654,18 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should return false for nonexistent tools via isToolEnabled()", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect(agent.isToolEnabled("nonexistent_tool")).toBe(false);
     });
 
     it("should reflect tool state changes via isToolEnabled()", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
 
       // Enable a disabled tool
       agent.enableTool("bash");
@@ -1598,7 +1681,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("should expose read-only tool summaries and bulk state helpers", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       const summaries = agent.getToolSummaries();
 
       expect(summaries[0]).toMatchObject({
@@ -1619,28 +1705,6 @@ describe("Agent with Multi-Provider Configuration", () => {
       agent.resetToolsToManifestDefaults();
       expect(agent.isToolEnabled("read")).toBe(true);
       expect(agent.isToolEnabled("grep")).toBe(false);
-    });
-
-    it("wires setGlobalInstallApprovalCallback into bash tool execution", async () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
-      const approval = jest.fn().mockResolvedValue(false);
-      agent.setGlobalInstallApprovalCallback(approval);
-
-      const result = await (agent as any).toolRegistry.executeWithStatus(
-        "bash",
-        {
-          command: "npm install -g eslint",
-        },
-      );
-
-      expect(approval).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: "npm install -g eslint",
-          reason: expect.stringMatching(/npm/i),
-        }),
-      );
-      expect(result.status).toBe("error");
-      expect(result.content).toMatch(/Global software install blocked/);
     });
   });
 
@@ -1891,7 +1955,10 @@ describe("Agent with Multi-Provider Configuration", () => {
 
     it("should cap rehydrated oversized tool results in the follow-up provider request", async () => {
       const provider = new MockProviderCapturingToolResult();
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       agent.addTool(new LargeResultTool());
       (agent as any).provider = provider;
 
@@ -2068,6 +2135,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const events: AgentDiagnosticEvent[] = [];
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         diagnosticsEnabled: true,
         onDiagnosticEvent: (event) => {
           events.push(event);
@@ -2251,6 +2319,7 @@ describe("Agent with Multi-Provider Configuration", () => {
 
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
       });
       agent.addTool(loopTool2);
       (agent as any).provider = new EmptyLoopingProvider();
@@ -2287,6 +2356,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       );
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         diagnosticsEnabled: true,
         onDiagnosticEvent: (event) => {
           events.push(event);
@@ -2437,6 +2507,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const events: AgentDiagnosticEvent[] = [];
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         diagnosticsEnabled: true,
         onDiagnosticEvent: (event) => events.push(event),
       });
@@ -2458,6 +2529,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should accept agentsMdContent parameter", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         agentsMdContent: "Project instructions",
       });
       expect(agent).toBeDefined();
@@ -2468,6 +2540,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const customPrompt = "Custom system prompt";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         systemPrompt: customPrompt,
         agentsMdContent: agentsMdContent,
       });
@@ -2480,6 +2553,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agentsMdContent = "Project-specific instructions";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         agentsMdContent: agentsMdContent,
       });
 
@@ -2493,6 +2567,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const customPrompt = "Custom system prompt";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         systemPrompt: customPrompt,
         agentsMdContent: "",
       });
@@ -2504,6 +2579,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const customPrompt = "Custom system prompt";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         systemPrompt: customPrompt,
       });
 
@@ -2513,6 +2589,7 @@ describe("Agent with Multi-Provider Configuration", () => {
     it("should use default core identity when agentsMdContent and systemPrompt are not provided", () => {
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
       });
 
       expect((agent as any).baseRules).toContain(
@@ -2525,6 +2602,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const agentsMdContent = "Project instructions";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         agentsMdContent: agentsMdContent,
       });
       (agent as any).provider = mockProvider;
@@ -2544,6 +2622,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const defaultPrompt = "You are a helpful AI coding assistant.";
       const agent = new Agent({
         providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
         systemPrompt: defaultPrompt,
         agentsMdContent,
       });
@@ -2728,7 +2807,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       }
 
       const events: AgentVisibilityEvent[] = [];
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       agent.addTool(new CustomTool());
       (agent as any).provider = new CustomToolProvider();
 
@@ -2897,7 +2979,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new ContextLengthRetryProvider();
 
       const tokens: string[] = [];
@@ -2930,7 +3015,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new PersistentContextLengthProvider();
 
       const response = await agent.streamChat(
@@ -2956,7 +3044,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new AlwaysContextLengthProvider();
 
       await expect(
@@ -2982,7 +3073,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new GenericErrorProvider();
 
       await expect(
@@ -3030,7 +3124,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new NoToolsRetryProvider();
 
       const response = await agent.streamChat(
@@ -3207,7 +3304,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     let agent: Agent;
 
     beforeEach(() => {
-      agent = new Agent({ providersConfig: testProvidersConfig });
+      agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
     });
 
     function expectSinglePinnedRecord(id: string) {
@@ -3311,7 +3411,10 @@ describe("Agent with Multi-Provider Configuration", () => {
       });
 
       const json = agent.exportSession();
-      const agent2 = new Agent({ providersConfig: testProvidersConfig });
+      const agent2 = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       agent2.importSession(json);
 
       const records = agent2.getPinnedMemory();
@@ -3350,7 +3453,10 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("getConversationState()", () => {
     it("should return empty state on a fresh agent", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       const state = agent.getConversationState();
 
       expect(state.turns).toHaveLength(0);
@@ -3375,7 +3481,10 @@ describe("Agent with Multi-Provider Configuration", () => {
 
   describe("getLastPromptPlan()", () => {
     it("should return null before any requests are made", () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       expect(agent.getLastPromptPlan()).toBeNull();
     });
 
@@ -3418,7 +3527,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new RetryMockProvider();
 
       await agent.streamChat(userSubmission("Trigger retry"), () => {});
@@ -3459,7 +3571,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new ToolLoopProvider();
 
       await agent.streamChat(userSubmission("Loop test"), () => {});
@@ -3538,7 +3653,10 @@ describe("Agent with Multi-Provider Configuration", () => {
         }
       }
 
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new ToolThenAnswerProvider();
 
       const planEvents: Array<{ iteration: number; retryLevel: number }> = [];
@@ -3619,7 +3737,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     }
 
     it("emits tool_finished for a working tool", async () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new SingleToolCallProvider("read", {
         path: "package.json",
       });
@@ -3630,7 +3751,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("emits tool_failed for a disabled tool", async () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       agent.disableTool("grep");
       (agent as any).provider = new SingleToolCallProvider("grep", {
         path: ".",
@@ -3643,7 +3767,10 @@ describe("Agent with Multi-Provider Configuration", () => {
     });
 
     it("emits tool_failed for a missing tool", async () => {
-      const agent = new Agent({ providersConfig: testProvidersConfig });
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        permissions: BYPASS_PERMISSIONS,
+      });
       (agent as any).provider = new SingleToolCallProvider(
         "nonexistent_tool_xyz",
         {},
