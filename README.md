@@ -1106,10 +1106,14 @@ if (decision.outcome === "ask") {
 - **Store.** `PermissionStore` has `load(owner)` and `update(owner, change)`.
   `update` must apply the pure `change` function to the owner's current stored
   settings atomically, so concurrent edits from one engine or several never
-  drop each other's rules. An engine caches what it last read or wrote;
-  `reload()` reads again.
+  drop each other's rules. `load` must return the settings as of the latest
+  completed update. An engine runs its own reads and writes one at a time, so
+  a slow read cannot undo a later write. It caches what it last read or
+  wrote; `reload()` reads again.
 - **Exact path grants** escape glob characters, so approving a file named
-  `notes*.txt` does not approve `notes-2.txt`. Path patterns never negate.
+  `notes*.txt` does not approve `notes-2.txt`. The workspace root and home
+  directory are matched literally, even if their names contain glob
+  characters. Path patterns never negate.
 
 Run `npm run build && npm run example:policy` for a complete consumer.
 

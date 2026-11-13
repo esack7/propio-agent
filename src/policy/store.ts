@@ -25,6 +25,7 @@ export type PermissionSettingsChange = (
 
 /** Where rules live is the application's concern; policy only asks for them. */
 export interface PermissionStore {
+  /** Resolves to the settings as of the latest update that has completed. */
   load(owner: OwnerScope): Promise<PermissionSettings>;
   /**
    * Apply `change` to the owner's current stored settings and store the

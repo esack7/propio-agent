@@ -193,6 +193,7 @@ export class PolicyEngine {
   private readonly homeDir?: string;
   private readonly createRequestId: () => string;
   private readonly pending = new Map<string, PolicyRequest>();
+  private storeQueue: Promise<void> = Promise.resolve();
   private settings: PermissionSettings;
   private presetOverride?: string;
   private modeOverride?: PermissionMode;
@@ -362,7 +363,9 @@ export class PolicyEngine {
 
   /** Read the owner's stored settings again, replacing the cached copy. */
   async reload(): Promise<void> {
-    this.adopt(await this.store.load(this.owner));
+    await this.serialized(async () =>
+      this.adopt(await this.store.load(this.owner)),
+    );
   }
 
   /** Drop a request that will not be answered, such as on cancellation. */
@@ -448,7 +451,23 @@ export class PolicyEngine {
   /** Write through the store's atomic update, then use what it stored. */
   private async update(change: PermissionSettingsChange): Promise<void> {
     // A failed write throws here and leaves the rules in use unchanged.
-    this.adopt(await this.store.update(this.owner, change));
+    await this.serialized(async () =>
+      this.adopt(await this.store.update(this.owner, change)),
+    );
+  }
+
+  /**
+   * Run this engine's store reads and writes one at a time, adopting each
+   * result before the next starts. A read that began before a write can then
+   * never finish after it and put back the settings the write replaced.
+   */
+  private serialized<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.storeQueue.then(operation, operation);
+    this.storeQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /** Validate everything before replacing any state, so bad settings change nothing. */

@@ -224,3 +224,51 @@ describe("a pattern with nothing to compare against", () => {
     expect(matches("custom(anything)", "allow", "custom")).toBe(false);
   });
 });
+
+describe("root directories with glob characters", () => {
+  const at = (workspaceRoot: string, homeDir?: string) => ({
+    workspaceRoot,
+    homeDir,
+  });
+  const matchesIn = (
+    ruleText: string,
+    target: string,
+    root: { workspaceRoot: string; homeDir?: string },
+  ) =>
+    ruleMatches(
+      parseRule(ruleText),
+      "allow",
+      { toolName: "edit", capabilities: [], target: path(target) },
+      root,
+    );
+
+  it.each([
+    ["/work/draft[1]", "/work/draft[1]/example.txt", true],
+    ["/work/draft[1]", "/work/draft1/example.txt", false],
+    ["/work/draft*", "/work/draft*/example.txt", true],
+    ["/work/draft*", "/work/draft1/example.txt", false],
+    ["/work/{a,b}", "/work/{a,b}/example.txt", true],
+    ["/work/{a,b}", "/work/a/example.txt", false],
+    ["/work/what?", "/work/whatx/example.txt", false],
+  ])("a relative rule under %s against %s is %s", (root, target, expected) => {
+    expect(matchesIn("edit(example.txt)", target, at(root))).toBe(expected);
+    expect(matchesIn("edit(**)", target, at(root))).toBe(expected);
+  });
+
+  it("keeps the glob in the rule itself working under such a root", () => {
+    expect(
+      matchesIn("edit(src/*.ts)", "/work/draft*/src/a.ts", at("/work/draft*")),
+    ).toBe(true);
+    expect(
+      matchesIn("edit(src/*.ts)", "/work/draft1/src/a.ts", at("/work/draft*")),
+    ).toBe(false);
+  });
+
+  it("treats the home directory literally for ~/ rules", () => {
+    const root = at("/work/project", "/home/a{b,c}");
+    expect(matchesIn("edit(~/.ssh/**)", "/home/a{b,c}/.ssh/id", root)).toBe(
+      true,
+    );
+    expect(matchesIn("edit(~/.ssh/**)", "/home/ab/.ssh/id", root)).toBe(false);
+  });
+});

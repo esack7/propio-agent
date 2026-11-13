@@ -157,12 +157,17 @@ function absolutePattern(
   context: RuleMatchContext,
 ): string | undefined {
   if (pattern.startsWith("/")) return pattern;
+  // The roots are real directories, not patterns: a "[" or "*" in their
+  // names must match only itself.
   if (pattern === "~" || pattern.startsWith("~/")) {
     return context.homeDir === undefined
       ? undefined
-      : joinPath(context.homeDir, pattern.slice(1));
+      : joinPath(literalPathPattern(context.homeDir), pattern.slice(1));
   }
-  return joinPath(context.workspaceRoot, pattern.replace(/^\.\//, ""));
+  return joinPath(
+    literalPathPattern(context.workspaceRoot),
+    pattern.replace(/^\.\//, ""),
+  );
 }
 
 function joinPath(root: string, rest: string): string {

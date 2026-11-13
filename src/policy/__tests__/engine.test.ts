@@ -1134,3 +1134,169 @@ describe("built-in presets", () => {
 });
 
 type PermissionPresetLike = { mode: string };
+
+describe("store reads that overlap writes", () => {
+  /** Captures the stored settings when load is called, resolves on release. */
+  function pausingStore(inner: InMemoryPermissionStore) {
+    let paused = false;
+    const releases: Array<() => void> = [];
+    const updates: string[] = [];
+    let failNextLoad = false;
+    const store: PermissionStore = {
+      load: async (owner) => {
+        if (failNextLoad) {
+          failNextLoad = false;
+          throw new Error("read failed");
+        }
+        const snapshot = await inner.load(owner);
+        if (paused)
+          await new Promise<void>((resolve) => releases.push(resolve));
+        return snapshot;
+      },
+      update: async (owner, change) => {
+        updates.push(owner);
+        return inner.update(owner, change);
+      },
+    };
+    return {
+      store,
+      updates,
+      pause: () => {
+        paused = true;
+      },
+      failNextLoad: () => {
+        failNextLoad = true;
+      },
+      release: () => {
+        paused = false;
+        releases.splice(0).forEach((resolve) => resolve());
+      },
+      waitForPausedRead: async () => {
+        while (releases.length === 0) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      },
+    };
+  }
+
+  it("never lets a read captured before a write undo it", async () => {
+    const inner = new InMemoryPermissionStore();
+    const control = pausingStore(inner);
+    const policy = await PolicyEngine.create({
+      store: control.store,
+      owner: OWNER,
+      workspaceRoot: WORKSPACE,
+    });
+    const request = asked(policy.evaluate(CALLS.bash));
+
+    control.pause();
+    const answered = policy.answer({
+      requestId: request.id,
+      decision: "allow_once",
+    });
+    await control.waitForPausedRead();
+    // The answer's read holds a snapshot without the deny.
+    const denied = policy.addRule("deny", "bash");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(control.updates).toEqual([]);
+    control.release();
+    const [decision] = await Promise.all([answered, denied]);
+
+    // The answer was decided before the deny existed; the deny then holds.
+    expect(decision).toMatchObject({ outcome: "allow" });
+    expect(await inner.load(OWNER)).toEqual({
+      allow: [],
+      ask: [],
+      deny: ["bash"],
+    });
+    expect(policy.evaluate(CALLS.bash)).toMatchObject({
+      outcome: "deny",
+      rule: "bash",
+    });
+    expect(policy.describe().rules).toEqual([
+      { effect: "deny", rule: "bash", source: "user" },
+    ]);
+  });
+
+  it("keeps a deny applied by this engine when an earlier reload finishes later", async () => {
+    const inner = new InMemoryPermissionStore();
+    const control = pausingStore(inner);
+    const policy = await PolicyEngine.create({
+      store: control.store,
+      owner: OWNER,
+      workspaceRoot: WORKSPACE,
+    });
+
+    control.pause();
+    const reloaded = policy.reload();
+    await control.waitForPausedRead();
+    const denied = policy.addRule("deny", "bash");
+    // Give the write every chance to finish while the read is still paused.
+    for (let tick = 0; tick < 5; tick++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    control.release();
+    await Promise.all([reloaded, denied]);
+
+    expect(policy.evaluate(CALLS.bash).outcome).toBe("deny");
+  });
+
+  it("keeps working after a failed read", async () => {
+    const inner = new InMemoryPermissionStore();
+    const control = pausingStore(inner);
+    const policy = await PolicyEngine.create({
+      store: control.store,
+      owner: OWNER,
+      workspaceRoot: WORKSPACE,
+    });
+    const request = asked(policy.evaluate(CALLS.bash));
+
+    control.failNextLoad();
+    await expect(
+      policy.answer({ requestId: request.id, decision: "allow_once" }),
+    ).rejects.toThrow("read failed");
+    await policy.addRule("deny", "bash");
+
+    expect(policy.evaluate(CALLS.bash).outcome).toBe("deny");
+    // The failed answer reopened the request, and it now meets the deny.
+    await expect(
+      policy.answer({ requestId: request.id, decision: "allow_once" }),
+    ).resolves.toMatchObject({ outcome: "deny", rule: "bash" });
+  });
+});
+
+describe("a workspace root with glob characters", () => {
+  it("grants only the file under the real root", async () => {
+    const root = "/work/draft*";
+    const { engine: policy } = await engine({}, { workspaceRoot: root });
+    const target = `${root}/example.txt`;
+    const request = asked(policy.evaluate(fileCall("edit", WRITE, target)));
+    const exact = request.suggestions.find((s) => s.scope === "exact")!;
+
+    await policy.answer({
+      requestId: request.id,
+      decision: "allow_session",
+      rule: exact.rule,
+    });
+
+    expect(policy.evaluate(fileCall("edit", WRITE, target)).outcome).toBe(
+      "allow",
+    );
+    expect(
+      policy.evaluate(fileCall("edit", WRITE, "/work/draft1/example.txt"))
+        .outcome,
+    ).toBe("ask");
+  });
+
+  it("applies a relative deny under a root with brackets", async () => {
+    const { engine: policy } = await engine(
+      { deny: ["edit(example.txt)"] },
+      { workspaceRoot: "/work/draft[1]" },
+    );
+
+    expect(
+      policy.evaluate(fileCall("edit", WRITE, "/work/draft[1]/example.txt"))
+        .outcome,
+    ).toBe("deny");
+  });
+});
