@@ -531,7 +531,8 @@ files that resolve outside it. The prompt and the tool-call lines show
 control and invisible characters in a command, path, or result as escapes
 such as `\x1b` or `\u202e`. The deprecated `PROPIO_ALLOW_GLOBAL_INSTALLS`
 covers only a single command whose subcommand is the package manager's own
-install (`npm install -g`, `brew install`, `cargo install`, …), with no
+install (`npm install -g`, `brew install`, `cargo install`, …), written as
+plain words with no quoting, escapes, variables, or globs, and with no
 `sudo`, `env`, or shell wrapper; anything else asks.
 
 When a call asks, the prompt shows the tool, the command or resolved path, and

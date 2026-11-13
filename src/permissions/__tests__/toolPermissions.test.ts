@@ -628,6 +628,8 @@ describe("global installs", () => {
     "npm install --global false eslint",
     "npm install -- -g eslint",
     "npm install -g --no-glob eslint",
+    "npm install -'g'x eslint",
+    "npm install -g $PKG",
   ])(
     "does not let the deprecated setting approve %j, which only looks like an install",
     async (command) => {

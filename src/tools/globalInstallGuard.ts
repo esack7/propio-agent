@@ -581,19 +581,40 @@ const INSTALL_SUBCOMMANDS: Readonly<
 };
 
 /**
+ * A word made only of characters every POSIX shell passes through unchanged:
+ * no quoting, escapes, expansions, globs, braces, tildes, comments, history
+ * or job syntax, operators, or redirections.
+ */
+const LITERAL_SHELL_WORD = /^[A-Za-z0-9@._/:=+,%-]+$/;
+
+/**
+ * The arguments the shell will pass, when that is beyond doubt: the command
+ * is whitespace-separated literal words, so each word reaches the program
+ * exactly as written. Anything else returns undefined. The heuristic
+ * tokenizer above joins or splits quoted text differently from the shell
+ * (`-'g'x` is one argument to `sh`), so it explains prompts but never decides
+ * an approval.
+ */
+function literalShellWords(command: string): ShellToken[] | undefined {
+  const words = command.trim().split(/[ \t]+/);
+  if (words.length === 0 || words[0] === "") return undefined;
+  if (!words.every((word) => LITERAL_SHELL_WORD.test(word))) return undefined;
+  return words.map((value) => ({ value, quoted: false }));
+}
+
+/**
  * Whether a command is, beyond doubt, one package manager installing
- * globally: a single command with no wrapper (`sudo`, `env`, a shell) whose
- * first word after the manager's own options is its install subcommand.
+ * globally: literal words only (see `literalShellWords`), no wrapper (`sudo`,
+ * `env`, a shell), and the manager's own install subcommand.
  * `classifyGlobalInstallCommand` flags likely installs for review; this
  * stricter test decides what a blanket approval may cover, so any doubt
  * answers no.
  */
 export function isUnambiguousGlobalInstall(command: string): boolean {
-  const segments = splitCommandSegments(command);
-  if (segments.length !== 1) return false;
-  const tokens = tokenizeShellSegment(segments[0]!);
+  const tokens = literalShellWords(command);
+  if (!tokens) return false;
   const [manager, ...rest] = tokens;
-  if (!manager || manager.quoted) return false;
+  if (!manager) return false;
   const words = rest.map((token) => token.value);
   if (manager.value === "yarn") {
     const [first, second] = words.filter((word) => !word.startsWith("-"));
