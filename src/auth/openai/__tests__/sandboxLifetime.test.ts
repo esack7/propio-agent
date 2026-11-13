@@ -95,6 +95,111 @@ describe("a settings file that is a symbolic link on the host", () => {
     });
   });
 
+  it("copies only the permissions object, the part the container reads", async () => {
+    const target = join(directory, "dotfiles-settings.json");
+    await writeFile(
+      target,
+      JSON.stringify({
+        runtime: { maxIterations: 4 },
+        token: "not for the container",
+        permissions: { deny: ["bash"] },
+      }),
+    );
+    await symlink(target, join(source, "settings.json"));
+
+    const view = await viewOf();
+
+    expect(
+      JSON.parse(await readFile(join(view, "settings.json"), "utf8")),
+    ).toEqual({ permissions: { deny: ["bash"] } });
+  });
+
+  it("copies an empty object for linked settings without permissions", async () => {
+    const target = join(directory, "dotfiles-settings.json");
+    await writeFile(target, JSON.stringify({ secret: "value" }));
+    await symlink(target, join(source, "settings.json"));
+
+    const view = await viewOf();
+
+    expect(
+      JSON.parse(await readFile(join(view, "settings.json"), "utf8")),
+    ).toEqual({});
+  });
+
+  it.each([
+    ["the POC credentials", ["poc", "openai-subscription"]],
+    ["the ChatGPT credential store", ["auth", "openai"]],
+  ])(
+    "refuses a link into %s, which never enters the sandbox",
+    async (_label, parts) => {
+      const excluded = join(source, ...parts);
+      await mkdir(excluded, { recursive: true });
+      const credential = join(excluded, "profile.json");
+      await writeFile(
+        credential,
+        JSON.stringify({ permissions: {}, refreshToken: "synthetic" }),
+      );
+      await symlink(credential, join(source, "settings.json"));
+
+      const failure = await createSandboxConfigView(source).catch(
+        (error: Error) => error,
+      );
+
+      expect((failure as Error).message).toMatch(
+        /links into a directory that holds credentials/,
+      );
+      expect((failure as Error).message).not.toContain("synthetic");
+    },
+  );
+
+  it("refuses a link that reaches the credentials by another name", async () => {
+    const excluded = join(source, "auth", "openai");
+    await mkdir(excluded, { recursive: true });
+    await writeFile(join(excluded, "profile.json"), "{}");
+    // A second link to the same directory, outside ~/.propio.
+    const alias = join(directory, "alias");
+    await symlink(excluded, alias);
+    await symlink(join(alias, "profile.json"), join(source, "settings.json"));
+
+    await expect(createSandboxConfigView(source)).rejects.toThrow(
+      /links into a directory that holds credentials/,
+    );
+  });
+
+  it("refuses a link into the secret directory outside ~/.propio", async () => {
+    // The secret directory is found from the home directory, so this runs
+    // where the home directory is the test's own.
+    const home = join(directory, "home");
+    const secrets = join(home, ".local", "share", "propio", "openai-secrets");
+    await mkdir(secrets, { recursive: true });
+    await mkdir(join(home, ".propio"));
+    await writeFile(join(secrets, "secret.json"), "{}");
+    await symlink(
+      join(secrets, "secret.json"),
+      join(home, ".propio", "settings.json"),
+    );
+    const script = `
+      const { createSandboxConfigView } = await import(${JSON.stringify(
+        fileURLToPath(new URL("../sandboxHost.ts", import.meta.url)),
+      )});
+      await createSandboxConfigView(${JSON.stringify(join(home, ".propio"))})
+        .then(() => console.log("CREATED"), (error) => console.log(error.message));
+    `;
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", script],
+      {
+        env: { ...process.env, HOME: home },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    await new Promise((resolve) => child.once("exit", resolve));
+
+    expect(output).toMatch(/links into a directory that holds credentials/);
+  });
+
   it("still leaves every other link out of the view", async () => {
     const secret = join(directory, "secret.txt");
     await writeFile(secret, "secret");
@@ -110,7 +215,7 @@ describe("a settings file that is a symbolic link on the host", () => {
   });
 
   it.each([
-    ["leads nowhere", undefined, /could not be read as JSON/],
+    ["leads nowhere", undefined, /symbolic link to a file that does not exist/],
     [
       "leads to something that is not JSON",
       "secret key material",

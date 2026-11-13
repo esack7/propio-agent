@@ -1164,6 +1164,71 @@ describe("in the sandbox, where the project is mounted under another path", () =
     ]);
   });
 
+  describe("the mounted copy of the host's ~/.propio", () => {
+    let configMount: string;
+
+    beforeEach(() => {
+      // Stands for the container's /app/.propio.
+      configMount = path.join(root, "app-propio");
+      fs.mkdirSync(configMount);
+      fs.writeFileSync(path.join(configMount, "providers.json"), "{}");
+    });
+
+    const withConfig = (
+      settings: Partial<PermissionSettings>,
+      options: ToolPermissionsOptions = {},
+    ) =>
+      permissions(
+        { sandbox: { hostPaths: HOST, configMount }, ...options },
+        settings,
+      );
+
+    it.each([
+      ["the host home", "read(~/.propio/**)"],
+      ["an absolute host path", "read(/Users/me/.propio/providers.json)"],
+    ])(
+      "is covered by a deny rule written with %s, also under bypass",
+      async (_label, rule) => {
+        const policy = withConfig({ deny: [rule] }, { preset: "bypass" });
+
+        expect(
+          await policy.authorize(
+            call.read(path.join(configMount, "providers.json")),
+          ),
+        ).toMatchObject({ allowed: false, rule });
+      },
+    );
+
+    it("is outside the workspace, so reading it asks, and the prompt names the host file", async () => {
+      const channel = scriptedChannel("deny");
+      const policy = withConfig({}, { approvalChannel: channel });
+
+      await policy.authorize(
+        call.read(path.join(configMount, "providers.json")),
+      );
+
+      expect(channel.requests[0]).toMatchObject({
+        reason: "The path is outside the workspace",
+        target: { kind: "path", path: "/Users/me/.propio/providers.json" },
+      });
+    });
+
+    it("is matched only when it is mounted", async () => {
+      const policy = permissions(
+        { sandbox: { hostPaths: HOST }, preset: "bypass" },
+        { deny: ["read(~/.propio/**)"] },
+      );
+
+      expect(
+        (
+          await policy.authorize(
+            call.read(path.join(configMount, "providers.json")),
+          )
+        ).allowed,
+      ).toBe(true);
+    });
+  });
+
   it("still asks about a container path outside the mounted project", async () => {
     const channel = scriptedChannel("deny");
     const policy = sandboxed({}, { approvalChannel: channel });

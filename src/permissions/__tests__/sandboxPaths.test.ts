@@ -3,6 +3,7 @@ import {
   createHostPathTranslator,
   isHostPathRule,
   readHostPaths,
+  sandboxMounts,
   unappliableHostRule,
 } from "../sandboxPaths.js";
 
@@ -41,33 +42,69 @@ describe("readHostPaths", () => {
 });
 
 describe("createHostPathTranslator", () => {
-  const toHost = createHostPathTranslator("/workspace", "/Users/me/proj");
+  const HOST = { workspace: "/Users/me/proj", home: "/Users/me" };
+  const toHost = createHostPathTranslator(
+    sandboxMounts("/workspace", HOST, "/app/.propio"),
+  );
 
   it.each([
     ["/workspace", "/Users/me/proj"],
     ["/workspace/src/a.ts", "/Users/me/proj/src/a.ts"],
     ["/workspace/.env", "/Users/me/proj/.env"],
+    // The mounted copy of the host's ~/.propio is named as the original.
+    ["/app/.propio", "/Users/me/.propio"],
+    ["/app/.propio/providers.json", "/Users/me/.propio/providers.json"],
+    ["/app/.propio/settings.json", "/Users/me/.propio/settings.json"],
   ])("names %s as the host does: %s", (container, host) => {
     expect(toHost(container)).toBe(host);
   });
 
-  it.each(["/etc/hosts", "/root/.ssh/id", "/workspace-other/a", "/tmp/x"])(
-    "leaves %s, which only the container has, as it is",
-    (container) => {
-      expect(toHost(container)).toBe(container);
-    },
-  );
+  it.each([
+    "/etc/hosts",
+    "/root/.ssh/id",
+    "/root/.propio/settings.json",
+    "/workspace-other/a",
+    "/app/.propio-other/a",
+    "/app/dist/index.js",
+    "/tmp/x",
+  ])("leaves %s, which only the container has, as it is", (container) => {
+    expect(toHost(container)).toBe(container);
+  });
 
-  it.each(["/Users/me/proj", "/Users/me/proj/secrets/key"])(
-    "refuses %s: in the container that is not the host's project",
+  it.each([
+    "/Users/me/proj",
+    "/Users/me/proj/secrets/key",
+    "/Users/me/.propio/providers.json",
+  ])(
+    "refuses %s: in the container that is not the host's file",
     (container) => {
       expect(() => toHost(container)).toThrow(/is not the host directory/);
     },
   );
 
   it("is the identity when both sides use the same path", () => {
-    const same = createHostPathTranslator("/work/proj", "/work/proj");
+    const same = createHostPathTranslator([
+      { container: "/work/proj", host: "/work/proj" },
+    ]);
     expect(same("/work/proj/a")).toBe("/work/proj/a");
+  });
+
+  it("maps only the project when no config copy is mounted", () => {
+    const projectOnly = createHostPathTranslator(
+      sandboxMounts("/workspace", HOST),
+    );
+    expect(projectOnly("/app/.propio/providers.json")).toBe(
+      "/app/.propio/providers.json",
+    );
+  });
+
+  it("uses the deepest mount when one lies inside another", () => {
+    const nested = createHostPathTranslator([
+      { container: "/mnt", host: "/host/a" },
+      { container: "/mnt/inner", host: "/host/b" },
+    ]);
+    expect(nested("/mnt/inner/x")).toBe("/host/b/x");
+    expect(nested("/mnt/other")).toBe("/host/a/other");
   });
 });
 

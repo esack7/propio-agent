@@ -21,6 +21,8 @@ export interface HostPaths {
  */
 export interface SandboxPaths {
   readonly hostPaths?: HostPaths;
+  /** Where the copy of the host's `~/.propio` is mounted, if it is. */
+  readonly configMount?: string;
 }
 
 function absoluteOrUndefined(value: string | undefined): string | undefined {
@@ -50,30 +52,65 @@ function isInside(candidate: string, root: string): boolean {
   );
 }
 
+/** A host directory and where the sandbox mounts it. */
+export interface Mount {
+  readonly container: string;
+  readonly host: string;
+}
+
+/**
+ * The mounts a sandbox run makes of host directories: the project, and the
+ * copy of the host's `~/.propio` at `configMount` when there is one.
+ */
+export function sandboxMounts(
+  containerWorkspace: string,
+  hostPaths: HostPaths,
+  configMount?: string,
+): Mount[] {
+  return [
+    { container: containerWorkspace, host: hostPaths.workspace },
+    ...(configMount === undefined
+      ? []
+      : [
+          {
+            container: configMount,
+            host: path.join(hostPaths.home, ".propio"),
+          },
+        ]),
+  ];
+}
+
 /**
  * Maps a resolved container path to the path the same file has on the host,
  * so that rules written on the host, with host absolute paths, match it
- * unchanged. Only the mounted workspace exists in both places. A container
- * path that merely looks like a host workspace path is refused: it is not the
+ * unchanged. Only mounted directories exist in both places. A container
+ * path that merely looks like a mounted host path is refused: it is not the
  * host file its name claims, and no rule could be applied to it honestly.
  */
 export function createHostPathTranslator(
-  containerWorkspace: string,
-  hostWorkspace: string,
+  mounts: readonly Mount[],
 ): (resolvedPath: string) => string {
+  // The deepest mount first, should one ever lie inside another.
+  const ordered = [...mounts].sort(
+    (a, b) => b.container.length - a.container.length,
+  );
   return (resolvedPath) => {
-    if (isInside(resolvedPath, containerWorkspace)) {
+    const mount = ordered.find(({ container }) =>
+      isInside(resolvedPath, container),
+    );
+    if (mount) {
       return path.join(
-        hostWorkspace,
-        path.relative(containerWorkspace, resolvedPath),
+        mount.host,
+        path.relative(mount.container, resolvedPath),
       );
     }
-    if (
-      hostWorkspace !== containerWorkspace &&
-      isInside(resolvedPath, hostWorkspace)
-    ) {
+    const lookalike = ordered.find(
+      ({ container, host }) =>
+        host !== container && isInside(resolvedPath, host),
+    );
+    if (lookalike) {
       throw new Error(
-        `Cannot judge ${resolvedPath}: inside the sandbox this is not the host directory ${hostWorkspace}, which is mounted at ${containerWorkspace}`,
+        `Cannot judge ${resolvedPath}: inside the sandbox this is not the host directory ${lookalike.host}, which is mounted at ${lookalike.container}`,
       );
     }
     return resolvedPath;

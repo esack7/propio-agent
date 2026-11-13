@@ -2,6 +2,7 @@ import {
   cp,
   mkdtemp,
   readFile,
+  realpath,
   writeFile,
   rm,
   lstat,
@@ -9,8 +10,9 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { loadProvidersConfig, resolveProvider } from "@propio-ai/providers";
+import { defaultOpenAiSecretDirectory } from "./auth.js";
 import { authForAccount, subscriptionAccountId } from "./runtime.js";
 import { startCredentialBroker } from "./broker.js";
 
@@ -37,13 +39,46 @@ function loadSandboxConfig(path: string) {
 
 const SETTINGS_FILE = "settings.json";
 
+/** Parts of ~/.propio that hold credentials and never enter the sandbox. */
+const EXCLUDED_CONFIG_PARTS = ["poc", "auth/openai"] as const;
+
+function isWithin(candidate: string, directory: string): boolean {
+  const part = relative(directory, candidate);
+  return (
+    part === "" ||
+    (part !== ".." && !part.startsWith("../") && !isAbsolute(part))
+  );
+}
+
+/** A directory with any links in it resolved; as given if it does not exist. */
+async function physical(directory: string): Promise<string> {
+  return await realpath(directory).catch(() => directory);
+}
+
+/**
+ * Every place credentials are kept: the excluded parts of the config
+ * directory, and the secret directory outside it. Physical paths, so a link
+ * cannot reach them by another name.
+ */
+async function credentialLocations(source: string): Promise<string[]> {
+  const locations = [
+    ...EXCLUDED_CONFIG_PARTS.map((part) => join(source, part)),
+    defaultOpenAiSecretDirectory(),
+  ];
+  return [
+    ...locations,
+    ...(await Promise.all(locations.map((location) => physical(location)))),
+  ];
+}
+
 /**
  * Links are left out of the view so that one cannot carry an arbitrary host
  * file into the container. A linked settings file is the exception that has
  * to be handled: natively its permission rules apply, and a sandbox run
- * without them would have no deny rules. Its contents are copied in, and only
- * if they are a JSON object as a settings file must be; otherwise the sandbox
- * does not start.
+ * without them would have no deny rules. So the link is followed, but never
+ * into a place that holds credentials, and only the `permissions` object is
+ * copied: it is the one part of the file the container reads. Anything that
+ * does not hold up stops the sandbox before it starts.
  */
 async function includeLinkedSettings(
   source: string,
@@ -55,9 +90,23 @@ async function includeLinkedSettings(
     () => false,
   );
   if (!isLink) return;
+  const target = await realpath(linked).catch(() => {
+    throw new SandboxConfigurationError(
+      "~/.propio/settings.json is a symbolic link to a file that does not exist. " +
+        "Fix the link or its target; the sandbox will not start without your permission rules.",
+    );
+  });
+  // Checked before reading: the target must not even be opened.
+  const locations = await credentialLocations(source);
+  if (locations.some((location) => isWithin(target, location))) {
+    throw new SandboxConfigurationError(
+      "~/.propio/settings.json links into a directory that holds credentials, " +
+        "which never enter the sandbox. Point it at your settings file instead.",
+    );
+  }
   let settings: unknown;
   try {
-    settings = JSON.parse(await readFile(linked, "utf8"));
+    settings = JSON.parse(await readFile(target, "utf8"));
   } catch {
     throw new SandboxConfigurationError(
       "~/.propio/settings.json is a symbolic link that could not be read as JSON. " +
@@ -74,12 +123,15 @@ async function includeLinkedSettings(
         "The sandbox will not start without your permission rules.",
     );
   }
+  // The container checks this object itself when it loads its rules.
+  const copied =
+    "permissions" in settings
+      ? { permissions: (settings as { permissions: unknown }).permissions }
+      : {};
   await writeFile(
     join(view, SETTINGS_FILE),
-    `${JSON.stringify(settings, null, 2)}\n`,
-    {
-      mode: 0o600,
-    },
+    `${JSON.stringify(copied, null, 2)}\n`,
+    { mode: 0o600 },
   );
 }
 
@@ -95,7 +147,7 @@ export async function createSandboxConfigView(source: string): Promise<string> {
           const part = relative(source, path).replace(/\\/g, "/");
           return (
             !(await lstat(path)).isSymbolicLink() &&
-            !["poc", "auth/openai"].some(
+            !EXCLUDED_CONFIG_PARTS.some(
               (excluded) =>
                 part === excluded || part.startsWith(`${excluded}/`),
             )

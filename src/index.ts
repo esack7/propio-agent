@@ -1291,7 +1291,10 @@ async function createInitializedAgent(
       store: permissionStore,
       // The settings are a mounted copy exactly when this is a sandbox run.
       sandbox: settingsLocation.sandbox
-        ? { hostPaths: readHostPaths(process.env) }
+        ? {
+            hostPaths: readHostPaths(process.env),
+            configMount: path.dirname(settingsLocation.filePath),
+          }
         : undefined,
       savingUnavailableReason: () => permissionStore.savingUnavailableReason(),
     },

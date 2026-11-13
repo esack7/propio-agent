@@ -600,7 +600,9 @@ In sandbox mode the container reads your host rules from a read-only copy of
 `--permissions bypass`. The project is mounted at `/workspace`, so the sandbox
 judges each file by the path it has on the host: a rule written with an
 absolute host path or with `~/` matches the same file in the sandbox, and
-prompts and grants show host paths. Rules cannot be saved from inside the
+prompts and grants show host paths. The same holds for the copy of
+`~/.propio` mounted at `/app/.propio`: a rule such as `read(~/.propio/**)`
+covers it. Rules cannot be saved from inside the
 sandbox: the prompt offers once and session grants only, and
 `/permissions allow`, `ask`, `deny`, and `remove` report why. Edit
 `~/.propio/settings.json` on the host. If the image is started some other way
@@ -608,8 +610,10 @@ than `propio --sandbox`, without being told the host paths, it refuses to run
 with a deny or ask rule that uses one, since that rule would match nothing.
 
 `settings.json` may be a symbolic link, for example into a dotfiles checkout.
-It is read through the link, saving rewrites the file it points to and keeps
-the link, and sandbox mode copies its contents in. A link that leads nowhere,
+It is read through the link, and saving rewrites the file it points to and
+keeps the link. Sandbox mode copies in only its `permissions` object, and
+refuses to start if the link leads into a directory that holds credentials
+(`~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
 or to something that is not a settings object, is an error natively and stops
 the sandbox before it starts.
 

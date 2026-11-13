@@ -12,6 +12,11 @@ import {
 } from "./store.js";
 import { startChatGptCallback } from "./callback.js";
 
+/** Where renewable ChatGPT credentials live by default; never in ~/.propio. */
+export function defaultOpenAiSecretDirectory(): string {
+  return join(homedir(), ".local", "share", "propio", "openai-secrets");
+}
+
 const ISSUER = "https://auth.openai.com";
 const TOKEN_ENDPOINT = `${ISSUER}/api/accounts/oauth/token`;
 const RESOURCE = "https://api.openai.com/v1";
@@ -68,8 +73,7 @@ export class OpenAiAuth {
       directory:
         options.directory ?? join(homedir(), ".propio", "auth", "openai"),
       secretDirectory:
-        options.secretDirectory ??
-        join(homedir(), ".local", "share", "propio", "openai-secrets"),
+        options.secretDirectory ?? defaultOpenAiSecretDirectory(),
       profile: options.profile,
       storage: options.storage,
       backend: options.backend,

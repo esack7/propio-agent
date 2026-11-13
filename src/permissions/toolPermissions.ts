@@ -25,6 +25,7 @@ import { resolveToolPath } from "../tools/shared.js";
 import type { ApprovalChannel } from "./approvalChannel.js";
 import {
   createHostPathTranslator,
+  sandboxMounts,
   unappliableHostRule,
   type SandboxPaths,
 } from "./sandboxPaths.js";
@@ -178,7 +179,13 @@ export class ToolPermissions {
     this.workspaceRoot = fs.realpathSync(this.toolWorkspaceRoot);
     const hostPaths = options.sandbox?.hostPaths;
     this.translatePath = hostPaths
-      ? createHostPathTranslator(this.workspaceRoot, hostPaths.workspace)
+      ? createHostPathTranslator(
+          sandboxMounts(
+            this.workspaceRoot,
+            hostPaths,
+            options.sandbox?.configMount,
+          ),
+        )
       : undefined;
     this.channel = options.approvalChannel;
   }
