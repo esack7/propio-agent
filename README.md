@@ -525,7 +525,10 @@ in `ask`:
 
 The workspace is the directory the agent was started in. Paths are checked
 after symbolic links are resolved, so a link inside the workspace that points
-outside it counts as outside.
+outside it counts as outside. `grep` and `find` stay under the directory they
+search: they do not descend into linked directories, and they skip linked
+files that resolve outside it. The prompt shows control and invisible
+characters in a command or path as escapes such as `\x1b` or `\u202e`.
 
 When a call asks, the prompt shows the tool, the command or resolved path, and
 the reason. Answer `y` to allow that one call; anything else denies it. A

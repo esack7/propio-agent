@@ -5,7 +5,7 @@ export {
   resolveToolMetadata,
 } from "./capabilities.js";
 export type { Capability, ToolMetadata } from "./capabilities.js";
-export { PolicyRuleError, parseRule } from "./rules.js";
+export { PolicyRuleError, isCompoundCommand, parseRule } from "./rules.js";
 export type {
   ParsedRule,
   PolicyRule,

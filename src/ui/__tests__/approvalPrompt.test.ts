@@ -1,8 +1,10 @@
+import { getEventListeners } from "events";
 import { PassThrough } from "stream";
 import type { ApprovalRequest } from "../../policy/index.js";
 import {
   createConfirmApprovalChannel,
   formatApprovalPrompt,
+  visibleText,
 } from "../approvalPrompt.js";
 import { createPromptComposer } from "../promptComposer.js";
 
@@ -61,6 +63,85 @@ describe("formatApprovalPrompt", () => {
 
     expect(text).toContain('Arguments: {"title":"xxx');
     expect(text.length).toBeLessThan(700);
+  });
+});
+
+describe("visibleText", () => {
+  it.each([
+    ["\x1b[2K\rls", "\\x1b[2K\\rls"],
+    ["a\nb\tc", "a\\nb\\tc"],
+    ["back\bspace\x7f", "back\\x08space\\x7f"],
+    ["c1 \u009b31m", "c1 \\x9b31m"],
+    ["rm -rf \u202eexe.txt", "rm -rf \\u202eexe.txt"],
+    ["zero\u200bwidth\ufeff", "zero\\u200bwidth\\ufeff"],
+    ["already \\x1b text", "already \\\\x1b text"],
+    ["plain ünïcode → ok", "plain ünïcode → ok"],
+  ])("renders %j as %j", (input, expected) => {
+    expect(visibleText(input)).toBe(expected);
+  });
+});
+
+describe("untrusted fields in the prompt", () => {
+  // Erase the line, return to its start, and write an innocent command over
+  // the real one.
+  const disguise = "rm -rf ~\x1b[2K\rnpm test";
+
+  function printable(text: string): boolean {
+    return !/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e]/u.test(
+      text,
+    );
+  }
+
+  it.each([
+    [
+      "command",
+      {
+        args: { command: disguise },
+        target: { kind: "command", command: disguise },
+      },
+    ],
+    [
+      "directory and environment",
+      {
+        args: { command: "ls", cwd: "/tmp\x1b[8m", env: { A: "\u202e" } },
+        target: { kind: "command", command: "ls" },
+      },
+    ],
+    [
+      "path",
+      {
+        toolName: "write",
+        args: { path: "x" },
+        target: { kind: "path", path: "/work/\x1b]8;;evil\x07a.txt" },
+      },
+    ],
+    [
+      "other arguments",
+      {
+        toolName: "mcp__x__y",
+        args: { title: "\x1b[2Jcleared" },
+        target: { kind: "mcp", serverPrefix: "mcp__x" },
+      },
+    ],
+    ["tool name", { toolName: "mcp__x__\x1b[31mred" }],
+    ["reason", { reason: "Matched user ask rule bash(\x1b[8mhidden)" }],
+  ] as const)("shows the %s with no control characters", (_label, change) => {
+    const text = formatApprovalPrompt({
+      ...base,
+      ...(change as Partial<ApprovalRequest>),
+    });
+
+    expect(printable(text)).toBe(true);
+  });
+
+  it("shows the whole disguised command", () => {
+    expect(
+      formatApprovalPrompt({
+        ...base,
+        args: { command: disguise },
+        target: { kind: "command", command: disguise },
+      }),
+    ).toContain("Command: rm -rf ~\\x1b[2K\\rnpm test");
   });
 });
 
@@ -126,6 +207,33 @@ describe("a confirm prompt closed by its signal", () => {
     input.write("y\n");
     await expect(next).resolves.toBe(true);
     prompts.close();
+  });
+
+  it("leaves no listener on the turn's signal after each prompt ends", async () => {
+    const { input, composer: prompts } = composer();
+    const controller = new AbortController();
+    const before = getEventListeners(controller.signal, "abort").length;
+
+    for (let index = 0; index < 12; index++) {
+      const answered = prompts.confirm({
+        promptText: "Allow? ",
+        defaultValue: false,
+        signal: controller.signal,
+      });
+      await tick();
+      input.write(index % 2 === 0 ? "y\n" : "\n");
+      await answered;
+    }
+    const closing = prompts.confirm({
+      promptText: "Allow? ",
+      defaultValue: false,
+      signal: controller.signal,
+    });
+    await tick();
+    prompts.close();
+    await expect(closing).resolves.toBe(false);
+
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(before);
   });
 
   it("does not open a prompt for a signal that is already aborted", async () => {

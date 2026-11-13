@@ -4,6 +4,7 @@ import type { AgentToolPolicyDecision } from "../agent-core/types.js";
 import {
   InMemoryPermissionStore,
   PolicyEngine,
+  isCompoundCommand,
   parseRule,
   type ApprovalRequest,
   type JsonObject,
@@ -202,7 +203,7 @@ export class ToolPermissions {
     }
     if (
       this.options.allowGlobalInstallsWithoutPrompt === true &&
-      this.globalInstallReason(request) !== undefined
+      this.isPlainGlobalInstall(request)
     ) {
       return {
         rule: GLOBAL_INSTALL_ENV_RULE,
@@ -211,6 +212,21 @@ export class ToolPermissions {
       };
     }
     return undefined;
+  }
+
+  /**
+   * The deprecated setting approves an install, not a shell invocation: a
+   * compound command could chain anything after it, and a detached one runs
+   * somewhere or with something the text does not show. Those ask as usual.
+   */
+  private isPlainGlobalInstall(request: PolicyRequest): boolean {
+    const target = request.target;
+    return (
+      target?.kind === "command" &&
+      target.detached !== true &&
+      !isCompoundCommand(target.command) &&
+      this.globalInstallReason(request) !== undefined
+    );
   }
 
   private globalInstallReason(request: PolicyRequest): string | undefined {

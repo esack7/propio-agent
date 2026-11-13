@@ -17,6 +17,7 @@ jest.unstable_mockModule("fs/promises", () => ({
   rename: jest.fn(),
   stat: jest.fn(),
   open: jest.fn(),
+  realpath: jest.fn(async (value: string) => value),
 }));
 
 jest.unstable_mockModule("fast-glob", () => ({
@@ -45,8 +46,10 @@ let mockFg: jest.MockedFunction<any>;
 const mockExecFileAsync = jest.fn();
 
 function mockFileStat(isDirectory: boolean): void {
+  // The search root is the directory; every entry beneath it is a file.
   jest.mocked(mockFsPromises.stat).mockResolvedValue({
     isDirectory: () => isDirectory,
+    isFile: () => true,
   } as any);
 }
 
@@ -72,6 +75,16 @@ function mockOpenFileContents(contents: string): void {
     ),
     close: jest.fn(async () => {}),
   });
+}
+
+/** fast-glob entries for plain files, as listContainedFiles requests them. */
+function mockGlobFiles(paths: string[]): void {
+  mockFg.mockResolvedValue(
+    paths.map((path) => ({
+      path,
+      dirent: { isFile: () => true, isSymbolicLink: () => false },
+    })),
+  );
 }
 
 function mockDirectoryEntries(entries: unknown[]): void {
@@ -139,9 +152,7 @@ describe("Tool Implementations", () => {
 
     it("rejects directories", async () => {
       const tool = new ReadTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
+      mockFileStat(true);
 
       await expect(tool.execute({ path: "/test/dir" })).rejects.toThrow(
         "Path is a directory, not a file",
@@ -518,7 +529,7 @@ describe("Tool Implementations", () => {
     it("finds regex matches recursively", async () => {
       const tool = new GrepTool();
       mockFileStat(true);
-      mockFg.mockResolvedValue(["/test/dir/a.txt", "/test/dir/b.txt"]);
+      mockGlobFiles(["/test/dir/a.txt", "/test/dir/b.txt"]);
       mockFileContents("match 123");
 
       const result = await tool.execute({
@@ -534,7 +545,7 @@ describe("Tool Implementations", () => {
     it("reads recursive matches sequentially to bound open files", async () => {
       const tool = new GrepTool();
       mockFileStat(true);
-      mockFg.mockResolvedValue(["/test/dir/a.txt", "/test/dir/b.txt"]);
+      mockGlobFiles(["/test/dir/a.txt", "/test/dir/b.txt"]);
 
       let resolveFirstRead: (() => void) | undefined;
       let signalFirstReadStarted: (() => void) | undefined;
@@ -580,10 +591,8 @@ describe("Tool Implementations", () => {
   describe("FindTool", () => {
     it("finds matching files under a directory", async () => {
       const tool = new FindTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
-      mockFg.mockResolvedValue(["/test/src/a.ts", "/test/src/b.ts"]);
+      mockFileStat(true);
+      mockGlobFiles(["/test/src/a.ts", "/test/src/b.ts"]);
 
       const result = await tool.execute({
         path: "/test/src",
@@ -595,10 +604,8 @@ describe("Tool Implementations", () => {
 
     it("returns a no matches message", async () => {
       const tool = new FindTool();
-      jest.mocked(mockFsPromises.stat).mockResolvedValue({
-        isDirectory: () => true,
-      } as any);
-      mockFg.mockResolvedValue([]);
+      mockFileStat(true);
+      mockGlobFiles([]);
 
       const result = await tool.execute({
         path: "/test/src",
