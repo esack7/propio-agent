@@ -621,6 +621,24 @@ describe("global installs", () => {
   );
 
   it.each([
+    "npm run install -g",
+    "cargo build --bin install",
+    "sudo npm install -g eslint",
+  ])(
+    "does not let the deprecated setting approve %j, which only looks like an install",
+    async (command) => {
+      const channel = scriptedChannel("deny");
+      const policy = permissions({
+        approvalChannel: channel,
+        allowGlobalInstallsWithoutPrompt: true,
+      });
+
+      expect((await policy.authorize(call.bash(command))).allowed).toBe(false);
+      expect(channel.requests).toHaveLength(1);
+    },
+  );
+
+  it.each([
     ["outside the workspace", () => ({ cwd: outside })],
     ["with environment overrides", () => ({ env: { NPM_CONFIG_PREFIX: "/" } })],
   ])(

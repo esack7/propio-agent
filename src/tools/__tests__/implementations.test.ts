@@ -20,10 +20,6 @@ jest.unstable_mockModule("fs/promises", () => ({
   realpath: jest.fn(async (value: string) => value),
 }));
 
-jest.unstable_mockModule("fast-glob", () => ({
-  default: jest.fn(),
-}));
-
 jest.unstable_mockModule("child_process", () => ({
   execFile: jest.fn(),
   spawn: jest.fn(),
@@ -42,7 +38,6 @@ let GrepTool: any;
 let FindTool: any;
 let LsTool: any;
 let mockFsPromises: jest.Mocked<any>;
-let mockFg: jest.MockedFunction<any>;
 const mockExecFileAsync = jest.fn();
 
 function mockFileStat(isDirectory: boolean): void {
@@ -77,13 +72,15 @@ function mockOpenFileContents(contents: string): void {
   });
 }
 
-/** fast-glob entries for plain files, as listContainedFiles requests them. */
+/** One directory of plain files, as the search walk lists it. */
 function mockGlobFiles(paths: string[]): void {
-  mockFg.mockResolvedValue(
-    paths.map((path) => ({
-      path,
-      dirent: { isFile: () => true, isSymbolicLink: () => false },
-    })),
+  jest.mocked(mockFsPromises.readdir).mockResolvedValue(
+    paths.map((filePath) => ({
+      name: filePath.slice(filePath.lastIndexOf("/") + 1),
+      isFile: () => true,
+      isDirectory: () => false,
+      isSymbolicLink: () => false,
+    })) as any,
   );
 }
 
@@ -93,7 +90,6 @@ function mockDirectoryEntries(entries: unknown[]): void {
 
 beforeAll(async () => {
   mockFsPromises = (await import("fs/promises")) as jest.Mocked<any>;
-  mockFg = (await import("fast-glob")).default as jest.MockedFunction<any>;
   await import("child_process");
   const util = await import("util");
   jest.mocked(util.promisify).mockReturnValue(mockExecFileAsync as any);

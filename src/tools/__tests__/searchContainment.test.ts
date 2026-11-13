@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "@jest/globals";
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { listContainedFiles, type ReadDirectory } from "../containedFiles.js";
 import { FindTool } from "../find.js";
 import { GrepTool } from "../grep.js";
 import { resolveToolPath } from "../shared.js";
@@ -86,5 +88,92 @@ describe("recursive searches stay under their root", () => {
 
     expect(result).toContain("needle outside");
     expect(result).toContain("needle deep");
+  });
+});
+
+describe("the search walk opens nothing outside its root", () => {
+  function recordingReader(opened: string[]): ReadDirectory {
+    return async (directory) => {
+      opened.push(fs.realpathSync(directory));
+      return await fsPromises.readdir(directory, { withFileTypes: true });
+    };
+  }
+
+  function insideRoot(directory: string, searchRoot: string): boolean {
+    const relative = path.relative(searchRoot, directory);
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+  }
+
+  it.each([
+    ["a pattern through a linked directory", "src", "dirlink/**/*.txt"],
+    ["a nested pattern from the workspace", ".", "src/dirlink/**/*.txt"],
+    ["a pattern that climbs out", "src", "../../outside/**/*.txt"],
+    ["an absolute pattern", "src", `${"/"}**/*.txt`],
+    ["every file", ".", "**/*"],
+  ])("for %s", async (_label, start, pattern) => {
+    const opened: string[] = [];
+    const searchRoot = path.join(workspace, start);
+
+    const files = await listContainedFiles(
+      searchRoot,
+      pattern,
+      recordingReader(opened),
+    );
+
+    expect(opened.length).toBeGreaterThan(0);
+    for (const directory of opened) {
+      expect(insideRoot(directory, searchRoot)).toBe(true);
+    }
+    expect(opened.some((directory) => directory.startsWith(outside))).toBe(
+      false,
+    );
+    for (const file of files) {
+      expect(insideRoot(fs.realpathSync(file), searchRoot)).toBe(true);
+    }
+  });
+
+  it("enters only directories the pattern can match beneath", async () => {
+    fs.mkdirSync(path.join(workspace, "docs/deep"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, "docs/deep/a.md"), "x");
+    const opened: string[] = [];
+
+    const files = await listContainedFiles(
+      workspace,
+      "src/*.txt",
+      recordingReader(opened),
+    );
+
+    expect(opened).toEqual([workspace, path.join(workspace, "src")]);
+    expect(files).toEqual([
+      path.join(workspace, "src/a.txt"),
+      path.join(workspace, "src/inner.txt"),
+    ]);
+  });
+
+  it("matches hidden entries only when the pattern names them", async () => {
+    fs.mkdirSync(path.join(workspace, ".github"));
+    fs.writeFileSync(path.join(workspace, ".github/ci.yml"), "x");
+    fs.writeFileSync(path.join(workspace, ".env"), "x");
+
+    expect(await listContainedFiles(workspace, "**/*")).not.toContain(
+      path.join(workspace, ".env"),
+    );
+    expect(await listContainedFiles(workspace, ".github/*.yml")).toEqual([
+      path.join(workspace, ".github/ci.yml"),
+    ]);
+  });
+
+  it("skips a subdirectory it cannot read, but not an unreadable root", async () => {
+    const reader: ReadDirectory = async (directory) => {
+      if (directory.endsWith("src")) throw new Error("EACCES");
+      return await fsPromises.readdir(directory, { withFileTypes: true });
+    };
+
+    await expect(
+      listContainedFiles(workspace, "**/*", reader),
+    ).resolves.toEqual([]);
+    await expect(
+      listContainedFiles(path.join(workspace, "src"), "**/*", reader),
+    ).rejects.toThrow("EACCES");
   });
 });

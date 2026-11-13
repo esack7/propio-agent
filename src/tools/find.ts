@@ -5,11 +5,8 @@ import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { ChatTool } from "@propio-ai/providers";
-import {
-  listContainedFiles,
-  normalizeToolPath,
-  throwDirectoryOperationError,
-} from "./shared.js";
+import { listContainedFiles } from "./containedFiles.js";
+import { normalizeToolPath, throwDirectoryOperationError } from "./shared.js";
 
 function recursivePattern(pattern: string): string {
   if (pattern.includes("/")) {

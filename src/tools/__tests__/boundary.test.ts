@@ -104,7 +104,8 @@ describe("headless local tools", () => {
     expect(shell.stdout.trim().replace(/^\/private/, "")).toBe(
       workspace.replace(/^\/private/, ""),
     );
-    expect(cwd).toHaveBeenCalled(); // fast-glob eagerly evaluates its unused cwd fallback.
+    // No tool consults the ambient working directory.
+    expect(cwd).not.toHaveBeenCalled();
   });
 
   it("replaces a writable file even when its previous content cannot be read", async () => {

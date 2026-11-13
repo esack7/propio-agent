@@ -17,7 +17,7 @@ import {
   type ReplAppMode,
   type TranscriptEntry,
 } from "./replUi.js";
-import type { ToolCallView } from "./toolCallView.js";
+import { visibleToolCallView, type ToolCallView } from "./toolCallView.js";
 import type { PromptState } from "./promptState.js";
 import { renderTranscriptEntry } from "./transcriptEntryOps.js";
 
@@ -257,17 +257,19 @@ export class TerminalUi {
     this.statusRenderer.status(text, phase);
   }
 
+  // Every tool-call view enters the terminal through these two methods, so
+  // this is where text from the model and tools is made visible.
   upsertToolCallView(view: ToolCallView): void {
     if (this.json) {
       return;
     }
 
     if (this.retainedStore) {
-      this.retainedStore.upsertToolCallView(view);
+      this.retainedStore.upsertToolCallView(visibleToolCallView(view));
       return;
     }
 
-    this.appendToolCallTranscriptEntry(view);
+    this.appendToolCallTranscriptEntry(visibleToolCallView(view));
   }
 
   appendToolCallView(view: ToolCallView): void {
@@ -275,7 +277,7 @@ export class TerminalUi {
       return;
     }
 
-    this.appendToolCallTranscriptEntry(view);
+    this.appendToolCallTranscriptEntry(visibleToolCallView(view));
   }
 
   private appendToolCallTranscriptEntry(view: ToolCallView): void {

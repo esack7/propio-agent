@@ -470,3 +470,63 @@ export function classifyGlobalInstallCommand(
 
   return { matched: false };
 }
+
+/**
+ * The subcommand that installs, for package managers whose syntax makes it
+ * unambiguous. A manager not listed here (pacman's -S family, for one) is
+ * never recognized.
+ */
+const INSTALL_SUBCOMMANDS: Readonly<
+  Record<
+    string,
+    { readonly verbs: readonly string[]; readonly global?: boolean }
+  >
+> = {
+  npm: { verbs: ["install", "i", "add"], global: true },
+  pnpm: { verbs: ["add"], global: true },
+  brew: { verbs: ["install", "upgrade"] },
+  apt: { verbs: ["install"] },
+  "apt-get": { verbs: ["install"] },
+  dnf: { verbs: ["install"] },
+  yum: { verbs: ["install"] },
+  apk: { verbs: ["add"] },
+  zypper: { verbs: ["install"] },
+  pipx: { verbs: ["install"] },
+  cargo: { verbs: ["install"] },
+  gem: { verbs: ["install"] },
+};
+
+/**
+ * Whether a command is, beyond doubt, one package manager installing
+ * globally: a single command with no wrapper (`sudo`, `env`, a shell) whose
+ * first word after the manager's own options is its install subcommand.
+ * `classifyGlobalInstallCommand` flags likely installs for review; this
+ * stricter test decides what a blanket approval may cover, so any doubt
+ * answers no.
+ */
+export function isUnambiguousGlobalInstall(command: string): boolean {
+  const segments = splitCommandSegments(command);
+  if (segments.length !== 1) return false;
+  const tokens = tokenizeShellSegment(segments[0]!);
+  const [manager, ...rest] = tokens;
+  if (!manager || manager.quoted) return false;
+  const words = rest.map((token) => token.value);
+  if (manager.value === "yarn") {
+    const [first, second] = words.filter((word) => !word.startsWith("-"));
+    return first === "global" && second === "add";
+  }
+  const known = Object.prototype.hasOwnProperty.call(
+    INSTALL_SUBCOMMANDS,
+    manager.value,
+  )
+    ? INSTALL_SUBCOMMANDS[manager.value]
+    : undefined;
+  if (!known) return false;
+  const subcommand = rest.find((token) => !token.value.startsWith("-"));
+  return (
+    subcommand !== undefined &&
+    !subcommand.quoted &&
+    known.verbs.includes(subcommand.value) &&
+    (known.global !== true || hasGlobalNpmFlag(words))
+  );
+}

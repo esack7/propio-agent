@@ -1,6 +1,7 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import { listContainedFiles } from "./containedFiles.js";
 
 const DEFAULT_OUTPUT_LIMIT = 50 * 1024;
 const DEFAULT_TRUNCATION_MARKER = "[output truncated]";
@@ -150,56 +151,6 @@ export function toStringArg(value: unknown, label: string): string {
     throw new Error(`${label} must be a string`);
   }
   return value;
-}
-
-/**
- * Files under `rootPath` matching `pattern`, without leaving the root. Linked
- * directories are not descended into, and every entry, including one reached
- * through a directory the pattern names, is kept only when it resolves to a
- * file under the root. A search approved for one directory therefore never
- * reads or lists what a link inside it points to elsewhere.
- */
-export async function listContainedFiles(
-  rootPath: string,
-  pattern = "**/*",
-): Promise<string[]> {
-  const realRoot = await fsPromises.realpath(rootPath);
-  const fg = (await import("fast-glob")).default;
-  const entries = await fg(pattern, {
-    cwd: rootPath,
-    absolute: true,
-    onlyFiles: false,
-    dot: false,
-    followSymbolicLinks: false,
-    objectMode: true,
-  });
-  const files: string[] = [];
-  for (const entry of entries) {
-    const candidate = entry.dirent.isFile() || entry.dirent.isSymbolicLink();
-    if (candidate && (await isFileInside(entry.path, realRoot))) {
-      files.push(entry.path);
-    }
-  }
-  return files;
-}
-
-async function isFileInside(
-  entryPath: string,
-  realRoot: string,
-): Promise<boolean> {
-  try {
-    const target = await fsPromises.realpath(entryPath);
-    const relative = path.relative(realRoot, target);
-    const inside =
-      relative !== "" &&
-      relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative);
-    return inside && (await fsPromises.stat(target)).isFile();
-  } catch {
-    // A broken link has nothing to search.
-    return false;
-  }
 }
 
 export async function collectFilesForSearch(

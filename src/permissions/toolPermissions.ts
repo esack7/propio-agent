@@ -15,7 +15,10 @@ import {
   type PolicyRequest,
   type ToolMetadata,
 } from "../policy/index.js";
-import { classifyGlobalInstallCommand } from "../tools/globalInstallGuard.js";
+import {
+  classifyGlobalInstallCommand,
+  isUnambiguousGlobalInstall,
+} from "../tools/globalInstallGuard.js";
 import { resolveToolPath } from "../tools/shared.js";
 import type { ApprovalChannel } from "./approvalChannel.js";
 import { resolvePolicyTarget } from "./targets.js";
@@ -216,8 +219,10 @@ export class ToolPermissions {
 
   /**
    * The deprecated setting approves an install, not a shell invocation: a
-   * compound command could chain anything after it, and a detached one runs
-   * somewhere or with something the text does not show. Those ask as usual.
+   * compound command could chain anything after it, a detached one runs
+   * somewhere or with something the text does not show, and a command the
+   * strict recognizer cannot place as an install subcommand may be something
+   * else. Those ask as usual.
    */
   private isPlainGlobalInstall(request: PolicyRequest): boolean {
     const target = request.target;
@@ -225,7 +230,7 @@ export class ToolPermissions {
       target?.kind === "command" &&
       target.detached !== true &&
       !isCompoundCommand(target.command) &&
-      this.globalInstallReason(request) !== undefined
+      isUnambiguousGlobalInstall(target.command)
     );
   }
 

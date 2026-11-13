@@ -4,8 +4,8 @@ import type { ApprovalRequest } from "../../policy/index.js";
 import {
   createConfirmApprovalChannel,
   formatApprovalPrompt,
-  visibleText,
 } from "../approvalPrompt.js";
+import { visibleText } from "../visibleText.js";
 import { createPromptComposer } from "../promptComposer.js";
 
 const base: ApprovalRequest = {
