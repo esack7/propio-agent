@@ -471,50 +471,88 @@ export function classifyGlobalInstallCommand(
   return { matched: false };
 }
 
-type ScopeReading = "global" | "local" | "unclear" | undefined;
-
-/** Options whose meaning for npm's install scope is fixed. */
-const EXACT_SCOPE_OPTIONS: Readonly<Record<string, ScopeReading>> = {
-  "-g": "global",
-  "--global": "global",
-  "--global=true": "global",
-  "--location=global": "global",
-  "--no-global": "local",
-};
+/** The only spellings read as a global install; npm reads each the same way. */
+const GLOBAL_SCOPE_OPTIONS: ReadonlySet<string> = new Set([
+  "-g",
+  "--global",
+  "--location=global",
+]);
 
 /**
- * Other spellings that name the scope, including combined short flags such
- * as -gD, which npm's option parser may expand. They are not interpreted.
+ * Whether an npm or pnpm argument list is, beyond doubt, a global install
+ * with one of `verbs`. npm's option parser reads options in order, takes a
+ * separate `true` or `false` as a boolean option's value, expands
+ * abbreviations (`--no-glob`), and stops at `--`, so a list is accepted only
+ * when every argument is the subcommand, a global option spelled exactly as
+ * above, `--location global`, `--`, or a package. Any other option, and a
+ * bare `true` or `false`, sends the call to the operator.
  */
-const UNCLEAR_SCOPE_OPTION =
-  /^(--global=|--location=|--no-(global|location)\b|-[^-]*g)/;
-
-/** What one argument says about npm's install scope, if anything. */
-function readScopeOption(
-  token: string,
-  next: string | undefined,
-): ScopeReading {
-  if (Object.prototype.hasOwnProperty.call(EXACT_SCOPE_OPTIONS, token)) {
-    return EXACT_SCOPE_OPTIONS[token];
+function isAllowlistedGlobalInstall(
+  args: readonly ShellToken[],
+  verbs: readonly string[],
+): boolean {
+  let global = false;
+  let endOfOptions = false;
+  const positionals: Array<{ token: ShellToken; afterEnd: boolean }> = [];
+  for (let index = 0; index < args.length;) {
+    const { kind, span } = readArgument(args, index, endOfOptions);
+    if (kind === "reject") return false;
+    if (kind === "end") endOfOptions = true;
+    if (kind === "global") global = true;
+    if (kind === "positional") {
+      positionals.push({ token: args[index]!, afterEnd: endOfOptions });
+    }
+    index += span;
   }
-  if (token === "--location") return next === "global" ? "global" : "unclear";
-  return UNCLEAR_SCOPE_OPTION.test(token) ? "unclear" : undefined;
+  return global && isInstallSubcommand(positionals[0], verbs);
 }
 
 /**
- * Whether npm's effective scope is global beyond doubt. npm lets a later
- * option override an earlier one (`--global --no-global` installs locally),
- * so every option that names the scope must say global and at least one
- * must be present; any other reading is left to the operator.
+ * The first positional is the subcommand; after `--` npm would read it as a
+ * package instead, and a quoted one is not taken at its word.
  */
-function hasOnlyGlobalScope(words: readonly string[]): boolean {
-  let global = false;
-  for (let index = 0; index < words.length; index += 1) {
-    const reading = readScopeOption(words[index]!, words[index + 1]);
-    if (reading === "local" || reading === "unclear") return false;
-    if (reading === "global") global = true;
+function isInstallSubcommand(
+  first: { token: ShellToken; afterEnd: boolean } | undefined,
+  verbs: readonly string[],
+): boolean {
+  return (
+    first !== undefined &&
+    !first.afterEnd &&
+    !first.token.quoted &&
+    verbs.includes(first.token.value)
+  );
+}
+
+type ArgumentKind = "end" | "global" | "positional" | "reject";
+
+/** What the argument at `index` is, and how many arguments it spans. */
+function readArgument(
+  args: readonly ShellToken[],
+  index: number,
+  endOfOptions: boolean,
+): { kind: ArgumentKind; span: number } {
+  const value = args[index]!.value;
+  if (!endOfOptions && value === "--") return { kind: "end", span: 1 };
+  if (!endOfOptions && value.startsWith("-")) {
+    const span = globalOptionLength(args, index);
+    return span > 0 ? { kind: "global", span } : { kind: "reject", span: 1 };
   }
-  return global;
+  return { kind: isPlainPositional(value) ? "positional" : "reject", span: 1 };
+}
+
+/** How many arguments a global option at `index` spans; 0 if it is not one. */
+function globalOptionLength(
+  args: readonly ShellToken[],
+  index: number,
+): number {
+  const value = args[index]!.value;
+  if (GLOBAL_SCOPE_OPTIONS.has(value)) return 1;
+  return value === "--location" && args[index + 1]?.value === "global" ? 2 : 0;
+}
+
+/** A bare `true` or `false` may be the value of the option before it. */
+function isPlainPositional(value: string): boolean {
+  return value !== "true" && value !== "false";
 }
 
 /**
@@ -568,11 +606,11 @@ export function isUnambiguousGlobalInstall(command: string): boolean {
     ? INSTALL_SUBCOMMANDS[manager.value]
     : undefined;
   if (!known) return false;
+  if (known.global) return isAllowlistedGlobalInstall(rest, known.verbs);
   const subcommand = rest.find((token) => !token.value.startsWith("-"));
   return (
     subcommand !== undefined &&
     !subcommand.quoted &&
-    known.verbs.includes(subcommand.value) &&
-    (known.global !== true || hasOnlyGlobalScope(words))
+    known.verbs.includes(subcommand.value)
   );
 }

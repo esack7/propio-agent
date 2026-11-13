@@ -625,6 +625,9 @@ describe("global installs", () => {
     "cargo build --bin install",
     "sudo npm install -g eslint",
     "npm install -g --no-global eslint",
+    "npm install --global false eslint",
+    "npm install -- -g eslint",
+    "npm install -g --no-glob eslint",
   ])(
     "does not let the deprecated setting approve %j, which only looks like an install",
     async (command) => {
