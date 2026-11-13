@@ -1,5 +1,5 @@
 import { StringDecoder } from "node:string_decoder";
-import { execFile, spawn } from "child_process";
+import { execFile, spawn, type ChildProcess } from "child_process";
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
@@ -9,6 +9,9 @@ const CANCEL_MESSAGE = "Command cancelled";
 export const MAXBUFFER_TRUNCATION_MESSAGE =
   "stdout or stderr maxBuffer length exceeded";
 
+/** How long a command's process group gets to exit after SIGTERM. */
+const PROCESS_GROUP_KILL_GRACE_MS = 2000;
+
 export interface RunShellCommandOptions {
   command: string;
   cwd?: string;
@@ -16,6 +19,8 @@ export interface RunShellCommandOptions {
   timeoutMs?: number;
   maxBuffer?: number;
   abortSignal?: AbortSignal;
+  /** Test hook; defaults to PROCESS_GROUP_KILL_GRACE_MS. */
+  killGraceMs?: number;
 }
 
 export interface RunShellCommandResult {
@@ -263,6 +268,28 @@ function createOutputCollector(maxBytes: number, exceeded: () => void) {
   };
 }
 
+/**
+ * Signal every process the command started. The shell is spawned as the
+ * leader of its own process group, so a negative pid reaches the shell and
+ * its descendants; signalling the shell alone would leave them running.
+ */
+function signalProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.pid === undefined) {
+    child.kill(signal);
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    // The group is already gone, or could not be signalled as a group.
+    try {
+      child.kill(signal);
+    } catch {
+      // Nothing left to signal.
+    }
+  }
+}
+
 async function runWithSpawn(
   options: RunShellCommandOptions,
 ): Promise<RunShellCommandResult> {
@@ -275,12 +302,28 @@ async function runWithSpawn(
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      // Own process group, so termination reaches what the shell started.
+      detached: true,
     });
 
     let settled = false;
     let timedOut = false;
     let aborted = false;
     let maxBufferExceeded = false;
+    let killHandle: NodeJS.Timeout | undefined;
+
+    // SIGTERM the group, then SIGKILL whatever is left after the grace
+    // period. The escalation stays armed until the command's output closes,
+    // because a child that ignores SIGTERM can outlive the shell.
+    const terminate = (): void => {
+      if (killHandle !== undefined || settled) {
+        return;
+      }
+      signalProcessGroup(child, "SIGTERM");
+      killHandle = setTimeout(() => {
+        signalProcessGroup(child, "SIGKILL");
+      }, options.killGraceMs ?? PROCESS_GROUP_KILL_GRACE_MS);
+    };
 
     const killForMaxBuffer = (): void => {
       if (maxBufferExceeded) {
@@ -288,7 +331,7 @@ async function runWithSpawn(
       }
 
       maxBufferExceeded = true;
-      child.kill();
+      terminate();
     };
 
     const finish = (result: RunShellCommandResult): void => {
@@ -297,6 +340,7 @@ async function runWithSpawn(
       }
       settled = true;
       clearTimeout(timeoutHandle);
+      clearTimeout(killHandle);
       signal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
@@ -314,13 +358,13 @@ async function runWithSpawn(
     if (timeoutMs !== undefined && timeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
-        child.kill();
+        terminate();
       }, timeoutMs);
     }
 
     const onAbort = (): void => {
       aborted = true;
-      child.kill();
+      terminate();
     };
 
     if (signal) {

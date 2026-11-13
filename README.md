@@ -1149,7 +1149,12 @@ create/replace semantics, before/after SHA-256 hashes, and completed side-effect
 state. This metadata is additive; legacy `status` behavior is unchanged.
 
 Cancellation is cooperative. Pre-cancelled calls do not execute. Shell calls pass
-the signal to the executor; the Node adapter terminates the direct shell process.
+the signal to the executor. The Node adapter runs each cancellable command in its
+own process group and, on cancellation, timeout, or exceeding the output cap,
+sends the group `SIGTERM` and then `SIGKILL` to whatever is left two seconds
+later, so processes the command started are stopped with it. A command run
+without a cancellation signal is not grouped. Because the command has no
+controlling terminal, it cannot prompt on `/dev/tty`.
 Filesystem tools check before starting, writes/edits also check before atomic
 replacement begins, and grep checks between files. In-flight I/O, glob traversal,
 completed writes, and an approval callback that ignores its signal cannot be

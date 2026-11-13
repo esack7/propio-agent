@@ -160,6 +160,58 @@ describe("runShellCommand", () => {
       exitCode: -1,
       aborted: true,
     });
-    expect(child.kill).toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("starts cancellable commands in their own process group", async () => {
+    const child = createMockChildProcess();
+    jest.mocked(spawn).mockReturnValue(child as never);
+    const pending = runShellCommand({
+      command: "true",
+      abortSignal: new AbortController().signal,
+    });
+    child.emit("close", 0);
+    await pending;
+    expect(jest.mocked(spawn).mock.calls[0]?.[2]).toMatchObject({
+      detached: true,
+    });
+  });
+
+  it("escalates to SIGKILL only while the command is still open", async () => {
+    jest.useFakeTimers();
+    try {
+      const stubborn = createMockChildProcess();
+      jest.mocked(spawn).mockReturnValue(stubborn as never);
+      const stubbornController = new AbortController();
+      const stubbornResult = runShellCommand({
+        command: "stubborn",
+        abortSignal: stubbornController.signal,
+        killGraceMs: 500,
+      });
+      stubbornController.abort();
+      jest.advanceTimersByTime(499);
+      expect(stubborn.kill).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      expect(stubborn.kill).toHaveBeenLastCalledWith("SIGKILL");
+      stubborn.emit("close", null);
+      await stubbornResult;
+
+      const prompt = createMockChildProcess();
+      jest.mocked(spawn).mockReturnValue(prompt as never);
+      const promptController = new AbortController();
+      const promptResult = runShellCommand({
+        command: "prompt",
+        abortSignal: promptController.signal,
+        killGraceMs: 500,
+      });
+      promptController.abort();
+      prompt.emit("close", null);
+      await promptResult;
+      jest.advanceTimersByTime(1000);
+      expect(prompt.kill).toHaveBeenCalledTimes(1);
+      expect(prompt.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
