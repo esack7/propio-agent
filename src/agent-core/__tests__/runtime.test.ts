@@ -469,7 +469,9 @@ describe("public headless runtime", () => {
 
       await expect(running).rejects.toThrow("cancelled");
       expect(executeWithStatus).not.toHaveBeenCalled();
-      expect(fixture.events).toContainEqual({ type: "turn_cancelled" });
+      expect(fixture.events).toContainEqual(
+        expect.objectContaining({ type: "turn_cancelled" }),
+      );
       expect(traceEvents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -528,22 +530,26 @@ describe("public headless runtime", () => {
 
     expect(executionCount).toBe(2);
     const state = fixture.context.getConversationState();
-    expect(state.artifacts).toHaveLength(1);
-    expect(state.artifacts[0].content).toBe("first completed");
-    expect(state.turns[0].entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "tool",
-          toolInvocations: [expect.objectContaining({ toolCallId: "call-1" })],
-        }),
-      ]),
-    );
-    const recordedToolCallIds = state.turns[0].entries.flatMap((entry) =>
+    // The completed result is kept as it was. The call that was running and
+    // the one that never started are recorded as interrupted, not run.
+    expect(state.artifacts.map((artifact) => artifact.content)).toEqual([
+      "first completed",
+      expect.stringMatching(/^\[Interrupted before this call finished/),
+      expect.stringMatching(/^\[Not run: the turn was interrupted/),
+    ]);
+    const recorded = state.turns[0].entries.flatMap((entry) =>
       entry.kind === "tool"
-        ? entry.toolInvocations.map((invocation) => invocation.toolCallId)
+        ? entry.toolInvocations.map((invocation) => [
+            invocation.toolCallId,
+            invocation.status,
+          ])
         : [],
     );
-    expect(recordedToolCallIds).toEqual(["call-1"]);
+    expect(recorded).toEqual([
+      ["call-1", "success"],
+      ["call-2", "error"],
+      ["call-3", "error"],
+    ]);
   });
 
   it("orders lifecycle and tool events and replays opaque continuation through the public context", async () => {
@@ -685,7 +691,9 @@ describe("public headless runtime", () => {
     expect(
       JSON.stringify(fixture.context.getConversationState()),
     ).not.toContain("late");
-    expect(fixture.events).toContainEqual({ type: "turn_cancelled" });
+    expect(fixture.events).toContainEqual(
+      expect.objectContaining({ type: "turn_cancelled" }),
+    );
   });
 
   it("never starts a tool when its start event cancels the turn", async () => {

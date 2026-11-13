@@ -1593,6 +1593,28 @@ incompatible changes require explicit migration notes.
 - By default, cancellation discards an empty incomplete current turn. Set
   `policy.discardInterruptedTurn` to customize this choice. The CLI keeps its
   existing Escape-only discard policy. Turns with committed entries are retained.
+- When a turn is cancelled during a tool batch, the runtime records a result
+  for every call the batch left open before it emits `turn_cancelled`: the
+  call that was running or awaiting approval is recorded as interrupted with
+  possibly partial effects, and calls that had not started as not run. Results
+  that completed earlier are kept as they were, a late result from the
+  interrupted call is ignored, and nothing is replayed. The next request then
+  has exactly one result for each tool call. `turn_cancelled` carries the
+  `phase` (`model` or `tool`) and `interruptedToolCallIds`; its trace record
+  adds the abort reason and `actor: "user"` when the reason is `interrupt`,
+  `escape`, or `sigint`. A model step that was interrupted is not committed.
+- `streamChat` accepts `guidance`, a caller-owned source with one method,
+  `drain()`. Before each model request, and again when the model gives a
+  final answer, the runtime takes whatever is waiting and adds each message
+  to the conversation as a user message, in order, with a one-line lead-in
+  saying it was sent while work was in progress. Guidance that arrives during
+  the final answer continues the turn. The runtime emits `guidance_delivered`
+  for each message and records `operator_guidance` in the trace with actor
+  `user`, the message id, and its length; the text is captured only at full
+  capture. Each guidance message starts a new turn record in the conversation
+  store, so the saved-session format is unchanged. Messages still waiting
+  when a turn ends or is cancelled stay in the source. File mentions in
+  guidance are not expanded.
 
 Compatibility fixes accompanying the boundary: cancellation in a tool-start
 callback prevents dispatch, idle-timeout cleanup no longer blocks on a stalled

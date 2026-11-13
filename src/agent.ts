@@ -2342,7 +2342,8 @@ export class Agent {
         useNoProgressDetector: this.runtimeConfig.useNoProgressDetector,
         streamIdleTimeoutMs: this.runtimeConfig.streamIdleTimeoutMs,
         outputTokenRecoveryLimit: this.runtimeConfig.outputTokenRecoveryLimit,
-        discardInterruptedTurn: (signal) => signal.reason === "escape",
+        discardInterruptedTurn: (signal) =>
+          signal.reason === "escape" || signal.reason === "interrupt",
         resolveToolScope: () => this.resolveRuntimeToolScope(),
       },
       tools: {

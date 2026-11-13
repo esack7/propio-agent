@@ -18,6 +18,8 @@ export type {
   AgentVisibilityEvent,
   AgentLifecycleEvent,
   AgentStreamOptions,
+  GuidanceMessage,
+  GuidanceSource,
   TurnReasoningSummary,
   PromptPlanSnapshot,
 } from "./events.js";
