@@ -1,6 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
+import { trackShellProcessGroup } from "./processGroups.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +17,8 @@ export interface RunShellCommandOptions {
   timeoutMs?: number;
   maxBuffer?: number;
   abortSignal?: AbortSignal;
+  /** Test hook for the SIGTERM-to-SIGKILL grace period (default 2000 ms). */
+  killGraceMs?: number;
 }
 
 export interface RunShellCommandResult {
@@ -275,6 +278,8 @@ async function runWithSpawn(
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      // Own process group, so termination reaches what the shell started.
+      detached: true,
     });
 
     let settled = false;
@@ -282,13 +287,22 @@ async function runWithSpawn(
     let aborted = false;
     let maxBufferExceeded = false;
 
+    // SIGTERM the group, then SIGKILL whatever is left after the grace
+    // period. The group is tracked until it has no members, independently of
+    // the shell's output closing: a descendant that redirected its output
+    // keeps running after the shell has gone.
+    const group = trackShellProcessGroup(child, options.killGraceMs);
+    const terminate = (): void => {
+      if (!settled) group.terminate();
+    };
+
     const killForMaxBuffer = (): void => {
       if (maxBufferExceeded) {
         return;
       }
 
       maxBufferExceeded = true;
-      child.kill();
+      terminate();
     };
 
     const finish = (result: RunShellCommandResult): void => {
@@ -298,7 +312,15 @@ async function runWithSpawn(
       settled = true;
       clearTimeout(timeoutHandle);
       signal?.removeEventListener("abort", onAbort);
-      resolve(result);
+      if (!group.terminating) {
+        // Finished on its own. Anything it deliberately left in the
+        // background keeps running, as before.
+        group.release();
+        resolve(result);
+        return;
+      }
+      // A terminated command is reported once nothing it started is left.
+      void group.gone.then(() => resolve(result));
     };
 
     const stdoutOutput = createOutputCollector(maxBuffer, killForMaxBuffer);
@@ -314,13 +336,13 @@ async function runWithSpawn(
     if (timeoutMs !== undefined && timeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
-        child.kill();
+        terminate();
       }, timeoutMs);
     }
 
     const onAbort = (): void => {
       aborted = true;
-      child.kill();
+      terminate();
     };
 
     if (signal) {
