@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import type { ToolExecutionResult } from "./types.js";
@@ -34,6 +35,11 @@ function throwEditFileSystemError(
 
 export class EditTool implements PresentedTool {
   readonly name = "edit";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["workspace_write"],
+    readOnly: false,
+    concurrencySafe: false,
+  };
   readonly description = "Edit a file - replace text.";
 
   private readonly resolvePath: (rawPath: unknown) => string;

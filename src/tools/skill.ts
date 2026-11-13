@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import { ChatTool } from "@propio-ai/providers";
 import { PresentedTool } from "./interface.js";
 import type { ToolDisplayAdapter } from "./displayAdapter.js";
@@ -14,6 +15,11 @@ export interface SkillToolInvoker {
 
 export class SkillTool implements PresentedTool {
   readonly name = "skill";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["read"],
+    readOnly: true,
+    concurrencySafe: false,
+  };
   readonly description = "Activate a loaded inline skill.";
 
   constructor(private readonly invoker: SkillToolInvoker) {}

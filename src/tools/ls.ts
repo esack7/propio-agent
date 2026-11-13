@@ -1,3 +1,4 @@
+import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
@@ -12,6 +13,11 @@ import {
 
 export class LsTool implements PresentedTool {
   readonly name = "ls";
+  readonly metadata: ToolMetadata = {
+    capabilities: ["read"],
+    readOnly: true,
+    concurrencySafe: true,
+  };
   readonly description = "List directory contents.";
 
   private readonly resolvePath: (rawPath: unknown) => string;

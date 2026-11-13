@@ -1025,6 +1025,104 @@ schemas use the shared providers contracts; implementation dependencies include
 Node filesystem/process APIs and fast-glob. The subpath follows the agent package
 version and remains provisional until a real second consumer validates it.
 
+### Reusable policy API (provisional)
+
+`@propio-ai/agent/policy` decides whether a tool call may run. It imports nothing
+else from this package, performs no I/O, and keeps no module-level state: rules
+come from a store the caller supplies, and paths, the workspace root, and the
+home directory are passed in. **The CLI does not enforce it yet**; this release
+adds the primitive and tool metadata only.
+
+```ts
+import { InMemoryPermissionStore, PolicyEngine } from "@propio-ai/agent/policy";
+
+const policy = await PolicyEngine.create({
+  store: new InMemoryPermissionStore(),
+  owner: "local", // opaque; engines with different owners share nothing
+  workspaceRoot: "/work/project",
+});
+const decision = policy.evaluate({
+  toolName: "edit",
+  args: { path: "/work/project/src/a.ts" },
+  metadata: {
+    capabilities: ["workspace_write"],
+    readOnly: false,
+    concurrencySafe: false,
+  },
+  target: { kind: "path", path: "/work/project/src/a.ts" },
+});
+if (decision.outcome === "ask") {
+  // decision.request is plain JSON: show it, send it, answer it later.
+  await policy.answer({
+    requestId: decision.request.id,
+    decision: "allow_once",
+  });
+}
+```
+
+- **Tool metadata.** Each tool may declare `metadata`: capabilities (`read`,
+  `workspace_write`, `process`, `network`, `external`), `readOnly`, and
+  `concurrencySafe`. The built-in tools declare theirs. A tool that declares
+  nothing, including every MCP tool, is treated as `external` and not
+  concurrency-safe. `ToolRegistry.getToolMetadata(name)` returns the resolved
+  value.
+- **Targets.** The caller says what a call acts on: `{ kind: "path", path }`
+  (absolute, normalized, symbolic links resolved), `{ kind: "command", command }`,
+  or `{ kind: "mcp", serverPrefix }`. Policy never inspects arguments by tool
+  name. Paths are POSIX paths.
+- **Rules.** Strings in `allow`, `ask`, and `deny` lists:
+
+  | Rule                 | Matches                                                         |
+  | -------------------- | --------------------------------------------------------------- |
+  | `bash`               | every call to that tool                                         |
+  | `edit(src/**)`       | a path glob; relative to the workspace, or `/abs/**`, or `~/**` |
+  | `bash(npm test)`     | that exact command                                              |
+  | `bash(git status:*)` | the prefix, followed by a space or the end                      |
+  | `mcp__github`        | every tool of that MCP server                                   |
+  | `capability:process` | every tool declaring the capability                             |
+
+  Deny beats ask, and ask beats allow, whichever source a rule came from. An
+  allow rule never covers a command containing `;`, `&`, `|`, `<`, `>`, a
+  backtick, `$(`, or a newline, so approving one command cannot approve what is
+  chained after it; deny and ask rules match each chained command. This guards
+  against unintended actions and is not a sandbox. A rule that cannot be parsed
+  fails the load with its text and position.
+
+- **Modes** set the default when no rule matches. `ask`: reads inside the
+  workspace run, everything else asks. `accept-edits`: writes inside the
+  workspace run too. `bypass`: everything runs. Rules apply in every mode.
+- **Presets** name a mode plus rules: `read-only` (writes, commands, network,
+  and external tools denied), `ask` (the default), `accept-edits`, `bypass`.
+  User rules layer on top.
+- **Approval.** An `ask` decision carries an `ApprovalRequest` with the call,
+  the reason, and the grants that would cover it. `answer()` accepts
+  `allow_once`, `allow_session` or `allow_always` with one rule that covers the
+  call, or `deny` with an optional reason for the model. Session grants are
+  held on the engine (`listSessionGrants`, `restoreSessionGrants`,
+  `revokeSessionGrant`); `allow_always` saves through the store. A grant never
+  overrides a deny rule: an answer re-reads the stored rules and is refused if
+  a deny written while the request waited now matches. Only the first answer
+  to a request counts.
+- **Store.** `PermissionStore` has `load(owner)` and `update(owner, change)`.
+  `update` must apply the pure `change` function to the owner's current stored
+  settings atomically, so concurrent edits from one engine or several never
+  drop each other's rules. `load` must return the settings as of the latest
+  completed update. An engine runs its own reads and writes one at a time, so
+  a slow read cannot undo a later write. It caches what it last read or
+  wrote; `reload()` reads again.
+- **Exact grants.** Exact file grants match one absolute path, so an
+  always-allow saved for the owner does not apply to the same relative path in
+  another workspace. They escape glob characters, so approving a file named
+  `notes*.txt` does not approve `notes-2.txt`. Exact command grants match the
+  command text regardless of working directory or environment overrides:
+  approving `npm test` in one directory also allows it in another. No exact
+  grant is offered for a command ending in `:*`, which the syntax reads as a
+  prefix. The workspace root and home
+  directory are matched literally, even if their names contain glob
+  characters. Path patterns never negate.
+
+Run `npm run build && npm run example:policy` for a complete consumer.
+
 ### Tool registry
 
 `src/tools/registry.ts` maintains the set of available tools and their enabled/disabled state. Tools can be toggled at runtime via `/tools` or the `agent.enableTool()` / `agent.disableTool()` APIs.

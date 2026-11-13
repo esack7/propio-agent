@@ -1,5 +1,6 @@
 import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "./types.js";
+import type { ToolMetadata } from "../policy/capabilities.js";
 
 export interface ToolExecutionContext {
   /** Cooperative cancellation. It cannot roll back completed filesystem changes. */
@@ -11,6 +12,11 @@ export interface ExecutableTool {
   readonly name: string;
   readonly description: string;
   getSchema(): ChatTool;
+  /**
+   * What the tool can touch, for policy and scheduling. A tool that declares
+   * nothing is treated as having unknown external effects.
+   */
+  readonly metadata?: ToolMetadata;
   execute(
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
