@@ -79,6 +79,51 @@ function createJournalVerifier() {
 }
 
 describe("recovery journal state equivalence", () => {
+  it("matches a full export after guidance, including a turn it reopens", () => {
+    const { context, checkpoint, cleanup } = createJournalVerifier();
+    try {
+      context.beginUserTurn("Inspect the file");
+      context.commitAssistantResponse("", [toolCall("first")]);
+      context.recordToolResults([
+        {
+          toolCallId: "first",
+          toolName: "fixture_tool",
+          status: "success",
+          rawContent: "first result",
+        },
+      ]);
+      checkpoint();
+      context.appendOperatorGuidance("Only the header.");
+      checkpoint();
+      context.commitAssistantResponse("Done");
+      checkpoint();
+      expect(context.getConversationState().turns[0]!.completedAt).toEqual(
+        expect.any(String),
+      );
+      context.appendOperatorGuidance("Also the footer.");
+      checkpoint();
+      expect(
+        context.getConversationState().turns[0]!.completedAt,
+      ).toBeUndefined();
+      context.commitAssistantResponse("Done with both.");
+      checkpoint();
+      expect(
+        context
+          .getConversationState()
+          .turns[0]!.entries.map((entry) => entry.kind),
+      ).toEqual([
+        "assistant",
+        "tool",
+        "guidance",
+        "assistant",
+        "guidance",
+        "assistant",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("matches a full export after every turn, result, summary, memory, and skill change", () => {
     const { context, checkpoint, cleanup } = createJournalVerifier();
     try {

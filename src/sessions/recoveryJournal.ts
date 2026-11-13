@@ -128,6 +128,13 @@ function encodeChange(
         entry: persistEntry(change.entry),
         turn: change.turn,
       };
+    case "guidance_added":
+      return {
+        kind: change.kind,
+        turnId: change.turnId,
+        entry: persistEntry(change.entry),
+        reopened: change.reopened,
+      };
     case "tool_results_added":
       return {
         kind: change.kind,
@@ -266,6 +273,20 @@ function removeLastTurn(
   );
 }
 
+function addGuidanceEntry(
+  snapshot: Record<string, unknown>,
+  change: Record<string, unknown>,
+): void {
+  const turn = lastTurn(snapshot, change.turnId);
+  if (asObject(change.entry).kind !== "guidance")
+    throw new Error("Invalid recovery guidance entry");
+  asArray(turn.entries).push(change.entry);
+  if (change.reopened === true) {
+    delete turn.completedAt;
+    delete turn.estimatedTokens;
+  }
+}
+
 function addAssistantEntry(
   snapshot: Record<string, unknown>,
   change: Record<string, unknown>,
@@ -294,6 +315,9 @@ function applyTurnChange(
       return true;
     case "assistant_removed":
       asArray(lastTurn(snapshot, change.turnId).entries).pop();
+      return true;
+    case "guidance_added":
+      addGuidanceEntry(snapshot, change);
       return true;
     case "tool_results_added":
       applyToolResults(snapshot, change);

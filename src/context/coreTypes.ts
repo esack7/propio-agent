@@ -256,6 +256,17 @@ export type TurnEntry =
       readonly estimatedTokens?: number;
       readonly message: ChatMessage;
       readonly toolInvocations: ReadonlyArray<ToolInvocationRecord>;
+    }
+  | {
+      /**
+       * A user message the operator sent while the turn was running. It
+       * belongs to the turn it steers, so prompt selection keeps it with the
+       * task and a cancelled step does not discard it.
+       */
+      readonly kind: "guidance";
+      readonly createdAt: string;
+      readonly estimatedTokens?: number;
+      readonly message: ChatMessage;
     };
 
 /**

@@ -104,11 +104,36 @@ function buildAssistantToolIterationSignature(
   return `${textSignature}|${toolSignature}`;
 }
 
+/** Abort reasons that mean the operator stopped the turn. */
+const OPERATOR_ABORT_REASONS: ReadonlySet<string> = new Set([
+  "interrupt",
+  "escape",
+  "sigint",
+]);
+
+const INTERRUPTED_RUNNING_RESULT =
+  "[Interrupted before this call finished. It may have had partial effects. It was not retried.]";
+const INTERRUPTED_PENDING_RESULT =
+  "[Not run: the turn was interrupted before this call started.]";
+
+/**
+ * Guidance is a user message like any other, with one line saying when it
+ * was sent, so the model reads it as a steer on the work in progress rather
+ * than as a new task.
+ */
+export function formatOperatorGuidance(text: string): string {
+  return `[The operator sent this while you were working. Take it into account and continue.]\n\n${text}`;
+}
+
 export class AgentRuntime {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
   private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
   private turnStarted = false;
+  /** What the running turn is doing, for the record of a cancellation. */
+  private turnPhase: "model" | "tool" | undefined;
+  private interruptedToolCallIds: string[] = [];
+  private cancellationReason: unknown;
   private running = false;
   private currentTurnOperationId: string | undefined;
   private currentTurnId: string | undefined;
@@ -244,6 +269,9 @@ export class AgentRuntime {
     this.throwIfAbortCancelled(options?.abortSignal);
     this.running = true;
     this.turnStarted = false;
+    this.turnPhase = undefined;
+    this.interruptedToolCallIds = [];
+    this.cancellationReason = undefined;
     this.currentTurnOperationId = randomUUID();
     try {
       this.emitVisibilityEvent(options, { type: "turn_started" });
@@ -290,10 +318,36 @@ export class AgentRuntime {
         true
       )
         this.contextManager.abandonIncompleteTurn();
-      this.emitVisibilityEvent(options, { type: "turn_cancelled" });
+      this.cancellationReason = options.abortSignal.reason;
+      this.emitVisibilityEvent(options, {
+        type: "turn_cancelled",
+        ...(this.turnPhase ? { phase: this.turnPhase } : {}),
+        ...(this.interruptedToolCallIds.length > 0
+          ? { interruptedToolCallIds: [...this.interruptedToolCallIds] }
+          : {}),
+      });
     } else {
       this.emitVisibilityEvent(options, { type: "turn_failed", error });
     }
+  }
+
+  /** Who stopped the turn. An operator's interrupt is theirs, not the agent's. */
+  private cancellationTracePayload(
+    event: Extract<AgentVisibilityEvent, { type: "turn_cancelled" }>,
+  ): Record<string, unknown> {
+    const reason =
+      typeof this.cancellationReason === "string"
+        ? this.cancellationReason
+        : undefined;
+    return {
+      actor:
+        reason !== undefined && OPERATOR_ABORT_REASONS.has(reason)
+          ? "user"
+          : "application",
+      ...(reason !== undefined ? { reason } : {}),
+      ...(event.phase ? { phase: event.phase } : {}),
+      interruptedToolCallIds: event.interruptedToolCallIds ?? [],
+    };
   }
 
   private emitVisibilityEvent(
@@ -333,7 +387,12 @@ export class AgentRuntime {
         return;
       case "turn_cancelled":
         trace.record(
-          { component: "agent", type: event.type, identity, payload: {} },
+          {
+            component: "agent",
+            type: event.type,
+            identity,
+            payload: this.cancellationTracePayload(event),
+          },
           { durable: true },
         );
         return;
@@ -1162,15 +1221,23 @@ export class AgentRuntime {
     toolExecutionEvents: Array<{ name: string; failed: boolean }>,
   ): Promise<void> {
     this.dependencies.integrations?.onToolBatch?.();
-    for (const toolCall of toolCallsToExecute) {
-      const raw = await this.processToolCall(
-        toolCall,
-        allowedTools,
-        iteration,
-        options,
-        onToken,
-        toolExecutionEvents,
-      );
+    this.turnPhase = "tool";
+    for (const [index, toolCall] of toolCallsToExecute.entries()) {
+      let raw: ArtifactToolResult;
+      try {
+        raw = await this.processToolCall(
+          toolCall,
+          allowedTools,
+          iteration,
+          options,
+          onToken,
+          toolExecutionEvents,
+        );
+      } catch (error) {
+        if (options?.abortSignal?.aborted)
+          this.resolveInterruptedToolCalls(toolCallsToExecute.slice(index));
+        throw error;
+      }
       const completedResult =
         this.dependencies.integrations?.processToolResult?.(raw) ?? raw;
       // Commit each completed result before dispatching the next call. A later
@@ -1178,6 +1245,72 @@ export class AgentRuntime {
       this.contextManager.recordToolResults([completedResult]);
       this.dependencies.integrations?.onToolResultCommitted?.(completedResult);
     }
+  }
+
+  /**
+   * Give every call the interrupt left open a result, so the conversation
+   * stays well-formed and the next request does not invite a replay. The
+   * first call was dispatched or awaiting approval; the rest never started.
+   * Their real results, if any arrive later, are ignored.
+   */
+  private resolveInterruptedToolCalls(unresolved: ChatToolCall[]): void {
+    const results = unresolved.map((toolCall, index): ArtifactToolResult => ({
+      toolCallId: toolCall.id!,
+      toolName: toolCall.function.name,
+      status: "error",
+      rawContent:
+        index === 0 ? INTERRUPTED_RUNNING_RESULT : INTERRUPTED_PENDING_RESULT,
+    }));
+    this.contextManager.recordToolResults(results);
+    for (const result of results) {
+      this.interruptedToolCallIds.push(result.toolCallId);
+      this.dependencies.integrations?.onToolResultCommitted?.(result);
+    }
+  }
+
+  /**
+   * Move waiting operator guidance into the conversation, in order, as user
+   * messages. Called only where every earlier tool call has its result, so
+   * the model reads the guidance before it is asked again.
+   */
+  private deliverGuidance(
+    options: AgentStreamOptions | undefined,
+    nextIteration: number,
+  ): number {
+    const waiting = options?.guidance?.drain() ?? [];
+    for (const message of waiting) {
+      this.contextManager.appendOperatorGuidance(
+        formatOperatorGuidance(message.text),
+      );
+      const trace = this.dependencies.trace;
+      trace?.record(
+        {
+          component: "agent",
+          type: "operator_guidance",
+          identity: {
+            parentOperationId: this.currentTurnOperationId,
+            turnId: this.currentTurnId,
+          },
+          payload: {
+            actor: "user",
+            guidanceId: message.id,
+            iteration: nextIteration,
+            textChars: message.text.length,
+            ...(trace.captureLevel === "full"
+              ? { text: trace.captureMaterial?.(message.text) }
+              : {}),
+          },
+        },
+        { durable: true },
+      );
+      this.emitVisibilityEvent(options, {
+        type: "guidance_delivered",
+        id: message.id,
+        text: message.text,
+        iteration: nextIteration,
+      });
+    }
+    return waiting.length;
   }
 
   private async runToolWithAbort(
@@ -2117,8 +2250,15 @@ export class AgentRuntime {
         options?.maxIterations ?? this.runtimeConfig.maxIterations;
       let emptyToolOnlyStreak = 0;
 
-      while (continueLoop && iterationCount < maxIterations) {
+      while (iterationCount < maxIterations) {
         this.throwIfAbortCancelled(options?.abortSignal);
+        // Guidance that arrived during the last step goes in before the
+        // model is asked again. If it arrived as the model gave its final
+        // answer, the turn continues so the guidance is not left unread.
+        const delivered = this.deliverGuidance(options, iterationCount + 1);
+        if (!continueLoop && delivered === 0) break;
+        continueLoop = true;
+        this.turnPhase = "model";
         iterationCount++;
         const allowedTools = this.selectToolScope(iterationCount);
 

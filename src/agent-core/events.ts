@@ -5,13 +5,21 @@ export type AgentLifecycleEvent =
   | { type: "turn_started" }
   | { type: "assistant_text"; delta: string }
   | { type: "turn_completed"; result: string }
-  | { type: "turn_cancelled" }
+  | {
+      type: "turn_cancelled";
+      /** What the turn was doing when it was cancelled. */
+      phase?: "model" | "tool";
+      /** Calls that were running or not yet started, now recorded as interrupted. */
+      interruptedToolCallIds?: readonly string[];
+    }
   | { type: "turn_failed"; error: unknown };
 
 export type AgentVisibilityEvent =
   | AgentLifecycleEvent
   | { type: "status"; status: string; phase?: string }
   | { type: "thinking_delta"; delta: string }
+  /** Operator guidance entered the conversation before the given request. */
+  | { type: "guidance_delivered"; id: string; text: string; iteration: number }
   | {
       type: "tool_started";
       toolName: string;
@@ -66,7 +74,26 @@ export type AgentToolOptions = AgentEventOptions & {
   readonly abortSignal?: AbortSignal;
 };
 
+/** Something the operator said while a turn was running. */
+export interface GuidanceMessage {
+  /** Chosen by the sender; echoed when the message is delivered. */
+  readonly id: string;
+  readonly text: string;
+}
+
+/**
+ * Where a running turn looks for operator guidance. The caller owns the
+ * queue; the runtime only takes what is waiting, in order, at each point
+ * where the model is about to be asked again.
+ */
+export interface GuidanceSource {
+  /** Remove and return every waiting message, oldest first. */
+  drain(): readonly GuidanceMessage[];
+}
+
 export type AgentStreamOptions = AgentToolOptions & {
+  /** Guidance to deliver between model requests without cancelling the turn. */
+  readonly guidance?: GuidanceSource;
   readonly extraUserInstruction?: string;
   readonly maxIterations?: number;
 };

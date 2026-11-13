@@ -86,6 +86,29 @@ describe("persistence", () => {
       expect(lastTurn.entries).toHaveLength(2);
     });
 
+    it("should round-trip operator guidance inside its turn", () => {
+      const manager = buildPopulatedManager();
+      manager.beginUserTurn("Still working");
+      manager.commitAssistantResponse("Let me check", [
+        { id: "tc-g", function: { name: "search", arguments: { q: "test" } } },
+      ]);
+      manager.recordToolResults([toolResult("tc-g", "search", "results")]);
+      manager.appendOperatorGuidance("Only recent results.");
+
+      const restored = roundTrip(manager);
+
+      const lastTurn = restored.turns[2];
+      expect(lastTurn.entries.map((entry) => entry.kind)).toEqual([
+        "assistant",
+        "tool",
+        "guidance",
+      ]);
+      expect(lastTurn.entries[2].message).toEqual({
+        role: "user",
+        content: "Only recent results.",
+      });
+    });
+
     it("should round-trip rolling summary", () => {
       const manager = buildPopulatedManager();
       const state = manager.getConversationState();
@@ -761,6 +784,20 @@ describe("persistence", () => {
       expect(() => parseSession(json)).toThrow(SessionParseError);
       expect(() => parseSession(json)).toThrow(matcher as any);
     }
+    it("should reject a guidance entry whose message is not from the user", () => {
+      const manager = new ContextManager();
+      manager.beginUserTurn("Task");
+      manager.appendOperatorGuidance("Steer");
+      const document = JSON.parse(
+        serializeSession(manager.getConversationState(), TEST_METADATA),
+      );
+      document.context.turns[0].entries[0].message.role = "assistant";
+      expectParseError(
+        JSON.stringify(document),
+        'has kind "guidance" but message.role is "assistant"; expected "user"',
+      );
+    });
+
     it("should reject non-JSON input", () => {
       expect(() => parseSession("not json at all")).toThrow(SessionParseError);
       expect(() => parseSession("not json at all")).toThrow("Invalid JSON");
