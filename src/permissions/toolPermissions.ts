@@ -12,7 +12,9 @@ import {
   type PermissionMode,
   type PermissionStore,
   type PolicyDecision,
+  type PolicyDescription,
   type PolicyRequest,
+  type RuleEffect,
   type ToolMetadata,
 } from "../policy/index.js";
 import {
@@ -42,6 +44,23 @@ export interface ToolPermissionsOptions {
   readonly approvalChannel?: ApprovalChannel;
   /** Deprecated `PROPIO_ALLOW_GLOBAL_INSTALLS=1`: classified installs run unasked. */
   readonly allowGlobalInstallsWithoutPrompt?: boolean;
+  /** Called after the preset, mode, rules, or session grants are edited. */
+  readonly onChange?: () => void;
+}
+
+/** The outcome of the most recent call that reached the rules. */
+export interface LastPermissionDecision {
+  readonly toolName: string;
+  readonly allowed: boolean;
+  readonly rule: string;
+  readonly actor: AgentToolPolicyDecision["actor"];
+  readonly reason?: string;
+}
+
+/** Everything `/permissions` shows. */
+export interface PermissionsOverview extends PolicyDescription {
+  readonly sessionGrants: readonly string[];
+  readonly lastDecision?: LastPermissionDecision;
 }
 
 export interface ToolAuthorizationInput {
@@ -88,6 +107,14 @@ function denied(
   };
 }
 
+/** Names the narrowest rule that would allow the call, when there is one. */
+function nonInteractiveRuleHint(request: ApprovalRequest): string {
+  const grant = request.suggestions[0]?.rule;
+  return grant
+    ? `add ${JSON.stringify(grant)} to permissions.allow in ~/.propio/settings.json, `
+    : "";
+}
+
 /**
  * Puts the policy engine in front of tool dispatch for one agent. It owns
  * what policy must not know: how tool arguments become a target, the
@@ -104,6 +131,7 @@ export class ToolPermissions {
   private engine?: PolicyEngine;
   /** Grants restored before the engine finished loading. */
   private restoredGrants?: readonly string[];
+  private lastDecision?: LastPermissionDecision;
 
   constructor(options: ToolPermissionsOptions = {}) {
     this.options = options;
@@ -145,7 +173,62 @@ export class ToolPermissions {
     else this.restoredGrants = [...ruleTexts];
   }
 
+  /** The preset, mode, rules by source, session grants, and last decision. */
+  async overview(): Promise<PermissionsOverview> {
+    const engine = await this.loadEngine();
+    return {
+      ...engine.describe(),
+      sessionGrants: engine.listSessionGrants(),
+      ...(this.lastDecision ? { lastDecision: this.lastDecision } : {}),
+    };
+  }
+
+  /** Store a rule for the owner, moving it out of the other lists. */
+  async addRule(effect: RuleEffect, ruleText: string): Promise<void> {
+    await (await this.loadEngine()).addRule(effect, ruleText);
+    this.options.onChange?.();
+  }
+
+  /** Remove a stored rule from whichever list holds it. */
+  async removeRule(ruleText: string): Promise<boolean> {
+    const removed = await (await this.loadEngine()).removeRule(ruleText);
+    if (removed) this.options.onChange?.();
+    return removed;
+  }
+
+  async revokeSessionGrant(ruleText: string): Promise<boolean> {
+    const revoked = (await this.loadEngine()).revokeSessionGrant(ruleText);
+    if (revoked) this.options.onChange?.();
+    return revoked;
+  }
+
+  /** Select a preset for this session; the stored preset is left alone. */
+  async setPreset(name: string): Promise<void> {
+    await (await this.loadEngine()).setPreset(name);
+    this.options.onChange?.();
+  }
+
+  /** Override the preset's mode for this session. */
+  async setMode(mode: PermissionMode): Promise<void> {
+    (await this.loadEngine()).setMode(mode);
+    this.options.onChange?.();
+  }
+
   async authorize(
+    input: ToolAuthorizationInput,
+  ): Promise<AgentToolPolicyDecision> {
+    const decision = await this.decide(input);
+    this.lastDecision = {
+      toolName: input.name,
+      allowed: decision.allowed,
+      rule: decision.rule,
+      actor: decision.actor,
+      ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+    };
+    return decision;
+  }
+
+  private async decide(
     input: ToolAuthorizationInput,
   ): Promise<AgentToolPolicyDecision> {
     const engine = await this.loadEngine();
@@ -258,8 +341,10 @@ export class ToolPermissions {
           rule: NON_INTERACTIVE_RULE,
           reason:
             `approval required (${request.reason}); not available in non-interactive mode. ` +
-            "Run interactively to approve it, or start with --permissions accept-edits " +
-            "(workspace edits) or --permissions bypass (every call).",
+            "Run interactively to approve it, " +
+            nonInteractiveRuleHint(request) +
+            "or start with --permissions accept-edits (workspace edits) or " +
+            "--permissions bypass (every call).",
           actor: "application",
           source: "mode",
         },

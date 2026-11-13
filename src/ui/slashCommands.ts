@@ -17,6 +17,18 @@ export interface FooterVisibilityOptions {
   readonly showToolCalls: boolean;
   readonly showThinking: boolean;
   readonly agentMode?: "execute" | "plan" | "discover";
+  /** Shown when it is not the default, and loudly for bypass. */
+  readonly permissionMode?: string;
+}
+
+/** Nothing for `ask`; bypass is never left unlabeled. */
+function permissionFooterLabel(
+  visibility: boolean | FooterVisibilityOptions,
+): string {
+  const mode =
+    typeof visibility === "boolean" ? undefined : visibility.permissionMode;
+  if (mode === undefined || mode === "ask") return "";
+  return ` | permissions: ${mode === "bypass" ? "BYPASS" : mode}`;
 }
 
 export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
@@ -107,6 +119,35 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
   {
     name: "Tools",
     commands: [{ command: "/tools", description: "manage enabled tools" }],
+  },
+  {
+    name: "Permissions",
+    commands: [
+      {
+        command: "/permissions",
+        description: "show rules, session grants, and the last decision",
+      },
+      {
+        command: "/permissions allow <rule>",
+        description: "save an allow rule (also: ask, deny)",
+      },
+      {
+        command: "/permissions remove <rule>",
+        description: "remove a saved rule",
+      },
+      {
+        command: "/permissions revoke <grant>",
+        description: "revoke a session grant",
+      },
+      {
+        command: "/permissions preset <name>",
+        description: "use a preset for this session",
+      },
+      {
+        command: "/permissions mode <name>",
+        description: "set the permission mode for this session",
+      },
+    ],
   },
   {
     name: "MCP",
@@ -210,7 +251,7 @@ export function getIdleFooterText(
 
   return `Enter to send | ? help | mode: ${modeLabel} | tools: ${
     showToolCalls ? "shown" : "hidden"
-  } | thinking: ${showThinking ? "shown" : "hidden"}`;
+  } | thinking: ${showThinking ? "shown" : "hidden"}${permissionFooterLabel(visibility)}`;
 }
 
 export function getBashFooterText(
@@ -233,7 +274,7 @@ export function getBashFooterText(
 
   return `Enter to run | mode: ${modeLabel} | tools: ${
     showToolCalls ? "shown" : "hidden"
-  } | thinking: ${showThinking ? "shown" : "hidden"}`;
+  } | thinking: ${showThinking ? "shown" : "hidden"}${permissionFooterLabel(visibility)}`;
 }
 
 export function isHelpCommand(input: string): boolean {

@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { streamAssistantTurn } from "../ui/assistantTurnRenderer.js";
-import { createConfirmApprovalChannel } from "../ui/approvalPrompt.js";
+import {
+  createApprovalPromptChannel,
+  createTerminalApprovalIo,
+} from "../ui/approvalPrompt.js";
 import { createPlainSubmission } from "../ui/input/promptSubmission.js";
 import { TerminalUi } from "../ui/terminal.js";
 import { createTtyTestStream } from "../ui/__tests__/ttyTestStream.js";
@@ -42,15 +45,19 @@ describe("a turn that asks about a disguised command", () => {
       const stderr = createTtyTestStream();
       const ui = new TerminalUi({ ...mode, json: false, stdout, stderr });
       const questions: string[] = [];
+      const terminalIo = createTerminalApprovalIo(ui, process.stdin);
       const agent = createTestAgent(
         new ToolCallMockProvider("bash", { command: DISGUISED }),
         {
           permissions: {
-            approvalChannel: createConfirmApprovalChannel(async (text) => {
-              // As the CLI does: the question is written to the terminal.
-              questions.push(text);
-              ui.getPromptOutputStream().write(ui.prompt(text));
-              return false;
+            // The CLI's own prompt, with the operator's line supplied.
+            approvalChannel: createApprovalPromptChannel({
+              show: (lines) => terminalIo.show(lines),
+              readLine: async (text) => {
+                questions.push(text);
+                ui.getPromptOutputStream().write(ui.prompt(text));
+                return "n";
+              },
             }),
           },
         },

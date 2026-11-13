@@ -299,6 +299,10 @@ describe("without an approval channel (a8)", () => {
     });
     expect(decision.reason).toContain("not available in non-interactive mode");
     expect(decision.reason).toContain("--permissions");
+    // It names the narrowest rule that would allow the call, and where it goes.
+    expect(decision.reason).toContain(
+      'add "bash(npm test)" to permissions.allow in ~/.propio/settings.json',
+    );
   });
 
   it("still runs what needs no approval, and what a rule allows", async () => {
@@ -865,5 +869,110 @@ describe("an approval answered by another process (a11)", () => {
     expect(decision.reason).toBe(
       `Permission denied for write: child ${channel.pid} refused write`,
     );
+  });
+});
+
+describe("what /permissions reads and edits", () => {
+  it("reports the preset, mode, rules by source, grants, and the last decision", async () => {
+    const policy = permissions(
+      { preset: "read-only" },
+      { allow: ["read(/etc/hosts)"], deny: ["bash(git push:*)"] },
+    );
+    policy.restoreSessionGrants(["grep"]);
+    expect((await policy.overview()).lastDecision).toBeUndefined();
+
+    await policy.authorize(call.bash("git push origin"));
+
+    expect(await policy.overview()).toEqual({
+      preset: "read-only",
+      mode: "ask",
+      rules: expect.arrayContaining([
+        { effect: "deny", rule: "capability:process", source: "preset" },
+        { effect: "deny", rule: "bash(git push:*)", source: "user" },
+        { effect: "allow", rule: "read(/etc/hosts)", source: "user" },
+        { effect: "allow", rule: "grep", source: "session" },
+      ]),
+      sessionGrants: ["grep"],
+      lastDecision: {
+        toolName: "bash",
+        allowed: false,
+        rule: "capability:process",
+        actor: "application",
+        reason: expect.stringContaining("Permission denied for bash"),
+      },
+    });
+  });
+
+  it("records an operator's answer as the last decision", async () => {
+    const policy = permissions({
+      approvalChannel: scriptedChannel("allow_once"),
+    });
+
+    await policy.authorize(call.write());
+
+    expect((await policy.overview()).lastDecision).toMatchObject({
+      toolName: "write",
+      allowed: true,
+      rule: "approval:allow_once",
+      actor: "user",
+    });
+  });
+
+  it("applies rule edits at once and stores them", async () => {
+    const store = new InMemoryPermissionStore();
+    const policy = permissions({ store });
+
+    await policy.addRule("allow", "bash(npm test)");
+    expect((await policy.authorize(call.bash())).allowed).toBe(true);
+    await policy.addRule("deny", "bash(npm test)");
+    expect((await policy.authorize(call.bash())).allowed).toBe(false);
+    expect(await store.load(LOCAL_PERMISSION_OWNER)).toEqual({
+      allow: [],
+      ask: [],
+      deny: ["bash(npm test)"],
+    });
+    expect(await policy.removeRule("bash(npm test)")).toBe(true);
+    expect(await policy.removeRule("bash(npm test)")).toBe(false);
+  });
+
+  it("changes the preset and mode for this instance only", async () => {
+    const store = new InMemoryPermissionStore();
+    const policy = permissions({ store });
+
+    await policy.setPreset("bypass");
+    expect((await policy.authorize(call.bash())).rule).toBe("mode:bypass");
+    await policy.setPreset("ask");
+    await policy.setMode("accept-edits");
+    expect((await policy.authorize(call.write())).rule).toBe(
+      "mode:accept-edits",
+    );
+    expect(await store.load(LOCAL_PERMISSION_OWNER)).not.toHaveProperty(
+      "preset",
+    );
+    await expect(policy.setPreset("everything")).rejects.toThrow(
+      /Unknown permission preset/,
+    );
+  });
+
+  it("reports each effective edit, and nothing for one that changed nothing", async () => {
+    let changes = 0;
+    const policy = permissions({
+      onChange: () => {
+        changes += 1;
+      },
+    });
+    policy.restoreSessionGrants(["bash"]);
+
+    await policy.addRule("ask", "bash(git:*)");
+    await policy.removeRule("bash(git:*)");
+    await policy.revokeSessionGrant("bash");
+    await policy.setPreset("accept-edits");
+    await policy.setMode("ask");
+    expect(changes).toBe(5);
+
+    await policy.removeRule("bash(git:*)");
+    await policy.revokeSessionGrant("bash");
+    await expect(policy.addRule("allow", "bash(")).rejects.toThrow();
+    expect(changes).toBe(5);
   });
 });

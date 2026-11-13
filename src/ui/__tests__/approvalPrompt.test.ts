@@ -1,9 +1,15 @@
 import { getEventListeners } from "events";
 import { PassThrough } from "stream";
-import type { ApprovalRequest } from "../../policy/index.js";
+import type {
+  ApprovalAnswer,
+  ApprovalRequest,
+  GrantSuggestion,
+} from "../../policy/index.js";
 import {
-  createConfirmApprovalChannel,
-  formatApprovalPrompt,
+  askOperator,
+  createApprovalPromptChannel,
+  formatApprovalRequest,
+  type ApprovalPromptIo,
 } from "../approvalPrompt.js";
 import { visibleText } from "../visibleText.js";
 import { createPromptComposer } from "../promptComposer.js";
@@ -19,17 +25,16 @@ const base: ApprovalRequest = {
   suggestions: [],
 };
 
-describe("formatApprovalPrompt", () => {
+const formatApprovalPrompt = (request: ApprovalRequest): string =>
+  formatApprovalRequest(request).join("\n");
+
+describe("formatApprovalRequest", () => {
   it("shows the command and why it asks", () => {
-    expect(formatApprovalPrompt(base)).toBe(
-      [
-        "bash needs approval.",
-        "Command: npm test",
-        "Reason: Calls with the process capability need approval in ask mode",
-        "",
-        "Allow this call? (y/N) ",
-      ].join("\n"),
-    );
+    expect(formatApprovalRequest(base)).toEqual([
+      "bash needs approval.",
+      "Command: npm test",
+      "Reason: Calls with the process capability need approval in ask mode",
+    ]);
   });
 
   it("shows where a command runs and what environment it sets", () => {
@@ -145,28 +150,181 @@ describe("untrusted fields in the prompt", () => {
   });
 });
 
-describe("createConfirmApprovalChannel", () => {
-  it("answers allow once for yes and deny for anything else", async () => {
-    const yes = createConfirmApprovalChannel(async () => true);
-    const no = createConfirmApprovalChannel(async () => false);
+const SUGGESTIONS: GrantSuggestion[] = [
+  { rule: "bash(npm test)", scope: "exact", description: "this exact command" },
+  { rule: "bash", scope: "tool", description: "every call to bash" },
+  {
+    rule: "capability:process",
+    scope: "capability",
+    description: "every call with the process capability",
+  },
+];
+const withGrants: ApprovalRequest = { ...base, suggestions: SUGGESTIONS };
 
-    expect(await yes.request(base)).toEqual({
+/** An operator who types the given lines; null withdraws the question. */
+function scriptedIo(lines: Array<string | null>): ApprovalPromptIo & {
+  shown: string[];
+  asked: string[];
+} {
+  const shown: string[] = [];
+  const asked: string[] = [];
+  return {
+    shown,
+    asked,
+    show: (text) => shown.push(...text),
+    readLine: async (promptText) => {
+      asked.push(promptText);
+      if (lines.length === 0) throw new Error("asked more than scripted");
+      return lines.shift() as string | null;
+    },
+  };
+}
+
+async function answerTo(
+  lines: Array<string | null>,
+  request: ApprovalRequest = withGrants,
+): Promise<{ answer: ApprovalAnswer; io: ReturnType<typeof scriptedIo> }> {
+  const io = scriptedIo(lines);
+  return { answer: await askOperator(request, io), io };
+}
+
+describe("askOperator", () => {
+  it("shows the request and the choices before asking", async () => {
+    const { io } = await answerTo(["y"]);
+
+    expect(io.shown).toEqual([
+      "bash needs approval.",
+      "Command: npm test",
+      "Reason: Calls with the process capability need approval in ask mode",
+      "",
+      "  y  allow once",
+      "  s  allow for this session",
+      "  a  always allow (saved to your settings)",
+      '  n  deny; a reason for the model may follow, as in "n use staging"',
+    ]);
+    expect(io.asked).toEqual(["Allow? [y/s/a/N] "]);
+  });
+
+  it.each(["y", "Y", "yes", "  yes  "])("allows once for %j", async (line) => {
+    expect((await answerTo([line])).answer).toEqual({
       requestId: "approval-1",
       decision: "allow_once",
     });
-    expect(await no.request(base)).toEqual({
+  });
+
+  it.each(["", "n", "N", "no", "deny", "  "])("denies for %j", async (line) => {
+    expect((await answerTo([line])).answer).toEqual({
       requestId: "approval-1",
       decision: "deny",
     });
   });
 
-  it("puts the formatted request and the turn's signal to the prompt", async () => {
-    const confirm = jest.fn(async () => false);
+  it("denies when the question is withdrawn, at either step", async () => {
+    expect((await answerTo([null])).answer.decision).toBe("deny");
+    expect((await answerTo(["s", null])).answer.decision).toBe("deny");
+  });
+
+  it("passes on a reason for the model", async () => {
+    expect((await answerTo(["n use the  staging database"])).answer).toEqual({
+      requestId: "approval-1",
+      decision: "deny",
+      reason: "use the staging database",
+    });
+  });
+
+  it.each([
+    ["s", "allow_session", "for this session"],
+    ["session", "allow_session", "for this session"],
+    ["a", "allow_always", "always"],
+    ["always", "allow_always", "always"],
+  ] as const)(
+    "for %j lists the grants and answers %s with the one chosen",
+    async (line, decision, scope) => {
+      const { answer, io } = await answerTo([line, "2"]);
+
+      expect(answer).toEqual({
+        requestId: "approval-1",
+        decision,
+        rule: "bash",
+      });
+      expect(io.shown.slice(-4)).toEqual([
+        `Allow ${scope}:`,
+        "  1. this exact command  [bash(npm test)]",
+        "  2. every call to bash  [bash]",
+        "  3. every call with the process capability  [capability:process]",
+      ]);
+      expect(io.asked.at(-1)).toBe("Which? [1-3, Enter to go back] ");
+    },
+  );
+
+  it("asks again for a grant number that is not offered", async () => {
+    const { answer, io } = await answerTo(["s", "0", "4", "two", "1"]);
+
+    expect(answer).toMatchObject({ rule: "bash(npm test)" });
+    expect(
+      io.shown.filter((line) => line === "Enter a number from 1 to 3."),
+    ).toHaveLength(3);
+  });
+
+  it("goes back to the choices on an empty grant, granting nothing", async () => {
+    const { answer, io } = await answerTo(["a", "", "n"]);
+
+    expect(answer).toEqual({ requestId: "approval-1", decision: "deny" });
+    expect(io.asked).toEqual([
+      "Allow? [y/s/a/N] ",
+      "Which? [1-3, Enter to go back] ",
+      "Allow? [y/s/a/N] ",
+    ]);
+  });
+
+  it("asks again for anything it does not understand, never allowing by default", async () => {
+    const { answer, io } = await answerTo(["maybe", "ok", "sure", "y"]);
+
+    expect(answer.decision).toBe("allow_once");
+    expect(
+      io.shown.filter((line) => line === "Enter y, s, a, or n."),
+    ).toHaveLength(3);
+  });
+
+  it("offers no grants when none covers the call", async () => {
+    const { answer, io } = await answerTo(["s", "y"], base);
+
+    expect(io.shown).not.toContain("  s  allow for this session");
+    expect(io.shown).toContain(
+      "No grant covers this call; allow it once or deny it.",
+    );
+    expect(answer.decision).toBe("allow_once");
+  });
+
+  it("shows a grant made from the command with its control characters escaped, and answers with the real rule", async () => {
+    const rule = "bash(echo \x1b[2Khidden)";
+    const { answer, io } = await answerTo(["s", "1"], {
+      ...base,
+      suggestions: [
+        { rule, scope: "exact", description: "this exact command" },
+      ],
+    });
+
+    expect(io.shown).toContain(
+      "  1. this exact command  [bash(echo \\x1b[2Khidden)]",
+    );
+    expect(answer).toMatchObject({ rule });
+  });
+
+  it("hands the turn's signal to every question", async () => {
     const signal = new AbortController().signal;
+    const signals: Array<AbortSignal | undefined> = [];
+    const io: ApprovalPromptIo = {
+      show: () => {},
+      readLine: async (_text, received) => {
+        signals.push(received);
+        return signals.length === 1 ? "s" : "1";
+      },
+    };
 
-    await createConfirmApprovalChannel(confirm).request(base, signal);
+    await createApprovalPromptChannel(io).request(withGrants, signal);
 
-    expect(confirm).toHaveBeenCalledWith(formatApprovalPrompt(base), signal);
+    expect(signals).toEqual([signal, signal]);
   });
 });
 
