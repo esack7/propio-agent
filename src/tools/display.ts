@@ -15,7 +15,6 @@ export interface ToolDisplay<Body extends ToolDisplayBody = ToolDisplayBody> {
   readonly body: Body;
   /** Why the call failed, when it did. */
   readonly error?: string;
-  readonly fullOutputPath?: string;
 }
 
 export type ToolDisplayBody =

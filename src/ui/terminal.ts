@@ -346,6 +346,23 @@ export class TerminalUi {
       this.lastExpandableCall = structuredClone(view);
   }
 
+  removeRunningToolCall(id: string): void {
+    const view = this.retainedStore?.getState().toolCallDisplays.get(id);
+    if (view)
+      this.retainedStore?.upsertToolCallDisplay({ ...view, status: "success" });
+  }
+
+  clearRunningToolCalls(): void {
+    for (const id of this.retainedStore?.getState().toolCallDisplays.keys() ??
+      [])
+      this.removeRunningToolCall(id);
+  }
+
+  clearToolCallHistory(): void {
+    this.clearRunningToolCalls();
+    this.lastExpandableCall = null;
+  }
+
   expandLastToolCall(): void {
     if (this.json) return;
     const view = this.lastExpandableCall;
@@ -357,13 +374,10 @@ export class TerminalUi {
       1,
       (this.writer.getStderrStream().columns ?? 80) - 1,
     );
-    const display = view.fullOutputPath
-      ? { ...view.display, fullOutputPath: view.fullOutputPath }
-      : view.display;
     this.appendTranscriptEntry({
       kind: "tool_display",
       text: renderToolDisplay(
-        display,
+        view.display,
         { ...view, color: this.interactive && !this.plain },
         width,
         "expanded",

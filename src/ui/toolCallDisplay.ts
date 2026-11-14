@@ -4,5 +4,4 @@ export interface ToolCallDisplay extends DisplayState {
   readonly id: string;
   readonly toolName: string;
   readonly display: ToolDisplay;
-  readonly fullOutputPath?: string;
 }

@@ -165,3 +165,18 @@ describe("handleInteractiveSubmission chat path", () => {
     );
   });
 });
+
+it("clears tool expansion history through /clear", async () => {
+  const { agent } = createCapturingAgent();
+  agent.clearContext = jest.fn();
+  const ui = createInteractiveUi();
+  const reset = jest.spyOn(ui, "clearToolCallHistory");
+  await runInteractiveSubmission(
+    createPlainSubmission("/clear", "prompt"),
+    agent,
+    ui,
+  );
+  expect(agent.clearContext).toHaveBeenCalledTimes(1);
+  expect(reset).toHaveBeenCalledTimes(1);
+  ui.cleanup();
+});

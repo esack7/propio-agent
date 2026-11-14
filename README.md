@@ -1661,9 +1661,9 @@ incompatible changes require explicit migration notes.
   Opaque provider continuation is retained in context, never included in thinking
   or token events. Consumers should treat context and prompt snapshots as private.
 - Tool result events carry raw result text, arguments and execution status so
-  consumers can choose their own rendering. Compatibility preview fields are plain
-  text; `useLabel` is null. The CLI adds its existing tool labels and formatting,
-  excludes runtime-only lifecycle events, and preserves its original event shapes.
+  consumers can choose their own rendering. Tool events carry structured `display` payloads and completion `durationMs`;
+  the CLI renders those payloads locally and excludes runtime-only lifecycle
+  events. The provisional label and preview fields have been removed.
 - Supply a `ToolRegistry` or another `AgentToolExecutor`. The context implements
   the explicit `AgentContextStore` contract; `ConversationManager` satisfies it.
   Prefer `policy.resolveToolScope()` to select an allowlist plus immutable policy

@@ -260,3 +260,92 @@ it("colors added and removed diff lines only when color is requested", () => {
     ).join("\n"),
   ).not.toContain("\x1b");
 });
+
+it("preserves long diff operation markers and colors when collapsed", () => {
+  const display: ToolDisplay = {
+    title: "edit",
+    body: {
+      kind: "diff",
+      path: "a",
+      operation: "replace",
+      added: 1,
+      removed: 1,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          newStart: 1,
+          lines: [
+            { op: "+", text: "界".repeat(100) },
+            { op: "-", text: "old".repeat(100) },
+          ],
+        },
+      ],
+    },
+  };
+  const lines = renderToolDisplay(
+    display,
+    { status: "success", color: true },
+    40,
+    "collapsed",
+  );
+  expect(lines[2]).toContain("\x1b[32m  │ + ");
+  expect(lines[3]).toContain("\x1b[31m  │ - ");
+  expect(lines.every((line) => getDisplayWidth(line) <= 40)).toBe(true);
+  expect(lines).toMatchSnapshot();
+});
+it.each([{ stale: true }, { unavailable: "not read" }])(
+  "omits meaningless diff counts: %j",
+  (flag) => {
+    expect(
+      renderToolDisplay(
+        {
+          title: "edit",
+          body: {
+            kind: "diff",
+            path: "a",
+            operation: "replace",
+            added: 5,
+            removed: 3,
+            hunks: [],
+            truncated: false,
+            ...flag,
+          },
+        },
+        { status: "success" },
+        80,
+        "collapsed",
+      )[0],
+    ).toBe("✓ edit");
+  },
+);
+it.each([
+  ["content", 0, "No matches"],
+  ["content", 1, "1 match in 1 file"],
+  ["files", 0, "No files found"],
+  ["files", 1, "Found 1 file"],
+  ["list", 0, "Empty directory"],
+  ["list", 1, "1 item"],
+] as const)(
+  "uses the right search wording for %s %s",
+  (mode, matches, expected) => {
+    expect(
+      renderToolDisplay(
+        { title: "search", body: { kind: "search", mode, matches, files: 1 } },
+        { status: "success" },
+        80,
+        "collapsed",
+      )[0],
+    ).toContain(expected);
+  },
+);
+it("uses singular line wording", () => {
+  expect(
+    renderToolDisplay(
+      { title: "read", body: { kind: "file_read", path: "a", lines: 1 } },
+      { status: "success" },
+      80,
+      "collapsed",
+    )[0],
+  ).toContain("1 line");
+});

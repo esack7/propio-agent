@@ -2,6 +2,7 @@ import type { ToolDisplay, ToolDisplayBody } from "../../tools/display.js";
 import {
   getDisplayWidth,
   keepEndWithinDisplayWidth,
+  keepStartWithinDisplayWidth,
   wrapVisibleText,
 } from "../displayWidth.js";
 import { visibleText } from "../visibleText.js";
@@ -10,6 +11,7 @@ export interface DisplayState {
   status: "running" | "success" | "error";
   durationMs?: number;
   color?: boolean;
+  readonly fullOutputPath?: string;
 }
 export type DisplayMode = "collapsed" | "expanded";
 interface Lines {
@@ -31,7 +33,13 @@ function diff(body: Extract<ToolDisplayBody, { kind: "diff" }>): Lines {
               : [text];
           }),
         ]);
-  return { summary: `+${body.added} −${body.removed}`, details };
+  return {
+    summary:
+      body.stale || body.unavailable !== undefined
+        ? ""
+        : `+${body.added} −${body.removed}`,
+    details,
+  };
 }
 function command(body: Extract<ToolDisplayBody, { kind: "command" }>): Lines {
   const details = [
@@ -53,7 +61,7 @@ function fileRead(
   body: Extract<ToolDisplayBody, { kind: "file_read" }>,
 ): Lines {
   return {
-    summary: body.lines === undefined ? "" : `${body.lines} lines`,
+    summary: body.lines === undefined ? "" : plural(body.lines, "line"),
     details: [
       `path: ${visibleText(body.path)}`,
       ...(body.range
@@ -64,14 +72,30 @@ function fileRead(
     ],
   };
 }
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : noun === "match" ? "es" : "s"}`;
+}
+function searchSummary(
+  body: Extract<ToolDisplayBody, { kind: "search" }>,
+): string {
+  if (body.matches === undefined) return "";
+  if (body.mode === "list")
+    return body.matches === 0
+      ? "Empty directory"
+      : plural(body.matches, "item");
+  if (body.mode === "files")
+    return body.matches === 0
+      ? "No files found"
+      : `Found ${plural(body.matches, "file")}`;
+  if (body.matches === 0) return "No matches";
+  return (
+    plural(body.matches, "match") +
+    (body.files === undefined ? "" : ` in ${plural(body.files, "file")}`)
+  );
+}
 function search(body: Extract<ToolDisplayBody, { kind: "search" }>): Lines {
   return {
-    summary: [
-      body.matches === undefined ? "" : `${body.matches} matches`,
-      body.files === undefined ? "" : `${body.files} files`,
-    ]
-      .filter(Boolean)
-      .join(" in "),
+    summary: searchSummary(body),
     details: [
       ...(body.pattern === undefined
         ? []
@@ -131,8 +155,8 @@ export function renderToolDisplay(
       : [visibleText(display.title), body.summary].filter(Boolean).join(" · ");
   const header = `${status} ${title}${timing}`;
   const details = [
-    ...(display.fullOutputPath
-      ? [`Full output: ${visibleText(display.fullOutputPath)}`]
+    ...(mode === "expanded" && state.fullOutputPath
+      ? [`Full output: ${visibleText(state.fullOutputPath)}`]
       : []),
     ...(display.error
       ? [
@@ -173,7 +197,12 @@ function fitLines(
     if (columns <= getDisplayWidth(prefix)) return [prefix.slice(0, columns)];
     const room = columns - getDisplayWidth(prefix);
     if (mode === "collapsed")
-      return [prefix + keepEndWithinDisplayWidth(content, room)];
+      return [
+        prefix +
+          (line.startsWith("  │ ")
+            ? keepStartWithinDisplayWidth(content, room)
+            : keepEndWithinDisplayWidth(content, room)),
+      ];
     return wrapVisibleText(content, room).map((chunk) => prefix + chunk);
   });
 }

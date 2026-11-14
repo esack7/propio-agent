@@ -211,6 +211,7 @@ export async function streamAssistantTurn(
       if (event.type === "tool_started") {
         startHiddenToolStatus();
       } else {
+        ui.removeRunningToolCall(event.toolCallId);
         finishHiddenToolStatus();
       }
       return;
@@ -306,6 +307,7 @@ export async function streamAssistantTurn(
       },
     );
   } finally {
+    ui.clearRunningToolCalls();
     clearThinkingStatusForAnswer();
     clearHiddenToolStatus();
     if (thinkingFlushTimerId) {

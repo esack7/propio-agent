@@ -145,3 +145,67 @@ it("clears the prior running row before appending a completed result", () => {
   expect(output.indexOf("\x1b[1A")).toBeLessThan(output.indexOf("Reading"));
   ui.cleanup();
 });
+
+it.each(["toggle", "throw", "abort"])(
+  "removes running displays after %s",
+  async (scenario) => {
+    const { ui } = harness();
+    const store = (ui as unknown as { retainedStore: ReplUiStore })
+      .retainedStore;
+    const visibility = {
+      showThinking: false,
+      showToolCalls: true,
+      showStatus: false,
+      showReasoningSummary: false,
+      showContextStats: false,
+      showPromptPlan: false,
+    };
+    const controller = new AbortController();
+    const run = streamAssistantTurn(
+      {
+        streamChat: async (_input, _token, options) => {
+          options?.onEvent?.({
+            type: "tool_started",
+            toolCallId: "a",
+            toolName: "bash",
+            display: call.display,
+            args: {},
+            argumentChars: 0,
+          });
+          expect(store.getState().toolCallDisplays.size).toBe(1);
+          if (scenario === "toggle") {
+            visibility.showToolCalls = false;
+            options?.onEvent?.({
+              type: "tool_finished",
+              toolCallId: "a",
+              toolName: "bash",
+              display: call.display,
+              durationMs: 1,
+            });
+            expect(store.getState().toolCallDisplays.size).toBe(0);
+          } else if (scenario === "throw") throw new Error("failed turn");
+          else controller.abort();
+          return "done";
+        },
+        getLastTurnReasoningSummary: () => null,
+        getConversationState: jest.fn(),
+      },
+      { text: "test" },
+      ui,
+      controller.signal,
+      () => visibility,
+    );
+    if (scenario === "throw") await expect(run).rejects.toThrow("failed turn");
+    else await run;
+    expect(store.getState().toolCallDisplays.size).toBe(0);
+    ui.cleanup();
+  },
+);
+it("resets expansion history when clearing the conversation", () => {
+  const { ui, stderr } = harness(true);
+  ui.renderToolCall(call);
+  ui.clearToolCallHistory();
+  stderr.chunks.length = 0;
+  ui.expandLastToolCall();
+  expect(stderr.chunks.join("")).toContain("No tool result to expand");
+});

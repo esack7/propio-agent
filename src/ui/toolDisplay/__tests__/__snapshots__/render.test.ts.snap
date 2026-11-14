@@ -1,5 +1,14 @@
 // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
+exports[`preserves long diff operation markers and colors when collapsed 1`] = `
+[
+  "✓ edit · +1 −1",
+  "  │ @@ -1 +1 @@",
+  "[32m  │ + 界界界界界界界界界界界界界界界界…[0m",
+  "[31m  │ - oldoldoldoldoldoldoldoldoldoldold…[0m",
+]
+`;
+
 exports[`tool display rendering command error 40 collapsed 1`] = `
 [
   "✗ $ npm test · exit 0 · 12.4s",
