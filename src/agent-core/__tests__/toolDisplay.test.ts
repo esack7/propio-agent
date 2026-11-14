@@ -374,6 +374,34 @@ describe("display payloads on tool events (a8)", () => {
     expect(toolEvents()[0].display).toEqual(GENERIC_BEFORE);
   });
 
+  it("counts a hook's work before its first await against the budget", async () => {
+    let calledAt = 0;
+    let executedAt = 0;
+    const { run, toolEvents } = setup(
+      {
+        describeToolCall: () => {
+          calledAt = performance.now();
+          const until = calledAt + 200;
+          while (performance.now() < until) {
+            // Synchronous setup, then a description that never arrives.
+          }
+          return new Promise<ToolDisplay>(() => {});
+        },
+      },
+      async () => {
+        executedAt = performance.now();
+        return { status: "success", content: "ok" };
+      },
+    );
+    await run();
+
+    expect(toolEvents()[0].display).toEqual(GENERIC_BEFORE);
+    // The whole budget is 250 ms from the call; a fresh 250 ms timer after
+    // the 200 ms of setup would hold the tool for about 450 ms.
+    expect(executedAt - calledAt).toBeGreaterThanOrEqual(200);
+    expect(executedAt - calledAt).toBeLessThan(380);
+  });
+
   it("passes the scope the call will be authorized against", async () => {
     const seen: unknown[] = [];
     const { run } = setup({

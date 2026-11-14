@@ -290,7 +290,13 @@ export class AgentRuntime {
       const display = await Promise.race([
         described,
         new Promise<ToolDisplay>((resolve) => {
-          timer = setTimeout(() => resolve(fallback), DESCRIBE_CALL_BUDGET_MS);
+          // Only what is left of the budget: the hook's synchronous work
+          // before its first await has already been spent.
+          const remaining = Math.max(
+            0,
+            DESCRIBE_CALL_BUDGET_MS - (performance.now() - startedAt),
+          );
+          timer = setTimeout(() => resolve(fallback), remaining);
         }),
       ]);
       // The timer cannot fire while the event loop is blocked, so a
