@@ -3,7 +3,9 @@ import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import type { SearchDisplay, ToolDisplay } from "./display.js";
+import { describeSearchCall, describeSearchResult } from "./searchDisplay.js";
+import type { ToolExecutionResult } from "./types.js";
 import { ChatTool } from "@propio-ai/providers";
 import { listContainedFiles } from "./containedFiles.js";
 import { normalizeToolPath, throwDirectoryOperationError } from "./shared.js";
@@ -14,6 +16,16 @@ function recursivePattern(pattern: string): string {
   }
 
   return `**/${pattern}`;
+}
+
+function findTitle(args: Readonly<Record<string, unknown>>): string {
+  const path = typeof args.path === "string" ? args.path : "";
+  const pattern = typeof args.pattern === "string" ? args.pattern : "";
+  const matching =
+    pattern.length > 0 ? ` matching ${JSON.stringify(pattern)}` : "";
+  return path.length > 0
+    ? `Finding files in ${path}${matching}`
+    : `Finding files${matching}`;
 }
 
 export class FindTool implements PresentedTool {
@@ -31,44 +43,21 @@ export class FindTool implements PresentedTool {
     this.resolvePath = options?.resolvePath ?? normalizeToolPath;
   }
 
-  getDisplayAdapter(): ToolDisplayAdapter {
-    return {
-      renderUse(input) {
-        const path = input.path;
-        const pattern = input.pattern;
-        if (typeof pattern === "string" && pattern.length > 0) {
-          return typeof path === "string" && path.length > 0
-            ? `${pattern} in ${path}`
-            : pattern;
-        }
-        return null;
-      },
-      renderResult(result) {
-        if (result.startsWith("No files found")) {
-          return "No files found";
-        }
-        const files = result
-          .trim()
-          .split("\n")
-          .filter((l) => l.length > 0);
-        return `Found ${files.length} file${files.length === 1 ? "" : "s"}`;
-      },
-    };
+  describeCall(
+    args: Readonly<Record<string, unknown>>,
+  ): ToolDisplay<SearchDisplay> {
+    return describeSearchCall(findTitle(args), "files", args);
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const path = args.path;
-    const pattern = args.pattern;
-    if (typeof path === "string" && path.length > 0) {
-      if (typeof pattern === "string" && pattern.length > 0) {
-        return `Finding files in ${path} matching ${JSON.stringify(pattern)}`;
-      }
-      return `Finding files in ${path}`;
-    }
-
-    return typeof pattern === "string" && pattern.length > 0
-      ? `Finding files matching ${JSON.stringify(pattern)}`
-      : "Finding files";
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay<SearchDisplay> {
+    return describeSearchResult(
+      this.describeCall(args),
+      result,
+      "No files found",
+    );
   }
 
   getSchema(): ChatTool {

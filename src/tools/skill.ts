@@ -1,7 +1,8 @@
 import type { ToolMetadata } from "../policy/capabilities.js";
 import { ChatTool } from "@propio-ai/providers";
 import { PresentedTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import { genericDisplay, type ToolDisplay } from "./display.js";
+import type { ToolExecutionResult } from "./types.js";
 
 export interface SkillToolInvoker {
   invokeSkill(
@@ -11,6 +12,13 @@ export interface SkillToolInvoker {
       readonly source?: "model";
     },
   ): Promise<string>;
+}
+
+function skillTitle(args: Readonly<Record<string, unknown>>): string {
+  const name = args.name;
+  return typeof name === "string" && name.length > 0
+    ? `Invoking skill ${name}`
+    : "Invoking skill";
 }
 
 export class SkillTool implements PresentedTool {
@@ -24,23 +32,18 @@ export class SkillTool implements PresentedTool {
 
   constructor(private readonly invoker: SkillToolInvoker) {}
 
-  getDisplayAdapter(): ToolDisplayAdapter {
-    return {
-      renderUse(input) {
-        const name = input.name;
-        return typeof name === "string" && name.length > 0 ? name : null;
-      },
-      renderResult(result) {
-        return result;
-      },
-    };
+  describeCall(args: Readonly<Record<string, unknown>>): ToolDisplay {
+    return genericDisplay(skillTitle(args), args);
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const name = args.name;
-    return typeof name === "string" && name.length > 0
-      ? `Invoking skill ${name}`
-      : "Invoking skill";
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay {
+    return genericDisplay(skillTitle(args), args, {
+      content: result.content,
+      failed: result.status !== "success",
+    });
   }
 
   getSchema(): ChatTool {

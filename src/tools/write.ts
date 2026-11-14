@@ -4,10 +4,15 @@ import type { ToolExecutionContext } from "./execution.js";
 import type { ToolExecutionResult } from "./types.js";
 import { createHash } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
-import { PresentedTool } from "./interface.js";
+import { PresentedTool, type ToolDescribeContext } from "./interface.js";
+import type { ToolDisplay } from "./display.js";
+import {
+  createContentHash,
+  finishFileChange,
+  previewFileChange,
+} from "./fileChangeDisplay.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
-  createPathToolDisplayAdapter,
   getPathToolInvocationLabel,
   normalizeToolPath,
   throwToolPathAccessError,
@@ -26,12 +31,30 @@ export class WriteTool implements PresentedTool {
 
   constructor(private readonly options: PathToolOptions = {}) {}
 
-  getDisplayAdapter() {
-    return createPathToolDisplayAdapter();
+  describeCall(
+    args: Readonly<Record<string, unknown>>,
+    context?: ToolDescribeContext,
+  ): Promise<ToolDisplay> {
+    return previewFileChange({
+      title: getPathToolInvocationLabel(args, "Writing", "Writing file"),
+      rawPath: args.path,
+      resolvePath: this.options.resolvePath ?? normalizeToolPath,
+      context,
+      next: () => toStringArg(args.content, "content"),
+    });
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    return getPathToolInvocationLabel(args, "Writing", "Writing file");
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+    before: ToolDisplay,
+  ): ToolDisplay {
+    return finishFileChange(
+      getPathToolInvocationLabel(args, "Writing", "Writing file"),
+      args.path,
+      result,
+      before,
+    );
   }
 
   getSchema(): ChatTool {
@@ -134,8 +157,4 @@ async function hashFileContents(path: string): Promise<string | undefined> {
   } finally {
     await handle?.close().catch(() => {});
   }
-}
-
-function createContentHash(content: string | Buffer): string {
-  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }

@@ -3,7 +3,13 @@ import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import {
+  displayTitle,
+  withFailure,
+  type FileReadDisplay,
+  type ToolDisplay,
+} from "./display.js";
+import type { ToolExecutionResult } from "./types.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
   normalizeToolPath,
@@ -54,24 +60,36 @@ export class ReadTool implements PresentedTool {
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
   }
 
-  getDisplayAdapter(): ToolDisplayAdapter {
+  describeCall(
+    args: Readonly<Record<string, unknown>>,
+  ): ToolDisplay<FileReadDisplay> {
+    const path = typeof args.path === "string" ? args.path : "";
+    const start = typeof args.startLine === "number" ? args.startLine : 1;
+    const count =
+      typeof args.lineCount === "number" ? args.lineCount : undefined;
+    const ranged = args.startLine !== undefined || count !== undefined;
     return {
-      renderUse(input) {
-        const path = input.path;
-        return typeof path === "string" && path.length > 0 ? path : null;
-      },
-      renderResult(result) {
-        const lineCount = result.split("\n").length;
-        return `Read ${lineCount} line${lineCount === 1 ? "" : "s"}`;
+      title: displayTitle(path ? `Reading ${path}` : "Reading file"),
+      body: {
+        kind: "file_read",
+        path,
+        ...(ranged
+          ? { range: { start, ...(count === undefined ? {} : { count }) } }
+          : {}),
       },
     };
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const path = args.path;
-    return typeof path === "string" && path.length > 0
-      ? `Reading ${path}`
-      : "Reading file";
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay {
+    const call = this.describeCall(args);
+    if (result.status !== "success") return withFailure(call, result.content);
+    return {
+      ...call,
+      body: { ...call.body, lines: result.content.split("\n").length },
+    };
   }
 
   getSchema(): ChatTool {

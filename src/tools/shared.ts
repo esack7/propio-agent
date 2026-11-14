@@ -1,6 +1,5 @@
 import * as fsPromises from "fs/promises";
 import * as path from "path";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
 import { listContainedFiles } from "./containedFiles.js";
 
 const DEFAULT_OUTPUT_LIMIT = 50 * 1024;
@@ -56,20 +55,8 @@ export async function readUtf8TextFile(filePath: string): Promise<string> {
   return buffer.toString("utf8");
 }
 
-export function createPathToolDisplayAdapter(): ToolDisplayAdapter {
-  return {
-    renderUse(input) {
-      const path = input.path;
-      return typeof path === "string" && path.length > 0 ? path : null;
-    },
-    renderResult(result) {
-      return result;
-    },
-  };
-}
-
 export function getPathToolInvocationLabel(
-  args: Record<string, unknown>,
+  args: Readonly<Record<string, unknown>>,
   verb: string,
   fallback: string,
 ): string {

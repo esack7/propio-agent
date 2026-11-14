@@ -22,6 +22,7 @@ import type {
 } from "../context/coreTypes.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 import { ToolArgumentValidator } from "../tools/argumentValidation.js";
+import { genericDisplay, type ToolDisplay } from "../tools/display.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { PromptSubmission } from "./input.js";
 import type {
@@ -111,6 +112,29 @@ const OPERATOR_ABORT_REASONS: ReadonlySet<string> = new Set([
   "sigint",
 ]);
 
+/** How long a tool may take to describe a call before the generic description is used. */
+const DESCRIBE_CALL_BUDGET_MS = 250;
+
+/**
+ * A copy of a tool scope that shares nothing with the original: its own set
+ * of tool names and its own metadata. Metadata that cannot be copied is left
+ * out rather than shared.
+ */
+function detachedScope(scope: AgentToolScope): AgentToolScope {
+  const { allowedTools, metadata, ...identity } = scope;
+  let copiedMetadata: AgentToolScope["metadata"];
+  try {
+    copiedMetadata =
+      metadata === undefined ? undefined : structuredClone(metadata);
+  } catch {
+    copiedMetadata = undefined;
+  }
+  return {
+    ...identity,
+    ...(allowedTools ? { allowedTools: new Set(allowedTools) } : {}),
+    ...(copiedMetadata === undefined ? {} : { metadata: copiedMetadata }),
+  };
+}
 const INTERRUPTED_RUNNING_RESULT =
   "[Interrupted before this call finished. It may have had partial effects. It was not retried.]";
 const INTERRUPTED_PENDING_RESULT =
@@ -144,6 +168,8 @@ export class AgentRuntime {
   private currentToolScope: AgentToolScope | undefined;
   private readonly argumentValidator = new ToolArgumentValidator();
   private readonly toolOperationIds = new Map<string, string>();
+  /** Time each finished call spent running, until its event is emitted. */
+  private readonly toolRunMs = new Map<string, number>();
   private readonly toolArgumentFingerprintKey = randomBytes(32);
   constructor(private readonly dependencies: AgentRuntimeOptions) {}
   private toolArgumentFingerprint(
@@ -212,6 +238,103 @@ export class AgentRuntime {
     _args: Record<string, unknown>,
   ): string {
     return name;
+  }
+  /** How a call is shown before it is authorized. */
+  private async describeCall(
+    name: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    allowedTools: ReadonlySet<string> | undefined,
+  ): Promise<ToolDisplay> {
+    const describe = this.dependencies.integrations?.describeToolCall;
+    if (!describe) return genericDisplay(name, args);
+    return await this.describeCallWithinBudget(
+      describe,
+      name,
+      toolCallId,
+      args,
+      this.currentToolScope ?? { allowedTools },
+    );
+  }
+  /**
+   * The application's description of a call, or the generic one if it throws
+   * or takes longer than the budget. A description never delays or fails a
+   * call.
+   */
+  private async describeCallWithinBudget(
+    describe: NonNullable<
+      NonNullable<AgentRuntimeOptions["integrations"]>["describeToolCall"]
+    >,
+    name: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    scope: AgentToolScope,
+  ): Promise<ToolDisplay> {
+    const fallback = genericDisplay(name, args);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = performance.now();
+    try {
+      // Presentation code gets its own copies, so nothing it does can change
+      // the arguments that are authorized and run, or the scope they are
+      // authorized against.
+      const described = Promise.resolve(
+        describe({
+          name,
+          toolCallId,
+          args: structuredClone(args),
+          scope: detachedScope(scope),
+        }),
+      );
+      // A description that arrives late is dropped, including a late failure.
+      described.catch(() => {});
+      const display = await Promise.race([
+        described,
+        new Promise<ToolDisplay>((resolve) => {
+          // Only what is left of the budget: the hook's synchronous work
+          // before its first await has already been spent.
+          const remaining = Math.max(
+            0,
+            DESCRIBE_CALL_BUDGET_MS - (performance.now() - startedAt),
+          );
+          timer = setTimeout(() => resolve(fallback), remaining);
+        }),
+      ]);
+      // The timer cannot fire while the event loop is blocked, so a
+      // description that kept it busy can win the race after the budget.
+      return performance.now() - startedAt > DESCRIBE_CALL_BUDGET_MS
+        ? fallback
+        : display;
+    } catch {
+      return fallback;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  private describeResult(
+    name: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    result: ToolExecutionResult,
+    before: ToolDisplay,
+  ): ToolDisplay {
+    const failed = result.status !== "success";
+    try {
+      // Copies, so presentation code cannot change the recorded result.
+      const described = this.dependencies.integrations?.describeToolResult?.({
+        name,
+        toolCallId,
+        args: structuredClone(args),
+        result: structuredClone(result),
+        before: structuredClone(before),
+      });
+      if (described) return described;
+    } catch {
+      // Fall through to the generic description.
+    }
+    return genericDisplay(before.title, args, {
+      content: result.content,
+      failed,
+    });
   }
   private prepareMessagesForProvider(messages: ChatMessage[]): ChatMessage[] {
     return (
@@ -1350,10 +1473,12 @@ export class AgentRuntime {
     this.throwIfAbortCancelled(abortSignal);
     if (denied) return denied;
     // Local tools receive cooperative cancellation; integrations may still run.
+    const startedAt = Date.now();
     const execResult = await this.awaitWithAbortSignal(
       this.executeToolWithStatus(toolName, executionArgs, abortSignal),
       abortSignal,
     );
+    this.toolRunMs.set(toolCallId, Date.now() - startedAt);
     this.throwIfAbortCancelled(abortSignal);
     return execResult;
   }
@@ -1552,6 +1677,12 @@ export class AgentRuntime {
     const serializedArgs = JSON.stringify(safeArgs);
     const toolCallId = toolCall.id!;
     const activityLabel = this.describeToolInvocation(toolName, safeArgs);
+    const display = await this.describeCall(
+      toolName,
+      toolCallId,
+      safeArgs,
+      allowedTools,
+    );
 
     this.emitToolStartedDiagnostics(
       toolName,
@@ -1561,6 +1692,7 @@ export class AgentRuntime {
       serializedArgs,
       iteration,
       options,
+      display,
     );
 
     const execResult = await this.runToolWithAbort(
@@ -1580,6 +1712,7 @@ export class AgentRuntime {
       execResult,
       iteration,
       options,
+      display,
     );
 
     if (!failed) {
@@ -1604,6 +1737,7 @@ export class AgentRuntime {
     serializedArgs: string,
     iteration: number,
     options: AgentToolOptions | undefined,
+    display: ToolDisplay,
   ): void {
     const operationId = randomUUID();
     this.toolOperationIds.set(toolCallId, operationId);
@@ -1644,6 +1778,7 @@ export class AgentRuntime {
       args,
       argumentChars: serializedArgs.length,
       argumentPreview: this.toPreview(serializedArgs),
+      display,
     });
     this.emitDiagnostic({
       type: "tool_execution_started",
@@ -1665,6 +1800,7 @@ export class AgentRuntime {
     execResult: ToolExecutionResult,
     iteration: number,
     options: AgentToolOptions | undefined,
+    before: ToolDisplay,
   ): boolean {
     const failed = execResult.status !== "success";
     const resultMaterial =
@@ -1695,7 +1831,16 @@ export class AgentRuntime {
       result,
       args,
       status: execResult.status,
+      display: this.describeResult(
+        toolName,
+        toolCallId,
+        args,
+        execResult,
+        before,
+      ),
+      durationMs: this.toolRunMs.get(toolCallId) ?? 0,
     });
+    this.toolRunMs.delete(toolCallId);
     const operationId = this.toolOperationIds.get(toolCallId);
     this.dependencies.trace?.record(
       {

@@ -21,3 +21,15 @@ export type {
   ShellExecutionResult,
 } from "./nodeShell.js";
 export type { Capability, ToolMetadata } from "../policy/capabilities.js";
+export { genericDisplay } from "./display.js";
+export type {
+  CommandDisplay,
+  DiffDisplay,
+  DiffHunk,
+  DiffLine,
+  FileReadDisplay,
+  GenericDisplay,
+  SearchDisplay,
+  ToolDisplay,
+  ToolDisplayBody,
+} from "./display.js";

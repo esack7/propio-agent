@@ -377,7 +377,8 @@ describe("agent modes", () => {
         status: "success" as const,
         content: "mcp ok",
       }),
-      describeToolInvocation: () => "mcp",
+      describeCall: () => undefined,
+      describeResult: () => undefined,
     };
 
     agent.setAgentMode("discover");

@@ -1131,8 +1131,8 @@ custom `resolvePath` can validate or map paths and must return absolute paths.
 Local implementations retain the existing read/write/edit/search/list semantics:
 atomic replacement writes, exact-match edits, text/binary checks and search
 ordering. `read`, `write`, `edit` and `bash` start enabled; `grep`, `find` and `ls`
-start disabled. Skill invocation, mode policy, scratchpad guidance, display
-adapters and session-output storage remain runtime integrations. The CLI uses the
+start disabled. Skill invocation, mode policy, scratchpad guidance, call
+descriptions and session-output storage remain runtime integrations. The CLI uses the
 same implementations and execution registry with its existing settings. The CLI
 workspace is captured at registry construction; later process-directory changes
 do not retarget these tools.
@@ -1145,6 +1145,21 @@ build a schema from a `McpToolDescriptor` and delegate `invoke` to
 `manager.executeToolWithStatus(descriptor.name, args)`. Neither reusable API needs
 agent internals or imports the other. MCP cancellation remains governed by the
 MCP manager's deadlines and shutdown; the adapter does not add remote cancellation.
+
+The same entry point exports `ToolDisplay`, a plain-JSON description of one
+tool call for a frontend to draw: a title and a body of kind `diff`, `command`,
+`file_read`, `search` or `generic`, plus an error when the call failed. It is
+separate from execution. `AgentRuntime` puts one on every `tool_started`,
+`tool_finished` and `tool_failed` event, together with the time the tool ran.
+An application supplies them through the `describeToolCall` and
+`describeToolResult` integrations; without those, or when one throws or takes
+longer than 250 ms, the runtime uses `genericDisplay`, which lists the
+arguments. A description is made before the call is authorized, so it must
+change nothing. The CLI's built-in tools describe themselves: `edit` and
+`write` read the target file and carry the lines the call would change, unless
+reading that file would itself need approval. Payloads are capped (400 diff
+lines, 200 lines and 16 KB of output per stream) and say when they were cut;
+the model still receives the tool's full result.
 
 Registry approval runs before execution, fails closed on exceptions and receives
 a detached copy of arguments. Execution uses the reviewed snapshot, even if the

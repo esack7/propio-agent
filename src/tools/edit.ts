@@ -2,13 +2,17 @@ import type { ToolMetadata } from "../policy/capabilities.js";
 import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import type { ToolExecutionResult } from "./types.js";
-import { createHash } from "node:crypto";
 import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import type { ToolDisplay } from "./display.js";
+import type { ToolDescribeContext } from "./interface.js";
+import {
+  createContentHash,
+  finishFileChange,
+  previewFileChange,
+} from "./fileChangeDisplay.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
-  createPathToolDisplayAdapter,
   getPathToolInvocationLabel,
   normalizeToolPath,
   throwFileOperationError,
@@ -33,6 +37,34 @@ function throwEditFileSystemError(
   throwToolPathAccessError(err, rawPath);
 }
 
+/**
+ * The text an edit leaves, and how many places it changed. Throws when the
+ * edit cannot be made. Describing a call and running it both use this.
+ */
+function applyEdit(
+  original: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+): { updated: string; occurrences: number } {
+  if (oldString.length === 0)
+    throw new Error("old_string must be a non-empty string");
+  const occurrences = original.split(oldString).length - 1;
+  if (occurrences === 0)
+    throw new Error(`String not found in file: ${oldString}`);
+  if (occurrences > 1 && !replaceAll) {
+    throw new Error(
+      `Multiple matches found for edit; set replace_all to true: ${oldString}`,
+    );
+  }
+  return {
+    updated: replaceAll
+      ? original.split(oldString).join(newString)
+      : original.replace(oldString, newString),
+    occurrences,
+  };
+}
+
 export class EditTool implements PresentedTool {
   readonly name = "edit";
   readonly metadata: ToolMetadata = {
@@ -48,12 +80,40 @@ export class EditTool implements PresentedTool {
     this.resolvePath = options?.resolvePath ?? normalizeToolPath;
   }
 
-  getDisplayAdapter(): ToolDisplayAdapter {
-    return createPathToolDisplayAdapter();
+  describeCall(
+    args: Readonly<Record<string, unknown>>,
+    context?: ToolDescribeContext,
+  ): Promise<ToolDisplay> {
+    return previewFileChange({
+      title: getPathToolInvocationLabel(args, "Editing", "Editing file"),
+      rawPath: args.path,
+      resolvePath: this.resolvePath,
+      context,
+      next: (original) => {
+        if (original === undefined) {
+          throw new Error(`File not found: ${String(args.path)}`);
+        }
+        return applyEdit(
+          original,
+          toStringArg(args.old_string, "old_string"),
+          toStringArg(args.new_string, "new_string"),
+          args.replace_all === true,
+        ).updated;
+      },
+    });
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    return getPathToolInvocationLabel(args, "Editing", "Editing file");
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+    before: ToolDisplay,
+  ): ToolDisplay {
+    return finishFileChange(
+      getPathToolInvocationLabel(args, "Editing", "Editing file"),
+      args.path,
+      result,
+      before,
+    );
   }
 
   getSchema(): ChatTool {
@@ -122,23 +182,13 @@ export class EditTool implements PresentedTool {
       const stats = await fsPromises.stat(path);
       if (stats.isDirectory())
         throw new Error(`Path is a directory, not a file: ${rawPath}`);
-      if (oldString.length === 0)
-        throw new Error("old_string must be a non-empty string");
-
       const original = await readUtf8TextFile(path);
-      const occurrences = original.split(oldString).length - 1;
-
-      if (occurrences === 0)
-        throw new Error(`String not found in file: ${oldString}`);
-      if (occurrences > 1 && !replaceAll) {
-        throw new Error(
-          `Multiple matches found for edit; set replace_all to true: ${oldString}`,
-        );
-      }
-
-      const updated = replaceAll
-        ? original.split(oldString).join(newString)
-        : original.replace(oldString, newString);
+      const { updated, occurrences } = applyEdit(
+        original,
+        oldString,
+        newString,
+        replaceAll,
+      );
 
       context.signal?.throwIfAborted();
       await writeFileAtomically(path, updated);
@@ -168,8 +218,4 @@ export class EditTool implements PresentedTool {
   ): Promise<string> {
     return (await this.executeWithStatus(args, context)).content;
   }
-}
-
-function createContentHash(content: string): string {
-  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }

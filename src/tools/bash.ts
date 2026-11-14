@@ -6,7 +6,13 @@ import type { ToolExecutionContext } from "./execution.js";
 import type { ShellExecutor } from "./nodeShell.js";
 import { normalizeToolPath } from "./shared.js";
 import { PresentedTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import {
+  displayTitle,
+  outputTail,
+  withFailure,
+  type CommandDisplay,
+  type ToolDisplay,
+} from "./display.js";
 import { ChatTool } from "@propio-ai/providers";
 import { runShellCommand } from "./runShellCommand.js";
 
@@ -34,34 +40,47 @@ function classifyCommandResult(
   return result.exitCode === 0 ? "succeeded" : "nonzero_exit";
 }
 
-function countNonEmptyLines(output: string): number {
-  return output.split("\n").filter((line) => line.trim().length > 0).length;
-}
-
-function formatNonZeroExit(parsed: BashToolResult): string {
-  const exit = parsed.exit_code ?? "?";
-  const stderr = (parsed.stderr ?? "").replace(/\s+/g, " ").trim();
-
-  if (stderr.length === 0) {
-    return `Exit ${exit}`;
+function parseBashToolResult(content: string): BashToolResult | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      ("exit_code" in parsed || "stdout" in parsed || "stderr" in parsed)
+      ? (parsed as BashToolResult)
+      : undefined;
+  } catch {
+    return undefined;
   }
-
-  const preview = stderr.length > 60 ? `${stderr.slice(0, 60)}...` : stderr;
-  return `Exit ${exit}: ${preview}`;
 }
 
-function formatZeroExit(parsed: BashToolResult): string {
-  const lines = countNonEmptyLines(parsed.stdout ?? "");
-
-  return lines > 0
-    ? `Exit 0 (${lines} line${lines === 1 ? "" : "s"})`
-    : "Exit 0";
+/** The command with what it wrote and how it ended. */
+function commandResultBody(
+  call: CommandDisplay,
+  parsed: BashToolResult,
+  classification: CommandOutcomeClassification | undefined,
+): CommandDisplay {
+  const stdout = outputTail(parsed.stdout ?? "");
+  const stderr = outputTail(parsed.stderr ?? "");
+  return {
+    ...call,
+    ...(typeof parsed.exit_code === "number"
+      ? { exitCode: parsed.exit_code }
+      : {}),
+    ...(classification ? { classification } : {}),
+    ...(stdout.tail ? { stdoutTail: stdout.tail } : {}),
+    ...(stderr.tail ? { stderrTail: stderr.tail } : {}),
+    stdoutLines: stdout.lines,
+    stderrLines: stderr.lines,
+    truncated: stdout.truncated || stderr.truncated,
+  };
 }
 
-function formatBashToolResult(parsed: BashToolResult): string {
-  return parsed.exit_code !== 0
-    ? formatNonZeroExit(parsed)
-    : formatZeroExit(parsed);
+function commandFailure(
+  classification: CommandOutcomeClassification | undefined,
+): string {
+  if (classification === "cancelled") return "Cancelled before it finished";
+  if (classification === "timed_out") return "Timed out";
+  return "Command failed";
 }
 
 export class BashTool implements PresentedTool {
@@ -82,27 +101,47 @@ export class BashTool implements PresentedTool {
     this.outputInlineLimit = config?.outputInlineLimit ?? 50 * 1024;
   }
 
-  getDisplayAdapter(): ToolDisplayAdapter {
+  describeCall(
+    args: Readonly<Record<string, unknown>>,
+  ): ToolDisplay<CommandDisplay> {
+    const command = typeof args.command === "string" ? args.command : "";
     return {
-      renderUse(input) {
-        const cmd = input.command;
-        return typeof cmd === "string" && cmd.length > 0 ? cmd : null;
-      },
-      renderResult(result) {
-        try {
-          return formatBashToolResult(JSON.parse(result) as BashToolResult);
-        } catch {
-          return null;
-        }
+      title: displayTitle(
+        command ? `Running ${command}` : "Running shell command",
+      ),
+      body: {
+        kind: "command",
+        command,
+        ...(typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
+        truncated: false,
       },
     };
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const command = args.command;
-    return typeof command === "string" && command.length > 0
-      ? `Running ${command}`
-      : "Running shell command";
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay {
+    const call = this.describeCall(args);
+    const parsed = parseBashToolResult(result.content);
+    // A result that is not this tool's own output is a refusal or a failure
+    // from before the command ran.
+    if (!parsed) {
+      return result.status === "success"
+        ? call
+        : withFailure(call, result.content);
+    }
+    const classification =
+      result.outcome?.kind === "command"
+        ? result.outcome.classification
+        : undefined;
+    const display: ToolDisplay<CommandDisplay> = {
+      ...call,
+      body: commandResultBody(call.body, parsed, classification),
+    };
+    return result.status === "success"
+      ? display
+      : withFailure(display, commandFailure(classification));
   }
 
   getSchema(): ChatTool {

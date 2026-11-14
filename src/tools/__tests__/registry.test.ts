@@ -196,7 +196,7 @@ describe("ToolRegistry", () => {
       ]);
     });
 
-    it("describes tool invocations with formatter fallback", () => {
+    it("describes a call with the tool's own description, or a generic one", async () => {
       registry.register(createMockTool("readable"), true);
       registry.register({
         name: "labeled_tool",
@@ -211,16 +211,22 @@ describe("ToolRegistry", () => {
             },
           };
         },
-        getInvocationLabel(): string {
-          return "Custom invocation label";
-        },
+        describeCall: () => ({
+          title: "Custom invocation label",
+          body: { kind: "generic", fields: [], truncated: false },
+        }),
         execute: jest.fn(async () => "success"),
       });
 
-      expect(registry.describeToolInvocation("labeled_tool", {})).toBe(
+      expect((await registry.describeCall("labeled_tool", {})).title).toBe(
         "Custom invocation label",
       );
-      expect(registry.describeToolInvocation("readable", {})).toBe("readable");
+      expect((await registry.describeCall("readable", {})).title).toBe(
+        "readable",
+      );
+      expect((await registry.describeCall("unregistered", {})).title).toBe(
+        "unregistered",
+      );
     });
   });
 });

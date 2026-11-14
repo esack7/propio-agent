@@ -1,6 +1,7 @@
 import type { McpToolDescriptor } from "./types.js";
 import type { PresentedTool } from "../tools/interface.js";
 import { createExecutableTool } from "../tools/adaptTool.js";
+import { genericDisplay, type ToolDisplay } from "../tools/display.js";
 import type { ToolExecutionContext } from "../tools/execution.js";
 import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "../tools/types.js";
@@ -71,8 +72,22 @@ export class McpExecutableTool implements PresentedTool {
     return this.execution.getSchema();
   }
 
-  getInvocationLabel(): string {
+  private displayTitle(): string {
     return this.title || `${this.serverName}:${this.remoteToolName}`;
+  }
+
+  describeCall(args: Readonly<Record<string, unknown>>): ToolDisplay {
+    return genericDisplay(this.displayTitle(), args);
+  }
+
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay {
+    return genericDisplay(this.displayTitle(), args, {
+      content: result.content,
+      failed: result.status !== "success",
+    });
   }
 
   async executeWithStatus(
