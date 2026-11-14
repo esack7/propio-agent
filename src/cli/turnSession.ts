@@ -30,6 +30,11 @@ export interface CliTurnSession {
     submission: PromptSubmission,
     abortSignal: AbortSignal,
   ): Promise<AssistantTurnResult>;
+  /**
+   * Guidance the last turn accepted but never gave the model, oldest first.
+   * Each call returns it once.
+   */
+  takeUndelivered(): string[];
 }
 
 export function createCliTurnSession(
@@ -45,6 +50,7 @@ export function createCliTurnSession(
   // the same images as strings, but no string form keeps every adapter's
   // handling of bytes; in one process the originals are handed over as is.
   let original: PromptSubmission | undefined;
+  let undelivered: string[] = [];
   const session = new AgentSession({
     runTurn: async (submission, control) => {
       const given = original ?? submission;
@@ -66,8 +72,19 @@ export function createCliTurnSession(
     },
   });
 
+  session.subscribe((event) => {
+    if (event.type === "session_turn_started") undelivered = [];
+    if (event.type === "session_turn_ended")
+      undelivered = event.undelivered.map((message) => message.text);
+  });
+
   return {
     session,
+    takeUndelivered() {
+      const taken = undelivered;
+      undelivered = [];
+      return taken;
+    },
     async runTurn(submission, abortSignal) {
       if (abortSignal.aborted) throw new Error("Request cancelled");
       const commandId = randomUUID();
@@ -117,6 +134,28 @@ export function createCliTurnSession(
         throw lastError;
       } finally {
         abortSignal.removeEventListener("abort", interrupt);
+      }
+    },
+  };
+}
+
+/**
+ * An approval channel that takes the keyboard and the screen from the line
+ * being typed to the running turn, and gives them back when it has its
+ * answer. The line's draft is kept meanwhile.
+ */
+export function borrowingKeyboard(
+  channel: ApprovalChannel,
+  typing: () => { suspend(): void; resume(): void } | null,
+): ApprovalChannel {
+  return {
+    request: async (request, signal) => {
+      const active = typing();
+      active?.suspend();
+      try {
+        return await channel.request(request, signal);
+      } finally {
+        active?.resume();
       }
     },
   };

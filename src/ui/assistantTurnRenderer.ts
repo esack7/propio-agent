@@ -334,6 +334,14 @@ export async function streamAssistantTurn(
       return;
     }
 
+    if (event.type === "guidance_delivered") {
+      // Shown where the model received it, after what it had said so far.
+      mdStream.flush();
+      clearThinkingStatusForAnswer();
+      ui.guidanceDelivered(event.text);
+      return;
+    }
+
     if (event.type === "prompt_plan_built") {
       renderPromptPlanEvent(currentVisibility, event);
     }

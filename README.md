@@ -551,8 +551,10 @@ the call, narrowest first: this exact command or file, every call to the
 tool, every tool of the MCP server, or every call with the capability. No
 exact grant is offered for a compound command or for one that runs outside
 the workspace or sets environment variables. A denial is returned to the
-model as the tool's result and the turn continues. Pressing Escape cancels
-the turn as usual.
+model as the tool's result and the turn continues. Pressing Escape
+interrupts the turn as usual. A line you were typing to the turn (see
+[Steering a running turn](#steering-a-running-turn)) is put aside while the
+question is open and comes back when it is answered.
 
 A session grant lasts until the session ends. It is saved with the session
 and restored by `/session load`; a new session starts with none.
@@ -674,6 +676,38 @@ Commands that would install software globally (`npm install -g`, `brew install`,
 reason shown in the prompt. `PROPIO_ALLOW_GLOBAL_INSTALLS=1` and
 `runtime.allowGlobalInstallsWithoutPrompt` still let them run without a prompt
 but are deprecated and print a warning.
+
+### Steering a running turn
+
+You do not have to wait for a turn to finish, or cancel it, to change its
+direction.
+
+- **Type to guide it.** Start typing while a turn runs and a `guide ❯` line
+  appears under its output. Press Enter to send the line. The turn is not
+  stopped: the model reads your message before its next request, after the
+  tool call in progress finishes. If the model was already giving its final
+  answer, it continues with your message instead of ending.
+- **What you see.** A sent line is shown as `queued ❯ …` until the model
+  receives it, and then appears in the transcript as your message at the
+  point it was delivered. You can send more than one; they arrive in order.
+- **Output waits while you type.** The turn keeps running, but what it
+  prints is held while the `guide ❯` line is on screen and appears when you
+  send or erase the line. Backspace edits, Ctrl+U clears, and an empty line
+  goes away.
+- **Escape interrupts.** The turn stops and you are back at the prompt.
+  Tool calls that had finished stay in the conversation, the call that was
+  running is recorded as interrupted, and your next message continues from
+  there. Nothing is run again.
+- **Nothing typed is lost.** Whatever you sent that the model never
+  received, and whatever you were still typing, is put back in the prompt
+  to edit and send.
+- **Deny with a reason** at an approval prompt is the third way to steer:
+  the reason goes to the model and the turn continues.
+
+Limits: the line is one line, without history, completion, or image paste.
+A line starting with `/` or `!` is not sent, because commands run only
+between turns. This needs the interactive terminal view. In plain mode only Escape is read, and non-interactive runs read no keys. Files mentioned with `@` in guidance are
+not attached.
 
 ### Session commands
 

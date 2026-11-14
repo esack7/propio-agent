@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { runOpenAiAuthCommand, runOpenAiSetup } from "./auth/openai/cli.js";
 import { showAccountMenu } from "./ui/accountMenu.js";
@@ -53,6 +54,7 @@ import { createShellRunOptionsFromRuntimeConfig } from "./tools/runShellCommand.
 import { exitAfterShellCleanup } from "./cli/exit.js";
 import {
   answerApprovalsThrough,
+  borrowingKeyboard,
   createCliTurnSession,
   type CliTurnSession,
 } from "./cli/turnSession.js";
@@ -101,6 +103,7 @@ import {
   type AbortStateController,
 } from "./ui/abortState.js";
 import { createTurnCancelListener } from "./ui/turnCancelListener.js";
+import { createTurnInput, type TurnInput } from "./ui/turnInput.js";
 import {
   createApprovalPromptChannel,
   createTerminalApprovalIo,
@@ -362,6 +365,10 @@ interface InteractiveSubmissionContext {
   getVisibility: () => VisibilityOptions;
   /** The session turns are dispatched to; one is made per turn if absent. */
   turnSession?: CliTurnSession;
+  /** Told which turn input is live, so a prompt can borrow the keyboard. */
+  setActiveTurnInput?: (input: TurnInput | null) => void;
+  /** Given what was typed or queued during a turn and never delivered. */
+  restoreInput?: (text: string) => void;
 }
 
 export async function runInteractiveTurn(
@@ -379,23 +386,36 @@ export async function runInteractiveTurn(
   setCurrentAbortController(abortController);
   ui.setMode("running");
 
-  const cancelListener = createTurnCancelListener({
+  const turnSession =
+    context.turnSession ??
+    createCliTurnSession(agent, ui, () => context.getVisibility());
+  // While the turn runs, typing is guidance for it and Escape interrupts it.
+  const turnInput = createTurnInput({
     input: context.inputStream,
     interactiveInput: context.interactiveInput,
-    onCancel: () => {
+    line: ui.createTurnInputLine(),
+    promptText: `guide ${ui.chatPrompt()}`,
+    onGuide: (text) => {
+      const sent = turnSession.session.dispatch({
+        type: "guide",
+        commandId: randomUUID(),
+        text,
+      });
+      if (sent.accepted) ui.guidanceQueued(text);
+      return sent.accepted;
+    },
+    onInterrupt: () => {
       context.cancelActiveTurn("escape");
     },
   });
-  cancelListener.attach();
+  turnInput.attach();
+  context.setActiveTurnInput?.(turnInput);
 
   try {
     if (options.beforeTurn) {
       await options.beforeTurn();
     }
 
-    const turnSession =
-      context.turnSession ??
-      createCliTurnSession(agent, ui, () => context.getVisibility());
     await turnSession.runTurn(submission, abortController.signal);
 
     if (abortController.signal.aborted) {
@@ -423,7 +443,20 @@ export async function runInteractiveTurn(
     ui.command("");
     ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
-    cancelListener.detach();
+    context.setActiveTurnInput?.(null);
+    const draft = turnInput.detach();
+    // Nothing typed is lost: what the model never received goes back into
+    // the prompt to edit and send.
+    const unsent = [...turnSession.takeUndelivered(), draft]
+      .filter((text) => text.trim().length > 0)
+      .join("\n");
+    if (unsent.length > 0) {
+      if (context.restoreInput) {
+        context.restoreInput(unsent);
+      } else {
+        ui.info(`Not sent: ${unsent}`);
+      }
+    }
     setCurrentAbortController(null);
   }
 
@@ -1037,12 +1070,18 @@ export async function runInteractiveSession(
     visibilityState.getSnapshot(),
   );
   agent.setApprovalChannel(turnSession.session.approvalChannel, "application");
-  answerApprovalsThrough(
-    turnSession.session,
-    createApprovalPromptChannel(createTerminalApprovalIo(ui, inputStream), {
+  const approvalPrompt = createApprovalPromptChannel(
+    createTerminalApprovalIo(ui, inputStream),
+    {
       savingUnavailableReason: () =>
         agent.permissions.savingUnavailableReason(),
-    }),
+    },
+  );
+  let activeTurnInput: TurnInput | null = null;
+  let restoredInput = "";
+  answerApprovalsThrough(
+    turnSession.session,
+    borrowingKeyboard(approvalPrompt, () => activeTurnInput),
   );
 
   try {
@@ -1075,7 +1114,9 @@ export async function runInteractiveSession(
             ? getBashFooterText(visibilitySnapshot)
             : getIdleFooterText(visibilitySnapshot),
         bashFooter: getBashFooterText(visibilitySnapshot),
+        ...(restoredInput.length > 0 ? { defaultValue: restoredInput } : {}),
       });
+      restoredInput = "";
 
       if (nextInput.status === "closed") {
         ui.closeOverlay();
@@ -1127,6 +1168,12 @@ export async function runInteractiveSession(
         shouldExit: abortState.shouldExit,
         getVisibility: () => visibilityState.getSnapshot(),
         turnSession,
+        setActiveTurnInput: (input) => {
+          activeTurnInput = input;
+        },
+        restoreInput: (text) => {
+          restoredInput = text;
+        },
       });
       if (exitCode !== null) {
         return exitCode;
