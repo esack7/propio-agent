@@ -1085,6 +1085,7 @@ export async function runInteractiveSession(
   const approvalPrompt = createApprovalPromptChannel(
     createTerminalApprovalIo(ui, inputStream),
     {
+      width: () => Math.max(1, (ui.getPromptOutputStream().columns ?? 80) - 1),
       savingUnavailableReason: () =>
         agent.permissions.savingUnavailableReason(),
     },

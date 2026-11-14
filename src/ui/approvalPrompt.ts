@@ -1,3 +1,5 @@
+import type { ToolDisplay } from "../tools/display.js";
+import { renderToolDisplay } from "./toolDisplay/render.js";
 import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import type {
   ApprovalAnswer,
@@ -36,14 +38,34 @@ function operationLines(request: ApprovalRequest): string[] {
 }
 
 /**
- * What is being asked, built only from the request. Every field that came
+ * What is being asked, with the tool preview when one is available. Every field that came
  * from the model, a tool, or a settings file is passed through `visibleText`
  * before it reaches the terminal.
  */
-export function formatApprovalRequest(request: ApprovalRequest): string[] {
+export function formatApprovalRequest(
+  request: ApprovalRequest,
+  display?: ToolDisplay,
+  width = 80,
+): string[] {
   return [
     `${visibleText(request.toolName)} needs approval.`,
-    ...operationLines(request),
+    ...(display
+      ? renderToolDisplay(
+          display,
+          {
+            status: "running",
+            collapsedLimit: display.body.kind === "diff" ? 40 : 12,
+          },
+          width,
+          "collapsed",
+        )
+      : operationLines(request)),
+    // Preserve the authoritative target (including resolved paths) beside the preview.
+    ...(display &&
+    (request.target?.kind === "command" || request.target?.kind === "path")
+      ? operationLines(request)
+      : []),
+    ...(display ? ["─".repeat(Math.max(1, Math.min(80, width)))] : []),
     `Reason: ${visibleText(request.reason)}`,
   ];
 }
@@ -74,6 +96,8 @@ function grantLine(suggestion: GrantSuggestion, index: number): string {
 }
 
 export interface ApprovalPromptOptions {
+  /** Available terminal columns. */
+  readonly width?: () => number;
   /** Why a rule cannot be saved, or undefined when it can. */
   readonly savingUnavailableReason?: () => Promise<string | undefined>;
 }
@@ -160,6 +184,7 @@ export async function askOperator(
   io: ApprovalPromptIo,
   signal?: AbortSignal,
   options: ApprovalPromptOptions = {},
+  display?: ToolDisplay,
 ): Promise<ApprovalAnswer> {
   const requestId = request.id;
   // Always-allow is offered only where the rule can actually be saved.
@@ -167,7 +192,11 @@ export async function askOperator(
   const choices = choiceLines(request, savingUnavailable);
   const question =
     savingUnavailable === undefined ? "Allow? [y/s/a/N] " : "Allow? [y/s/N] ";
-  io.show([...formatApprovalRequest(request), "", ...choices]);
+  io.show([
+    ...formatApprovalRequest(request, display, options.width?.()),
+    "",
+    ...choices,
+  ]);
   for (;;) {
     const line = await io.readLine(question, signal);
     if (line === null) return denial(requestId);
@@ -208,9 +237,10 @@ function grantRefusal(
 export function createApprovalPromptChannel(
   io: ApprovalPromptIo,
   options: ApprovalPromptOptions = {},
-): ApprovalChannel {
+): ApprovalDisplayChannel {
   return {
-    request: (request, signal) => askOperator(request, io, signal, options),
+    request: (request, signal, display) =>
+      askOperator(request, io, signal, options, display),
   };
 }
 
@@ -242,4 +272,12 @@ export function createTerminalApprovalIo(
       }
     },
   };
+}
+
+export interface ApprovalDisplayChannel extends ApprovalChannel {
+  request(
+    request: ApprovalRequest,
+    signal?: AbortSignal,
+    display?: ToolDisplay,
+  ): Promise<ApprovalAnswer>;
 }

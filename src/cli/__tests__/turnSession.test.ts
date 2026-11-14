@@ -9,6 +9,9 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import type { ToolDisplay } from "../../tools/display.js";
+import { AgentSession } from "../../agent-core/index.js";
+import type { AgentVisibilityEvent } from "../../agent.js";
 import type { Agent } from "../../agent.js";
 import type { GuidanceSource } from "../../agent-core/index.js";
 import type { ApprovalChannel } from "../../permissions/approvalChannel.js";
@@ -220,6 +223,55 @@ describe("the CLI's turn session", () => {
 });
 
 describe("answering approvals through the session", () => {
+  it("correlates previews by call id and forgets completed calls", async () => {
+    const display: ToolDisplay = {
+      title: "First",
+      body: { kind: "generic", fields: [], truncated: false },
+    };
+    const previews: Array<ToolDisplay | undefined> = [];
+    const session = new AgentSession<AgentVisibilityEvent>({
+      runTurn: async (_submission, control) => {
+        control.emit({
+          type: "tool_started",
+          toolCallId: "call-1",
+          toolName: "bash",
+          display,
+        } as AgentVisibilityEvent);
+        await session.approvalChannel.request({
+          ...request("one"),
+          toolCallId: "call-1",
+        });
+        await session.approvalChannel.request({
+          ...request("two"),
+          toolCallId: "other",
+        });
+        control.emit({
+          type: "tool_finished",
+          toolCallId: "call-1",
+          toolName: "bash",
+          display,
+          durationMs: 1,
+        } as AgentVisibilityEvent);
+        await session.approvalChannel.request({
+          ...request("three"),
+          toolCallId: "call-1",
+        });
+        return "Done";
+      },
+    });
+    const dispose = answerApprovalsThrough(session, {
+      request: async (approval, _signal, preview) => {
+        previews.push(preview);
+        return { requestId: approval.id, decision: "deny" };
+      },
+    });
+    session.dispatch({ type: "submit", commandId: "go", text: "go" });
+    await session.settled();
+    expect(previews).toEqual([display, undefined, undefined]);
+    expect(previews[0]).not.toBe(display);
+    dispose();
+  });
+
   function setup(reply: ApprovalChannel["request"]) {
     const { agent, settle } = heldAgent();
     const turns = createCliTurnSession(agent, createUi(), visibility);
@@ -395,13 +447,21 @@ describe("a real turn approved from the terminal prompt, through commands", () =
       });
       // As the CLI builds it: ask mode, no channel until the session's is set.
       const agent = createTestAgent(provider, { permissions: undefined });
-      const turns = createCliTurnSession(agent, createUi(), visibility);
+      const turns = createCliTurnSession(agent, createUi(), () => ({
+        ...visibility(),
+        showToolCalls: line === "y",
+      }));
       agent.setApprovalChannel(turns.session.approvalChannel, "application");
       const questions: string[] = [];
+      const shown: string[] = [];
+      let completed: ToolDisplay | undefined;
       answerApprovalsThrough(
         turns.session,
         createApprovalPromptChannel({
-          show: () => {},
+          show: (lines) => {
+            shown.push(...lines);
+            expect(notes()).toBe("original");
+          },
           readLine: async (text) => {
             questions.push(text);
             return line;
@@ -412,6 +472,8 @@ describe("a real turn approved from the terminal prompt, through commands", () =
       turns.session.subscribe((event) => {
         if (event.type === "approval_resolved")
           resolutions.push(event.resolution);
+        if (event.type === "tool_finished" || event.type === "tool_failed")
+          completed = event.display;
       });
 
       await turns.runTurn(
@@ -422,6 +484,16 @@ describe("a real turn approved from the terminal prompt, through commands", () =
       expect(questions.length).toBeGreaterThan(0);
       expect(resolutions).toEqual([resolution]);
       expect(notes()).toBe(expected);
+      expect(shown.join("\n")).toContain("- original");
+      expect(shown.join("\n")).toContain("+ changed");
+      expect(completed?.body.kind).toBe("diff");
+      if (completed?.body.kind === "diff") {
+        expect(
+          completed.body.hunks.flatMap((h) =>
+            h.lines.map((l) => l.op + l.text),
+          ),
+        ).toEqual(["-original", "+changed"]);
+      }
       // Either way the model was told and the turn finished.
       expect(provider.streamChatCalls).toHaveLength(2);
     },

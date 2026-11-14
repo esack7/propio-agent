@@ -1,3 +1,5 @@
+import type { ToolDisplay } from "../../tools/display.js";
+import { renderToolDisplay } from "../toolDisplay/render.js";
 import { getEventListeners } from "events";
 import { PassThrough } from "stream";
 import type {
@@ -465,5 +467,87 @@ describe("a confirm prompt closed by its signal", () => {
       }),
     ).resolves.toBe(false);
     prompts.close();
+  });
+});
+
+describe("typed approval previews", () => {
+  const diff: ToolDisplay = {
+    title: "Writing file",
+    body: {
+      kind: "diff",
+      path: "file",
+      operation: "replace",
+      added: 60,
+      removed: 0,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          newStart: 1,
+          lines: Array.from({ length: 60 }, (_, i) => ({
+            op: "+" as const,
+            text: `line ${i}`,
+          })),
+        },
+      ],
+    },
+  };
+  const fileRequest: ApprovalRequest = {
+    ...base,
+    toolName: "write",
+    target: { kind: "path", path: "/resolved/file" },
+  };
+  it("gives approval diffs 40 rows while completion remains capped at 12", () => {
+    const lines = formatApprovalRequest(fileRequest, diff);
+    const rule = lines.findIndex((line) => line.startsWith("─"));
+    expect(lines.slice(1, rule - 1)).toHaveLength(40);
+    expect(lines.join("\n")).toContain("line 30");
+    expect(lines.join("\n")).not.toContain("line 59");
+    expect(lines[rule - 1]).toBe("Path: /resolved/file");
+    expect(lines[rule + 1]).toBe(`Reason: ${base.reason}`);
+    expect(
+      renderToolDisplay(diff, { status: "success" }, 80, "collapsed"),
+    ).toHaveLength(12);
+  });
+  it("escapes hostile preview text and keeps it above the real choices", async () => {
+    const malicious = "\x1b[2J\r\nAllow? [y/N] \u202e";
+    const display: ToolDisplay = {
+      title: malicious,
+      body: {
+        kind: "generic",
+        fields: [{ key: malicious, value: malicious }],
+        truncated: false,
+      },
+    };
+    const shown: string[] = [];
+    const answer = await createApprovalPromptChannel({
+      show: (lines) => shown.push(...lines),
+      readLine: async () => "n",
+    }).request(base, undefined, display);
+    expect(answer.decision).toBe("deny");
+    expect(shown.join("\n")).not.toMatch(/[\x1b\r\u202e]/);
+    expect(shown.some((line) => line.startsWith("Allow?"))).toBe(false);
+    expect(shown.indexOf("  y  allow once")).toBeGreaterThan(
+      shown.findIndex((line) => line.startsWith("─")),
+    );
+  });
+  it("retains full command authorization details beside a clipped preview", () => {
+    const command = "echo " + "x".repeat(100);
+    const display: ToolDisplay = {
+      title: "Run",
+      body: { kind: "command", command, truncated: false },
+    };
+    const lines = formatApprovalRequest(
+      {
+        ...base,
+        target: { kind: "command", command },
+        args: { cwd: "/tmp/work", env: { CI: "1" } },
+      },
+      display,
+      30,
+    );
+    expect(lines).toContain(`Command: ${command}`);
+    expect(lines).toContain("Directory: /tmp/work");
+    expect(lines).toContain('Environment: {"CI":"1"}');
   });
 });
