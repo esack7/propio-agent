@@ -477,8 +477,27 @@ describe("command contract (a4)", () => {
     session.dispatch(JSON.parse(JSON.stringify(command)));
     await session.settled();
     expect(received).toEqual(images);
-    expect(Buffer.from(images[1]!, "base64")).toEqual(Buffer.from(bytes));
-    expect(encodeCommandImage(new Uint8Array())).toBe("");
+    const encoded = images[1]!;
+    expect(
+      Buffer.from(encoded.slice(encoded.indexOf(",") + 1), "base64"),
+    ).toEqual(Buffer.from(bytes));
+  });
+
+  it.each([
+    ["JPEG", [0xff, 0xd8, 0xff, 0xe0], "image/jpeg"],
+    ["PNG", [0x89, 0x50, 0x4e, 0x47], "image/png"],
+    ["GIF", [0x47, 0x49, 0x46, 0x38], "image/gif"],
+    [
+      "WebP",
+      [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50],
+      "image/webp",
+    ],
+    ["unrecognized", [1, 2, 3, 4], "image/png"],
+  ])("encodes %s bytes as a data URL of that type", (_name, head, type) => {
+    const bytes = Uint8Array.from(head);
+    expect(encodeCommandImage(bytes)).toBe(
+      `data:${type};base64,${Buffer.from(bytes).toString("base64")}`,
+    );
   });
 });
 
@@ -598,6 +617,34 @@ describe("session controller", () => {
       type: "session_turn_ended",
       outcome: "cancelled",
     });
+  });
+
+  it("settles only when the turn ends, even when awaited from its first event", async () => {
+    const { session, release } = heldSession();
+    let settledWhileRunning: boolean | undefined;
+    const awaited = new Promise<void>((resolve) => {
+      session.subscribe((event) => {
+        if (event.type !== "session_turn_started") return;
+        void session.settled().then(() => {
+          settledWhileRunning = session.running;
+          resolve();
+        });
+      });
+    });
+    session.dispatch({ type: "submit", commandId: "s", text: "Go" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settledWhileRunning).toBeUndefined();
+
+    release("done");
+    await awaited;
+    expect(settledWhileRunning).toBe(false);
+    // The next submit, made as soon as settlement is seen, is accepted.
+    expect(
+      session.dispatch({ type: "submit", commandId: "t", text: "Again" }),
+    ).toMatchObject({ accepted: true });
+    release("done");
+    await session.settled();
   });
 
   it("reports a turn that fails, with the error as data", async () => {

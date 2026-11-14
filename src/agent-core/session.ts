@@ -187,7 +187,13 @@ export class AgentSession<TEvent = never> {
         ? { images: [...command.images] }
         : {}),
     };
-    this.turnSettled = this.run(turn, submission);
+    // Settlement is in place before anything runs: a listener on the first
+    // event may already await it.
+    let settle!: () => void;
+    this.turnSettled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    void this.run(turn, submission).finally(settle);
     return { commandId: command.commandId, accepted: true };
   }
 

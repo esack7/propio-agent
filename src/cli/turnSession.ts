@@ -41,12 +41,18 @@ export function createCliTurnSession(
   // error are kept as they are rather than rebuilt from the ended event.
   let lastResult: AssistantTurnResult | undefined;
   let lastError: unknown;
+  // The submission as the terminal produced it. The submit command carries
+  // the same images as strings, but no string form keeps every adapter's
+  // handling of bytes; in one process the originals are handed over as is.
+  let original: PromptSubmission | undefined;
   const session = new AgentSession({
     runTurn: async (submission, control) => {
+      const given = original ?? submission;
+      original = undefined;
       try {
         lastResult = await streamAssistantTurn(
           agent,
-          submission,
+          given,
           ui,
           control.abortSignal,
           visibility,
@@ -93,13 +99,20 @@ export function createCliTurnSession(
         const images = submission.images?.map((image) =>
           image instanceof Uint8Array ? encodeCommandImage(image) : image,
         );
+        original = {
+          text: submission.text,
+          ...(submission.images ? { images: submission.images } : {}),
+        };
         const accepted = session.dispatch({
           type: "submit",
           commandId,
           text: submission.text,
           ...(images && images.length > 0 ? { images } : {}),
         });
-        if (!accepted.accepted) throw new Error(accepted.message);
+        if (!accepted.accepted) {
+          original = undefined;
+          throw new Error(accepted.message);
+        }
         if ((await ended) === "completed") return lastResult!;
         throw lastError;
       } finally {

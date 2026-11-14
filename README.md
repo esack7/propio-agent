@@ -1571,8 +1571,11 @@ if (parsed.ok) reply(session.dispatch(parsed.command));
   with that reason, so it is not recorded as an operator interrupt. The CLI
   uses it for Ctrl+C, which keeps an unanswered message in the saved session;
   Escape dispatches `interrupt`, which discards it.
-- Images in a `submit` are strings (a data URL or base64);
-  `encodeCommandImage` encodes bytes.
+- Images in a `submit` are strings as providers accept them, normally data
+  URLs. `encodeCommandImage` encodes bytes as a data URL whose type is read
+  from the bytes, since adapters treat bare base64 as PNG and Bedrock drops
+  it. In the CLI the agent receives the images as the terminal held them,
+  bytes included; the command carries the data URL form.
 - A session holds one conversation's steering state and nothing at module
   level, so many can run in one process. There is no session id in a
   command: routing to the right session is the transport's job.

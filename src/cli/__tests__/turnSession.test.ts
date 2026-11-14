@@ -86,18 +86,25 @@ const request = (id: string): ApprovalRequest => ({
 });
 
 describe("the CLI's turn session", () => {
-  it("submits through a command that carries only text and image strings", async () => {
+  it("submits through a JSON command and hands the agent the images as given", async () => {
     const { agent, calls, settle } = heldAgent();
     const turns = createCliTurnSession(agent, createUi(), visibility);
     const commands: string[] = [];
     turns.session.subscribe((event) => commands.push(event.type));
+    const dispatched: unknown[] = [];
+    const dispatch = turns.session.dispatch.bind(turns.session);
+    jest.spyOn(turns.session, "dispatch").mockImplementation((command) => {
+      dispatched.push(JSON.parse(JSON.stringify(command)));
+      return dispatch(command);
+    });
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
 
     const pending = turns.runTurn(
       {
         text: "Describe these",
         displayText: "[Image #1] [Image #2]",
         inputMode: "prompt",
-        images: ["data:image/png;base64,aGk=", new Uint8Array([104, 105])],
+        images: ["data:image/png;base64,aGk=", bytes],
       } as never,
       new AbortController().signal,
     );
@@ -105,10 +112,24 @@ describe("the CLI's turn session", () => {
 
     await expect(pending).resolves.toMatchObject({ response: "Two images." });
     expect(calls).toHaveLength(1);
-    // Display state stays in the terminal; bytes travel as base64.
+    // The command is plain JSON: display state stays in the terminal, and
+    // bytes travel as a data URL that names their type.
+    expect(dispatched[0]).toMatchObject({
+      type: "submit",
+      text: "Describe these",
+      images: ["data:image/png;base64,aGk=", "data:image/jpeg;base64,/9j/4A=="],
+    });
+    expect(Object.keys(dispatched[0] as object).sort()).toEqual([
+      "commandId",
+      "images",
+      "text",
+      "type",
+    ]);
+    // In this process the agent gets the images exactly as the terminal had
+    // them, bytes included, so each adapter treats them as it always did.
     expect(calls[0]!.submission).toEqual({
       text: "Describe these",
-      images: ["data:image/png;base64,aGk=", "aGk="],
+      images: ["data:image/png;base64,aGk=", bytes],
     });
     expect(commands).toEqual(["session_turn_started", "session_turn_ended"]);
   });

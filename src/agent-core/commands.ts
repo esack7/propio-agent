@@ -168,11 +168,26 @@ export function parseSessionCommand(value: unknown): ParsedSessionCommand {
     : { ok: false, commandId, message: problem };
 }
 
-/** Encode image bytes as base64 for a submit command. */
+/**
+ * The image type named by the first bytes, as the provider adapters read it.
+ * Anything unrecognized is treated as PNG, which is what they assume too.
+ */
+function sniffImageType(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes[0] === 0x47 && bytes[1] === 0x49) return "image/gif";
+  if (bytes[8] === 0x57 && bytes[9] === 0x45) return "image/webp";
+  return "image/png";
+}
+
+/**
+ * Encode image bytes for a submit command as a data URL. The type travels
+ * with the data, because adapters read bare base64 as PNG, and some drop it.
+ */
 export function encodeCommandImage(bytes: Uint8Array): string {
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
   }
-  return btoa(binary);
+  return `data:${sniffImageType(bytes)};base64,${btoa(binary)}`;
 }
