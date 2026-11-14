@@ -1,3 +1,4 @@
+import { utf8Head, utf8Length } from "./display.js";
 import type { DiffHunk, DiffLine } from "./display.js";
 
 export interface LineDiff {
@@ -5,7 +6,7 @@ export interface LineDiff {
   /** Lines added and removed in the whole change, including any left out. */
   readonly added: number;
   readonly removed: number;
-  /** The hunks hold fewer lines than the change has. */
+  /** The hunks hold fewer lines, or less text, than the change has. */
   readonly truncated: boolean;
 }
 
@@ -14,20 +15,30 @@ export interface LineDiffOptions {
   readonly context?: number;
   /** Most lines kept across all hunks. */
   readonly maxLines?: number;
+  /** Most UTF-8 bytes of line text kept across all hunks. */
+  readonly maxBytes?: number;
 }
 
 /** Above this many differing steps the middle is shown as one replacement. */
 const MAX_EDIT_DISTANCE = 1000;
 
 /**
- * The lines of a text. A final newline ends the last line rather than
- * starting an empty one, so a change to only the final newline has no lines
- * to show. Carriage returns stay in the line they end.
+ * The lines of a text, each with the line break that ends it. The last line
+ * has none when the text does not end in one, so gaining or losing a final
+ * line break changes that line. Carriage returns stay in the line they end.
  */
 export function splitLines(text: string): string[] {
-  if (text.length === 0) return [];
-  const lines = text.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
+  const lines: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    const end = text.indexOf("\n", start);
+    if (end === -1) {
+      lines.push(text.slice(start));
+      break;
+    }
+    lines.push(text.slice(start, end + 1));
+    start = end + 1;
+  }
   return lines;
 }
 
@@ -176,23 +187,61 @@ function hunkRanges(
   return ranges;
 }
 
-/** One hunk from a range of steps, holding at most `room` lines. */
+/** What is left to spend on hunk lines. */
+interface Budget {
+  lines: number;
+  bytes: number;
+  /** Something was left out or shortened. */
+  spent: boolean;
+}
+
+/** A line as shown: its text without the line break, cut to the budget. */
+function shownLine(op: Op, line: string, budget: Budget): DiffLine {
+  const terminated = line.endsWith("\n");
+  const text = terminated ? line.slice(0, -1) : line;
+  const size = utf8Length(text);
+  const fits = size <= budget.bytes;
+  const shown = fits ? text : utf8Head(text, budget.bytes);
+  budget.lines--;
+  budget.bytes -= fits ? size : budget.bytes;
+  if (!fits) budget.spent = true;
+  return {
+    op,
+    text: shown,
+    ...(terminated ? {} : { noNewline: true as const }),
+    ...(fits ? {} : { truncated: true as const }),
+  };
+}
+
+/** One hunk from a range of steps, as far as the budget allows. */
 function buildHunk(
   steps: readonly Step[],
   [start, end]: readonly [number, number],
   a: readonly string[],
   b: readonly string[],
-  room: number,
+  budget: Budget,
 ): DiffHunk {
-  const shown = steps.slice(start, Math.min(end + 1, start + room));
-  const lines: DiffLine[] = shown.map((step) => ({
-    op: step.op,
-    text: step.op === "+" ? b[step.newIndex] : a[step.oldIndex],
-  }));
+  const lines: DiffLine[] = [];
+  let hasOld = false;
+  let hasNew = false;
+  for (let i = start; i <= end; i++) {
+    if (budget.lines <= 0 || budget.bytes <= 0) {
+      budget.spent = true;
+      break;
+    }
+    const step = steps[i];
+    lines.push(
+      shownLine(
+        step.op,
+        step.op === "+" ? b[step.newIndex] : a[step.oldIndex],
+        budget,
+      ),
+    );
+    if (step.op !== "+") hasOld = true;
+    if (step.op !== "-") hasNew = true;
+  }
   const first = steps[start];
   // A side with no lines in the hunk starts at the line before it.
-  const hasOld = shown.some((step) => step.op !== "+");
-  const hasNew = shown.some((step) => step.op !== "-");
   return {
     oldStart: hasOld ? first.oldIndex + 1 : first.oldIndex,
     newStart: hasNew ? first.newIndex + 1 : first.newIndex,
@@ -202,32 +251,34 @@ function buildHunk(
 
 /**
  * A line-based diff of two texts as hunks with context. Applying the hunks
- * to the old lines gives the new lines.
+ * to the old lines gives the new lines, unless the result is truncated.
  */
 export function diffLines(
   oldText: string,
   newText: string,
   options: LineDiffOptions = {},
 ): LineDiff {
-  const maxLines = options.maxLines ?? Number.POSITIVE_INFINITY;
   const a = splitLines(oldText);
   const b = splitLines(newText);
   const steps = toSteps(editScript(a, b));
-  const ranges = hunkRanges(steps, options.context ?? 3);
-
+  const budget: Budget = {
+    lines: options.maxLines ?? Number.POSITIVE_INFINITY,
+    bytes: options.maxBytes ?? Number.POSITIVE_INFINITY,
+    spent: false,
+  };
   const hunks: DiffHunk[] = [];
-  let kept = 0;
-  for (const range of ranges) {
-    if (kept >= maxLines) break;
-    const hunk = buildHunk(steps, range, a, b, maxLines - kept);
-    hunks.push(hunk);
-    kept += hunk.lines.length;
+  for (const range of hunkRanges(steps, options.context ?? 3)) {
+    if (budget.lines <= 0 || budget.bytes <= 0) {
+      budget.spent = true;
+      break;
+    }
+    const hunk = buildHunk(steps, range, a, b, budget);
+    if (hunk.lines.length > 0) hunks.push(hunk);
   }
-  const total = ranges.reduce((sum, [start, end]) => sum + end - start + 1, 0);
   return {
     hunks,
     added: steps.filter((step) => step.op === "+").length,
     removed: steps.filter((step) => step.op === "-").length,
-    truncated: kept < total,
+    truncated: budget.spent,
   };
 }

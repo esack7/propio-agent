@@ -26,6 +26,7 @@ import {
   displayUseLabel,
   genericDisplay,
   outputTail,
+  utf8Length,
 } from "../display.js";
 import type { PresentedTool } from "../interface.js";
 import { diffLines } from "../lineDiff.js";
@@ -434,6 +435,53 @@ describe("payload limits", () => {
     });
   });
 
+  it("cuts a diff with a very long line to the byte budget", async () => {
+    const before = await registry.describeCall("write", {
+      path: "one-line.json",
+      content: `{"value":"${"v".repeat(2 * 1024 * 1024)}"}`,
+    });
+    expect(before.body).toMatchObject({ kind: "diff", truncated: true });
+    expect(utf8Length(JSON.stringify(before))).toBeLessThan(
+      DISPLAY_LIMITS.diffBytes + 1024,
+    );
+  });
+
+  it("shows a write that only removes the final line break", async () => {
+    await writeFile(file("a.txt"), "one\ntwo\n");
+    const { before, after } = await describedRun("write", {
+      path: "a.txt",
+      content: "one\ntwo",
+    });
+    expect(before.body).toMatchObject({ added: 1, removed: 1 });
+    expect(after).toEqual(before);
+    expect(displayResultLabel(after)).toBe("Changed (+1 -1)");
+  });
+
+  it("counts the output tail in UTF-8 bytes and never splits a character", () => {
+    const emoji = outputTail("😀".repeat(7000));
+    expect(emoji.truncated).toBe(true);
+    expect(utf8Length(emoji.tail)).toBeLessThanOrEqual(
+      DISPLAY_LIMITS.tailBytes,
+    );
+    expect(emoji.tail).toBe("😀".repeat(DISPLAY_LIMITS.tailBytes / 4));
+
+    const lines = outputTail(Array(3000).fill("€€€€€€€€").join("\n"));
+    expect(lines.truncated).toBe(true);
+    expect(utf8Length(lines.tail)).toBeLessThanOrEqual(
+      DISPLAY_LIMITS.tailBytes,
+    );
+  });
+
+  it("trims trailing line breaks in linear time", () => {
+    const started = Date.now();
+    const tail = outputTail(`${"\n".repeat(50_000)}last line`);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(tail.tail.endsWith("\nlast line")).toBe(true);
+    expect(tail.tail.split("\n")).toHaveLength(DISPLAY_LIMITS.tailLines);
+    expect(tail.lines).toBe(1);
+    expect(outputTail(`ok${"\n".repeat(50_000)}`).tail).toBe("ok");
+  });
+
   it("cuts long generic values, long results, and many fields", () => {
     const long = "v".repeat(DISPLAY_LIMITS.genericValueChars + 10);
     const cutValue = genericDisplay("t", { a: long });
@@ -561,16 +609,18 @@ describe("the boundary", () => {
   const specifiers = (text: string) =>
     [...text.matchAll(IMPORT)].map((match) => match[1]);
 
-  it.each(["display.ts", "lineDiff.ts"])(
-    "%s imports only type declarations from its neighbours",
-    (name) => {
-      const text = source(name);
-      for (const specifier of specifiers(text)) {
-        expect(specifier).toMatch(/^\.\/(?:types|display)\.js$/);
-      }
+  it.each([
+    ["display.ts", /^\.\/types\.js$/],
+    ["lineDiff.ts", /^\.\/display\.js$/],
+  ])("%s imports only its pure neighbour", (name, allowed) => {
+    const text = source(name);
+    for (const specifier of specifiers(text)) {
+      expect(specifier).toMatch(allowed);
+    }
+    if (name === "display.ts") {
       expect(text).not.toMatch(/^import\s+(?!type\b)/m);
-    },
-  );
+    }
+  });
 
   it.each(["display.ts", "lineDiff.ts"])(
     "%s touches no process, file, network, or clock, and holds no state",

@@ -218,6 +218,23 @@ export class AgentRuntime {
   ): string {
     return name;
   }
+  /** How a call is shown before it is authorized. */
+  private async describeCall(
+    name: string,
+    toolCallId: string,
+    args: Record<string, unknown>,
+    allowedTools: ReadonlySet<string> | undefined,
+  ): Promise<ToolDisplay> {
+    const describe = this.dependencies.integrations?.describeToolCall;
+    if (!describe) return genericDisplay(name, args);
+    return await this.describeCallWithinBudget(
+      describe,
+      name,
+      toolCallId,
+      args,
+      this.currentToolScope ?? { allowedTools },
+    );
+  }
   /**
    * The application's description of a call, or the generic one if it throws
    * or takes longer than the budget. A description never delays or fails a
@@ -230,11 +247,16 @@ export class AgentRuntime {
     name: string,
     toolCallId: string,
     args: Record<string, unknown>,
+    scope: AgentToolScope,
   ): Promise<ToolDisplay> {
     const fallback = genericDisplay(name, args);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const described = Promise.resolve(describe({ name, toolCallId, args }));
+      // Presentation code gets its own copy, so nothing it does can change
+      // the arguments that are authorized and run.
+      const described = Promise.resolve(
+        describe({ name, toolCallId, args: structuredClone(args), scope }),
+      );
       // A description that arrives late is dropped, including a late failure.
       described.catch(() => {});
       return await Promise.race([
@@ -258,12 +280,13 @@ export class AgentRuntime {
   ): ToolDisplay {
     const failed = result.status !== "success";
     try {
+      // Copies, so presentation code cannot change the recorded result.
       const described = this.dependencies.integrations?.describeToolResult?.({
         name,
         toolCallId,
-        args,
-        result,
-        before,
+        args: structuredClone(args),
+        result: structuredClone(result),
+        before: structuredClone(before),
       });
       if (described) return described;
     } catch {
@@ -1615,15 +1638,12 @@ export class AgentRuntime {
     const serializedArgs = JSON.stringify(safeArgs);
     const toolCallId = toolCall.id!;
     const activityLabel = this.describeToolInvocation(toolName, safeArgs);
-    const describeToolCall = this.dependencies.integrations?.describeToolCall;
-    const display = describeToolCall
-      ? await this.describeCallWithinBudget(
-          describeToolCall,
-          toolName,
-          toolCallId,
-          safeArgs,
-        )
-      : genericDisplay(toolName, safeArgs);
+    const display = await this.describeCall(
+      toolName,
+      toolCallId,
+      safeArgs,
+      allowedTools,
+    );
 
     this.emitToolStartedDiagnostics(
       toolName,

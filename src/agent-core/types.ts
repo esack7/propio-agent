@@ -127,9 +127,15 @@ export interface AgentIntegrations {
   describeToolCall?(request: {
     readonly name: string;
     readonly toolCallId: string;
+    /** A detached copy: changing it does not change what runs. */
     readonly args: Readonly<Record<string, unknown>>;
+    /** The tool scope the call will be authorized against. */
+    readonly scope: AgentToolScope;
   }): ToolDisplay | Promise<ToolDisplay>;
-  /** Describe a call once it has a result. `before` is the earlier description. */
+  /**
+   * Describe a call once it has a result. `before` is the earlier
+   * description. Every value is a detached copy.
+   */
   describeToolResult?(request: {
     readonly name: string;
     readonly toolCallId: string;

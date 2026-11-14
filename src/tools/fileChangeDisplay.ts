@@ -90,6 +90,7 @@ export async function previewFileChange(options: {
     const updated = options.next(original);
     const diff = diffLines(original ?? "", updated, {
       maxLines: DISPLAY_LIMITS.diffLines,
+      maxBytes: DISPLAY_LIMITS.diffBytes,
     });
     return {
       title,

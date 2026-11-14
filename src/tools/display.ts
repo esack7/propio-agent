@@ -26,7 +26,12 @@ export type ToolDisplayBody =
 
 export interface DiffLine {
   readonly op: " " | "+" | "-";
+  /** The line without its line break. */
   readonly text: string;
+  /** The line is the last in its text and has no line break after it. */
+  readonly noNewline?: true;
+  /** The text was cut to keep the payload small. */
+  readonly truncated?: true;
 }
 
 export interface DiffHunk {
@@ -44,7 +49,7 @@ export interface DiffDisplay {
   readonly hunks: readonly DiffHunk[];
   readonly added: number;
   readonly removed: number;
-  /** Lines were left out to keep the payload small. */
+  /** Lines were left out, or a line was cut, to keep the payload small. */
   readonly truncated: boolean;
   /**
    * Hash of the content the hunks were computed against. A description made
@@ -106,7 +111,10 @@ export interface GenericDisplay {
 
 export const DISPLAY_LIMITS = Object.freeze({
   diffLines: 400,
+  /** UTF-8 bytes of line text across all hunks. */
+  diffBytes: 64 * 1024,
   tailLines: 200,
+  /** UTF-8 bytes. */
   tailBytes: 16 * 1024,
   genericValueChars: 2000,
   genericFields: 40,
@@ -130,6 +138,76 @@ function stringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** Bytes a UTF-16 code unit sequence takes in UTF-8, starting at `index`. */
+function codePointAt(
+  text: string,
+  index: number,
+): { bytes: number; units: number } {
+  const unit = text.charCodeAt(index);
+  if (unit < 0x80) return { bytes: 1, units: 1 };
+  if (unit < 0x800) return { bytes: 2, units: 1 };
+  const isHigh = unit >= 0xd800 && unit <= 0xdbff;
+  const next = text.charCodeAt(index + 1);
+  if (isHigh && next >= 0xdc00 && next <= 0xdfff) {
+    return { bytes: 4, units: 2 };
+  }
+  // A lone surrogate is encoded as U+FFFD, three bytes.
+  return { bytes: 3, units: 1 };
+}
+
+/** The length of a string in UTF-8 bytes. */
+export function utf8Length(text: string): number {
+  let bytes = 0;
+  for (let i = 0; i < text.length;) {
+    const point = codePointAt(text, i);
+    bytes += point.bytes;
+    i += point.units;
+  }
+  return bytes;
+}
+
+/** The longest start of the text within `maxBytes` UTF-8 bytes, never splitting a character. */
+export function utf8Head(text: string, maxBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  while (end < text.length) {
+    const point = codePointAt(text, end);
+    if (bytes + point.bytes > maxBytes) break;
+    bytes += point.bytes;
+    end += point.units;
+  }
+  return text.slice(0, end);
+}
+
+/** The longest end of the text within `maxBytes` UTF-8 bytes, never splitting a character. */
+function utf8Tail(text: string, maxBytes: number): string {
+  let bytes = 0;
+  let start = text.length;
+  while (start > 0) {
+    const low = text.charCodeAt(start - 1);
+    const high = text.charCodeAt(start - 2);
+    const pair =
+      start >= 2 &&
+      low >= 0xdc00 &&
+      low <= 0xdfff &&
+      high >= 0xd800 &&
+      high <= 0xdbff;
+    const units = pair ? 2 : 1;
+    const size = codePointAt(text, start - units).bytes;
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    start -= units;
+  }
+  return text.slice(start);
+}
+
+/** The text without line breaks at its end. A backward scan, so linear. */
+function trimTrailingNewlines(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 0x0a) end--;
+  return text.slice(0, end);
 }
 
 /** A title no longer than the limit. */
@@ -184,28 +262,37 @@ export function withFailure<Body extends ToolDisplayBody>(
   return { ...display, error: cut(error, DISPLAY_LIMITS.errorChars).text };
 }
 
-/** The last lines of a stream, within the line and byte limits. */
+/**
+ * The last lines of a stream, within the line limit and the UTF-8 byte
+ * limit. A last line longer than the byte limit keeps its end.
+ */
 export function outputTail(output: string): {
   tail: string;
   lines: number;
   truncated: boolean;
 } {
-  const trimmed = output.replace(/\n+$/, "");
+  const trimmed = trimTrailingNewlines(output);
   const all = trimmed.length === 0 ? [] : trimmed.split("\n");
   const lines = all.filter((line) => line.trim().length > 0).length;
-  let kept = all.slice(-DISPLAY_LIMITS.tailLines);
-  let truncated = kept.length < all.length;
-  let tail = kept.join("\n");
-  while (tail.length > DISPLAY_LIMITS.tailBytes && kept.length > 1) {
-    kept = kept.slice(1);
-    tail = kept.join("\n");
-    truncated = true;
+  const kept: string[] = [];
+  let bytes = 0;
+  let truncated = false;
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (kept.length === DISPLAY_LIMITS.tailLines) {
+      truncated = true;
+      break;
+    }
+    const cost = utf8Length(all[i]) + (kept.length > 0 ? 1 : 0);
+    if (bytes + cost > DISPLAY_LIMITS.tailBytes) {
+      if (kept.length === 0)
+        kept.push(utf8Tail(all[i], DISPLAY_LIMITS.tailBytes));
+      truncated = true;
+      break;
+    }
+    kept.push(all[i]);
+    bytes += cost;
   }
-  if (tail.length > DISPLAY_LIMITS.tailBytes) {
-    tail = tail.slice(-DISPLAY_LIMITS.tailBytes);
-    truncated = true;
-  }
-  return { tail, lines, truncated };
+  return { tail: kept.reverse().join("\n"), lines, truncated };
 }
 
 /** The first few results of a search, each cut to a line's worth. */

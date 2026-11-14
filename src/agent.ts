@@ -737,6 +737,7 @@ export class Agent {
   private async describeToolCall(
     name: string,
     args: Readonly<Record<string, unknown>>,
+    scope: AgentToolScope,
   ): Promise<ToolDisplay> {
     if (!this.toolRegistry.hasTool(name)) {
       return (
@@ -744,9 +745,12 @@ export class Agent {
       );
     }
     return await this.toolRegistry.describeCall(name, args, {
-      // A file is read to preview a change only where reading it would not
-      // itself need the operator's approval.
-      canPreviewRead: (rawPath) =>
+      // A file is read to preview a change only where the model could have
+      // read it itself: `read` is enabled, in the active scope, and would
+      // run without the operator's approval.
+      canPreviewRead: async (rawPath) =>
+        this.toolRegistry.isToolEnabled("read") &&
+        (scope.allowedTools?.has("read") ?? true) &&
         this.toolPermissions.allowsWithoutAsking({
           name: "read",
           args: { path: rawPath },
@@ -2421,7 +2425,8 @@ export class Agent {
         buildPlan: (instruction, retry, iteration, allowed) =>
           this.buildPlan(instruction, retry, iteration, allowed),
         describePromptPlan: (plan) => this.describePromptPlan(plan),
-        describeToolCall: ({ name, args }) => this.describeToolCall(name, args),
+        describeToolCall: ({ name, args, scope }) =>
+          this.describeToolCall(name, args, scope),
         describeToolResult: ({ name, args, result, before }) =>
           this.describeToolResult(name, args, result, before),
         authorizeTool: ({ name, args, scope, toolCallId, signal }) =>

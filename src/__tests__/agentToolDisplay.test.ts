@@ -161,6 +161,67 @@ describe("display payloads through the agent (a8)", () => {
     expect(fs.readFileSync(outside, "utf8")).toBe("x\nprivate two\n");
   });
 
+  it("does not read a file to preview a change when `read` is disabled", async () => {
+    const approvalChannel: ApprovalChannel = {
+      request: async (request) => ({
+        requestId: request.id,
+        decision: "allow_once",
+      }),
+    };
+    const agent = createTestAgent(
+      new ToolCallMockProvider("write", {
+        path: "notes.txt",
+        content: "replaced\n",
+      }),
+      { permissions: { approvalChannel } },
+    );
+    agent.disableTool("read");
+    const displays: ToolDisplay[] = [];
+    await agent.streamChat(userSubmission("Go"), () => {}, {
+      onEvent: (event) => {
+        if (event.type === "tool_started") displays.push(event.display);
+      },
+    });
+
+    expect(displays[0].body).toMatchObject({
+      kind: "diff",
+      hunks: [],
+      unavailable: "Not read before approval",
+    });
+    expect(JSON.stringify(displays)).not.toContain("two");
+    expect(fs.readFileSync(path.join(workspace, "notes.txt"), "utf8")).toBe(
+      "replaced\n",
+    );
+  });
+
+  it("does not read a file to preview a change when `read` is outside the active scope", async () => {
+    const agent = createTestAgent(new ToolCallMockProvider("write", {}));
+    const describeToolCall = (
+      agent as unknown as {
+        describeToolCall(
+          name: string,
+          args: Record<string, unknown>,
+          scope: { allowedTools?: ReadonlySet<string> },
+        ): Promise<ToolDisplay>;
+      }
+    ).describeToolCall.bind(agent);
+    const args = { path: "notes.txt", content: "replaced\n" };
+
+    const narrowed = await describeToolCall("write", args, {
+      allowedTools: new Set(["write"]),
+    });
+    expect(narrowed.body).toMatchObject({
+      hunks: [],
+      unavailable: "Not read before approval",
+    });
+    const withRead = await describeToolCall("write", args, {
+      allowedTools: new Set(["write", "read"]),
+    });
+    expect(withRead.body).toMatchObject({ removed: 3, added: 1 });
+    const unscoped = await describeToolCall("write", args, {});
+    expect(unscoped.body).toMatchObject({ removed: 3, added: 1 });
+  });
+
   it("does not record the preview's policy check as the last decision", async () => {
     const agent = createTestAgent(
       new ToolCallMockProvider("edit", {

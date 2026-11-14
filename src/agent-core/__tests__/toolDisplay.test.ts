@@ -30,6 +30,7 @@ function setup(
     status: "success",
     content: `result of ${String(args.key)}`,
   }),
+  callArgs: Record<string, unknown> = { key: "k" },
 ) {
   const requests: ChatRequest[] = [];
   const rounds: ChatStreamEvent[][] = [
@@ -39,7 +40,7 @@ function setup(
         toolCalls: [
           {
             id: "call-1",
-            function: { name: "lookup", arguments: { key: "k" } },
+            function: { name: "lookup", arguments: callArgs },
           },
         ],
       },
@@ -66,7 +67,10 @@ function setup(
           description: "Lookup",
           parameters: {
             type: "object",
-            properties: { key: { type: "string" } },
+            properties: {
+              key: { type: "string" },
+              tags: { type: "array", items: { type: "string" } },
+            },
           },
         },
       },
@@ -166,6 +170,7 @@ describe("display payloads on tool events (a8)", () => {
       name: "lookup",
       toolCallId: "call-1",
       args: { key: "k" },
+      scope: { allowedTools: undefined },
     });
     // The call is described before it runs, and its result with that
     // description in hand.
@@ -244,6 +249,51 @@ describe("display payloads on tool events (a8)", () => {
     } finally {
       process.off("unhandledRejection", unhandled);
     }
+  });
+
+  it("gives the hooks copies, so presentation cannot change what runs or is recorded", async () => {
+    const { run, toolEvents, execute, requests } = setup(
+      {
+        describeToolCall: ({ args, scope }) => {
+          expect(scope).toEqual({ allowedTools: undefined });
+          (args.tags as string[]).sort();
+          (args as Record<string, unknown>).key = "changed";
+          return described("Reading a.txt");
+        },
+        describeToolResult: ({ result, before }) => {
+          (result as ToolExecutionResult).content = "rewritten";
+          (before as { title: string }).title = "rewritten";
+          return before;
+        },
+      },
+      undefined,
+      { key: "k", tags: ["b", "a"] },
+    );
+    await run();
+
+    expect(execute).toHaveBeenCalledWith(
+      { key: "k", tags: ["b", "a"] },
+      expect.anything(),
+    );
+    const [started, finished] = toolEvents();
+    expect(started.display.title).toBe("Reading a.txt");
+    expect(finished.display.title).toBe("rewritten");
+    const toolMessage = requests[1].messages.find(
+      (message) => message.role === "tool",
+    );
+    expect(toolMessage?.toolResults?.[0]?.content).toBe("result of k");
+  });
+
+  it("passes the scope the call will be authorized against", async () => {
+    const seen: unknown[] = [];
+    const { run } = setup({
+      describeToolCall: ({ scope }) => {
+        seen.push(scope);
+        return described("Reading a.txt");
+      },
+    });
+    await run();
+    expect(seen).toEqual([{ allowedTools: undefined }]);
   });
 
   it("emits payloads that are plain JSON", async () => {

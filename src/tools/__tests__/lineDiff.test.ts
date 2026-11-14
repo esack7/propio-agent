@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@jest/globals";
-import type { DiffHunk } from "../display.js";
+import { utf8Length, type DiffHunk, type DiffLine } from "../display.js";
 import { diffLines, splitLines } from "../lineDiff.js";
+
+/** The line as it was in its text, with its line break if it had one. */
+const asWritten = (line: DiffLine) =>
+  line.noNewline ? line.text : `${line.text}\n`;
 
 /** The new lines that the hunks say the old lines become. */
 function applyHunks(oldLines: readonly string[], hunks: readonly DiffHunk[]) {
@@ -13,11 +17,11 @@ function applyHunks(oldLines: readonly string[], hunks: readonly DiffHunk[]) {
     position = start;
     for (const line of hunk.lines) {
       if (line.op === "+") {
-        result.push(line.text);
+        result.push(asWritten(line));
         continue;
       }
-      expect(oldLines[position]).toBe(line.text);
-      if (line.op === " ") result.push(line.text);
+      expect(oldLines[position]).toBe(asWritten(line));
+      if (line.op === " ") result.push(asWritten(line));
       position++;
     }
   }
@@ -104,13 +108,22 @@ describe("diffLines", () => {
       hunks: [{ oldStart: 1, newStart: 0 }],
     });
     expect(diffLines("same\n", "same\n").hunks).toEqual([]);
-    // Only the final newline differs: there is no line to show.
-    expect(diffLines("a\nb", "a\nb\n")).toMatchObject({
-      hunks: [],
-      added: 0,
-      removed: 0,
-    });
     expectRoundTrip("a\nb", "a\nc");
+  });
+
+  it("shows a final line gaining or losing its line break", () => {
+    const gained = expectRoundTrip("a\nb", "a\nb\n");
+    expect(gained).toMatchObject({ added: 1, removed: 1 });
+    expect(gained.hunks[0].lines).toEqual([
+      { op: " ", text: "a" },
+      { op: "-", text: "b", noNewline: true },
+      { op: "+", text: "b" },
+    ]);
+    const lost = expectRoundTrip("a\nb\n", "a\nb");
+    expect(lost.hunks[0].lines.slice(1)).toEqual([
+      { op: "-", text: "b" },
+      { op: "+", text: "b", noNewline: true },
+    ]);
   });
 
   it("keeps carriage returns in the line they end", () => {
@@ -143,6 +156,26 @@ describe("diffLines", () => {
     expect(diff.truncated).toBe(true);
     expect(diff.hunks.flatMap((hunk) => hunk.lines)).toHaveLength(50);
     expect(diff).toMatchObject({ added: 500, removed: 500 });
+  });
+
+  it("stops at the byte limit, cutting a long line, and says so", () => {
+    const long = "é".repeat(1_000_000);
+    const diff = diffLines("", `${long}\nshort\n`, { maxBytes: 1000 });
+    expect(diff.truncated).toBe(true);
+    expect(diff).toMatchObject({ added: 2, removed: 0 });
+    const lines = diff.hunks.flatMap((hunk) => hunk.lines);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ op: "+", truncated: true });
+    expect(utf8Length(lines[0].text)).toBe(1000);
+
+    // Several lines share one budget.
+    const many = Array.from({ length: 100 }, () => "x".repeat(50)).join("\n");
+    const shared = diffLines("", many, { maxBytes: 1000 });
+    expect(shared.truncated).toBe(true);
+    const bytes = shared.hunks
+      .flatMap((hunk) => hunk.lines)
+      .reduce((sum, line) => sum + utf8Length(line.text), 0);
+    expect(bytes).toBeLessThanOrEqual(1000);
   });
 
   it("falls back to one replacement when two large texts share nothing", () => {
