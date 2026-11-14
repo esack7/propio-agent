@@ -12,7 +12,11 @@ export interface KeyLineReaderOptions {
 
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u;
 
-function isPrintable(text: string | undefined, key: readline.Key): boolean {
+/** A key that types a visible character. */
+export function isPrintableKey(
+  text: string | undefined,
+  key: readline.Key,
+): text is string {
   return (
     typeof text === "string" &&
     text.length > 0 &&
@@ -36,7 +40,7 @@ const PLAIN_KEY_ACTIONS: Readonly<Record<string, KeyAction>> = {
 };
 
 /** What a key does to the line, apart from being typed into it. */
-function keyAction(key: readline.Key): KeyAction {
+export function lineKeyAction(key: readline.Key): KeyAction {
   const table = key.ctrl === true ? CONTROL_KEY_ACTIONS : PLAIN_KEY_ACTIONS;
   const name = key.name ?? "";
   return Object.prototype.hasOwnProperty.call(table, name)
@@ -91,12 +95,12 @@ export function readLineFromKeys(
       },
     };
     const onKeypress = (text: string | undefined, key: readline.Key): void => {
-      const action = keyAction(key);
+      const action = lineKeyAction(key);
       if (action !== "none") {
         actions[action]();
-      } else if (isPrintable(text, key)) {
+      } else if (isPrintableKey(text, key)) {
         buffer += text;
-        output.write(text as string);
+        output.write(text);
       }
     };
 

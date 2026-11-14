@@ -223,7 +223,14 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
   lines.push({
     text: formatLabelLine(
       "Esc",
-      "cancel the active turn, or exit shell-command input",
+      "interrupt the active turn, or exit shell-command input",
+    ),
+    style: "info",
+  });
+  lines.push({
+    text: formatLabelLine(
+      "Type during a turn",
+      "guide it without stopping; Enter sends, Esc interrupts",
     ),
     style: "info",
   });

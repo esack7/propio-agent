@@ -10,6 +10,9 @@ import { StatusRenderer } from "./statusRenderer.js";
 import { TranscriptRenderer } from "./transcriptRenderer.js";
 import { TerminalWriter, watchTerminalResize } from "./terminalWriter.js";
 import { symbols } from "./symbols.js";
+import { createHoldableStream, type HoldableStream } from "./holdableStream.js";
+import { createTurnInputLine, type TurnInputLine } from "./turnInputLine.js";
+import { visibleText } from "./visibleText.js";
 import { ReplRenderer } from "./replRenderer.js";
 import {
   ReplUiStore,
@@ -29,6 +32,19 @@ export interface TerminalUiOptions {
   stderr?: NodeJS.WriteStream;
 }
 
+/**
+ * In the retained view everything is drawn on stderr. Wrapping it lets the
+ * line typed during a turn hold that output while it is on screen.
+ */
+function holdableForRetainedView(
+  options: TerminalUiOptions,
+  stderr: NodeJS.WriteStream,
+): HoldableStream | null {
+  const retained =
+    options.interactive && !options.plain && !options.json && stderr.isTTY;
+  return retained ? createHoldableStream(stderr) : null;
+}
+
 export class TerminalUi {
   private readonly interactive: boolean;
   private readonly plain: boolean;
@@ -41,14 +57,17 @@ export class TerminalUi {
   private readonly retainedRenderer: ReplRenderer | null;
   private readonly retainedPromptOutputStream: NodeJS.WriteStream;
   private unwatchResize: () => void = () => {};
+  private readonly holdableStderr: HoldableStream | null;
 
   constructor(options: TerminalUiOptions) {
     this.interactive = options.interactive;
     this.plain = options.plain;
     this.json = options.json;
+    const stderr = options.stderr ?? process.stderr;
+    this.holdableStderr = holdableForRetainedView(options, stderr);
     this.writer = new TerminalWriter({
       stdout: options.stdout,
-      stderr: options.stderr,
+      stderr: this.holdableStderr?.stream ?? stderr,
     });
 
     const style = this.applyStyle.bind(this);
@@ -143,6 +162,36 @@ export class TerminalUi {
     }
 
     this.retainedStore.setMode(mode);
+  }
+
+  /**
+   * The line for typing to a running turn, or null where the terminal cannot
+   * show one (plain, JSON, or not a TTY).
+   */
+  createTurnInputLine(): TurnInputLine | null {
+    const holdable = this.holdableStderr;
+    return holdable
+      ? createTurnInputLine(
+          holdable,
+          () => this.writer.getStderrStream().columns ?? 80,
+        )
+      : null;
+  }
+
+  /** Guidance accepted for the running turn and not yet given to the model. */
+  guidanceQueued(text: string): void {
+    this.subtle(`queued ${symbols.prompt} ${visibleText(text)}`);
+  }
+
+  /** Guidance the model has now been given, at this point in the turn. */
+  guidanceDelivered(text: string): void {
+    if (this.json) {
+      return;
+    }
+    this.appendTranscriptEntry({
+      kind: "user_message",
+      text: visibleText(text),
+    });
   }
 
   setPromptState(state: PromptState | null): void {

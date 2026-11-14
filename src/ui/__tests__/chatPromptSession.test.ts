@@ -1089,7 +1089,15 @@ describe("chatPromptSession", () => {
 
     try {
       inputStream.write(`${PASTE_START}${pngPath}${PASTE_END}`);
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      // The pill appears once the file has been read. Wait for that rather
+      // than for a fixed time, which a busy machine can exceed.
+      for (
+        let waited = 0;
+        waited < 5000 && getState()?.buffer !== "[Image #1]";
+        waited += 10
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
 
       expect(getState()?.buffer).toBe("[Image #1]");
 
