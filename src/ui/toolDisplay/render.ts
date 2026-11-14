@@ -1,10 +1,15 @@
 import type { ToolDisplay, ToolDisplayBody } from "../../tools/display.js";
-import { getDisplayWidth, keepEndWithinDisplayWidth } from "../displayWidth.js";
+import {
+  getDisplayWidth,
+  keepEndWithinDisplayWidth,
+  wrapVisibleText,
+} from "../displayWidth.js";
 import { visibleText } from "../visibleText.js";
 
 export interface DisplayState {
   status: "running" | "success" | "error";
   durationMs?: number;
+  color?: boolean;
 }
 export type DisplayMode = "collapsed" | "expanded";
 interface Lines {
@@ -126,15 +131,33 @@ export function renderToolDisplay(
       : [visibleText(display.title), body.summary].filter(Boolean).join(" · ");
   const header = `${status} ${title}${timing}`;
   const details = [
-    ...(display.error
-      ? [`error: ${visibleText(display.error.split("\n")[0]!)}`]
+    ...(display.fullOutputPath
+      ? [`Full output: ${visibleText(display.fullOutputPath)}`]
       : []),
-    ...body.details,
+    ...(display.error
+      ? [
+          `error: ${visibleText(mode === "expanded" ? display.error : display.error.split("\n")[0]!)}`,
+        ]
+      : []),
+    ...body.details.filter(
+      (line) =>
+        mode === "expanded" ||
+        display.body.kind !== "command" ||
+        !line.startsWith("cwd: "),
+    ),
   ];
   if ("truncated" in display.body && display.body.truncated)
     details.push("… payload truncated");
   const lines = layoutLines(display, header, details, mode);
-  return fitLines(lines, width, mode, status);
+  const fitted = fitLines(lines, width, mode, status);
+  if (!state.color || display.body.kind !== "diff") return fitted;
+  return fitted.map((line) =>
+    line.startsWith("  │ + ")
+      ? `\x1b[32m${line}\x1b[0m`
+      : line.startsWith("  │ - ")
+        ? `\x1b[31m${line}\x1b[0m`
+        : line,
+  );
 }
 
 function fitLines(
@@ -143,7 +166,7 @@ function fitLines(
   mode: DisplayMode,
   status: string,
 ): string[] {
-  const columns = Math.max(1, Math.floor(width));
+  const columns = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 80;
   return lines.flatMap((line) => {
     const prefix = line.startsWith("  │ ") ? "  │ " : `${status} `;
     const content = line.slice(prefix.length);
@@ -151,17 +174,7 @@ function fitLines(
     const room = columns - getDisplayWidth(prefix);
     if (mode === "collapsed")
       return [prefix + keepEndWithinDisplayWidth(content, room)];
-    const chunks: string[] = [];
-    let chunk = "";
-    for (const segment of content) {
-      if (chunk && getDisplayWidth(chunk + segment) > room) {
-        chunks.push(prefix + chunk);
-        chunk = "";
-      }
-      chunk += getDisplayWidth(segment) > room ? "…" : segment;
-    }
-    chunks.push(prefix + chunk);
-    return chunks;
+    return wrapVisibleText(content, room).map((chunk) => prefix + chunk);
   });
 }
 
@@ -175,7 +188,7 @@ function layoutLines(
   if (mode === "expanded")
     lines = [header, ...details.map((line) => `  │ ${line}`)];
   else if (display.body.kind === "diff" || display.body.kind === "command") {
-    const shown = details.length > 11 ? details.slice(0, 10) : details;
+    const shown = collapsedDetails(display, details);
     lines = [header, ...shown.map((line) => `  │ ${line}`)];
     if (details.length > 11)
       lines.push(`  │ … ${details.length - 10} more lines`);
@@ -187,4 +200,14 @@ function layoutLines(
         : []),
     ];
   return lines;
+}
+
+function collapsedDetails(display: ToolDisplay, details: string[]): string[] {
+  const limit = details.length > 11 ? 10 : 11;
+  return display.body.kind === "command" && details.length > limit
+    ? [
+        ...(display.error ? [details[0]!] : []),
+        ...details.slice(-(limit - (display.error ? 1 : 0))),
+      ]
+    : details.slice(0, limit);
 }

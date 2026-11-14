@@ -151,7 +151,6 @@ export function formatOperatorGuidance(text: string): string {
 
 export class AgentRuntime {
   private static readonly MAX_EMPTY_TOOL_ONLY_STREAK = 3;
-  private static readonly MAX_VISIBILITY_PREVIEW_CHARS = 120;
   private static readonly MAX_CONTEXT_RETRY_LEVEL = 3;
   private turnStarted = false;
   /** What the running turn is doing, for the record of a cancellation. */
@@ -232,12 +231,6 @@ export class AgentRuntime {
     return this.dependencies.tools
       .getEnabledSchemas()
       .filter((tool) => !allowed || allowed.has(tool.function.name));
-  }
-  private describeToolInvocation(
-    name: string,
-    _args: Record<string, unknown>,
-  ): string {
-    return name;
   }
   /** How a call is shown before it is authorized. */
   private async describeCall(
@@ -772,14 +765,6 @@ export class AgentRuntime {
     phase?: string,
   ): void {
     this.emitVisibilityEvent(options, { type: "status", status, phase });
-  }
-
-  private toPreview(text: string): string {
-    const compact = text.replace(/\s+/g, " ").trim();
-    if (compact.length <= AgentRuntime.MAX_VISIBILITY_PREVIEW_CHARS) {
-      return compact;
-    }
-    return `${compact.slice(0, AgentRuntime.MAX_VISIBILITY_PREVIEW_CHARS)}...`;
   }
 
   private normalizeStreamEvent(event: ChatStreamEvent): {
@@ -1676,7 +1661,6 @@ export class AgentRuntime {
     const toolName = toolCall.function.name;
     const serializedArgs = JSON.stringify(safeArgs);
     const toolCallId = toolCall.id!;
-    const activityLabel = this.describeToolInvocation(toolName, safeArgs);
     const display = await this.describeCall(
       toolName,
       toolCallId,
@@ -1687,7 +1671,6 @@ export class AgentRuntime {
     this.emitToolStartedDiagnostics(
       toolName,
       toolCallId,
-      activityLabel,
       safeArgs,
       serializedArgs,
       iteration,
@@ -1706,7 +1689,6 @@ export class AgentRuntime {
     const failed = this.emitToolFinishedEvents(
       toolName,
       toolCallId,
-      activityLabel,
       safeArgs,
       result,
       execResult,
@@ -1732,7 +1714,6 @@ export class AgentRuntime {
   private emitToolStartedDiagnostics(
     toolName: string,
     toolCallId: string,
-    activityLabel: string,
     args: Record<string, unknown>,
     serializedArgs: string,
     iteration: number,
@@ -1773,11 +1754,8 @@ export class AgentRuntime {
       type: "tool_started",
       toolName,
       toolCallId,
-      activityLabel,
-      useLabel: null,
       args,
       argumentChars: serializedArgs.length,
-      argumentPreview: this.toPreview(serializedArgs),
       display,
     });
     this.emitDiagnostic({
@@ -1794,7 +1772,6 @@ export class AgentRuntime {
   private emitToolFinishedEvents(
     toolName: string,
     toolCallId: string,
-    activityLabel: string,
     args: Record<string, unknown>,
     result: string,
     execResult: ToolExecutionResult,
@@ -1821,13 +1798,10 @@ export class AgentRuntime {
       truncatedForContext: false,
       status: execResult.status,
     });
-    const resultPreview = this.toPreview(result);
     this.emitVisibilityEvent(options, {
       type: failed ? "tool_failed" : "tool_finished",
       toolName,
       toolCallId,
-      activityLabel,
-      resultPreview,
       result,
       args,
       status: execResult.status,
@@ -1839,6 +1813,7 @@ export class AgentRuntime {
         before,
       ),
       durationMs: this.toolRunMs.get(toolCallId) ?? 0,
+      fullOutputPath: execResult.externalStorage?.externalPath,
     });
     this.toolRunMs.delete(toolCallId);
     const operationId = this.toolOperationIds.get(toolCallId);

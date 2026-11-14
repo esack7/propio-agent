@@ -1,3 +1,4 @@
+import { renderToolDisplay } from "./toolDisplay/render.js";
 import { formatInputPrompt, formatUserMessage } from "./formatting.js";
 import {
   MarkdownStreamer,
@@ -20,7 +21,7 @@ import {
   type ReplAppMode,
   type TranscriptEntry,
 } from "./replUi.js";
-import { visibleToolCallView, type ToolCallView } from "./toolCallView.js";
+import type { ToolCallDisplay } from "./toolCallDisplay.js";
 import type { PromptState } from "./promptState.js";
 import { renderTranscriptEntry } from "./transcriptEntryOps.js";
 
@@ -306,43 +307,68 @@ export class TerminalUi {
     this.statusRenderer.status(text, phase);
   }
 
-  // Every tool-call view enters the terminal through these two methods, so
-  // this is where text from the model and tools is made visible.
-  upsertToolCallView(view: ToolCallView): void {
-    if (this.json) {
-      return;
-    }
+  private lastExpandableCall: ToolCallDisplay | null = null;
 
-    if (this.retainedStore) {
-      this.retainedStore.upsertToolCallView(visibleToolCallView(view));
-      return;
-    }
-
-    this.appendToolCallTranscriptEntry(visibleToolCallView(view));
+  renderToolCall(view: ToolCallDisplay): void {
+    if (this.json) return;
+    const width = Math.max(
+      1,
+      (this.writer.getStderrStream().columns ?? 80) - 1,
+    );
+    const collapsed = renderToolDisplay(
+      view.display,
+      { ...view, color: this.interactive && !this.plain },
+      width,
+      "collapsed",
+    );
+    if (this.retainedStore) this.retainedStore.upsertToolCallDisplay(view);
+    if (view.status === "running" && this.retainedStore) return;
+    this.appendTranscriptEntry({
+      kind: "tool_display",
+      text: collapsed.join("\n"),
+    });
+    if (view.status !== "running")
+      this.rememberExpandableCall(view, width, collapsed);
   }
 
-  appendToolCallView(view: ToolCallView): void {
-    if (this.json) {
-      return;
-    }
-
-    this.appendToolCallTranscriptEntry(visibleToolCallView(view));
+  private rememberExpandableCall(
+    view: ToolCallDisplay,
+    width: number,
+    collapsed: string[],
+  ): void {
+    const expanded = renderToolDisplay(
+      view.display,
+      { ...view, color: this.interactive && !this.plain },
+      width,
+      "expanded",
+    );
+    if (view.fullOutputPath || expanded.join("\n") !== collapsed.join("\n"))
+      this.lastExpandableCall = structuredClone(view);
   }
 
-  private appendToolCallTranscriptEntry(view: ToolCallView): void {
-    if (view.status === "running") {
-      this.appendTranscriptEntry({ kind: "info", text: `◆ ${view.useLabel}` });
-    } else if (view.status === "success") {
-      const text = view.resultLabel
-        ? `${view.useLabel} — ${view.resultLabel}`
-        : view.useLabel;
-      this.appendTranscriptEntry({ kind: "success", text });
-    } else {
-      const text = view.resultLabel
-        ? `${view.useLabel} — ${view.resultLabel}`
-        : view.useLabel;
-      this.appendTranscriptEntry({ kind: "error", text });
+  expandLastToolCall(): void {
+    if (this.json) return;
+    const view = this.lastExpandableCall;
+    if (!view) {
+      this.subtle("No tool result to expand.");
+      return;
     }
+    const width = Math.max(
+      1,
+      (this.writer.getStderrStream().columns ?? 80) - 1,
+    );
+    const display = view.fullOutputPath
+      ? { ...view.display, fullOutputPath: view.fullOutputPath }
+      : view.display;
+    this.appendTranscriptEntry({
+      kind: "tool_display",
+      text: renderToolDisplay(
+        display,
+        { ...view, color: this.interactive && !this.plain },
+        width,
+        "expanded",
+      ).join("\n"),
+    });
   }
 
   traceStatus(text: string): void {
@@ -549,7 +575,7 @@ export class TerminalUi {
   clearEphemeralSurfaces(): void {
     if (this.retainedStore) {
       const state = this.retainedStore.getState();
-      if (state.status || state.toolCallViews.size > 0) {
+      if (state.status || state.toolCallDisplays.size > 0) {
         this.retainedStore.clearEphemeralSurfaces();
       }
       return;
@@ -569,7 +595,7 @@ export class TerminalUi {
     if (this.retainedStore) {
       const state = this.retainedStore.getState();
       if (state.status) {
-        this.retainedStore.clearEphemeralSurfaces();
+        this.retainedStore.setStatus(null);
       }
       return;
     }

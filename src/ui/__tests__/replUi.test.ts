@@ -127,12 +127,14 @@ describe("ReplRenderer", () => {
       phase: "tool call",
     });
 
-    store.upsertToolCallView({
+    store.upsertToolCallDisplay({
       id: "tc-1",
       toolName: "read",
       status: "running",
-      useLabel: "Reading files",
-      resultLabel: null,
+      display: {
+        title: "Reading files",
+        body: { kind: "generic" as const, fields: [], truncated: false },
+      },
     });
     renderer.flush(store.getState());
     expect(stderr.chunks.join("")).toContain("Reading files");
@@ -200,13 +202,15 @@ describe("ReplRenderer", () => {
       id: "tc-1",
       toolName: "read",
       status: "running" as const,
-      useLabel: "Reading files",
-      resultLabel: null,
+      display: {
+        title: "Reading files",
+        body: { kind: "generic" as const, fields: [], truncated: false },
+      },
     };
-    store.upsertToolCallView(view);
+    store.upsertToolCallDisplay(view);
     renderer.flush(store.getState());
 
-    store.upsertToolCallView(view);
+    store.upsertToolCallDisplay(view);
     renderer.flush(store.getState());
 
     expect(spinner.start).toHaveBeenCalledTimes(1);
@@ -244,7 +248,7 @@ describe("ReplRenderer", () => {
     store.appendTranscriptEntry({ kind: "info", text: "hello" });
     renderer.flush(store.getState());
 
-    expect(clearStderrLinesSpy).toHaveBeenCalledWith(1);
+    expect(clearStderrLinesSpy).toHaveBeenCalledWith(2);
   });
 
   it("clears overlays using the exact number of rendered lines", () => {
@@ -259,7 +263,7 @@ describe("ReplRenderer", () => {
     store.closeOverlay();
     renderer.flush(store.getState());
 
-    expect(clearStderrLinesSpy).toHaveBeenCalledWith(2);
+    expect(clearStderrLinesSpy).toHaveBeenCalledWith(3);
   });
 
   it("counts JSON overlay entries using their rendered stderr lines", () => {
@@ -276,7 +280,7 @@ describe("ReplRenderer", () => {
     store.closeOverlay();
     renderer.flush(store.getState());
 
-    expect(clearStderrLinesSpy).toHaveBeenCalledWith(6);
+    expect(clearStderrLinesSpy).toHaveBeenCalledWith(7);
   });
 
   it("repaints retained bottom content using resized line estimates", () => {
@@ -297,8 +301,24 @@ describe("ReplRenderer", () => {
     stderr.columns = 20;
     renderer.handleResize(store.getState());
 
-    expect(clearStderrLinesSpy).toHaveBeenLastCalledWith(2);
+    expect(clearStderrLinesSpy).toHaveBeenLastCalledWith(3);
     expect(stderr.chunks.join("")).toContain("alpha beta gamma");
     expect(stderr.chunks.join("")).toContain("delta epsilon");
   });
+});
+
+it("draws all in-flight payloads rather than only the latest", () => {
+  const { renderer, store, stderr } = createHarness();
+  for (const id of ["first", "second"])
+    store.upsertToolCallDisplay({
+      id,
+      toolName: "read",
+      status: "running",
+      display: { title: id, body: { kind: "file_read", path: id } },
+    });
+  renderer.flush(store.getState());
+  const output = stderr.chunks.join("");
+  expect(output).toContain("first");
+  expect(output).toContain("second");
+  expect(output.indexOf("first")).toBeLessThan(output.indexOf("second"));
 });

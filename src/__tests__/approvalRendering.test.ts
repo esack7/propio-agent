@@ -86,7 +86,7 @@ describe("a turn that asks about a disguised command", () => {
       expect(terminal).not.toContain(`work${INJECTED}`);
       // The tool line came first, and both it and the question show the
       // whole command.
-      const toolLine = terminal.indexOf(`Bash ${SHOWN}`);
+      const toolLine = terminal.indexOf(`$ ${SHOWN}`);
       const question = terminal.indexOf(`Command: ${SHOWN}`);
       expect(toolLine).toBeGreaterThanOrEqual(0);
       expect(question).toBeGreaterThan(toolLine);

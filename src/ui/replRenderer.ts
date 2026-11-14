@@ -8,12 +8,7 @@ import type {
   ReplUiState,
   TranscriptEntry,
 } from "./replUi.js";
-import type { ToolCallView } from "./toolCallView.js";
-import {
-  formatToolExecution,
-  formatSuccess,
-  formatError,
-} from "./formatting.js";
+import { renderToolDisplay } from "./toolDisplay/render.js";
 import {
   countTranscriptEntryStderrLines,
   renderTranscriptEntry,
@@ -147,7 +142,8 @@ export class ReplRenderer {
       this.renderedBottomLineCount > 0 &&
       (bottomSignatureChanged || transcriptAppended)
     ) {
-      this.options.writer.clearStderrLines(this.renderedBottomLineCount);
+      // Bottom entries end in a newline: include the empty cursor row.
+      this.options.writer.clearStderrLines(this.renderedBottomLineCount + 1);
       this.renderedBottomLineCount = 0;
     }
   }
@@ -174,7 +170,7 @@ export class ReplRenderer {
         Math.max(
           this.renderedBottomLineCount,
           countBottomZoneLines(nextState, this.options.writer),
-        ),
+        ) + 1,
       );
       this.renderedBottomLineCount = 0;
     }
@@ -224,9 +220,13 @@ export class ReplRenderer {
   private renderBottomZone(state: ReplUiState): number {
     let renderedLines = 0;
 
-    const lastToolCallView = lastMapValue(state.toolCallViews);
-    if (lastToolCallView) {
-      const text = renderToolCallViewText(lastToolCallView);
+    for (const view of state.toolCallDisplays.values()) {
+      const text = renderToolDisplay(
+        view.display,
+        view,
+        (this.options.writer.getStderrStream().columns ?? 80) - 1,
+        "collapsed",
+      ).join("\n");
       this.options.writer.writeStderrLine(text);
       renderedLines += countWrittenStderrLines(text, this.options.writer);
     }
@@ -254,10 +254,14 @@ function countBottomZoneLines(
 ): number {
   let count = 0;
 
-  const lastToolCallView = lastMapValue(state.toolCallViews);
-  if (lastToolCallView) {
+  for (const view of state.toolCallDisplays.values()) {
     count += countWrittenStderrLines(
-      renderToolCallViewText(lastToolCallView),
+      renderToolDisplay(
+        view.display,
+        view,
+        (writer.getStderrStream().columns ?? 80) - 1,
+        "collapsed",
+      ).join("\n"),
       writer,
     );
   }
@@ -278,7 +282,8 @@ function bottomZoneSignatureChanged(
   nextState: ReplUiState,
 ): boolean {
   return (
-    previousState?.toolCallViewsVersion !== nextState.toolCallViewsVersion ||
+    previousState?.toolCallDisplaysVersion !==
+      nextState.toolCallDisplaysVersion ||
     previousState?.footer !== nextState.footer ||
     !overlaysEqual(previousState?.overlay ?? null, nextState.overlay)
   );
@@ -307,22 +312,4 @@ function countWrittenStderrLines(text: string, writer: TerminalWriter): number {
   );
   const trimmed = fitted.endsWith("\n") ? fitted.slice(0, -1) : fitted;
   return Math.max(1, trimmed.split("\n").length);
-}
-
-function lastMapValue<V>(map: ReadonlyMap<string, V>): V | undefined {
-  let last: V | undefined;
-  for (const v of map.values()) {
-    last = v;
-  }
-  return last;
-}
-
-function renderToolCallViewText(view: ToolCallView): string {
-  if (view.status === "running") {
-    return formatToolExecution(view.useLabel);
-  }
-  const label = view.resultLabel
-    ? `${view.useLabel} — ${view.resultLabel}`
-    : view.useLabel;
-  return view.status === "success" ? formatSuccess(label) : formatError(label);
 }

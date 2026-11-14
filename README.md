@@ -1756,3 +1756,26 @@ without generated build files.
 Use `propio setup openai` to explicitly choose API billing or Continue with ChatGPT, select an account/model and prompt budget, and choose session-only or persistent use. `propio auth login openai --account personal` signs in without changing defaults; `/model` and `/account` provide normal selection and account management. Existing API configurations retain their behavior. Plan access and background summaries consume the selected account's allowance or permitted credits; [Manage usage](https://chatgpt.com/settings/usage).
 
 See [OpenAI setup, storage, recovery, and local testing](docs/openai-subscription.md). This implementation has automated coverage and a macOS/Colima broker transport check; production live acceptance and other platform gates remain pending. Windows credential operations and native Linux/Windows subscription sandbox startup are currently unsupported. No new package version has been published.
+
+### Tool call display and expansion
+
+Tool calls show structured results: file changes as diffs, commands with exit
+status, duration and output tails, and compact read/search summaries. Completed
+calls stay in the transcript regardless of thinking visibility. Every running
+call appears in the bottom area of an interactive terminal. Plain output prints
+starts and completed results; JSON mode adds no terminal rendering.
+
+Use `/expand` or **Ctrl+O** at the idle prompt to print the last result with
+hidden details, including the full-output path when a result was stored
+externally. Expansion prints the entire capped display payload; it does not load
+external files. Diff and command summaries use at most 12 lines. Reads, searches,
+and generic calls use one line, plus an error line on failure. Untrusted text is
+escaped and displayed in a separate column. **Ctrl+Y** now toggles tool visibility
+(previously Ctrl+O); Ctrl+T still toggles thinking. During a running turn the input
+editor accepts guidance, not expansion commands.
+
+Provisional API migration: tool events use `display` and completion `durationMs`
+in place of `activityLabel`, `useLabel`, `argumentPreview`, and `resultPreview`.
+Completion events may include `fullOutputPath`. The temporary `displayUseLabel`
+and `displayResultLabel` exports have been removed. The execution contract is
+unchanged.

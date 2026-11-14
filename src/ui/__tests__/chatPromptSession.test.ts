@@ -40,6 +40,7 @@ function expectSubmitPrompt(
 interface TestSessionOptions {
   typeaheadProviders?: TypeaheadProvider[];
   onRender?: (state: ChatPromptSessionState) => void;
+  expandToolCall?: () => void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
   refreshPromptFooters?: () => { prompt: string; bash: string };
@@ -99,6 +100,7 @@ function createPromptCallbacks(
     submit: options.submit ?? (() => {}),
     interrupt: options.interrupt ?? (() => {}),
     close: options.close ?? (() => {}),
+    expandToolCall: options.expandToolCall,
     toggleToolCalls: options.toggleToolCalls,
     toggleThinking: options.toggleThinking,
     refreshPromptFooters: options.refreshPromptFooters,
@@ -270,7 +272,7 @@ describe("chatPromptSession", () => {
     }
   });
 
-  it("invokes the tool-call toggle callback on Ctrl+O without changing the buffer", () => {
+  it("invokes the tool-call toggle callback on Ctrl+Y without changing the buffer", () => {
     const toggleToolCalls = jest.fn();
     const { inputStream, session, getState } = createTestSession({
       toggleToolCalls,
@@ -278,7 +280,7 @@ describe("chatPromptSession", () => {
 
     try {
       inputStream.emit("keypress", "o", {
-        name: "o",
+        name: "y",
         ctrl: true,
         meta: false,
         shift: false,
@@ -308,7 +310,7 @@ describe("chatPromptSession", () => {
     }
   });
 
-  it("clears a pending Ctrl+X editor chord before handling Ctrl+O", () => {
+  it("clears a pending Ctrl+X editor chord before handling Ctrl+Y", () => {
     const toggleToolCalls = jest.fn();
     const editorRunner = jest.fn(() => ({ status: 0, signal: null }));
     const { inputStream, session, getState } = createTestSession({
@@ -325,7 +327,7 @@ describe("chatPromptSession", () => {
         shift: false,
       });
       inputStream.emit("keypress", undefined, {
-        name: "o",
+        name: "y",
         ctrl: true,
         meta: false,
         shift: false,
@@ -569,7 +571,7 @@ describe("chatPromptSession", () => {
 
     try {
       inputStream.emit("keypress", "o", {
-        name: "o",
+        name: "y",
         ctrl: true,
         meta: false,
         shift: false,
@@ -1185,4 +1187,19 @@ describe("chatPromptSession", () => {
       session.cleanup();
     }
   });
+});
+
+it("expands with Ctrl+O while retaining the prompt buffer", () => {
+  const expandToolCall = jest.fn();
+  const { inputStream, session, getState } = createTestSession({
+    expandToolCall,
+  });
+  try {
+    inputStream.emit("keypress", "draft", { name: "draft" });
+    inputStream.emit("keypress", undefined, { name: "o", ctrl: true });
+    expect(expandToolCall).toHaveBeenCalledTimes(1);
+    expect(getState()?.buffer).toBe("draft");
+  } finally {
+    session.cleanup();
+  }
 });

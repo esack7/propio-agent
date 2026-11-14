@@ -143,3 +143,101 @@ describe("tool display rendering", () => {
     expect(lines.join("\n")).toContain("\\x1b");
   });
 });
+
+it("keeps the final command output within twelve lines, including failures", () => {
+  const display: ToolDisplay = {
+    title: "bash",
+    error: "failed",
+    body: {
+      kind: "command",
+      command: "test",
+      stdoutTail: Array.from({ length: 100 }, (_, i) => `out ${i}`).join("\n"),
+      stderrTail: "last error",
+      truncated: true,
+    },
+  };
+  const lines = renderToolDisplay(
+    display,
+    { status: "error" },
+    40,
+    "collapsed",
+  );
+  expect(lines).toHaveLength(12);
+  expect(lines[1]).toContain("failed");
+  expect(lines.join("\n")).toContain("out 99");
+  expect(lines.join("\n")).toContain("last error");
+});
+it("wraps long expanded lines without splitting joined emoji or losing content", () => {
+  const content = "界👩‍💻é".repeat(40);
+  const lines = renderToolDisplay(
+    {
+      title: "test",
+      body: {
+        kind: "generic",
+        fields: [{ key: "data", value: content }],
+        truncated: false,
+      },
+    },
+    { status: "success" },
+    40,
+    "expanded",
+  );
+  expect(lines.every((line) => getDisplayWidth(line) <= 40)).toBe(true);
+  // Invisible joiners are escaped before width fitting, preserving their visible representation.
+  expect(
+    lines
+      .slice(1)
+      .map((line) => line.slice(4))
+      .join(""),
+  ).toBe("data: " + content.replace(/\u200d/g, "\\u200d"));
+});
+it("retains the payload column even when hostile long lines are clipped", () => {
+  const payload = "x".repeat(200) + "needs approval";
+  const lines = renderToolDisplay(
+    {
+      title: payload,
+      body: {
+        kind: "generic",
+        fields: [{ key: "key", value: payload }],
+        truncated: false,
+      },
+    },
+    { status: "success" },
+    40,
+    "expanded",
+  );
+  expect(
+    lines
+      .slice(1)
+      .every((line) => line.startsWith("  │ ") || line.startsWith("✓ ")),
+  ).toBe(true);
+});
+
+it("keeps successful commands with no output on one line", () => {
+  expect(
+    renderToolDisplay(
+      {
+        title: "bash",
+        body: {
+          kind: "command",
+          command: "true",
+          cwd: "/tmp",
+          exitCode: 0,
+          truncated: false,
+        },
+      },
+      { status: "success" },
+      40,
+      "collapsed",
+    ),
+  ).toHaveLength(1);
+});
+
+it.each(displays)("bounds a ten-call turn for $body.kind", (display) => {
+  const lines = Array.from({ length: 10 }, () =>
+    renderToolDisplay(display, { status: "success" }, 40, "collapsed"),
+  ).flat();
+  expect(lines.length).toBeLessThanOrEqual(
+    display.body.kind === "diff" || display.body.kind === "command" ? 120 : 10,
+  );
+});

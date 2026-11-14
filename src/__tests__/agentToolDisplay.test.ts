@@ -104,15 +104,12 @@ describe("display payloads through the agent (a8)", () => {
       "one\n2\nthree\n",
     );
 
-    // What the terminal draws today is read off the same description.
-    expect(started).toMatchObject({
-      activityLabel: "Editing notes.txt",
-      useLabel: "notes.txt",
-    });
+    // Legacy label fields are absent from the public events.
+    expect(started).not.toHaveProperty("useLabel");
+    expect(started).not.toHaveProperty("activityLabel");
+    expect(ended).not.toHaveProperty("resultPreview");
     expect(ended).toMatchObject({
       type: "tool_finished",
-      activityLabel: "Editing notes.txt",
-      resultPreview: "Changed (+1 -1)",
       durationMs: expect.any(Number),
     });
     expect(JSON.parse(JSON.stringify(ended))).toEqual(ended);
@@ -249,14 +246,11 @@ describe("display payloads through the agent (a8)", () => {
   it("describes a command with its exit status and a read with its line count", async () => {
     const bash = await run("bash", { command: "echo hi; exit 2" });
     expect(bash.started).toMatchObject({
-      activityLabel: "Running echo hi; exit 2",
-      useLabel: "echo hi; exit 2",
       display: { body: { kind: "command", command: "echo hi; exit 2" } },
     });
     expect(bash.ended).toMatchObject({
       type: "tool_finished",
       // The shell runner adds its own line to stderr on a nonzero exit.
-      resultPreview: expect.stringMatching(/^Exit 2\b/),
       display: {
         body: { exitCode: 2, classification: "nonzero_exit", stdoutTail: "hi" },
       },
@@ -269,7 +263,6 @@ describe("display payloads through the agent (a8)", () => {
       "tool_finished",
     ]);
     expect(read.ended).toMatchObject({
-      resultPreview: "Read 4 lines",
       display: { body: { kind: "file_read", path: "notes.txt", lines: 4 } },
     });
   });

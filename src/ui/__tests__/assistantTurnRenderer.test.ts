@@ -244,10 +244,12 @@ function toolStartedStep(
       type: "tool_started",
       toolName,
       toolCallId,
-      activityLabel,
+      display: {
+        title: activityLabel,
+        body: { kind: "generic", fields: [], truncated: false },
+      },
       args: {},
       argumentChars: argumentPreview.length,
-      argumentPreview,
     },
   };
 }
@@ -264,8 +266,11 @@ function toolFinishedStep(
       type: "tool_finished",
       toolName,
       toolCallId,
-      activityLabel,
-      resultPreview,
+      display: {
+        title: activityLabel,
+        body: { kind: "generic", fields: [], resultPreview, truncated: false },
+      },
+      durationMs: 1,
     },
   };
 }
@@ -430,8 +435,16 @@ describe("streamAssistantTurn", () => {
           type: "tool_finished",
           toolName: "read",
           toolCallId: "tool_1",
-          activityLabel: 'Reading src for "streamChat"',
-          resultPreview: "match found",
+          display: {
+            title: 'Reading src for "streamChat"',
+            body: {
+              kind: "generic",
+              fields: [],
+              resultPreview: "match found",
+              truncated: false,
+            },
+          },
+          durationMs: 1,
         },
       },
       {
@@ -440,8 +453,16 @@ describe("streamAssistantTurn", () => {
           type: "tool_failed",
           toolName: "grep",
           toolCallId: "tool_2",
-          activityLabel: 'Searching src for "missing"',
-          resultPreview: "no matches",
+          display: {
+            title: 'Searching src for "missing"',
+            body: {
+              kind: "generic",
+              fields: [],
+              resultPreview: "no matches",
+              truncated: false,
+            },
+          },
+          durationMs: 1,
         },
       },
     ]);
@@ -649,8 +670,7 @@ describe("streamAssistantTurn", () => {
   it("commits tool output as transcript lines while visible thinking is streaming", async () => {
     const { ui, stderr } = createUi();
     const beginThinkingSpy = jest.spyOn(ui, "beginThinkingResponse");
-    const appendToolSpy = jest.spyOn(ui, "appendToolCallView");
-    const upsertToolSpy = jest.spyOn(ui, "upsertToolCallView");
+    const appendToolSpy = jest.spyOn(ui, "renderToolCall");
     const agent = new ScriptedAssistantTurnAgent([
       thinkingStep("Thinking before tool."),
       ...readPackageJsonSteps(),
@@ -672,7 +692,6 @@ describe("streamAssistantTurn", () => {
     const output = normalizeOutput(stderr.chunks);
 
     expect(appendToolSpy).toHaveBeenCalledTimes(2);
-    expect(upsertToolSpy).not.toHaveBeenCalled();
     expect(beginThinkingSpy).toHaveBeenCalledTimes(2);
     expect(output.indexOf("Thinking before tool.")).toBeLessThan(
       output.indexOf("Reading package.json"),
@@ -810,10 +829,12 @@ describe("streamAssistantTurn", () => {
           type: "tool_started",
           toolName: "read",
           toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
+          display: {
+            title: "Reading package.json",
+            body: { kind: "generic", fields: [], truncated: false },
+          },
           args: {},
           argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
         },
       },
       {
@@ -822,8 +843,16 @@ describe("streamAssistantTurn", () => {
           type: "tool_finished",
           toolName: "read",
           toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "package content",
+          display: {
+            title: "Reading package.json",
+            body: {
+              kind: "generic",
+              fields: [],
+              resultPreview: "package content",
+              truncated: false,
+            },
+          },
+          durationMs: 1,
         },
       },
     ]);
@@ -852,11 +881,12 @@ describe("streamAssistantTurn", () => {
           type: "tool_started",
           toolName: "read",
           toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          useLabel: "package.json",
+          display: {
+            title: "Reading package.json",
+            body: { kind: "generic", fields: [], truncated: false },
+          },
           args: {},
           argumentChars: 12,
-          argumentPreview: '{"path":"package.json"}',
         },
       },
       {
@@ -865,8 +895,16 @@ describe("streamAssistantTurn", () => {
           type: "tool_finished",
           toolName: "read",
           toolCallId: "tool_1",
-          activityLabel: "Reading package.json",
-          resultPreview: "Read 1 line",
+          display: {
+            title: "Reading package.json",
+            body: {
+              kind: "generic",
+              fields: [],
+              resultPreview: "Read 1 line",
+              truncated: false,
+            },
+          },
+          durationMs: 1,
         },
       },
       { type: "token", value: "Final answer." },
@@ -918,10 +956,12 @@ describe("streamAssistantTurn", () => {
           type: "tool_started",
           toolName: "grep",
           toolCallId: "tool_9",
-          activityLabel: 'Searching src for "missing"',
+          display: {
+            title: 'Searching src for "missing"',
+            body: { kind: "generic", fields: [], truncated: false },
+          },
           args: {},
           argumentChars: 16,
-          argumentPreview: '{"pattern":"missing"}',
         },
       },
       {
@@ -930,8 +970,16 @@ describe("streamAssistantTurn", () => {
           type: "tool_failed",
           toolName: "grep",
           toolCallId: "tool_9",
-          activityLabel: 'Searching src for "missing"',
-          resultPreview: "No matches found.",
+          display: {
+            title: 'Searching src for "missing"',
+            body: {
+              kind: "generic",
+              fields: [],
+              resultPreview: "No matches found.",
+              truncated: false,
+            },
+          },
+          durationMs: 1,
         },
       },
     ]);

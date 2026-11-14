@@ -184,3 +184,22 @@ export function keepEndWithinDisplayWidth(
   }
   return `${marker}${kept.reverse().join("")}`;
 }
+
+/** Wrap visible text without splitting a grapheme; callers own line prefixes. */
+export function wrapVisibleText(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  let used = 0;
+  for (const cluster of graphemes(text)) {
+    const size = widestDisplayWidth(cluster);
+    if (line && used + size > width) {
+      lines.push(line);
+      line = "";
+      used = 0;
+    }
+    line += size > width ? "…" : cluster;
+    used += Math.min(size, width);
+  }
+  lines.push(line);
+  return lines;
+}

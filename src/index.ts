@@ -956,6 +956,11 @@ export async function handleInteractiveSubmission(
   }
 
   const handlers: InteractiveInputHandler[] = [
+    async (text, context) => {
+      if (text !== "/expand") return undefined;
+      context.ui.expandLastToolCall();
+      return null;
+    },
     handleExitSubmission,
     handleHelpSubmission,
     handleClearSubmission,
@@ -1041,6 +1046,7 @@ export async function runInteractiveSession(
       ui.idleFooter(footer);
     },
     refreshPromptFooters: () => getPromptFooters(),
+    onExpandToolCall: () => ui.expandLastToolCall(),
     onToggleToolCalls: () => {
       visibilityState.toggleToolCalls();
       return composer.getState()?.inputMode === "bash"

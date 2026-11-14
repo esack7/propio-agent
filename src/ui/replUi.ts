@@ -1,10 +1,11 @@
 import { clonePromptState, type PromptState } from "./promptState.js";
-import type { ToolCallView } from "./toolCallView.js";
+import type { ToolCallDisplay } from "./toolCallDisplay.js";
 
 export type ReplAppMode =
   "idle" | "running" | "awaitingInput" | "showingResults" | "error";
 
 export type TranscriptEntry =
+  | { kind: "tool_display"; text: string }
   | { kind: "user_message"; text: string }
   | { kind: "assistant_start" }
   | { kind: "assistant_token"; text: string }
@@ -46,8 +47,8 @@ export interface ReplUiState {
   footer: string | null;
   mode: ReplAppMode;
   overlay: OverlayState | null;
-  toolCallViews: ReadonlyMap<string, ToolCallView>;
-  toolCallViewsVersion: number;
+  toolCallDisplays: ReadonlyMap<string, ToolCallDisplay>;
+  toolCallDisplaysVersion: number;
 }
 
 export type ReplUiAction =
@@ -59,7 +60,7 @@ export type ReplUiAction =
   | { type: "openOverlay"; overlay: OverlayState }
   | { type: "closeOverlay" }
   | { type: "clearEphemeralSurfaces" }
-  | { type: "upsertToolCallView"; view: ToolCallView };
+  | { type: "upsertToolCallDisplay"; view: ToolCallDisplay };
 
 function cloneOverlayState(overlay: OverlayState | null): OverlayState | null {
   if (!overlay) {
@@ -80,8 +81,8 @@ function cloneState(state: ReplUiState): ReplUiState {
     footer: state.footer,
     mode: state.mode,
     overlay: cloneOverlayState(state.overlay),
-    toolCallViews: new Map(state.toolCallViews),
-    toolCallViewsVersion: state.toolCallViewsVersion,
+    toolCallDisplays: new Map(state.toolCallDisplays),
+    toolCallDisplaysVersion: state.toolCallDisplaysVersion,
   };
 }
 
@@ -101,8 +102,8 @@ export class ReplUiStore {
       footer: initialState.footer ?? null,
       mode: initialState.mode ?? "idle",
       overlay: cloneOverlayState(initialState.overlay ?? null),
-      toolCallViews: new Map(),
-      toolCallViewsVersion: 0,
+      toolCallDisplays: new Map(),
+      toolCallDisplaysVersion: 0,
     };
   }
 
@@ -128,8 +129,8 @@ export class ReplUiStore {
   }
 
   private applyAction(action: ReplUiAction): boolean {
-    if (action.type === "upsertToolCallView") {
-      return this.applyUpsertToolCallView(action.view);
+    if (action.type === "upsertToolCallDisplay") {
+      return this.applyUpsertToolCallDisplay(action.view);
     }
 
     this.applyStateAction(action);
@@ -137,7 +138,7 @@ export class ReplUiStore {
   }
 
   private applyStateAction(
-    action: Exclude<ReplUiAction, { type: "upsertToolCallView" }>,
+    action: Exclude<ReplUiAction, { type: "upsertToolCallDisplay" }>,
   ): void {
     switch (action.type) {
       case "appendTranscriptEntry":
@@ -223,37 +224,22 @@ export class ReplUiStore {
     this.state = {
       ...this.state,
       status: null,
-      toolCallViews: new Map(),
-      toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
+      toolCallDisplays: new Map(),
+      toolCallDisplaysVersion: this.state.toolCallDisplaysVersion + 1,
     };
   }
 
-  private applyUpsertToolCallView(view: ToolCallView): boolean {
-    let base = this.state.toolCallViews;
-    const existing = base.get(view.id);
-    if (
-      existing &&
-      existing.status === view.status &&
-      existing.useLabel === view.useLabel &&
-      existing.resultLabel === view.resultLabel
-    ) {
+  private applyUpsertToolCallDisplay(view: ToolCallDisplay): boolean {
+    const existing = this.state.toolCallDisplays.get(view.id);
+    if (existing && JSON.stringify(existing) === JSON.stringify(view))
       return false;
-    }
-
-    if (
-      view.status === "running" &&
-      base.size > 0 &&
-      [...base.values()].every((entry) => entry.status !== "running")
-    ) {
-      base = new Map();
-    }
-
-    const newViews = new Map(base);
-    newViews.set(view.id, view);
+    const newViews = new Map(this.state.toolCallDisplays);
+    if (view.status === "running") newViews.set(view.id, structuredClone(view));
+    else newViews.delete(view.id);
     this.state = {
       ...this.state,
-      toolCallViews: newViews,
-      toolCallViewsVersion: this.state.toolCallViewsVersion + 1,
+      toolCallDisplays: newViews,
+      toolCallDisplaysVersion: this.state.toolCallDisplaysVersion + 1,
     };
     return true;
   }
@@ -290,7 +276,7 @@ export class ReplUiStore {
     this.dispatch({ type: "clearEphemeralSurfaces" });
   }
 
-  upsertToolCallView(view: ToolCallView): void {
-    this.dispatch({ type: "upsertToolCallView", view });
+  upsertToolCallDisplay(view: ToolCallDisplay): void {
+    this.dispatch({ type: "upsertToolCallDisplay", view });
   }
 }

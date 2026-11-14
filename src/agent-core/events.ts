@@ -25,11 +25,8 @@ export type AgentVisibilityEvent =
       type: "tool_started";
       toolName: string;
       toolCallId: string;
-      activityLabel: string;
-      useLabel: string | null;
       args: Record<string, unknown>;
       argumentChars: number;
-      argumentPreview: string;
       /** The call as it would run, described before anyone approved it. */
       display: ToolDisplay;
     }
@@ -37,8 +34,6 @@ export type AgentVisibilityEvent =
       type: "tool_finished";
       toolName: string;
       toolCallId: string;
-      activityLabel: string;
-      resultPreview: string;
       result: string;
       args: Record<string, unknown>;
       status: ToolExecutionStatus;
@@ -46,13 +41,12 @@ export type AgentVisibilityEvent =
       display: ToolDisplay;
       /** Time spent running the tool, not waiting for approval. */
       durationMs: number;
+      fullOutputPath?: string;
     }
   | {
       type: "tool_failed";
       toolName: string;
       toolCallId: string;
-      activityLabel: string;
-      resultPreview: string;
       result: string;
       args: Record<string, unknown>;
       status: ToolExecutionStatus;
@@ -60,6 +54,7 @@ export type AgentVisibilityEvent =
       display: ToolDisplay;
       /** Time spent running the tool, not waiting for approval. */
       durationMs: number;
+      fullOutputPath?: string;
     }
   | {
       type: "reasoning_summary";

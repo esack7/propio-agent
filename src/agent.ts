@@ -36,12 +36,7 @@ import {
 } from "./config/runtimeConfig.js";
 import { loadProvidersConfig } from "./config/providersConfig.js";
 import { ToolRegistry } from "./tools/registry.js";
-import {
-  displayResultLabel,
-  displayUseLabel,
-  genericDisplay,
-  type ToolDisplay,
-} from "./tools/display.js";
+import { genericDisplay, type ToolDisplay } from "./tools/display.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import type { ApprovalChannel } from "./permissions/approvalChannel.js";
 import {
@@ -2552,27 +2547,14 @@ export class Agent {
     event: RuntimeEvent,
   ): AgentVisibilityEvent | undefined {
     if (isRuntimeOnlyEvent(event)) return undefined;
-    // The labels are what the terminal draws today. They are read off the
-    // description, so the two cannot disagree.
-    if (event.type === "tool_started") {
-      return {
-        ...event,
-        activityLabel: event.display.title,
-        useLabel: displayUseLabel(event.display),
-      };
-    }
     if (event.type === "tool_finished" || event.type === "tool_failed") {
       return {
         type: event.type,
         toolName: event.toolName,
         toolCallId: event.toolCallId,
-        activityLabel: event.display.title,
-        resultPreview:
-          (event.type === "tool_finished"
-            ? displayResultLabel(event.display)
-            : null) ?? event.resultPreview,
         display: event.display,
         durationMs: event.durationMs,
+        fullOutputPath: event.fullOutputPath,
       };
     }
     return event;

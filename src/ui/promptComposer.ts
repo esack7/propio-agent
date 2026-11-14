@@ -68,6 +68,7 @@ export interface PromptComposerOptions {
   createInterface?: typeof readline.createInterface;
   renderFooter?: (footer: string) => void;
   renderState?: (state: PromptState | null) => void;
+  onExpandToolCall?: () => void;
   onToggleToolCalls?: () => string | null | undefined;
   onToggleThinking?: () => string | null | undefined;
   onCycleAgentMode?: () => string | null | undefined;
@@ -324,6 +325,7 @@ export function createPromptComposer(
               setCloseReason("interrupted");
               process.kill(process.pid, "SIGINT");
             },
+            expandToolCall: options.onExpandToolCall,
             toggleToolCalls: () => {
               return options.onToggleToolCalls?.();
             },

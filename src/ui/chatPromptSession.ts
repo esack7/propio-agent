@@ -71,6 +71,7 @@ export interface ChatPromptSessionCallbacks {
   render(state: ChatPromptSessionState): void;
   submit(submission: UiPromptSubmission): void;
   interrupt(): void;
+  expandToolCall?: () => void;
   toggleToolCalls?: () => string | null | undefined;
   toggleThinking?: () => string | null | undefined;
   cycleAgentMode?: () => string | null | undefined;
@@ -1613,6 +1614,13 @@ export function createChatPromptSession(
     };
 
     if (key.name === "o" && key.ctrl) {
+      clearPreviousLayout();
+      lastLayout = null;
+      callbacks.expandToolCall?.();
+      render();
+      return true;
+    }
+    if (key.name === "y" && key.ctrl) {
       return applyFooterToggle(callbacks.toggleToolCalls);
     }
 

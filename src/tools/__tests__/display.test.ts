@@ -22,8 +22,6 @@ import {
 } from "../index.js";
 import {
   DISPLAY_LIMITS,
-  displayResultLabel,
-  displayUseLabel,
   genericDisplay,
   outputTail,
   utf8Length,
@@ -90,8 +88,6 @@ describe("what each built-in tool describes", () => {
     expect(after.error).toBeUndefined();
     // The preview is the diff of the file before and after the real edit.
     expect(await readFile(file("a.txt"), "utf8")).toBe("one\n2\n2.5\nthree\n");
-    expect(displayUseLabel(after)).toBe("a.txt");
-    expect(displayResultLabel(after)).toBe("Changed (+2 -1)");
   });
 
   it("edit with replace_all: every replacement is in the preview", async () => {
@@ -120,7 +116,6 @@ describe("what each built-in tool describes", () => {
     });
     expect(result.status).toBe("error");
     expect(after.error).toContain("String not found");
-    expect(displayResultLabel(after)).toContain("String not found");
   });
 
   it("write: a new file is all additions; an existing one is a diff", async () => {
@@ -137,7 +132,6 @@ describe("what each built-in tool describes", () => {
     });
     expect(created.before.body).not.toHaveProperty("baseHash");
     expect(created.after).toEqual(created.before);
-    expect(displayResultLabel(created.after)).toBe("Created (+2 -0)");
 
     const replaced = await describedRun("write", {
       path: "new.txt",
@@ -173,8 +167,6 @@ describe("what each built-in tool describes", () => {
       stderrLines: 1,
       truncated: false,
     });
-    expect(displayUseLabel(ok.after)).toBe("printf 'a\\nb\\n'; echo warn >&2");
-    expect(displayResultLabel(ok.after)).toBe("Exit 0 (2 lines)");
 
     const failed = await describedRun("bash", {
       command: "echo broke >&2; exit 3",
@@ -187,7 +179,6 @@ describe("what each built-in tool describes", () => {
     });
     // A command that ran and exited nonzero is a result, not a failed call.
     expect(failed.after.error).toBeUndefined();
-    expect(displayResultLabel(failed.after)).toBe("Exit 3: broke");
   });
 
   it("bash: a cancelled command is a failure with what it had written", async () => {
@@ -216,7 +207,6 @@ describe("what each built-in tool describes", () => {
       body: { kind: "file_read", path: "a.txt" },
     });
     expect(whole.after.body).toMatchObject({ lines: 5 });
-    expect(displayResultLabel(whole.after)).toBe("Read 5 lines");
 
     const ranged = await describedRun("read", {
       path: "a.txt",
@@ -257,29 +247,22 @@ describe("what each built-in tool describes", () => {
     expect(
       grep.after.body.kind === "search" && grep.after.body.sample,
     ).toHaveLength(3);
-    expect(displayUseLabel(grep.after)).toBe(`"foo" in ${workspace}`);
-    expect(displayResultLabel(grep.after)).toBe("Found 3 matches in 2 files");
 
     const none = await describedRun("grep", {
       path: workspace,
       pattern: "zzz",
     });
     expect(none.after.body).toMatchObject({ matches: 0, files: 0, sample: [] });
-    expect(displayResultLabel(none.after)).toBe("No matches");
 
     const find = await describedRun("find", {
       path: workspace,
       pattern: "*.txt",
     });
     expect(find.after.body).toMatchObject({ mode: "files", matches: 2 });
-    expect(displayUseLabel(find.after)).toBe(`*.txt in ${workspace}`);
-    expect(displayResultLabel(find.after)).toBe("Found 2 files");
 
     const ls = await describedRun("ls", { path: workspace });
     expect(ls.before.title).toBe(`Listing ${workspace}`);
     expect(ls.after.body).toMatchObject({ mode: "list", matches: 2 });
-    expect(displayUseLabel(ls.after)).toBe(workspace);
-    expect(displayResultLabel(ls.after)).toBe("2 items");
   });
 
   it("skill: a generic description with the skill named in the title", async () => {
@@ -361,8 +344,6 @@ describe("a tool that describes nothing", () => {
       },
     });
     expect(after.body).toMatchObject({ resultPreview: "found  it\n" });
-    expect(displayUseLabel(after)).toBeNull();
-    expect(displayResultLabel(after)).toBe("found it");
   });
 
   it("reports a failure as the error, not as a result", async () => {
@@ -479,7 +460,6 @@ describe("payload limits", () => {
     });
     expect(before.body).toMatchObject({ added: 1, removed: 1 });
     expect(after).toEqual(before);
-    expect(displayResultLabel(after)).toBe("Changed (+1 -1)");
   });
 
   it("counts the output tail in UTF-8 bytes and never splits a character", () => {
@@ -622,7 +602,6 @@ describe("describing a call changes nothing", () => {
       truncated: false,
       stale: true,
     });
-    expect(displayResultLabel(after)).toBe("Changed");
   });
 });
 
