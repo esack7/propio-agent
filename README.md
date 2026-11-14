@@ -1523,9 +1523,68 @@ const result = await runtime.streamChat(
 // Call controller.abort() while a turn is running to cancel it.
 ```
 
+#### Sessions and commands
+
+`AgentSession`, from the same entry point, puts a turn behind typed commands
+and events, so a frontend steers it without calling the runtime. The CLI uses
+it in-process; a server can put the same commands on a transport.
+
+```typescript
+import { AgentSession, parseSessionCommand } from "@propio-ai/agent/agent-core";
+
+const session = new AgentSession({
+  runTurn: (submission, control) =>
+    runtime.streamChat(submission, () => {}, {
+      abortSignal: control.abortSignal,
+      guidance: control.guidance,
+      onEvent: control.emit,
+    }),
+});
+session.subscribe((event) => send(event)); // every event is plain JSON
+
+const parsed = parseSessionCommand(JSON.parse(body)); // validate what arrives
+if (parsed.ok) reply(session.dispatch(parsed.command));
+```
+
+| Command                              | Effect                                         | Refused when                                    |
+| ------------------------------------ | ---------------------------------------------- | ----------------------------------------------- |
+| `submit` (`text`, optional `images`) | Starts a turn                                  | A turn is running (`turn_running`)              |
+| `guide` (`text`)                     | Queues guidance for the running turn           | No turn is running (`no_turn`)                  |
+| `interrupt`                          | Stops the running turn, keeping completed work | No turn is running (`no_turn`)                  |
+| `answer_approval` (`answer`)         | Answers a waiting approval request             | No such request is waiting (`unknown_approval`) |
+
+- Every command carries a `commandId` chosen by the sender. `dispatch` returns
+  at once with `{ commandId, accepted }` and, when refused, a `code` and
+  `message`. A value that is not a command is refused as `invalid`; unknown
+  fields are refused.
+- A turn's outcome arrives as `session_turn_ended` with `outcome`
+  (`completed`, `cancelled`, `failed`), the `result` or an `error` as
+  `{ name, message }`, and any guidance that was accepted but never delivered.
+- `guidance_queued` and the runtime's `guidance_delivered` carry the guide
+  command's id.
+- `session.approvalChannel` is an approval channel: give it to whatever
+  authorizes tool calls. A request is emitted as `approval_requested`; the
+  answer is an `answer_approval` command; `approval_resolved` reports the
+  decision, or `withdrawn` if the turn was interrupted first.
+- Images in a `submit` are strings (a data URL or base64);
+  `encodeCommandImage` encodes bytes.
+- A session holds one conversation's steering state and nothing at module
+  level, so many can run in one process. There is no session id in a
+  command: routing to the right session is the transport's job.
+- Events are not yet numbered, and events passed through from a turn are
+  only as serializable as the turn makes them (`turn_failed` from
+  `AgentRuntime` carries an `Error`). Numbered, fully serializable events
+  are the next roadmap phase.
+
+In the CLI, submitting a message, pressing Escape, and answering an approval
+prompt each dispatch one of these commands. The agent receives the text and
+images of a submission; what was displayed in the prompt stays in the
+terminal.
+
 Run `npm run example:agent-core` after building for a complete in-memory record
 lookup application. It uses all three public entry points, executes a tool,
-returns an answer, and demonstrates cancellation without provider credentials.
+returns an answer, demonstrates cancellation, and steers a turn through
+session commands, all without provider credentials.
 The example validates standalone consumption; a second production application,
 a separate `@propio-ai/agent-core` repository, and publication remain separate
 milestones. This API follows the agent package's version and remains provisional;

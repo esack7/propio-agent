@@ -102,12 +102,9 @@ describe("handleInteractiveSubmission chat path", () => {
 
     expect(exitCode).toBeNull();
     expect(persistSubmittedInput).toHaveBeenCalledWith("[Pasted text #1]");
-    expect(getSubmission()).toEqual(
-      expect.objectContaining({
-        text: largeBody,
-        displayText: "[Pasted text #1]",
-      }),
-    );
+    // The agent gets what the submit command carries: the expanded text.
+    // What was displayed stays with the terminal.
+    expect(getSubmission()).toEqual({ text: largeBody });
     expect(getSubmission()?.text).not.toContain("[Pasted text #1]");
   });
 

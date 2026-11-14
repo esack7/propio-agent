@@ -14,6 +14,21 @@ export type {
   AgentPromptTraceMetadata,
 } from "./types.js";
 export type { PromptSubmission, PromptImage } from "./input.js";
+export { parseSessionCommand, encodeCommandImage } from "./commands.js";
+export type {
+  SessionCommand,
+  CommandResult,
+  CommandRejection,
+  ParsedSessionCommand,
+} from "./commands.js";
+export { AgentSession } from "./session.js";
+export type {
+  AgentSessionOptions,
+  SessionEvent,
+  SessionOwnEvent,
+  SessionTurnControl,
+  SessionTurnRunner,
+} from "./session.js";
 export type {
   AgentVisibilityEvent,
   AgentLifecycleEvent,
