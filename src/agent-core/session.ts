@@ -1,4 +1,5 @@
-import type { ApprovalAnswer, ApprovalRequest } from "../policy/index.js";
+import type { ApprovalAnswer } from "../policy/index.js";
+import type { ApprovalRequest } from "./approval.js";
 import {
   parseSessionCommand,
   type CommandRejection,

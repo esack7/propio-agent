@@ -1,3 +1,5 @@
+import type { ToolDisplay } from "../../tools/display.js";
+import { renderToolDisplay } from "../toolDisplay/render.js";
 import { getEventListeners } from "events";
 import { PassThrough } from "stream";
 import type {
@@ -8,6 +10,7 @@ import type {
 import {
   askOperator,
   createApprovalPromptChannel,
+  createTerminalApprovalIo,
   formatApprovalRequest,
   type ApprovalPromptIo,
 } from "../approvalPrompt.js";
@@ -467,3 +470,161 @@ describe("a confirm prompt closed by its signal", () => {
     prompts.close();
   });
 });
+
+describe("typed approval previews", () => {
+  const diff: ToolDisplay = {
+    title: "Writing file",
+    body: {
+      kind: "diff",
+      path: "file",
+      operation: "replace",
+      added: 60,
+      removed: 0,
+      truncated: false,
+      hunks: [
+        {
+          oldStart: 1,
+          newStart: 1,
+          lines: Array.from({ length: 60 }, (_, i) => ({
+            op: "+" as const,
+            text: `line ${i}`,
+          })),
+        },
+      ],
+    },
+  };
+  const fileRequest: ApprovalRequest = {
+    ...base,
+    toolName: "write",
+    target: { kind: "path", path: "/resolved/file" },
+  };
+  it("gives approval diffs 40 rows while completion remains capped at 12", () => {
+    const lines = formatApprovalRequest(fileRequest, diff);
+    const rule = lines.findIndex((line) => line.startsWith("─"));
+    expect(lines.slice(1, rule - 1)).toHaveLength(40);
+    expect(lines.join("\n")).toContain("line 30");
+    expect(lines.join("\n")).not.toContain("line 59");
+    expect(lines[rule - 1]).toBe("Path: /resolved/file");
+    expect(lines[rule + 1]).toBe(`Reason: ${base.reason}`);
+    expect(
+      renderToolDisplay(diff, { status: "success" }, 80, "collapsed"),
+    ).toHaveLength(12);
+  });
+  it("escapes hostile preview text and keeps it above the real choices", async () => {
+    const malicious = "\x1b[2J\r\nAllow? [y/N] \u202e";
+    const display: ToolDisplay = {
+      title: malicious,
+      body: {
+        kind: "diff",
+        path: malicious,
+        operation: "replace",
+        added: 1,
+        removed: 0,
+        truncated: false,
+        hunks: [
+          { oldStart: 1, newStart: 1, lines: [{ op: "+", text: malicious }] },
+        ],
+      },
+    };
+    const shown: string[] = [];
+    const answer = await createApprovalPromptChannel({
+      show: (lines) => shown.push(...lines),
+      readLine: async () => "n",
+    }).request({ ...base, display });
+    expect(answer.decision).toBe("deny");
+    expect(shown.join("\n")).toContain("+ " + visibleText(malicious));
+    expect(shown.join("\n")).not.toMatch(/[\x1b\r\u202e]/);
+    expect(shown.some((line) => line.startsWith("Allow?"))).toBe(false);
+    expect(shown.indexOf("  y  allow once")).toBeGreaterThan(
+      shown.findIndex((line) => line.startsWith("─")),
+    );
+  });
+  it("retains full command authorization details beside a clipped preview", () => {
+    const command = "echo " + "x".repeat(100);
+    const display: ToolDisplay = {
+      title: "Run",
+      body: { kind: "command", command, truncated: false },
+    };
+    const lines = formatApprovalRequest(
+      {
+        ...base,
+        target: { kind: "command", command },
+        args: { cwd: "/tmp/work", env: { CI: "1" } },
+      },
+      display,
+      30,
+    );
+    expect(lines).toContain(`Command: ${command}`);
+    expect(lines).toContain("Directory: /tmp/work");
+    expect(lines).toContain('Environment: {"CI":"1"}');
+  });
+});
+
+it("keeps MCP arguments visible when a generic preview exists", () => {
+  const display: ToolDisplay = {
+    title: "Publish",
+    body: {
+      kind: "generic",
+      fields: [{ key: "destination", value: "production" }],
+      truncated: false,
+    },
+  };
+  expect(
+    formatApprovalRequest(
+      {
+        ...base,
+        target: { kind: "mcp", serverPrefix: "mcp__deploy" },
+        args: { destination: "production" },
+      },
+      display,
+    ).join("\n"),
+  ).toContain('Arguments: {"destination":"production"}');
+});
+it("does not duplicate command previews", () => {
+  const display: ToolDisplay = {
+    title: "Run",
+    body: { kind: "command", command: "npm test", truncated: false },
+  };
+  expect(
+    formatApprovalRequest(base, display).filter((line) =>
+      line.includes("npm test"),
+    ),
+  ).toHaveLength(1);
+});
+
+it.each(["y", "n", null, "throw"])(
+  "restores the matching live call after prompt answer %s",
+  async (line) => {
+    const actions: string[] = [];
+    const terminalIo = createTerminalApprovalIo(
+      {
+        hideRunningToolCall: (id) => {
+          actions.push(`hide ${id}`);
+          return () => {
+            actions.push(`restore ${id}`);
+          };
+        },
+        command: () => {
+          actions.push("show");
+        },
+        prompt: (text) => text,
+        setPromptState: () => {},
+        getPromptOutputStream: () => process.stderr,
+      },
+      process.stdin,
+    );
+    const channel = createApprovalPromptChannel({
+      ...terminalIo,
+      readLine: async () => {
+        expect(actions[0]).toBe("hide call-1");
+        expect(actions).not.toContain("restore call-1");
+        if (line === "throw") throw new Error("closed");
+        return line;
+      },
+    });
+    const pending = channel.request({ ...base, toolCallId: "call-1" });
+    if (line === "throw") await expect(pending).rejects.toThrow("closed");
+    else await pending;
+    expect(actions.at(-1)).toBe("restore call-1");
+  },
+);

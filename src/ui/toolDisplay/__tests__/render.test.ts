@@ -349,3 +349,28 @@ it("uses singular line wording", () => {
     )[0],
   ).toContain("1 line");
 });
+
+it.each([0, 1, 2, -1, NaN, Infinity])(
+  "bounds invalid collapsed limits (%s)",
+  (collapsedLimit) => {
+    const display: ToolDisplay = {
+      title: "Run",
+      body: {
+        kind: "command",
+        command: "run",
+        stdoutTail: Array.from({ length: 50 }, (_, i) => `line ${i}`).join(
+          "\n",
+        ),
+        truncated: false,
+      },
+    };
+    const lines = renderToolDisplay(
+      display,
+      { status: "success", collapsedLimit },
+      80,
+      "collapsed",
+    );
+    expect(lines.length).toBeLessThanOrEqual(12);
+    expect(lines.join("\n")).toContain("more lines");
+  },
+);

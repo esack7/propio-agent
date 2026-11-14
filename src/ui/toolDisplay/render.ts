@@ -11,6 +11,7 @@ export interface DisplayState {
   status: "running" | "success" | "error";
   durationMs?: number;
   color?: boolean;
+  collapsedLimit?: number;
   readonly fullOutputPath?: string;
 }
 export type DisplayMode = "collapsed" | "expanded";
@@ -172,7 +173,13 @@ export function renderToolDisplay(
   ];
   if ("truncated" in display.body && display.body.truncated)
     details.push("… payload truncated");
-  const lines = layoutLines(display, header, details, mode);
+  const lines = layoutLines(
+    display,
+    header,
+    details,
+    mode,
+    collapsedCap(state.collapsedLimit),
+  );
   const fitted = fitLines(lines, width, mode, status);
   if (!state.color || display.body.kind !== "diff") return fitted;
   return fitted.map((line) =>
@@ -212,15 +219,16 @@ function layoutLines(
   header: string,
   details: string[],
   mode: DisplayMode,
+  cap: number,
 ): string[] {
   let lines: string[];
   if (mode === "expanded")
     lines = [header, ...details.map((line) => `  │ ${line}`)];
   else if (display.body.kind === "diff" || display.body.kind === "command") {
-    const shown = collapsedDetails(display, details);
+    const shown = collapsedDetails(display, details, cap);
     lines = [header, ...shown.map((line) => `  │ ${line}`)];
-    if (details.length > 11)
-      lines.push(`  │ … ${details.length - 10} more lines`);
+    if (details.length > cap - 1)
+      lines.push(`  │ … ${details.length - (cap - 2)} more lines`);
   } else
     lines = [
       header,
@@ -231,12 +239,20 @@ function layoutLines(
   return lines;
 }
 
-function collapsedDetails(display: ToolDisplay, details: string[]): string[] {
-  const limit = details.length > 11 ? 10 : 11;
+function collapsedDetails(
+  display: ToolDisplay,
+  details: string[],
+  cap: number,
+): string[] {
+  const limit = details.length > cap - 1 ? cap - 2 : cap - 1;
   return display.body.kind === "command" && details.length > limit
     ? [
         ...(display.error ? [details[0]!] : []),
         ...details.slice(-(limit - (display.error ? 1 : 0))),
       ]
     : details.slice(0, limit);
+}
+
+function collapsedCap(limit = 12): number {
+  return Number.isFinite(limit) ? Math.max(3, Math.floor(limit)) : 12;
 }

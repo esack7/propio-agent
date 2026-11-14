@@ -1,10 +1,10 @@
+import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import { randomUUID } from "node:crypto";
 import {
   AgentSession,
   encodeCommandImage,
   type PromptSubmission,
 } from "../agent-core/index.js";
-import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import type { ApprovalAnswer } from "../policy/index.js";
 import {
   streamAssistantTurn,
@@ -171,7 +171,7 @@ export function answerApprovalsThrough(
   channel: ApprovalChannel,
 ): () => void {
   const open = new Map<string, AbortController>();
-  return session.subscribe((event) => {
+  const unsubscribe = session.subscribe((event) => {
     if (event.type === "approval_resolved") {
       // Withdrawn while the question was showing: close the prompt.
       const asking = open.get(event.requestId);
@@ -208,4 +208,20 @@ export function answerApprovalsThrough(
           send(deny("The approval prompt gave an answer that does not fit"));
       });
   });
+  return () => {
+    unsubscribe();
+    for (const [id, controller] of open) {
+      session.dispatch({
+        type: "answer_approval",
+        commandId: randomUUID(),
+        answer: {
+          requestId: id,
+          decision: "deny",
+          reason: "The approval prompt was closed",
+        },
+      });
+      controller.abort();
+    }
+    open.clear();
+  };
 }

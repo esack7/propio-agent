@@ -662,11 +662,14 @@ describe("tool permissions in the agent", () => {
 
       await agent.streamChat(userSubmission("Change"), () => {});
 
-      expect(io.shown.slice(0, 3)).toEqual([
-        "write needs approval.",
-        `Path: ${path.join(workspace, "notes.txt")}`,
-        "Reason: Workspace writes need approval in ask mode",
-      ]);
+      expect(io.shown).toEqual(
+        expect.arrayContaining([
+          "write needs approval.",
+          `Path: ${path.join(workspace, "notes.txt")}`,
+          "Reason: Workspace writes need approval in ask mode",
+        ]),
+      );
+      expect(io.shown.join("\n")).toContain("+ changed");
       expect(notes()).toBe("changed");
       expect(policyEvents.at(-1)).toMatchObject({
         actor: "user",

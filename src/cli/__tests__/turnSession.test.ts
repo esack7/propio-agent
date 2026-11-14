@@ -9,6 +9,8 @@ import {
   it,
   jest,
 } from "@jest/globals";
+import type { ToolDisplay } from "../../tools/display.js";
+import { AgentSession } from "../../agent-core/index.js";
 import type { Agent } from "../../agent.js";
 import type { GuidanceSource } from "../../agent-core/index.js";
 import type { ApprovalChannel } from "../../permissions/approvalChannel.js";
@@ -220,6 +222,54 @@ describe("the CLI's turn session", () => {
 });
 
 describe("answering approvals through the session", () => {
+  it("carries previews without a tool event or call id", async () => {
+    const display: ToolDisplay = {
+      title: "First",
+      body: { kind: "generic", fields: [], truncated: false },
+    };
+    const session = new AgentSession({
+      runTurn: async () => {
+        await session.approvalChannel.request({ ...request("one"), display });
+        return "Done";
+      },
+    });
+    const asked: unknown[] = [];
+    answerApprovalsThrough(session, {
+      request: async (approval) => {
+        asked.push(approval);
+        return { requestId: approval.id, decision: "deny" };
+      },
+    });
+    session.dispatch({ type: "submit", commandId: "go", text: "go" });
+    await session.settled();
+    expect(asked).toEqual([{ ...request("one"), display }]);
+    expect(JSON.parse(JSON.stringify(asked))).toEqual(asked);
+  });
+
+  it("settles the pending approval when disposed and ignores a late allow", async () => {
+    let reply!: (answer: ApprovalAnswer) => void;
+    let result: ApprovalAnswer | undefined;
+    const session = new AgentSession({
+      runTurn: async () => {
+        result = await session.approvalChannel.request(request("open"));
+        return "Done";
+      },
+    });
+    const dispose = answerApprovalsThrough(session, {
+      request: () =>
+        new Promise((resolve) => {
+          reply = resolve;
+        }),
+    });
+    session.dispatch({ type: "submit", commandId: "go", text: "go" });
+    dispose();
+    await session.settled();
+    expect(result).toMatchObject({ decision: "deny" });
+    reply({ requestId: "open", decision: "allow_once" });
+    await Promise.resolve();
+    expect(result).toMatchObject({ decision: "deny" });
+  });
+
   function setup(reply: ApprovalChannel["request"]) {
     const { agent, settle } = heldAgent();
     const turns = createCliTurnSession(agent, createUi(), visibility);
@@ -384,24 +434,36 @@ describe("a real turn approved from the terminal prompt, through commands", () =
     fs.readFileSync(path.join(workspace, "notes.txt"), "utf8");
 
   it.each([
-    ["y", "changed", "allow_once"],
-    ["n", "original", "deny"],
+    ["y", "changed", "allow_once", true],
+    ["n", "original", "deny", true],
+    ["y", "changed", "allow_once", false],
+    ["n", "original", "deny", false],
   ])(
     "the operator's %s leaves the file %s",
-    async (line, expected, resolution) => {
+    async (line, expected, resolution, showToolCalls) => {
       const provider = new ToolCallMockProvider("write", {
         path: "notes.txt",
         content: "changed",
       });
       // As the CLI builds it: ask mode, no channel until the session's is set.
       const agent = createTestAgent(provider, { permissions: undefined });
-      const turns = createCliTurnSession(agent, createUi(), visibility);
+      const ui = createUi();
+      const rendered = jest.spyOn(ui, "renderToolCall");
+      const turns = createCliTurnSession(agent, ui, () => ({
+        ...visibility(),
+        showToolCalls,
+      }));
       agent.setApprovalChannel(turns.session.approvalChannel, "application");
       const questions: string[] = [];
+      const shown: string[] = [];
+      let completed: ToolDisplay | undefined;
       answerApprovalsThrough(
         turns.session,
         createApprovalPromptChannel({
-          show: () => {},
+          show: (lines) => {
+            shown.push(...lines);
+            expect(notes()).toBe("original");
+          },
           readLine: async (text) => {
             questions.push(text);
             return line;
@@ -409,7 +471,10 @@ describe("a real turn approved from the terminal prompt, through commands", () =
         }),
       );
       const resolutions: unknown[] = [];
+      const sessionTypes: string[] = [];
       turns.session.subscribe((event) => {
+        sessionTypes.push(event.type);
+        expect(JSON.parse(JSON.stringify(event))).toEqual(event);
         if (event.type === "approval_resolved")
           resolutions.push(event.resolution);
       });
@@ -419,9 +484,28 @@ describe("a real turn approved from the terminal prompt, through commands", () =
         new AbortController().signal,
       );
 
+      expect(sessionTypes).toEqual([
+        "session_turn_started",
+        "approval_requested",
+        "approval_resolved",
+        "session_turn_ended",
+      ]);
       expect(questions.length).toBeGreaterThan(0);
       expect(resolutions).toEqual([resolution]);
       expect(notes()).toBe(expected);
+      expect(shown.join("\n")).toContain("- original");
+      expect(shown.join("\n")).toContain("+ changed");
+      completed = rendered.mock.calls.find(
+        ([view]) => view.status !== "running",
+      )?.[0].display;
+      if (showToolCalls) expect(completed?.body.kind).toBe("diff");
+      if (completed?.body.kind === "diff") {
+        expect(
+          completed.body.hunks.flatMap((h) =>
+            h.lines.map((l) => l.op + l.text),
+          ),
+        ).toEqual(["-original", "+changed"]);
+      }
       // Either way the model was told and the turn finished.
       expect(provider.streamChatCalls).toHaveLength(2);
     },

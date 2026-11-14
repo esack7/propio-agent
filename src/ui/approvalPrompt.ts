@@ -1,9 +1,10 @@
-import type { ApprovalChannel } from "../permissions/approvalChannel.js";
+import type { ToolDisplay } from "../tools/display.js";
+import { renderToolDisplay } from "./toolDisplay/render.js";
 import type {
-  ApprovalAnswer,
+  ApprovalChannel,
   ApprovalRequest,
-  GrantSuggestion,
-} from "../policy/index.js";
+} from "../permissions/approvalChannel.js";
+import type { ApprovalAnswer, GrantSuggestion } from "../policy/index.js";
 import { readLineFromKeys } from "./keyLineReader.js";
 import { createPromptState } from "./promptState.js";
 import type { TerminalUi } from "./terminal.js";
@@ -36,14 +37,27 @@ function operationLines(request: ApprovalRequest): string[] {
 }
 
 /**
- * What is being asked, built only from the request. Every field that came
+ * What is being asked, with the tool preview when one is available. Every field that came
  * from the model, a tool, or a settings file is passed through `visibleText`
  * before it reaches the terminal.
  */
-export function formatApprovalRequest(request: ApprovalRequest): string[] {
+export function formatApprovalRequest(
+  request: ApprovalRequest,
+  display: ToolDisplay | undefined = request.display,
+  width = 80,
+): string[] {
   return [
     `${visibleText(request.toolName)} needs approval.`,
+    ...(display?.body.kind === "diff"
+      ? renderToolDisplay(
+          display,
+          { status: "running", collapsedLimit: 40 },
+          width,
+          "collapsed",
+        )
+      : []),
     ...operationLines(request),
+    ...(display ? ["─".repeat(Math.max(1, Math.min(80, width)))] : []),
     `Reason: ${visibleText(request.reason)}`,
   ];
 }
@@ -74,12 +88,16 @@ function grantLine(suggestion: GrantSuggestion, index: number): string {
 }
 
 export interface ApprovalPromptOptions {
+  /** Available terminal columns. */
+  readonly width?: () => number;
   /** Why a rule cannot be saved, or undefined when it can. */
   readonly savingUnavailableReason?: () => Promise<string | undefined>;
 }
 
 /** How the prompt reaches the operator; the terminal in the CLI. */
 export interface ApprovalPromptIo {
+  /** Temporarily hide the call whose preview is shown here; return its cleanup. */
+  beginRequest?(request: ApprovalRequest): () => void;
   /** Show lines above the question. */
   show(lines: readonly string[]): void;
   /** Ask for one line. Null means the question was withdrawn. */
@@ -160,32 +178,42 @@ export async function askOperator(
   io: ApprovalPromptIo,
   signal?: AbortSignal,
   options: ApprovalPromptOptions = {},
+  display?: ToolDisplay,
 ): Promise<ApprovalAnswer> {
-  const requestId = request.id;
-  // Always-allow is offered only where the rule can actually be saved.
-  const savingUnavailable = await options.savingUnavailableReason?.();
-  const choices = choiceLines(request, savingUnavailable);
-  const question =
-    savingUnavailable === undefined ? "Allow? [y/s/a/N] " : "Allow? [y/s/N] ";
-  io.show([...formatApprovalRequest(request), "", ...choices]);
-  for (;;) {
-    const line = await io.readLine(question, signal);
-    if (line === null) return denial(requestId);
-    const choice = readChoice(line);
-    if (choice.kind === "once") return { requestId, decision: "allow_once" };
-    if (choice.kind === "deny") return denial(requestId, choice.reason);
-    const refusal = grantRefusal(choice, savingUnavailable);
-    if (refusal !== undefined) {
-      io.show([refusal]);
-      continue;
+  const restore = io.beginRequest?.(request);
+  try {
+    const requestId = request.id;
+    // Always-allow is offered only where the rule can actually be saved.
+    const savingUnavailable = await options.savingUnavailableReason?.();
+    const choices = choiceLines(request, savingUnavailable);
+    const question =
+      savingUnavailable === undefined ? "Allow? [y/s/a/N] " : "Allow? [y/s/N] ";
+    io.show([
+      ...formatApprovalRequest(request, display, options.width?.()),
+      "",
+      ...choices,
+    ]);
+    for (;;) {
+      const line = await io.readLine(question, signal);
+      if (line === null) return denial(requestId);
+      const choice = readChoice(line);
+      if (choice.kind === "once") return { requestId, decision: "allow_once" };
+      if (choice.kind === "deny") return denial(requestId, choice.reason);
+      const refusal = grantRefusal(choice, savingUnavailable);
+      if (refusal !== undefined) {
+        io.show([refusal]);
+        continue;
+      }
+      const grant = choice as Extract<Choice, { kind: "grant" }>;
+      const chosen = await chooseGrant(request, grant.scope, io, signal);
+      if (chosen === "closed") return denial(requestId);
+      if (chosen !== "back") {
+        return { requestId, decision: grant.decision, rule: chosen.rule };
+      }
+      io.show(choices);
     }
-    const grant = choice as Extract<Choice, { kind: "grant" }>;
-    const chosen = await chooseGrant(request, grant.scope, io, signal);
-    if (chosen === "closed") return denial(requestId);
-    if (chosen !== "back") {
-      return { requestId, decision: grant.decision, rule: chosen.rule };
-    }
-    io.show(choices);
+  } finally {
+    restore?.();
   }
 }
 
@@ -210,13 +238,18 @@ export function createApprovalPromptChannel(
   options: ApprovalPromptOptions = {},
 ): ApprovalChannel {
   return {
-    request: (request, signal) => askOperator(request, io, signal, options),
+    request: (request, signal) =>
+      askOperator(request, io, signal, options, request.display),
   };
 }
 
 type ApprovalTerminal = Pick<
   TerminalUi,
-  "command" | "prompt" | "setPromptState" | "getPromptOutputStream"
+  | "command"
+  | "prompt"
+  | "setPromptState"
+  | "getPromptOutputStream"
+  | "hideRunningToolCall"
 >;
 
 /** The prompt on the CLI's terminal, read a key at a time while a turn runs. */
@@ -225,6 +258,7 @@ export function createTerminalApprovalIo(
   input: NodeJS.ReadStream,
 ): ApprovalPromptIo {
   return {
+    beginRequest: (request) => ui.hideRunningToolCall(request.toolCallId),
     show(lines) {
       for (const line of lines) ui.command(line);
     },
