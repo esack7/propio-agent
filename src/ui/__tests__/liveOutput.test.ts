@@ -26,3 +26,12 @@ it("keeps partial lines per stream and handles progress and split CRLF", () => {
   expect(lines.slice(-2).map((l) => l.text)).toEqual(["12%", "next"]);
   expect(lines.every((l) => !l.text.includes("\r"))).toBe(true);
 });
+
+it.each(["def", "10%\rdef"])(
+  "does not join a retained tail onto a skipped partial line (%s)",
+  (head) => {
+    let lines = appendLiveOutput([], "stdout", "abc");
+    lines = appendLiveOutput(lines, "stdout", `${head}\n1\n2\n3\n4\n5\n6\n`);
+    expect(lines.map((line) => line.text)).toEqual(["2", "3", "4", "5", "6"]);
+  },
+);

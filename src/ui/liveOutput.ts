@@ -7,9 +7,14 @@ export function appendLiveOutput(
   stream: "stdout" | "stderr",
   text: string,
 ): LiveLine[] {
-  const lines = [...previous];
   const all = text.split("\n");
   const parts = all.slice(-6);
+  // Skipped parts already ended this stream's partial line. The retained
+  // suffix starts a new line, so it must not join the old fragment.
+  const lines = previous.filter(
+    (line) =>
+      all.length === parts.length || line.stream !== stream || !line.open,
+  );
   for (let i = 0; i < parts.length; i++) {
     const closed = i < parts.length - 1;
     const part = parts[i]!;
