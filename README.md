@@ -1566,6 +1566,11 @@ if (parsed.ok) reply(session.dispatch(parsed.command));
   authorizes tool calls. A request is emitted as `approval_requested`; the
   answer is an `answer_approval` command; `approval_resolved` reports the
   decision, or `withdrawn` if the turn was interrupted first.
+- `session.stop(reason)` is for the process that owns the session, when it
+  is exiting or shutting down. It is not a command: the turn's signal aborts
+  with that reason, so it is not recorded as an operator interrupt. The CLI
+  uses it for Ctrl+C, which keeps an unanswered message in the saved session;
+  Escape dispatches `interrupt`, which discards it.
 - Images in a `submit` are strings (a data URL or base64);
   `encodeCommandImage` encodes bytes.
 - A session holds one conversation's steering state and nothing at module

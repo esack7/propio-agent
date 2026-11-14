@@ -22,8 +22,9 @@ import type { TerminalUi } from "../ui/terminal.js";
 export interface CliTurnSession {
   readonly session: AgentSession;
   /**
-   * Submit a message and wait for the turn. Aborting the signal dispatches an
-   * interrupt. Resolves and rejects as the turn itself does.
+   * Submit a message and wait for the turn. Aborting the signal with reason
+   * "escape" dispatches an interrupt; any other reason stops the session's
+   * turn with that reason. Resolves and rejects as the turn itself does.
    */
   runTurn(
     submission: PromptSubmission,
@@ -77,8 +78,15 @@ export function createCliTurnSession(
           });
         },
       );
+      // Escape is the operator interrupting. Anything else, such as Ctrl+C,
+      // is the CLI going away: the turn stops with that reason, so an
+      // unanswered message is kept in the saved session as before.
       const interrupt = (): void => {
-        session.dispatch({ type: "interrupt", commandId: randomUUID() });
+        if (abortSignal.reason === "escape") {
+          session.dispatch({ type: "interrupt", commandId: randomUUID() });
+        } else {
+          session.stop(String(abortSignal.reason ?? "aborted"));
+        }
       };
       abortSignal.addEventListener("abort", interrupt, { once: true });
       try {

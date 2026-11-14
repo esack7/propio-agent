@@ -137,6 +137,23 @@ export class AgentSession<TEvent = never> {
     }
   }
 
+  /**
+   * Stop the running turn because the host is going away, not because the
+   * operator asked. This is not a command: it is for the process that owns
+   * the session, such as a CLI exiting or a server shutting down. The turn's
+   * signal aborts with `reason`, so it is not recorded as an interrupt.
+   * Returns false when no turn is running.
+   */
+  stop(reason: string): boolean {
+    const turn = this.turn;
+    if (!turn) return false;
+    if (!turn.controller.signal.aborted) {
+      turn.controller.abort(reason);
+      this.withdrawApprovals("The session is stopping");
+    }
+    return true;
+  }
+
   private reject(
     commandId: string,
     code: CommandRejection,

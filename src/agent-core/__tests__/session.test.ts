@@ -583,6 +583,23 @@ describe("session controller", () => {
     });
   });
 
+  it("stops a turn for the host with the host's reason", async () => {
+    const { session, events, control } = heldSession();
+    expect(session.stop("shutdown")).toBe(false);
+    session.dispatch({ type: "submit", commandId: "s", text: "Go" });
+    const answer = session.approvalChannel.request(request("r1"));
+    answer.catch(() => {});
+
+    expect(session.stop("shutdown")).toBe(true);
+    expect(control().abortSignal.reason).toBe("shutdown");
+    await expect(answer).rejects.toThrow(/cancelled/);
+    await session.settled();
+    expect(events.at(-1)).toMatchObject({
+      type: "session_turn_ended",
+      outcome: "cancelled",
+    });
+  });
+
   it("reports a turn that fails, with the error as data", async () => {
     const session = new AgentSession<never>({
       runTurn: async () => {

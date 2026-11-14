@@ -130,6 +130,20 @@ describe("the CLI's turn session", () => {
     expect(turns.session.running).toBe(false);
   });
 
+  it("stops the turn with the CLI's own reason when it is not the operator interrupting", async () => {
+    const { agent, calls, settle } = heldAgent();
+    const turns = createCliTurnSession(agent, createUi(), visibility);
+    const controller = new AbortController();
+    const pending = turns.runTurn({ text: "Go" }, controller.signal);
+
+    controller.abort("sigint");
+    // Not an interrupt: the agent keeps an unanswered message for Ctrl+C.
+    expect(calls[0]!.signal?.reason).toBe("sigint");
+    settle().reject(new Error("Request cancelled"));
+
+    await expect(pending).rejects.toThrow("cancelled");
+  });
+
   it("rejects with the turn's own error when the turn fails", async () => {
     const { agent, settle } = heldAgent();
     const turns = createCliTurnSession(agent, createUi(), visibility);
@@ -290,6 +304,42 @@ describe("answering approvals through the session", () => {
     ).resolves.toMatchObject({ requestId: "r1", decision: "deny" });
     await finish();
   });
+});
+
+describe("a real turn stopped before the model answers", () => {
+  /** A provider that says nothing until its request is aborted. */
+  const silentProvider = (onRequest: () => void) => ({
+    name: "silent",
+    getCapabilities: () => ({ contextWindowTokens: 128000 }),
+    async *streamChat(chatRequest: { signal?: AbortSignal }) {
+      onRequest();
+      await new Promise<void>((resolve) =>
+        chatRequest.signal?.addEventListener("abort", () => resolve()),
+      );
+      throw new Error("Request cancelled");
+      yield { delta: "" };
+    },
+  });
+
+  it.each([
+    ["escape", 0],
+    ["sigint", 1],
+  ])(
+    "aborting with %s leaves %i unanswered message in the conversation",
+    async (reason, turnsKept) => {
+      const controller = new AbortController();
+      const agent = createTestAgent(
+        silentProvider(() => controller.abort(reason)) as never,
+      );
+      const turns = createCliTurnSession(agent, createUi(), visibility);
+
+      await expect(
+        turns.runTurn({ text: "Hello" }, controller.signal),
+      ).rejects.toThrow();
+
+      expect(agent.getConversationState().turns).toHaveLength(turnsKept);
+    },
+  );
 });
 
 describe("a real turn approved from the terminal prompt, through commands", () => {
