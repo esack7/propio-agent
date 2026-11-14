@@ -221,6 +221,7 @@ export class ReplRenderer {
     let renderedLines = 0;
 
     for (const view of state.toolCallDisplays.values()) {
+      if (view.hidden) continue;
       const text = renderToolDisplay(
         view.display,
         view,
@@ -255,6 +256,7 @@ function countBottomZoneLines(
   let count = 0;
 
   for (const view of state.toolCallDisplays.values()) {
+    if (view.hidden) continue;
     count += countWrittenStderrLines(
       renderToolDisplay(
         view.display,

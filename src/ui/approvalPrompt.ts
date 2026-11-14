@@ -96,6 +96,8 @@ export interface ApprovalPromptOptions {
 
 /** How the prompt reaches the operator; the terminal in the CLI. */
 export interface ApprovalPromptIo {
+  /** Temporarily hide the call whose preview is shown here; return its cleanup. */
+  beginRequest?(request: ApprovalRequest): () => void;
   /** Show lines above the question. */
   show(lines: readonly string[]): void;
   /** Ask for one line. Null means the question was withdrawn. */
@@ -178,35 +180,40 @@ export async function askOperator(
   options: ApprovalPromptOptions = {},
   display?: ToolDisplay,
 ): Promise<ApprovalAnswer> {
-  const requestId = request.id;
-  // Always-allow is offered only where the rule can actually be saved.
-  const savingUnavailable = await options.savingUnavailableReason?.();
-  const choices = choiceLines(request, savingUnavailable);
-  const question =
-    savingUnavailable === undefined ? "Allow? [y/s/a/N] " : "Allow? [y/s/N] ";
-  io.show([
-    ...formatApprovalRequest(request, display, options.width?.()),
-    "",
-    ...choices,
-  ]);
-  for (;;) {
-    const line = await io.readLine(question, signal);
-    if (line === null) return denial(requestId);
-    const choice = readChoice(line);
-    if (choice.kind === "once") return { requestId, decision: "allow_once" };
-    if (choice.kind === "deny") return denial(requestId, choice.reason);
-    const refusal = grantRefusal(choice, savingUnavailable);
-    if (refusal !== undefined) {
-      io.show([refusal]);
-      continue;
+  const restore = io.beginRequest?.(request);
+  try {
+    const requestId = request.id;
+    // Always-allow is offered only where the rule can actually be saved.
+    const savingUnavailable = await options.savingUnavailableReason?.();
+    const choices = choiceLines(request, savingUnavailable);
+    const question =
+      savingUnavailable === undefined ? "Allow? [y/s/a/N] " : "Allow? [y/s/N] ";
+    io.show([
+      ...formatApprovalRequest(request, display, options.width?.()),
+      "",
+      ...choices,
+    ]);
+    for (;;) {
+      const line = await io.readLine(question, signal);
+      if (line === null) return denial(requestId);
+      const choice = readChoice(line);
+      if (choice.kind === "once") return { requestId, decision: "allow_once" };
+      if (choice.kind === "deny") return denial(requestId, choice.reason);
+      const refusal = grantRefusal(choice, savingUnavailable);
+      if (refusal !== undefined) {
+        io.show([refusal]);
+        continue;
+      }
+      const grant = choice as Extract<Choice, { kind: "grant" }>;
+      const chosen = await chooseGrant(request, grant.scope, io, signal);
+      if (chosen === "closed") return denial(requestId);
+      if (chosen !== "back") {
+        return { requestId, decision: grant.decision, rule: chosen.rule };
+      }
+      io.show(choices);
     }
-    const grant = choice as Extract<Choice, { kind: "grant" }>;
-    const chosen = await chooseGrant(request, grant.scope, io, signal);
-    if (chosen === "closed") return denial(requestId);
-    if (chosen !== "back") {
-      return { requestId, decision: grant.decision, rule: chosen.rule };
-    }
-    io.show(choices);
+  } finally {
+    restore?.();
   }
 }
 
@@ -242,7 +249,7 @@ type ApprovalTerminal = Pick<
   | "prompt"
   | "setPromptState"
   | "getPromptOutputStream"
-  | "clearRunningToolCalls"
+  | "hideRunningToolCall"
 >;
 
 /** The prompt on the CLI's terminal, read a key at a time while a turn runs. */
@@ -251,8 +258,8 @@ export function createTerminalApprovalIo(
   input: NodeJS.ReadStream,
 ): ApprovalPromptIo {
   return {
+    beginRequest: (request) => ui.hideRunningToolCall(request.toolCallId),
     show(lines) {
-      ui.clearRunningToolCalls();
       for (const line of lines) ui.command(line);
     },
     async readLine(promptText, signal) {

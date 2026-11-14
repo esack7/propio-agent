@@ -209,3 +209,49 @@ it("resets expansion history when clearing the conversation", () => {
   ui.expandLastToolCall();
   expect(stderr.chunks.join("")).toContain("No tool result to expand");
 });
+
+it.each(["allow", "deny", "abort", "finish"])(
+  "preserves other running calls and safely restores the approval call (%s)",
+  async (scenario) => {
+    const { ui, stderr } = harness();
+    const store = (ui as unknown as { retainedStore: ReplUiStore })
+      .retainedStore;
+    ui.renderToolCall({ ...call, status: "running" });
+    ui.renderToolCall({
+      ...call,
+      id: "b",
+      display: {
+        ...call.display,
+        body: { kind: "command", command: "other build", truncated: false },
+      },
+      status: "running",
+    });
+    const resume = ui.hideRunningToolCall("a");
+    expect(store.getState().toolCallDisplays.get("a")).toMatchObject({
+      status: "running",
+      hidden: true,
+    });
+    expect(store.getState().toolCallDisplays.get("b")).toMatchObject({
+      status: "running",
+    });
+    stderr.chunks.length = 0;
+    ui.command("Approval preview");
+    expect(stripAnsi(stderr.chunks.join(""))).toContain("other build");
+    expect(stripAnsi(stderr.chunks.join(""))).not.toContain("printf lines");
+    if (scenario === "finish") ui.renderToolCall(call);
+    resume();
+    if (scenario === "finish")
+      expect(store.getState().toolCallDisplays.has("a")).toBe(false);
+    else {
+      expect(store.getState().toolCallDisplays.get("a")).toMatchObject({
+        status: "running",
+        hidden: false,
+      });
+      stderr.chunks.length = 0;
+      ui.command("Question closed");
+      expect(stripAnsi(stderr.chunks.join(""))).toContain("printf lines");
+    }
+    expect(store.getState().toolCallDisplays.has("b")).toBe(true);
+    ui.cleanup();
+  },
+);

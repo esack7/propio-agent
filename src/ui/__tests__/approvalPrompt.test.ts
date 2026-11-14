@@ -592,22 +592,39 @@ it("does not duplicate command previews", () => {
   ).toHaveLength(1);
 });
 
-it("clears the live tool region before writing the approval preview", () => {
-  const actions: string[] = [];
-  const io = createTerminalApprovalIo(
-    {
-      clearRunningToolCalls: () => {
-        actions.push("clear");
+it.each(["y", "n", null, "throw"])(
+  "restores the matching live call after prompt answer %s",
+  async (line) => {
+    const actions: string[] = [];
+    const terminalIo = createTerminalApprovalIo(
+      {
+        hideRunningToolCall: (id) => {
+          actions.push(`hide ${id}`);
+          return () => {
+            actions.push(`restore ${id}`);
+          };
+        },
+        command: () => {
+          actions.push("show");
+        },
+        prompt: (text) => text,
+        setPromptState: () => {},
+        getPromptOutputStream: () => process.stderr,
       },
-      command: (line: string) => {
-        actions.push(line);
+      process.stdin,
+    );
+    const channel = createApprovalPromptChannel({
+      ...terminalIo,
+      readLine: async () => {
+        expect(actions[0]).toBe("hide call-1");
+        expect(actions).not.toContain("restore call-1");
+        if (line === "throw") throw new Error("closed");
+        return line;
       },
-      prompt: (text: string) => text,
-      setPromptState: () => {},
-      getPromptOutputStream: () => process.stderr,
-    },
-    process.stdin,
-  );
-  io.show(["approval diff", "choices"]);
-  expect(actions).toEqual(["clear", "approval diff", "choices"]);
-});
+    });
+    const pending = channel.request({ ...base, toolCallId: "call-1" });
+    if (line === "throw") await expect(pending).rejects.toThrow("closed");
+    else await pending;
+    expect(actions.at(-1)).toBe("restore call-1");
+  },
+);

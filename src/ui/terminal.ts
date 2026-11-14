@@ -346,6 +346,23 @@ export class TerminalUi {
       this.lastExpandableCall = structuredClone(view);
   }
 
+  /** Hide one live preview without ending the call; restore only if still running. */
+  hideRunningToolCall(id: string | undefined): () => void {
+    const store = this.retainedStore;
+    const view =
+      id === undefined ? undefined : store?.getState().toolCallDisplays.get(id);
+    if (!store || !view) return () => {};
+    store.upsertToolCallDisplay({ ...view, hidden: true });
+    return () => {
+      const current = store.getState().toolCallDisplays.get(view.id);
+      if (current)
+        store.upsertToolCallDisplay({
+          ...current,
+          hidden: view.hidden ?? false,
+        });
+    };
+  }
+
   removeRunningToolCall(id: string): void {
     const view = this.retainedStore?.getState().toolCallDisplays.get(id);
     if (view)
