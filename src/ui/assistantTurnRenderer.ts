@@ -39,7 +39,6 @@ export async function streamAssistantTurn(
   abortSignal: AbortSignal,
   visibility: AssistantTurnVisibilitySource,
   guidance?: GuidanceSource,
-  onEvent?: (event: AgentVisibilityEvent) => void,
 ): Promise<AssistantTurnResult> {
   const mdStream = ui.createMarkdownStream();
   let hiddenToolStatusVisible = false;
@@ -252,7 +251,6 @@ export async function streamAssistantTurn(
   };
 
   const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
-    onEvent?.(event);
     const currentVisibility = getVisibility();
 
     if (event.type === "status") {

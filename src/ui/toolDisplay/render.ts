@@ -178,7 +178,7 @@ export function renderToolDisplay(
     header,
     details,
     mode,
-    state.collapsedLimit ?? 12,
+    collapsedCap(state.collapsedLimit),
   );
   const fitted = fitLines(lines, width, mode, status);
   if (!state.color || display.body.kind !== "diff") return fitted;
@@ -251,4 +251,8 @@ function collapsedDetails(
         ...details.slice(-(limit - (display.error ? 1 : 0))),
       ]
     : details.slice(0, limit);
+}
+
+function collapsedCap(limit = 12): number {
+  return Number.isFinite(limit) ? Math.max(3, Math.floor(limit)) : 12;
 }

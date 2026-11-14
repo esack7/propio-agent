@@ -1427,6 +1427,7 @@ export class AgentRuntime {
     args: Record<string, unknown> | undefined,
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
+    display?: ToolDisplay,
   ): Promise<ToolExecutionResult> {
     const executionArgs = args ?? {};
     if (abortSignal?.aborted) {
@@ -1445,6 +1446,7 @@ export class AgentRuntime {
       executionArgs,
       allowedTools,
       abortSignal,
+      display,
     );
     if (abortSignal?.aborted && !denied) {
       this.recordToolPolicyDecision(toolName, toolCallId, executionArgs, {
@@ -1510,6 +1512,7 @@ export class AgentRuntime {
     args: Record<string, unknown>,
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
+    display?: ToolDisplay,
   ): Promise<ToolExecutionResult | undefined> {
     const scopeAllowed = !allowedTools || allowedTools.has(toolName);
     const scopeDecision: AgentToolPolicyDecision = {
@@ -1539,6 +1542,7 @@ export class AgentRuntime {
       args,
       allowedTools,
       abortSignal,
+      display,
     );
   }
 
@@ -1585,6 +1589,7 @@ export class AgentRuntime {
     args: Record<string, unknown>,
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
+    display?: ToolDisplay,
   ): Promise<ToolExecutionResult | undefined> {
     const authorize = this.dependencies.integrations?.authorizeTool;
     if (!authorize) return undefined;
@@ -1597,6 +1602,7 @@ export class AgentRuntime {
             args: structuredClone(args),
             scope: this.currentToolScope ?? { allowedTools },
             signal: abortSignal,
+            display,
           }),
         ),
         abortSignal,
@@ -1684,6 +1690,7 @@ export class AgentRuntime {
       args,
       allowedTools,
       options?.abortSignal,
+      display,
     );
     const result = execResult.content;
     const failed = this.emitToolFinishedEvents(

@@ -10,6 +10,7 @@ import type {
 import {
   askOperator,
   createApprovalPromptChannel,
+  createTerminalApprovalIo,
   formatApprovalRequest,
   type ApprovalPromptIo,
 } from "../approvalPrompt.js";
@@ -514,17 +515,24 @@ describe("typed approval previews", () => {
     const display: ToolDisplay = {
       title: malicious,
       body: {
-        kind: "generic",
-        fields: [{ key: malicious, value: malicious }],
+        kind: "diff",
+        path: malicious,
+        operation: "replace",
+        added: 1,
+        removed: 0,
         truncated: false,
+        hunks: [
+          { oldStart: 1, newStart: 1, lines: [{ op: "+", text: malicious }] },
+        ],
       },
     };
     const shown: string[] = [];
     const answer = await createApprovalPromptChannel({
       show: (lines) => shown.push(...lines),
       readLine: async () => "n",
-    }).request(base, undefined, display);
+    }).request({ ...base, display });
     expect(answer.decision).toBe("deny");
+    expect(shown.join("\n")).toContain("+ " + visibleText(malicious));
     expect(shown.join("\n")).not.toMatch(/[\x1b\r\u202e]/);
     expect(shown.some((line) => line.startsWith("Allow?"))).toBe(false);
     expect(shown.indexOf("  y  allow once")).toBeGreaterThan(
@@ -550,4 +558,56 @@ describe("typed approval previews", () => {
     expect(lines).toContain("Directory: /tmp/work");
     expect(lines).toContain('Environment: {"CI":"1"}');
   });
+});
+
+it("keeps MCP arguments visible when a generic preview exists", () => {
+  const display: ToolDisplay = {
+    title: "Publish",
+    body: {
+      kind: "generic",
+      fields: [{ key: "destination", value: "production" }],
+      truncated: false,
+    },
+  };
+  expect(
+    formatApprovalRequest(
+      {
+        ...base,
+        target: { kind: "mcp", serverPrefix: "mcp__deploy" },
+        args: { destination: "production" },
+      },
+      display,
+    ).join("\n"),
+  ).toContain('Arguments: {"destination":"production"}');
+});
+it("does not duplicate command previews", () => {
+  const display: ToolDisplay = {
+    title: "Run",
+    body: { kind: "command", command: "npm test", truncated: false },
+  };
+  expect(
+    formatApprovalRequest(base, display).filter((line) =>
+      line.includes("npm test"),
+    ),
+  ).toHaveLength(1);
+});
+
+it("clears the live tool region before writing the approval preview", () => {
+  const actions: string[] = [];
+  const io = createTerminalApprovalIo(
+    {
+      clearRunningToolCalls: () => {
+        actions.push("clear");
+      },
+      command: (line: string) => {
+        actions.push(line);
+      },
+      prompt: (text: string) => text,
+      setPromptState: () => {},
+      getPromptOutputStream: () => process.stderr,
+    },
+    process.stdin,
+  );
+  io.show(["approval diff", "choices"]);
+  expect(actions).toEqual(["clear", "approval diff", "choices"]);
 });

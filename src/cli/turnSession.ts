@@ -1,6 +1,4 @@
-import type { AgentVisibilityEvent } from "../agent.js";
-import type { ToolDisplay } from "../tools/display.js";
-import type { ApprovalDisplayChannel } from "../ui/approvalPrompt.js";
+import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import { randomUUID } from "node:crypto";
 import {
   AgentSession,
@@ -22,7 +20,7 @@ import type { TerminalUi } from "../ui/terminal.js";
  * way another frontend would over a transport.
  */
 export interface CliTurnSession {
-  readonly session: AgentSession<AgentVisibilityEvent>;
+  readonly session: AgentSession;
   /**
    * Submit a message and wait for the turn. Aborting the signal with reason
    * "escape" dispatches an interrupt; any other reason stops the session's
@@ -53,7 +51,7 @@ export function createCliTurnSession(
   // handling of bytes; in one process the originals are handed over as is.
   let original: PromptSubmission | undefined;
   let undelivered: string[] = [];
-  const session = new AgentSession<AgentVisibilityEvent>({
+  const session = new AgentSession({
     runTurn: async (submission, control) => {
       const given = original ?? submission;
       original = undefined;
@@ -65,7 +63,6 @@ export function createCliTurnSession(
           control.abortSignal,
           visibility,
           control.guidance,
-          control.emit,
         );
         return lastResult.response;
       } catch (error) {
@@ -148,15 +145,15 @@ export function createCliTurnSession(
  * answer. The line's draft is kept meanwhile.
  */
 export function borrowingKeyboard(
-  channel: ApprovalDisplayChannel,
+  channel: ApprovalChannel,
   typing: () => { suspend(): void; resume(): void } | null,
-): ApprovalDisplayChannel {
+): ApprovalChannel {
   return {
-    request: async (request, signal, display) => {
+    request: async (request, signal) => {
       const active = typing();
       active?.suspend();
       try {
-        return await channel.request(request, signal, display);
+        return await channel.request(request, signal);
       } finally {
         active?.resume();
       }
@@ -170,17 +167,11 @@ export function borrowingKeyboard(
  * any other frontend. Returns a function that stops answering.
  */
 export function answerApprovalsThrough(
-  session: AgentSession<AgentVisibilityEvent>,
-  channel: ApprovalDisplayChannel,
+  session: AgentSession,
+  channel: ApprovalChannel,
 ): () => void {
-  const displays = new Map<string, ToolDisplay>();
   const open = new Map<string, AbortController>();
   const unsubscribe = session.subscribe((event) => {
-    if (event.type === "tool_started")
-      displays.set(event.toolCallId, structuredClone(event.display));
-    if (event.type === "tool_finished" || event.type === "tool_failed")
-      displays.delete(event.toolCallId);
-    if (event.type === "session_turn_ended") displays.clear();
     if (event.type === "approval_resolved") {
       // Withdrawn while the question was showing: close the prompt.
       const asking = open.get(event.requestId);
@@ -198,7 +189,7 @@ export function answerApprovalsThrough(
       reason,
     });
     void channel
-      .request(request, asking.signal, displays.get(request.toolCallId ?? ""))
+      .request(request, asking.signal)
       .catch((error: unknown) =>
         deny(
           `The approval prompt failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -219,8 +210,18 @@ export function answerApprovalsThrough(
   });
   return () => {
     unsubscribe();
-    displays.clear();
-    for (const controller of open.values()) controller.abort();
+    for (const [id, controller] of open) {
+      session.dispatch({
+        type: "answer_approval",
+        commandId: randomUUID(),
+        answer: {
+          requestId: id,
+          decision: "deny",
+          reason: "The approval prompt was closed",
+        },
+      });
+      controller.abort();
+    }
     open.clear();
   };
 }

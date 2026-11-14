@@ -1,11 +1,10 @@
 import type { ToolDisplay } from "../tools/display.js";
 import { renderToolDisplay } from "./toolDisplay/render.js";
-import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import type {
-  ApprovalAnswer,
+  ApprovalChannel,
   ApprovalRequest,
-  GrantSuggestion,
-} from "../policy/index.js";
+} from "../permissions/approvalChannel.js";
+import type { ApprovalAnswer, GrantSuggestion } from "../policy/index.js";
 import { readLineFromKeys } from "./keyLineReader.js";
 import { createPromptState } from "./promptState.js";
 import type { TerminalUi } from "./terminal.js";
@@ -44,27 +43,20 @@ function operationLines(request: ApprovalRequest): string[] {
  */
 export function formatApprovalRequest(
   request: ApprovalRequest,
-  display?: ToolDisplay,
+  display: ToolDisplay | undefined = request.display,
   width = 80,
 ): string[] {
   return [
     `${visibleText(request.toolName)} needs approval.`,
-    ...(display
+    ...(display?.body.kind === "diff"
       ? renderToolDisplay(
           display,
-          {
-            status: "running",
-            collapsedLimit: display.body.kind === "diff" ? 40 : 12,
-          },
+          { status: "running", collapsedLimit: 40 },
           width,
           "collapsed",
         )
-      : operationLines(request)),
-    // Preserve the authoritative target (including resolved paths) beside the preview.
-    ...(display &&
-    (request.target?.kind === "command" || request.target?.kind === "path")
-      ? operationLines(request)
       : []),
+    ...operationLines(request),
     ...(display ? ["─".repeat(Math.max(1, Math.min(80, width)))] : []),
     `Reason: ${visibleText(request.reason)}`,
   ];
@@ -237,16 +229,20 @@ function grantRefusal(
 export function createApprovalPromptChannel(
   io: ApprovalPromptIo,
   options: ApprovalPromptOptions = {},
-): ApprovalDisplayChannel {
+): ApprovalChannel {
   return {
-    request: (request, signal, display) =>
-      askOperator(request, io, signal, options, display),
+    request: (request, signal) =>
+      askOperator(request, io, signal, options, request.display),
   };
 }
 
 type ApprovalTerminal = Pick<
   TerminalUi,
-  "command" | "prompt" | "setPromptState" | "getPromptOutputStream"
+  | "command"
+  | "prompt"
+  | "setPromptState"
+  | "getPromptOutputStream"
+  | "clearRunningToolCalls"
 >;
 
 /** The prompt on the CLI's terminal, read a key at a time while a turn runs. */
@@ -256,6 +252,7 @@ export function createTerminalApprovalIo(
 ): ApprovalPromptIo {
   return {
     show(lines) {
+      ui.clearRunningToolCalls();
       for (const line of lines) ui.command(line);
     },
     async readLine(promptText, signal) {
@@ -272,12 +269,4 @@ export function createTerminalApprovalIo(
       }
     },
   };
-}
-
-export interface ApprovalDisplayChannel extends ApprovalChannel {
-  request(
-    request: ApprovalRequest,
-    signal?: AbortSignal,
-    display?: ToolDisplay,
-  ): Promise<ApprovalAnswer>;
 }

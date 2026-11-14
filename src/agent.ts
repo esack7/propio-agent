@@ -819,6 +819,7 @@ export class Agent {
     scope: AgentToolScope,
     toolCallId?: string,
     signal?: AbortSignal,
+    display?: ToolDisplay,
   ): Promise<AgentToolPolicyDecision> {
     const mode = resolveScopeMode(scope, this.modeState.mode);
     const planDecision = authorizePlanTool(
@@ -858,6 +859,7 @@ export class Agent {
       sessionId: this.sessionId,
       toolCallId,
       signal,
+      display,
     });
     return { ...decision, metadata: { ...decision.metadata, mode } };
   }
@@ -2424,8 +2426,15 @@ export class Agent {
           this.describeToolCall(name, args, scope),
         describeToolResult: ({ name, args, result, before }) =>
           this.describeToolResult(name, args, result, before),
-        authorizeTool: ({ name, args, scope, toolCallId, signal }) =>
-          this.authorizeToolExecution(name, args, scope, toolCallId, signal),
+        authorizeTool: ({ name, args, scope, toolCallId, signal, display }) =>
+          this.authorizeToolExecution(
+            name,
+            args,
+            scope,
+            toolCallId,
+            signal,
+            display,
+          ),
         shrinkContext: (plan) => this.attemptSynchronousShrink(plan),
         onAssistantResponse: (content) =>
           this.recordPlanModeAssistantDraft(content),

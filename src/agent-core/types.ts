@@ -41,6 +41,7 @@ export interface AgentToolScope {
 }
 
 export interface AgentToolAuthorizationRequest {
+  readonly display?: ToolDisplay;
   readonly name: string;
   /** The model's identifier for this call, for correlating an approval. */
   readonly toolCallId?: string;

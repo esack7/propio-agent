@@ -1,4 +1,6 @@
-import type { ApprovalAnswer, ApprovalRequest } from "../policy/index.js";
+import type { ApprovalAnswer } from "../policy/index.js";
+import type { ApprovalRequest } from "../agent-core/approval.js";
+export type { ApprovalRequest } from "../agent-core/approval.js";
 
 /**
  * Puts an approval request to whoever may answer it. Requests and answers are

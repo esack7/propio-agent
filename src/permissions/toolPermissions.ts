@@ -1,3 +1,4 @@
+import type { ToolDisplay } from "../tools/display.js";
 import * as fs from "fs";
 import * as os from "os";
 import type { AgentToolPolicyDecision } from "../agent-core/types.js";
@@ -83,6 +84,7 @@ export interface PermissionsOverview extends PolicyDescription {
 }
 
 export interface ToolAuthorizationInput {
+  readonly display?: ToolDisplay;
   readonly name: string;
   readonly args: Readonly<Record<string, unknown>>;
   readonly metadata: ToolMetadata;
@@ -441,7 +443,10 @@ export class ToolPermissions {
       );
     }
     try {
-      const answer = await channel.request(request, input.signal);
+      const answer = await channel.request(
+        { ...request, ...(input.display ? { display: input.display } : {}) },
+        input.signal,
+      );
       if (answer?.requestId !== request.id) {
         throw new Error(
           `Approval answer is for request ${String(answer?.requestId)}, not ${request.id}`,
