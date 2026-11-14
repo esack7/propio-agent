@@ -71,3 +71,28 @@ it("cancels live output without late events", async () => {
   expect(events).toHaveLength(length);
   expect(events.some((e) => e.type === "tool_output")).toBe(true);
 });
+
+it("discards a partially filled live window when cancellation precedes its timer", async () => {
+  const controller = new AbortController();
+  const events: AgentVisibilityEvent[] = [];
+  const agent = createTestAgent(
+    new ToolCallMockProvider("bash", { command: "printf pending; sleep 10" }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await expect(
+      agent.streamChat(userSubmission("Go"), () => {}, {
+        abortSignal: controller.signal,
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "tool_started")
+            timer = setTimeout(() => controller.abort("escape"), 50);
+        },
+      }),
+    ).rejects.toThrow();
+    expect(events.filter((e) => e.type === "tool_output")).toEqual([]);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+});

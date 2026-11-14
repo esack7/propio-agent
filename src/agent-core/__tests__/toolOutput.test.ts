@@ -10,7 +10,7 @@ it("bounds noisy windows, preserves stream identity and accounts for UTF-8 drops
     output.append({ stream: i % 2 ? "stdout" : "stderr", text: "界" });
   expect(events).toHaveLength(0);
   jest.advanceTimersByTime(100);
-  expect(events).toHaveLength(2);
+  expect(events.length).toBeLessThanOrEqual(32);
   const chunks = events.filter((e) => e.type === "tool_output");
   expect(
     chunks.reduce((n, e) => n + Buffer.byteLength(e.text), 0),
@@ -42,4 +42,24 @@ it("isolates calls and observer exceptions", () => {
   ]);
   a.close();
   b.close();
+});
+
+it("retains recent output in order and discards a cancelled window", () => {
+  jest.useFakeTimers();
+  const events: AgentVisibilityEvent[] = [];
+  const output = createToolOutput("a", (e) => events.push(e));
+  output.append({ stream: "stdout", text: "old".repeat(2000) });
+  output.append({ stream: "stdout", text: "a\n" });
+  output.append({ stream: "stderr", text: "E\n" });
+  output.append({ stream: "stdout", text: "latest\n" });
+  jest.advanceTimersByTime(100);
+  const chunks = events.filter((e) => e.type === "tool_output");
+  expect(chunks.map((e) => e.stream)).toEqual(["stdout", "stderr", "stdout"]);
+  expect(chunks[chunks.length - 1].text).toBe("latest\n");
+  expect(
+    chunks.reduce((n, e) => n + Buffer.byteLength(e.text) + e.droppedBytes, 0),
+  ).toBe(6011);
+  output.append({ stream: "stdout", text: "cancelled" });
+  output.close({ discard: true });
+  expect(events).toHaveLength(3);
 });

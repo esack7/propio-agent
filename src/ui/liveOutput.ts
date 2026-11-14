@@ -1,24 +1,45 @@
+import { utf8Tail } from "../tools/display.js";
 import type { DisplayState } from "./toolDisplay/render.js";
 type LiveLine = NonNullable<DisplayState["liveOutput"]>[number];
-/** A bounded tail in arrival order, including unfinished lines. */
+/** Five recent lines, with an unfinished line tracked independently per stream. */
 export function appendLiveOutput(
   previous: readonly LiveLine[],
   stream: "stdout" | "stderr",
   text: string,
 ): LiveLine[] {
   const lines = [...previous];
-  const parts = text.split("\n");
+  const all = text.split("\n");
+  const parts = all.slice(-6);
   for (let i = 0; i < parts.length; i++) {
-    if (i === parts.length - 1 && parts[i] === "") break;
-    const last = lines[lines.length - 1];
-    const prefix =
-      last?.open && last.stream === stream ? lines.pop()!.text : "";
-    const combined = (prefix + parts[i]).slice(-4096);
-    const safe = /^[\uDC00-\uDFFF]/.test(combined)
-      ? combined.slice(1)
-      : combined;
-    lines.push({ stream, text: safe, open: i === parts.length - 1 });
+    const closed = i < parts.length - 1;
+    const part = parts[i]!;
+    if (!closed && !part) break;
+    const index = lines.findIndex(
+      (line) => line.stream === stream && line.open,
+    );
+    const earlier = index < 0 ? undefined : lines[index];
+    const current = progressLine(earlier, part, closed);
+    if (index >= 0) lines[index] = { stream, ...current };
+    else lines.push({ stream, ...current });
     if (lines.length > 5) lines.shift();
   }
   return lines;
+}
+function progressLine(
+  earlier: LiveLine | undefined,
+  part: string,
+  closed: boolean,
+) {
+  // A trailing CR waits: LF closes the existing line; text replaces it.
+  const trailingCR = part.endsWith("\r");
+  const content = trailingCR ? part.slice(0, -1) : part;
+  const cr = content.lastIndexOf("\r");
+  const prefix =
+    earlier?.replacePending && content ? "" : (earlier?.text ?? "");
+  const text = cr >= 0 ? content.slice(cr + 1) : prefix + content;
+  return {
+    text: utf8Tail(text, 4096),
+    open: !closed,
+    replacePending: !closed && trailingCR,
+  };
 }

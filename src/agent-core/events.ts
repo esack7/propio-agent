@@ -86,6 +86,8 @@ export type AgentEventOptions = {
 };
 
 export type AgentToolOptions = AgentEventOptions & {
+  /** Disable transient output while retaining other event observations. */
+  readonly streamToolOutput?: boolean;
   readonly abortSignal?: AbortSignal;
 };
 

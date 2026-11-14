@@ -1,4 +1,4 @@
-import { createToolOutput } from "./toolOutput.js";
+import { observeToolOutput } from "./toolOutput.js";
 import type { ToolExecutionContext } from "../tools/execution.js";
 import {
   type ChatMessage,
@@ -1432,7 +1432,7 @@ export class AgentRuntime {
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
     display?: ToolDisplay,
-    onEvent?: AgentToolOptions["onEvent"],
+    options?: AgentToolOptions,
   ): Promise<ToolExecutionResult> {
     const executionArgs = args ?? {};
     if (abortSignal?.aborted) {
@@ -1466,7 +1466,7 @@ export class AgentRuntime {
     if (denied) return denied;
     // Local tools receive cooperative cancellation; integrations may still run.
     const startedAt = Date.now();
-    const output = createToolOutput(toolCallId, (event) => onEvent?.(event));
+    const output = observeToolOutput(toolCallId, options);
     let execResult: ToolExecutionResult;
     try {
       execResult = await this.awaitWithAbortSignal(
@@ -1708,7 +1708,7 @@ export class AgentRuntime {
       allowedTools,
       options?.abortSignal,
       display,
-      options?.onEvent,
+      options,
     );
     const result = execResult.content;
     const failed = this.emitToolFinishedEvents(

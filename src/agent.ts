@@ -2327,6 +2327,9 @@ export class Agent {
       const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
+        streamToolOutput:
+          Boolean(options?.onEvent) &&
+          runtimeOptions.streamToolOutput !== false,
         abortSignal: subscriptionAccountId(this.resolvedProviderConfig)
           ? options?.abortSignal
             ? AbortSignal.any([options.abortSignal, controller.signal])

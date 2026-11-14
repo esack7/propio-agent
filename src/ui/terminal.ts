@@ -362,15 +362,9 @@ export class TerminalUi {
     store.upsertToolCallDisplay({
       ...view,
       durationMs: elapsedMs,
-      collapsedLimit: 7,
+      collapsedLimit: 8,
       liveOutput: lines,
-      display: {
-        ...view.display,
-        body: {
-          ...view.display.body,
-          truncated: view.display.body.truncated || droppedBytes > 0,
-        },
-      },
+      liveDroppedBytes: (view.liveDroppedBytes ?? 0) + droppedBytes,
     });
   }
 

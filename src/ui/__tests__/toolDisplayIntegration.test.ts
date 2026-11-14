@@ -278,6 +278,12 @@ it("updates a bounded escaped live tail through the output hold, preserving hidd
   expect(output).not.toContain("live 0\n");
   expect(output).toContain("\\x1b[2J");
   expect(output).toContain("1.2s");
+  expect(
+    store.getState().toolCallDisplays.get("a")?.display.body,
+  ).toMatchObject({ truncated: false });
+  expect(store.getState().toolCallDisplays.get("a")?.liveDroppedBytes).toBe(
+    100,
+  );
   const restore = ui.hideRunningToolCall("a");
   ui.updateToolOutput("a", "stderr", "still running", 1400, 0);
   expect(store.getState().toolCallDisplays.get("a")?.hidden).toBe(true);

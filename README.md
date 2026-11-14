@@ -1787,7 +1787,10 @@ and duration. Plain and JSON terminal modes do not print transient live updates.
 
 The execution context now accepts `onOutput({stream, text})`. Runtime
 `tool_output` events are transient and contain `toolCallId`, `stream`, `text`,
-`elapsedMs`, and `droppedBytes`. Each 100 ms window carries at most one event per
-stream and 4 KiB of text combined; a final flush precedes completion. Dropping
+`elapsedMs`, and `droppedBytes`. Each 100 ms window retains the latest 4 KiB
+of text in arrival order,
+coalescing adjacent chunks with a maximum of 32 events. Evicted bytes are counted;
+a final flush precedes normal completion, while cancellation discards pending
+text. Dropping
 live telemetry does not truncate the separately collected tool result. Event
 sequence numbering is planned for the protocol-events slice.
