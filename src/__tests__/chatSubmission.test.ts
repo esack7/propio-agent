@@ -5,6 +5,7 @@ import { PASTE_THRESHOLD } from "../ui/input/constants.js";
 import { expandPastedRefs } from "../ui/input/expandSubmit.js";
 import type { PastedContent } from "../ui/input/pastedContent.js";
 import {
+  createPlainSubmission,
   isImageOnlySubmission,
   isSubmissionEmpty,
   type UiPromptSubmission,
