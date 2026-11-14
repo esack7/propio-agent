@@ -446,6 +446,33 @@ describe("payload limits", () => {
     );
   });
 
+  it("stops searching for the smallest diff of a large file after its deadline", async () => {
+    // Alternating lines with scattered changes: about 1 MB, and several
+    // hundred milliseconds of search without a deadline.
+    const count = 500_000;
+    const old = Array.from({ length: count }, (_, i) => (i % 2 ? "a" : "b"));
+    const next = Array.from({ length: count }, (_, i) => (i % 2 ? "b" : "a"));
+    for (let i = 0; i < count; i += 1111) next[i] = "c";
+    await writeFile(file("big.txt"), old.join("\n"));
+
+    const started = performance.now();
+    const before = await registry.describeCall("write", {
+      path: "big.txt",
+      content: next.join("\n"),
+    });
+    const elapsed = performance.now() - started;
+
+    // The smallest diff changes about 450 lines; past the deadline the whole
+    // file is shown as one replacement.
+    expect(before.body).toMatchObject({
+      kind: "diff",
+      added: count,
+      removed: count,
+      truncated: true,
+    });
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   it("shows a write that only removes the final line break", async () => {
     await writeFile(file("a.txt"), "one\ntwo\n");
     const { before, after } = await describedRun("write", {

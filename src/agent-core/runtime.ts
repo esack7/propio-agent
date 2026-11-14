@@ -114,6 +114,27 @@ const OPERATOR_ABORT_REASONS: ReadonlySet<string> = new Set([
 
 /** How long a tool may take to describe a call before the generic description is used. */
 const DESCRIBE_CALL_BUDGET_MS = 250;
+
+/**
+ * A copy of a tool scope that shares nothing with the original: its own set
+ * of tool names and its own metadata. Metadata that cannot be copied is left
+ * out rather than shared.
+ */
+function detachedScope(scope: AgentToolScope): AgentToolScope {
+  const { allowedTools, metadata, ...identity } = scope;
+  let copiedMetadata: AgentToolScope["metadata"];
+  try {
+    copiedMetadata =
+      metadata === undefined ? undefined : structuredClone(metadata);
+  } catch {
+    copiedMetadata = undefined;
+  }
+  return {
+    ...identity,
+    ...(allowedTools ? { allowedTools: new Set(allowedTools) } : {}),
+    ...(copiedMetadata === undefined ? {} : { metadata: copiedMetadata }),
+  };
+}
 const INTERRUPTED_RUNNING_RESULT =
   "[Interrupted before this call finished. It may have had partial effects. It was not retried.]";
 const INTERRUPTED_PENDING_RESULT =
@@ -251,20 +272,32 @@ export class AgentRuntime {
   ): Promise<ToolDisplay> {
     const fallback = genericDisplay(name, args);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = performance.now();
     try {
-      // Presentation code gets its own copy, so nothing it does can change
-      // the arguments that are authorized and run.
+      // Presentation code gets its own copies, so nothing it does can change
+      // the arguments that are authorized and run, or the scope they are
+      // authorized against.
       const described = Promise.resolve(
-        describe({ name, toolCallId, args: structuredClone(args), scope }),
+        describe({
+          name,
+          toolCallId,
+          args: structuredClone(args),
+          scope: detachedScope(scope),
+        }),
       );
       // A description that arrives late is dropped, including a late failure.
       described.catch(() => {});
-      return await Promise.race([
+      const display = await Promise.race([
         described,
         new Promise<ToolDisplay>((resolve) => {
           timer = setTimeout(() => resolve(fallback), DESCRIBE_CALL_BUDGET_MS);
         }),
       ]);
+      // The timer cannot fire while the event loop is blocked, so a
+      // description that kept it busy can win the race after the budget.
+      return performance.now() - startedAt > DESCRIBE_CALL_BUDGET_MS
+        ? fallback
+        : display;
     } catch {
       return fallback;
     } finally {

@@ -178,6 +178,24 @@ describe("diffLines", () => {
     expect(bytes).toBeLessThanOrEqual(1000);
   });
 
+  it("shows the middle as one replacement once the deadline has passed", () => {
+    let clock = 0;
+    const now = () => ++clock;
+    const oldText = "keep\na\nb\nc\nkeep\n";
+    const newText = "keep\nb\nc\nd\nkeep\n";
+    const late = diffLines(oldText, newText, { deadline: { at: 0, now } });
+    expect(clock).toBeGreaterThan(0);
+    expect(late).toMatchObject({ added: 3, removed: 3 });
+    expect(applyHunks(splitLines(oldText), late.hunks)).toEqual(
+      splitLines(newText),
+    );
+    // With time to spare, the smallest diff.
+    const early = diffLines(oldText, newText, {
+      deadline: { at: Number.POSITIVE_INFINITY, now },
+    });
+    expect(early).toMatchObject({ added: 1, removed: 1 });
+  });
+
   it("falls back to one replacement when two large texts share nothing", () => {
     const oldText = Array.from({ length: 3000 }, (_, i) => `old ${i}`).join(
       "\n",

@@ -17,6 +17,12 @@ export interface LineDiffOptions {
   readonly maxLines?: number;
   /** Most UTF-8 bytes of line text kept across all hunks. */
   readonly maxBytes?: number;
+  /**
+   * When to stop looking for the smallest diff. Past it the differing middle
+   * is shown as one replacement, which is still correct. The clock is the
+   * caller's, so this module reads none.
+   */
+  readonly deadline?: { readonly at: number; now(): number };
 }
 
 /** Above this many differing steps the middle is shown as one replacement. */
@@ -72,12 +78,14 @@ function followMatches(
 function shortestEdit(
   a: readonly string[],
   b: readonly string[],
+  deadline: LineDiffOptions["deadline"],
 ): Op[] | undefined {
   const max = Math.min(a.length + b.length, MAX_EDIT_DISTANCE);
   const offset = max + 1;
   let v: Frontier = new Int32Array(2 * max + 3);
   const trace: Frontier[] = [];
   for (let d = 0; d <= max; d++) {
+    if (deadline && deadline.now() > deadline.at) return undefined;
     trace.push(v);
     v = v.slice();
     for (let k = -d; k <= d; k += 2) {
@@ -125,64 +133,120 @@ function backtrack(
   return ops.reverse();
 }
 
-function editScript(a: readonly string[], b: readonly string[]): Op[] {
+/**
+ * The edit script for the part of the two texts that differs, with up to
+ * `context` unchanged lines on each side. Lines further out cannot appear in
+ * a hunk, so no work is spent on them.
+ */
+interface EditWindow {
+  readonly ops: readonly Op[];
+  /** 0-based line where the window starts, the same in both texts. */
+  readonly start: number;
+  readonly added: number;
+  readonly removed: number;
+}
+
+/** How many lines the two texts share at the start and, after that, at the end. */
+function commonEnds(
+  a: readonly string[],
+  b: readonly string[],
+): { prefix: number; suffix: number } {
+  const shorter = Math.min(a.length, b.length);
   let prefix = 0;
-  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) {
-    prefix++;
-  }
+  while (prefix < shorter && a[prefix] === b[prefix]) prefix++;
   let suffix = 0;
   while (
-    suffix < a.length - prefix &&
-    suffix < b.length - prefix &&
+    suffix < shorter - prefix &&
     a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
   ) {
     suffix++;
   }
+  return { prefix, suffix };
+}
+
+/**
+ * Write the middle of the edit script into `ops` from `at`: the smallest
+ * edit if one was found, otherwise every old line removed and every new one
+ * added. Returns the lines added and removed.
+ */
+function writeMiddle(
+  ops: Op[],
+  at: number,
+  found: readonly Op[] | undefined,
+  removedLines: number,
+  addedLines: number,
+): { added: number; removed: number } {
+  if (!found) {
+    ops.fill("-", at, at + removedLines);
+    ops.fill("+", at + removedLines, at + removedLines + addedLines);
+    return { added: addedLines, removed: removedLines };
+  }
+  let added = 0;
+  let removed = 0;
+  for (let i = 0; i < found.length; i++) {
+    ops[at + i] = found[i];
+    if (found[i] === "+") added++;
+    else if (found[i] === "-") removed++;
+  }
+  return { added, removed };
+}
+
+function editWindow(
+  a: readonly string[],
+  b: readonly string[],
+  context: number,
+  deadline: LineDiffOptions["deadline"],
+): EditWindow {
+  const { prefix, suffix } = commonEnds(a, b);
   const midA = a.slice(prefix, a.length - suffix);
   const midB = b.slice(prefix, b.length - suffix);
-  const middle: Op[] = shortestEdit(midA, midB) ?? [
-    ...midA.map((): Op => "-"),
-    ...midB.map((): Op => "+"),
-  ];
-  return [
-    ...new Array<Op>(prefix).fill(" "),
-    ...middle,
-    ...new Array<Op>(suffix).fill(" "),
-  ];
+  const lead = Math.min(prefix, context);
+  const trail = Math.min(suffix, context);
+  // Past the deadline or the distance limit, the middle is one replacement.
+  const found = shortestEdit(midA, midB, deadline);
+  const middleLength = found ? found.length : midA.length + midB.length;
+  const ops = new Array<Op>(lead + middleLength + trail).fill(" ");
+  const counts = writeMiddle(ops, lead, found, midA.length, midB.length);
+  return { ops, start: prefix - lead, ...counts };
 }
 
-interface Step {
-  readonly op: Op;
-  /** 0-based index of this line in the old and new text. */
-  readonly oldIndex: number;
-  readonly newIndex: number;
+/** A run of ops to show, and where it starts in each text (0-based). */
+interface HunkRange {
+  readonly start: number;
+  end: number;
+  oldIndex: number;
+  newIndex: number;
 }
 
-function toSteps(ops: readonly Op[]): Step[] {
-  const steps: Step[] = [];
-  let oldIndex = 0;
-  let newIndex = 0;
-  for (const op of ops) {
-    steps.push({ op, oldIndex, newIndex });
-    if (op !== "+") oldIndex++;
-    if (op !== "-") newIndex++;
-  }
-  return steps;
-}
-
-/** Ranges of steps to show: each change with its context, merged where they meet. */
-function hunkRanges(
-  steps: readonly Step[],
-  context: number,
-): Array<[number, number]> {
-  const ranges: Array<[number, number]> = [];
-  for (let i = 0; i < steps.length; i++) {
-    if (steps[i].op === " ") continue;
+/** Each change with its context, merged where they meet. */
+function changeRanges(ops: readonly Op[], context: number): HunkRange[] {
+  const ranges: HunkRange[] = [];
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i] === " ") continue;
     const start = Math.max(0, i - context);
-    const end = Math.min(steps.length - 1, i + context);
+    const end = Math.min(ops.length - 1, i + context);
     const last = ranges[ranges.length - 1];
-    if (last && start <= last[1] + 1) last[1] = Math.max(last[1], end);
-    else ranges.push([start, end]);
+    if (last && start <= last.end + 1) last.end = Math.max(last.end, end);
+    else ranges.push({ start, end, oldIndex: 0, newIndex: 0 });
+  }
+  return ranges;
+}
+
+/** Ranges of ops to show, each with where it starts in the two texts. */
+function hunkRanges(window: EditWindow, context: number): HunkRange[] {
+  const { ops } = window;
+  const ranges = changeRanges(ops, context);
+  let next = 0;
+  let oldIndex = window.start;
+  let newIndex = window.start;
+  for (let i = 0; next < ranges.length; i++) {
+    if (ranges[next].start === i) {
+      ranges[next].oldIndex = oldIndex;
+      ranges[next].newIndex = newIndex;
+      next++;
+    }
+    if (ops[i] !== "+") oldIndex++;
+    if (ops[i] !== "-") newIndex++;
   }
   return ranges;
 }
@@ -213,38 +277,33 @@ function shownLine(op: Op, line: string, budget: Budget): DiffLine {
   };
 }
 
-/** One hunk from a range of steps, as far as the budget allows. */
+/** One hunk from a range of ops, as far as the budget allows. */
 function buildHunk(
-  steps: readonly Step[],
-  [start, end]: readonly [number, number],
+  ops: readonly Op[],
+  range: HunkRange,
   a: readonly string[],
   b: readonly string[],
   budget: Budget,
 ): DiffHunk {
   const lines: DiffLine[] = [];
-  let hasOld = false;
-  let hasNew = false;
-  for (let i = start; i <= end; i++) {
+  let oldIndex = range.oldIndex;
+  let newIndex = range.newIndex;
+  for (let i = range.start; i <= range.end; i++) {
     if (budget.lines <= 0 || budget.bytes <= 0) {
       budget.spent = true;
       break;
     }
-    const step = steps[i];
-    lines.push(
-      shownLine(
-        step.op,
-        step.op === "+" ? b[step.newIndex] : a[step.oldIndex],
-        budget,
-      ),
-    );
-    if (step.op !== "+") hasOld = true;
-    if (step.op !== "-") hasNew = true;
+    const op = ops[i];
+    lines.push(shownLine(op, op === "+" ? b[newIndex] : a[oldIndex], budget));
+    if (op !== "+") oldIndex++;
+    if (op !== "-") newIndex++;
   }
-  const first = steps[start];
   // A side with no lines in the hunk starts at the line before it.
+  const hasOld = oldIndex > range.oldIndex;
+  const hasNew = newIndex > range.newIndex;
   return {
-    oldStart: hasOld ? first.oldIndex + 1 : first.oldIndex,
-    newStart: hasNew ? first.newIndex + 1 : first.newIndex,
+    oldStart: hasOld ? range.oldIndex + 1 : range.oldIndex,
+    newStart: hasNew ? range.newIndex + 1 : range.newIndex,
     lines,
   };
 }
@@ -258,27 +317,28 @@ export function diffLines(
   newText: string,
   options: LineDiffOptions = {},
 ): LineDiff {
+  const context = options.context ?? 3;
   const a = splitLines(oldText);
   const b = splitLines(newText);
-  const steps = toSteps(editScript(a, b));
+  const window = editWindow(a, b, context, options.deadline);
   const budget: Budget = {
     lines: options.maxLines ?? Number.POSITIVE_INFINITY,
     bytes: options.maxBytes ?? Number.POSITIVE_INFINITY,
     spent: false,
   };
   const hunks: DiffHunk[] = [];
-  for (const range of hunkRanges(steps, options.context ?? 3)) {
+  for (const range of hunkRanges(window, context)) {
     if (budget.lines <= 0 || budget.bytes <= 0) {
       budget.spent = true;
       break;
     }
-    const hunk = buildHunk(steps, range, a, b, budget);
+    const hunk = buildHunk(window.ops, range, a, b, budget);
     if (hunk.lines.length > 0) hunks.push(hunk);
   }
   return {
     hunks,
-    added: steps.filter((step) => step.op === "+").length,
-    removed: steps.filter((step) => step.op === "-").length,
+    added: window.added,
+    removed: window.removed,
     truncated: budget.spent,
   };
 }

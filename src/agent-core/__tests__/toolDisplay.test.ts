@@ -31,6 +31,7 @@ function setup(
     content: `result of ${String(args.key)}`,
   }),
   callArgs: Record<string, unknown> = { key: "k" },
+  policy: Partial<AgentRuntimeOptions["policy"]> = {},
 ) {
   const requests: ChatRequest[] = [];
   const rounds: ChatStreamEvent[][] = [
@@ -89,6 +90,7 @@ function setup(
       useNoProgressDetector: false,
       streamIdleTimeoutMs: 0,
       outputTokenRecoveryLimit: 1,
+      ...policy,
     },
     integrations,
   });
@@ -282,6 +284,94 @@ describe("display payloads on tool events (a8)", () => {
       (message) => message.role === "tool",
     );
     expect(toolMessage?.toolResults?.[0]?.content).toBe("result of k");
+  });
+
+  it("gives the hook its own copy of the scope, so it cannot change what is allowed", async () => {
+    const authorizedScopes: unknown[] = [];
+    const seen: unknown[] = [];
+    const { run, toolEvents, execute } = setup(
+      {
+        describeToolCall: ({ scope }) => {
+          seen.push(structuredClone(scope));
+          (scope.allowedTools as Set<string>).delete("lookup");
+          (scope.metadata as { mode: string }).mode = "changed";
+          return described("Reading a.txt");
+        },
+        authorizeTool: ({ scope }) => {
+          authorizedScopes.push(structuredClone(scope));
+          return { allowed: true, actor: "application", rule: "test" };
+        },
+      },
+      undefined,
+      undefined,
+      {
+        resolveToolScope: () => ({
+          allowedTools: new Set(["lookup"]),
+          policyRevisionId: "policy-1",
+          metadata: { mode: "execute" },
+        }),
+      },
+    );
+    await run();
+
+    expect(seen).toEqual([
+      {
+        allowedTools: new Set(["lookup"]),
+        policyRevisionId: "policy-1",
+        metadata: { mode: "execute" },
+      },
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(toolEvents()[1].type).toBe("tool_finished");
+    expect(authorizedScopes).toEqual([
+      {
+        allowedTools: new Set(["lookup"]),
+        policyRevisionId: "policy-1",
+        metadata: { mode: "execute" },
+      },
+    ]);
+  });
+
+  it("leaves out scope metadata that cannot be copied, and still uses the description", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const { run, toolEvents } = setup(
+      {
+        describeToolCall: ({ scope }) => {
+          seen.push({ ...scope });
+          return described("Reading a.txt");
+        },
+      },
+      undefined,
+      undefined,
+      {
+        resolveToolScope: () => ({
+          allowedTools: new Set(["lookup"]),
+          metadata: { check: () => true },
+        }),
+      },
+    );
+    await run();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).not.toHaveProperty("metadata");
+    expect(toolEvents()[0].display.title).toBe("Reading a.txt");
+  });
+
+  it("drops a description that blocked the event loop past the budget", async () => {
+    const { run, toolEvents, execute } = setup({
+      describeToolCall: async () => {
+        await Promise.resolve();
+        const until = performance.now() + 350;
+        while (performance.now() < until) {
+          // Synchronous work: the budget timer cannot fire meanwhile.
+        }
+        return described("Reading a.txt");
+      },
+    });
+    await run();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(toolEvents()[0].display).toEqual(GENERIC_BEFORE);
   });
 
   it("passes the scope the call will be authorized against", async () => {

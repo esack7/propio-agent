@@ -15,6 +15,13 @@ import type { ToolExecutionResult } from "./types.js";
 /** Larger files are changed without a preview rather than read twice. */
 const PREVIEW_MAX_BYTES = 1024 * 1024;
 
+/**
+ * How long the diff may search for the smallest change. The search is
+ * synchronous, so this bounds how long a preview holds up the call; the
+ * runtime's own budget for a description is 250 ms.
+ */
+const PREVIEW_DIFF_BUDGET_MS = 50;
+
 export function createContentHash(content: string | Buffer): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
@@ -91,6 +98,10 @@ export async function previewFileChange(options: {
     const diff = diffLines(original ?? "", updated, {
       maxLines: DISPLAY_LIMITS.diffLines,
       maxBytes: DISPLAY_LIMITS.diffBytes,
+      deadline: {
+        at: performance.now() + PREVIEW_DIFF_BUDGET_MS,
+        now: () => performance.now(),
+      },
     });
     return {
       title,
