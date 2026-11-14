@@ -194,6 +194,7 @@ export class BashTool implements PresentedTool {
       command,
       ...executionOptions,
       abortSignal: context.signal,
+      onOutput: context.onOutput,
       maxBuffer: this.outputInlineLimit * 2,
     });
 

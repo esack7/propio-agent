@@ -2,7 +2,13 @@ import type { ChatTool } from "@propio-ai/providers";
 import type { ToolExecutionResult } from "./types.js";
 import type { ToolMetadata } from "../policy/capabilities.js";
 
+export interface ToolOutputChunk {
+  readonly stream: "stdout" | "stderr";
+  readonly text: string;
+}
+
 export interface ToolExecutionContext {
+  readonly onOutput?: (chunk: ToolOutputChunk) => void;
   /** Cooperative cancellation. It cannot roll back completed filesystem changes. */
   readonly signal?: AbortSignal;
 }

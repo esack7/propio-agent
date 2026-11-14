@@ -12,6 +12,11 @@ export interface DisplayState {
   durationMs?: number;
   color?: boolean;
   collapsedLimit?: number;
+  liveOutput?: readonly {
+    stream: "stdout" | "stderr";
+    text: string;
+    open: boolean;
+  }[];
   readonly fullOutputPath?: string;
 }
 export type DisplayMode = "collapsed" | "expanded";
@@ -164,7 +169,12 @@ export function renderToolDisplay(
           `error: ${visibleText(mode === "expanded" ? display.error : display.error.split("\n")[0]!)}`,
         ]
       : []),
-    ...body.details.filter(
+    ...(state.liveOutput
+      ? state.liveOutput.map(
+          (line) => `${line.stream} │ ${visibleText(line.text)}`,
+        )
+      : body.details
+    ).filter(
       (line) =>
         mode === "expanded" ||
         display.body.kind !== "command" ||

@@ -1,3 +1,4 @@
+import type { ToolExecutionContext } from "./execution.js";
 import { StringDecoder } from "node:string_decoder";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
@@ -17,6 +18,7 @@ export interface RunShellCommandOptions {
   timeoutMs?: number;
   maxBuffer?: number;
   abortSignal?: AbortSignal;
+  onOutput?: ToolExecutionContext["onOutput"];
   /** Test hook for the SIGTERM-to-SIGKILL grace period (default 2000 ms). */
   killGraceMs?: number;
 }
@@ -325,10 +327,22 @@ async function runWithSpawn(
 
     const stdoutOutput = createOutputCollector(maxBuffer, killForMaxBuffer);
     const stderrOutput = createOutputCollector(maxBuffer, killForMaxBuffer);
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    const publish = (stream: "stdout" | "stderr", text: string) => {
+      if (!text || settled) return;
+      try {
+        options.onOutput?.({ stream, text });
+      } catch {
+        /* Observers cannot break process cleanup. */
+      }
+    };
     child.stdout?.on("data", (chunk: Buffer) => {
+      publish("stdout", stdoutDecoder.write(chunk));
       if (!maxBufferExceeded) stdoutOutput.append(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
+      publish("stderr", stderrDecoder.write(chunk));
       if (!maxBufferExceeded) stderrOutput.append(chunk);
     });
 
@@ -370,6 +384,8 @@ async function runWithSpawn(
     });
 
     child.on("close", (code, terminationSignal) => {
+      publish("stdout", stdoutDecoder.end());
+      publish("stderr", stderrDecoder.end());
       const stdout = stdoutOutput.finish();
       const stderr = stderrOutput.finish();
       finish(
@@ -405,7 +421,7 @@ export async function runShellCommand(
       durationMs: 0,
     };
   }
-  if (options.abortSignal) {
+  if (options.abortSignal || options.onOutput) {
     return runWithSpawn(options);
   }
 

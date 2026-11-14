@@ -1,3 +1,4 @@
+import { appendLiveOutput } from "./liveOutput.js";
 import { renderToolDisplay } from "./toolDisplay/render.js";
 import { formatInputPrompt, formatUserMessage } from "./formatting.js";
 import {
@@ -344,6 +345,33 @@ export class TerminalUi {
     );
     if (view.fullOutputPath || expanded.join("\n") !== collapsed.join("\n"))
       this.lastExpandableCall = structuredClone(view);
+  }
+
+  /** Update only a retained running command; never append transient output to the transcript. */
+  updateToolOutput(
+    id: string,
+    stream: "stdout" | "stderr",
+    text: string,
+    elapsedMs: number,
+    droppedBytes: number,
+  ): void {
+    const store = this.retainedStore;
+    const view = store?.getState().toolCallDisplays.get(id);
+    if (!store || !view || view.display.body.kind !== "command") return;
+    const lines = appendLiveOutput(view.liveOutput ?? [], stream, text);
+    store.upsertToolCallDisplay({
+      ...view,
+      durationMs: elapsedMs,
+      collapsedLimit: 7,
+      liveOutput: lines,
+      display: {
+        ...view.display,
+        body: {
+          ...view.display.body,
+          truncated: view.display.body.truncated || droppedBytes > 0,
+        },
+      },
+    });
   }
 
   /** Hide one live preview without ending the call; restore only if still running. */

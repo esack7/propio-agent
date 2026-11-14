@@ -250,8 +250,27 @@ export async function streamAssistantTurn(
     }
   };
 
+  const renderOutputEvent = (
+    visible: boolean,
+    event: Extract<AgentVisibilityEvent, { type: "tool_output" }>,
+  ) => {
+    if (visible)
+      ui.updateToolOutput(
+        event.toolCallId,
+        event.stream,
+        event.text,
+        event.elapsedMs,
+        event.droppedBytes,
+      );
+  };
+
   const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
     const currentVisibility = getVisibility();
+
+    if (event.type === "tool_output") {
+      renderOutputEvent(currentVisibility.showToolCalls, event);
+      return;
+    }
 
     if (event.type === "status") {
       renderStatusEvent(currentVisibility, event);

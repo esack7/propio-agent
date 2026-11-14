@@ -1,3 +1,5 @@
+import { createToolOutput } from "./toolOutput.js";
+import type { ToolExecutionContext } from "../tools/execution.js";
 import {
   type ChatMessage,
   type ChatTool,
@@ -338,10 +340,12 @@ export class AgentRuntime {
     name: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
+    onOutput?: ToolExecutionContext["onOutput"],
   ): Promise<ToolExecutionResult> {
     try {
       return await this.dependencies.tools.executeWithStatus(name, args, {
         signal,
+        onOutput,
       });
     } catch (error) {
       this.throwIfAbortCancelled(signal);
@@ -1428,6 +1432,7 @@ export class AgentRuntime {
     allowedTools: ReadonlySet<string> | undefined,
     abortSignal?: AbortSignal,
     display?: ToolDisplay,
+    onEvent?: AgentToolOptions["onEvent"],
   ): Promise<ToolExecutionResult> {
     const executionArgs = args ?? {};
     if (abortSignal?.aborted) {
@@ -1461,10 +1466,22 @@ export class AgentRuntime {
     if (denied) return denied;
     // Local tools receive cooperative cancellation; integrations may still run.
     const startedAt = Date.now();
-    const execResult = await this.awaitWithAbortSignal(
-      this.executeToolWithStatus(toolName, executionArgs, abortSignal),
-      abortSignal,
-    );
+    const output = createToolOutput(toolCallId, (event) => onEvent?.(event));
+    let execResult: ToolExecutionResult;
+    try {
+      execResult = await this.awaitWithAbortSignal(
+        this.executeToolWithStatus(
+          toolName,
+          executionArgs,
+          abortSignal,
+          output.append,
+        ),
+        abortSignal,
+      );
+    } finally {
+      output.close();
+    }
+
     this.toolRunMs.set(toolCallId, Date.now() - startedAt);
     this.throwIfAbortCancelled(abortSignal);
     return execResult;
@@ -1691,6 +1708,7 @@ export class AgentRuntime {
       allowedTools,
       options?.abortSignal,
       display,
+      options?.onEvent,
     );
     const result = execResult.content;
     const failed = this.emitToolFinishedEvents(
