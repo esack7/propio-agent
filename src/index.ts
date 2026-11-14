@@ -51,6 +51,11 @@ import {
 import { processBashCommand } from "./ui/processBashCommand.js";
 import { createShellRunOptionsFromRuntimeConfig } from "./tools/runShellCommand.js";
 import { exitAfterShellCleanup } from "./cli/exit.js";
+import {
+  answerApprovalsThrough,
+  createCliTurnSession,
+  type CliTurnSession,
+} from "./cli/turnSession.js";
 import type { InputMode } from "./ui/inputModes.js";
 import {
   createPlainSubmission,
@@ -296,12 +301,13 @@ export async function runNonInteractiveSession(
   ui.setMode("running");
 
   try {
-    const result = await streamAssistantTurn(
+    const result = await createCliTurnSession(
       agent,
-      createPlainSubmission(stdinInput, "prompt"),
       ui,
-      abortController.signal,
       () => visibility,
+    ).runTurn(
+      createPlainSubmission(stdinInput, "prompt"),
+      abortController.signal,
     );
     ui.setMode("showingResults");
     writeNonInteractiveSuccessResponse(result, ui, visibility);
@@ -354,6 +360,8 @@ interface InteractiveSubmissionContext {
   cancelActiveTurn: AbortStateController["cancelActiveTurn"];
   shouldExit: () => boolean;
   getVisibility: () => VisibilityOptions;
+  /** The session turns are dispatched to; one is made per turn if absent. */
+  turnSession?: CliTurnSession;
 }
 
 export async function runInteractiveTurn(
@@ -385,13 +393,10 @@ export async function runInteractiveTurn(
       await options.beforeTurn();
     }
 
-    await streamAssistantTurn(
-      agent,
-      submission,
-      ui,
-      abortController.signal,
-      () => context.getVisibility(),
-    );
+    const turnSession =
+      context.turnSession ??
+      createCliTurnSession(agent, ui, () => context.getVisibility());
+    await turnSession.runTurn(submission, abortController.signal);
 
     if (abortController.signal.aborted) {
       return resolveInteractiveTurnAbortExitCode(
@@ -1026,12 +1031,18 @@ export async function runInteractiveSession(
     },
   });
   abortState.setActiveComposer(composer);
-  agent.setApprovalChannel(
+  // Turns, interrupts, and approval answers all go through one session as
+  // commands. The agent asks the session; the session asks the terminal.
+  const turnSession = createCliTurnSession(agent, ui, () =>
+    visibilityState.getSnapshot(),
+  );
+  agent.setApprovalChannel(turnSession.session.approvalChannel, "application");
+  answerApprovalsThrough(
+    turnSession.session,
     createApprovalPromptChannel(createTerminalApprovalIo(ui, inputStream), {
       savingUnavailableReason: () =>
         agent.permissions.savingUnavailableReason(),
     }),
-    "application",
   );
 
   try {
@@ -1115,6 +1126,7 @@ export async function runInteractiveSession(
         cancelActiveTurn: abortState.cancelActiveTurn,
         shouldExit: abortState.shouldExit,
         getVisibility: () => visibilityState.getSnapshot(),
+        turnSession,
       });
       if (exitCode !== null) {
         return exitCode;

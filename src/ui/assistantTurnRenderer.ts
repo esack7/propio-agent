@@ -9,7 +9,7 @@ import {
 } from "./contextInspector.js";
 import { TerminalUi } from "./terminal.js";
 import type { ToolCallView } from "./toolCallView.js";
-import type { UiPromptSubmission } from "./input/promptSubmission.js";
+import type { GuidanceSource, PromptSubmission } from "../agent-core/index.js";
 
 export interface AssistantTurnVisibilityOptions {
   showToolCalls: boolean;
@@ -35,10 +35,11 @@ export interface AssistantTurnResult {
 
 export async function streamAssistantTurn(
   agent: AssistantTurnAgent,
-  submission: UiPromptSubmission,
+  submission: PromptSubmission,
   ui: TerminalUi,
   abortSignal: AbortSignal,
   visibility: AssistantTurnVisibilitySource,
+  guidance?: GuidanceSource,
 ): Promise<AssistantTurnResult> {
   const mdStream = ui.createMarkdownStream();
   const useLabelByCallId = new Map<string, string>();
@@ -357,6 +358,7 @@ export async function streamAssistantTurn(
         abortSignal,
         onEvent: renderVisibilityEvent,
         requestReasoning: getVisibility().showThinking,
+        ...(guidance ? { guidance } : {}),
       },
     );
   } finally {
