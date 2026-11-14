@@ -184,3 +184,44 @@ export function keepEndWithinDisplayWidth(
   }
   return `${marker}${kept.reverse().join("")}`;
 }
+
+/** Wrap visible text without splitting a grapheme; callers own line prefixes. */
+export function wrapVisibleText(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let line = "";
+  let used = 0;
+  for (const cluster of graphemes(text)) {
+    const size = widestDisplayWidth(cluster);
+    if (line && used + size > width) {
+      lines.push(line);
+      line = "";
+      used = 0;
+    }
+    line += size > width ? "…" : cluster;
+    used += Math.min(size, width);
+  }
+  lines.push(line);
+  return lines;
+}
+
+/** Keep the beginning of visible text, preserving diff/stream markers. */
+export function keepStartWithinDisplayWidth(
+  text: string,
+  width: number,
+): string {
+  const clusters = graphemes(text);
+  if (
+    clusters.reduce((sum, cluster) => sum + widestDisplayWidth(cluster), 0) <=
+    width
+  )
+    return text;
+  let kept = "";
+  let used = 0;
+  for (const cluster of clusters) {
+    const size = widestDisplayWidth(cluster);
+    if (used + size > Math.max(0, width - 1)) break;
+    kept += cluster;
+    used += size;
+  }
+  return kept + "…";
+}

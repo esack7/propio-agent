@@ -2696,7 +2696,7 @@ describe("Agent with Multi-Provider Configuration", () => {
             statuses.push(event.status);
           }
           if (event.type === "tool_started") {
-            expect(event.activityLabel).toBe("Reading package.json");
+            expect(event.display.title).toBe("Reading package.json");
           }
         },
       });
@@ -2823,7 +2823,7 @@ describe("Agent with Multi-Provider Configuration", () => {
       const started = events.find((event) => event.type === "tool_started");
       expect(started?.type).toBe("tool_started");
       if (started?.type === "tool_started") {
-        expect(started.activityLabel).toBe("custom_tool");
+        expect(started.display.title).toBe("custom_tool");
       }
     });
 

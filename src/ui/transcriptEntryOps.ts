@@ -3,6 +3,7 @@ import type { TerminalWriter } from "./terminalWriter.js";
 import type { TranscriptEntry } from "./replUi.js";
 
 const TEXT_TRANSCRIPT_KINDS = new Set<TranscriptEntry["kind"]>([
+  "tool_display",
   "user_message",
   "info",
   "command",
@@ -26,6 +27,7 @@ const TEXT_TRANSCRIPT_RENDERERS: Record<
   TextTranscriptKind,
   (transcript: TranscriptRenderer, text: string) => void
 > = {
+  tool_display: (transcript, text) => transcript.toolDisplay(text),
   user_message: (transcript, text) => transcript.userMessage(text),
   assistant_token: (transcript, text) => transcript.writeAssistant(text),
   thinking_token: (transcript, text) => transcript.writeThinking(text),
@@ -145,6 +147,7 @@ export function countTranscriptEntryStderrLines(
       );
     case "assistant_start":
       return countLine("", writer) + 1;
+    case "tool_display":
     case "assistant_token":
     case "info":
     case "command":

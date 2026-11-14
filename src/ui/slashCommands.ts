@@ -41,6 +41,10 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
         command: "/account",
         description: "manage ChatGPT registrations and setup",
       },
+      {
+        command: "/expand",
+        description: "expand the last collapsed tool result",
+      },
       { command: "/clear", description: "clear session context" },
       { command: "/skill <name>", description: "run an inline skill now" },
       { command: "/skills", description: "list loaded skills" },
@@ -209,13 +213,19 @@ export function buildSlashCommandHelpLines(): SlashCommandLine[] {
     style: "info",
   });
   lines.push({
-    text: formatLabelLine("Ctrl+O", "toggle tool output"),
+    text: formatLabelLine("Ctrl+O", "expand last tool result"),
     style: "info",
   });
-  lines.push({
-    text: formatLabelLine("Ctrl+T", "toggle thinking output"),
-    style: "info",
-  });
+  lines.push(
+    {
+      text: formatLabelLine("Ctrl+Y", "toggle tool output"),
+      style: "info",
+    },
+    {
+      text: formatLabelLine("Ctrl+T", "toggle thinking output"),
+      style: "info",
+    },
+  );
   lines.push({
     text: formatLabelLine("Ctrl+X Ctrl+E", "open the editor"),
     style: "info",

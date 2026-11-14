@@ -30,6 +30,11 @@ function formatDurationSeconds(durationMs: number): string {
 export class TranscriptRenderer {
   constructor(private readonly options: TranscriptRendererOptions) {}
 
+  toolDisplay(text: string): void {
+    this.options.clearStatus();
+    this.options.writer.writeStderrLine(text);
+  }
+
   userMessage(text: string): void {
     this.options.clearStatus();
 

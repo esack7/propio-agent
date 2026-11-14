@@ -233,7 +233,7 @@ describe("createPromptComposer", () => {
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
-      name: "o",
+      name: "y",
       ctrl: true,
       meta: false,
       shift: false,
@@ -345,7 +345,7 @@ describe("createPromptComposer", () => {
     );
 
     harness.inputStream.emit("keypress", "\u000f", {
-      name: "o",
+      name: "y",
       ctrl: true,
       meta: false,
       shift: false,

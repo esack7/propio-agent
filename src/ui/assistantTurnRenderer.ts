@@ -8,7 +8,6 @@ import {
   formatPromptPlanCompact,
 } from "./contextInspector.js";
 import { TerminalUi } from "./terminal.js";
-import type { ToolCallView } from "./toolCallView.js";
 import type { GuidanceSource, PromptSubmission } from "../agent-core/index.js";
 
 export interface AssistantTurnVisibilityOptions {
@@ -42,7 +41,6 @@ export async function streamAssistantTurn(
   guidance?: GuidanceSource,
 ): Promise<AssistantTurnResult> {
   const mdStream = ui.createMarkdownStream();
-  const useLabelByCallId = new Map<string, string>();
   let hiddenToolStatusVisible = false;
   let hiddenToolCallInProgress = false;
   let hiddenThinkingStatusActive = false;
@@ -202,75 +200,6 @@ export async function streamAssistantTurn(
     hiddenToolCallInProgress = false;
   };
 
-  const renderVisibleToolStarted = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<AgentVisibilityEvent, { type: "tool_started" }>,
-  ): void => {
-    clearThinkingStatusForAnswer();
-    const toolLabel =
-      event.toolName.charAt(0).toUpperCase() + event.toolName.slice(1);
-    const useLabel =
-      event.useLabel != null
-        ? `${toolLabel} ${event.useLabel}`
-        : event.activityLabel;
-    useLabelByCallId.set(event.toolCallId, useLabel);
-    mdStream.flush();
-    const runningView: ToolCallView = {
-      id: event.toolCallId,
-      toolName: event.toolName,
-      status: "running",
-      useLabel,
-      resultLabel: null,
-    };
-    if (canRenderVisibleThinking(currentVisibility)) {
-      ui.appendToolCallView(runningView);
-    } else {
-      ui.upsertToolCallView(runningView);
-    }
-  };
-
-  const renderVisibleToolFinished = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<AgentVisibilityEvent, { type: "tool_finished" }>,
-  ): void => {
-    clearThinkingStatusForAnswer();
-    const useLabel =
-      useLabelByCallId.get(event.toolCallId) ?? event.activityLabel;
-    const successView: ToolCallView = {
-      id: event.toolCallId,
-      toolName: event.toolName,
-      status: "success",
-      useLabel,
-      resultLabel: event.resultPreview,
-    };
-    if (canRenderVisibleThinking(currentVisibility)) {
-      ui.appendToolCallView(successView);
-    } else {
-      ui.upsertToolCallView(successView);
-    }
-  };
-
-  const renderVisibleToolFailed = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<AgentVisibilityEvent, { type: "tool_failed" }>,
-  ): void => {
-    clearThinkingStatusForAnswer();
-    const useLabel =
-      useLabelByCallId.get(event.toolCallId) ?? event.activityLabel;
-    const errorView: ToolCallView = {
-      id: event.toolCallId,
-      toolName: event.toolName,
-      status: "error",
-      useLabel,
-      resultLabel: event.resultPreview,
-    };
-    if (canRenderVisibleThinking(currentVisibility)) {
-      ui.appendToolCallView(errorView);
-    } else {
-      ui.upsertToolCallView(errorView);
-    }
-  };
-
   const renderToolEvent = (
     currentVisibility: AssistantTurnVisibilityOptions,
     event: Extract<
@@ -282,22 +211,31 @@ export async function streamAssistantTurn(
       if (event.type === "tool_started") {
         startHiddenToolStatus();
       } else {
+        ui.removeRunningToolCall(event.toolCallId);
         finishHiddenToolStatus();
       }
       return;
     }
 
-    if (event.type === "tool_started") {
-      renderVisibleToolStarted(currentVisibility, event);
-      return;
-    }
-
-    if (event.type === "tool_finished") {
-      renderVisibleToolFinished(currentVisibility, event);
-      return;
-    }
-
-    renderVisibleToolFailed(currentVisibility, event);
+    clearThinkingStatusForAnswer();
+    mdStream.flush();
+    ui.renderToolCall({
+      id: event.toolCallId,
+      toolName: event.toolName,
+      display: event.display,
+      status:
+        event.type === "tool_started"
+          ? "running"
+          : event.type === "tool_failed"
+            ? "error"
+            : "success",
+      ...(event.type === "tool_started"
+        ? {}
+        : {
+            durationMs: event.durationMs,
+            fullOutputPath: event.fullOutputPath,
+          }),
+    });
   };
 
   const renderPromptPlanEvent = (
@@ -356,7 +294,6 @@ export async function streamAssistantTurn(
           if (token.trim().length > 0) {
             clearThinkingStatusForAnswer();
             clearHiddenToolStatus();
-            ui.clearEphemeralSurfaces();
           }
           beginAssistantResponseIfNeeded();
           mdStream.push(token);
@@ -370,6 +307,7 @@ export async function streamAssistantTurn(
       },
     );
   } finally {
+    ui.clearRunningToolCalls();
     clearThinkingStatusForAnswer();
     clearHiddenToolStatus();
     if (thinkingFlushTimerId) {

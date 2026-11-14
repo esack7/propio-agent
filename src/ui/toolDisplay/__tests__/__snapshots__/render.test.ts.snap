@@ -1,0 +1,525 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`preserves long diff operation markers and colors when collapsed 1`] = `
+[
+  "✓ edit · +1 −1",
+  "  │ @@ -1 +1 @@",
+  "[32m  │ + 界界界界界界界界界界界界界界界界…[0m",
+  "[31m  │ - oldoldoldoldoldoldoldoldoldoldold…[0m",
+]
+`;
+
+exports[`tool display rendering command error 40 collapsed 1`] = `
+[
+  "✗ $ npm test · exit 0 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command error 40 expanded 1`] = `
+[
+  "✗ $ npm test · exit 0 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command error 120 collapsed 1`] = `
+[
+  "✗ $ npm test · exit 0 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command error 120 expanded 1`] = `
+[
+  "✗ $ npm test · exit 0 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command running 40 collapsed 1`] = `
+[
+  "◆ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command running 40 expanded 1`] = `
+[
+  "◆ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command running 120 collapsed 1`] = `
+[
+  "◆ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command running 120 expanded 1`] = `
+[
+  "◆ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command success 40 collapsed 1`] = `
+[
+  "✓ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command success 40 expanded 1`] = `
+[
+  "✓ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command success 120 collapsed 1`] = `
+[
+  "✓ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering command success 120 expanded 1`] = `
+[
+  "✓ $ npm test · exit 0 · 12.4s",
+  "  │ stdout │ passed",
+  "  │ stdout │ finished",
+  "  │ stderr │ warning",
+]
+`;
+
+exports[`tool display rendering diff error 40 collapsed 1`] = `
+[
+  "✗ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff error 40 expanded 1`] = `
+[
+  "✗ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff error 120 collapsed 1`] = `
+[
+  "✗ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff error 120 expanded 1`] = `
+[
+  "✗ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ error: Permission denied",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff running 40 collapsed 1`] = `
+[
+  "◆ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff running 40 expanded 1`] = `
+[
+  "◆ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff running 120 collapsed 1`] = `
+[
+  "◆ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff running 120 expanded 1`] = `
+[
+  "◆ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff success 40 collapsed 1`] = `
+[
+  "✓ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff success 40 expanded 1`] = `
+[
+  "✓ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff success 120 collapsed 1`] = `
+[
+  "✓ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering diff success 120 expanded 1`] = `
+[
+  "✓ Editing 界.ts · +1 −1 · 12.4s",
+  "  │ @@ -1 +1 @@",
+  "  │ - old",
+  "  │ + new",
+  "  │ \\ No newline at end of file",
+]
+`;
+
+exports[`tool display rendering file_read error 40 collapsed 1`] = `
+[
+  "✗ Reading file · 214 lines · 12.4s",
+  "  │ error: Permission denied",
+]
+`;
+
+exports[`tool display rendering file_read error 40 expanded 1`] = `
+[
+  "✗ Reading file · 214 lines · 12.4s",
+  "  │ error: Permission denied",
+  "  │ path: 界.ts",
+  "  │ range: 10, count 20",
+]
+`;
+
+exports[`tool display rendering file_read error 120 collapsed 1`] = `
+[
+  "✗ Reading file · 214 lines · 12.4s",
+  "  │ error: Permission denied",
+]
+`;
+
+exports[`tool display rendering file_read error 120 expanded 1`] = `
+[
+  "✗ Reading file · 214 lines · 12.4s",
+  "  │ error: Permission denied",
+  "  │ path: 界.ts",
+  "  │ range: 10, count 20",
+]
+`;
+
+exports[`tool display rendering file_read running 40 collapsed 1`] = `
+[
+  "◆ Reading file · 214 lines · 12.4s",
+]
+`;
+
+exports[`tool display rendering file_read running 40 expanded 1`] = `
+[
+  "◆ Reading file · 214 lines · 12.4s",
+  "  │ path: 界.ts",
+  "  │ range: 10, count 20",
+]
+`;
+
+exports[`tool display rendering file_read running 120 collapsed 1`] = `
+[
+  "◆ Reading file · 214 lines · 12.4s",
+]
+`;
+
+exports[`tool display rendering file_read running 120 expanded 1`] = `
+[
+  "◆ Reading file · 214 lines · 12.4s",
+  "  │ path: 界.ts",
+  "  │ range: 10, count 20",
+]
+`;
+
+exports[`tool display rendering file_read success 40 collapsed 1`] = `
+[
+  "✓ Reading file · 214 lines · 12.4s",
+]
+`;
+
+exports[`tool display rendering file_read success 40 expanded 1`] = `
+[
+  "✓ Reading file · 214 lines · 12.4s",
+  "  │ path: 界.ts",
+  "  │ range: 10, count 20",
+]
+`;
+
+exports[`tool display rendering file_read success 120 collapsed 1`] = `
+[
+  "✓ Reading file · 214 lines · 12.4s",
+]
+`;
+
+exports[`tool display rendering file_read success 120 expanded 1`] = `
+[
+  "✓ Reading file · 214 lines · 12.4s",
+  "  │ path: 界.ts",
+  "  │ range: 10, count 20",
+]
+`;
+
+exports[`tool display rendering generic error 40 collapsed 1`] = `
+[
+  "✗ MCP call · one · 12.4s",
+  "  │ error: Permission denied",
+]
+`;
+
+exports[`tool display rendering generic error 40 expanded 1`] = `
+[
+  "✗ MCP call · one · 12.4s",
+  "  │ error: Permission denied",
+  "  │ query: hello",
+  "  │ result │ one",
+  "  │ result │ two",
+]
+`;
+
+exports[`tool display rendering generic error 120 collapsed 1`] = `
+[
+  "✗ MCP call · one · 12.4s",
+  "  │ error: Permission denied",
+]
+`;
+
+exports[`tool display rendering generic error 120 expanded 1`] = `
+[
+  "✗ MCP call · one · 12.4s",
+  "  │ error: Permission denied",
+  "  │ query: hello",
+  "  │ result │ one",
+  "  │ result │ two",
+]
+`;
+
+exports[`tool display rendering generic running 40 collapsed 1`] = `
+[
+  "◆ MCP call · one · 12.4s",
+]
+`;
+
+exports[`tool display rendering generic running 40 expanded 1`] = `
+[
+  "◆ MCP call · one · 12.4s",
+  "  │ query: hello",
+  "  │ result │ one",
+  "  │ result │ two",
+]
+`;
+
+exports[`tool display rendering generic running 120 collapsed 1`] = `
+[
+  "◆ MCP call · one · 12.4s",
+]
+`;
+
+exports[`tool display rendering generic running 120 expanded 1`] = `
+[
+  "◆ MCP call · one · 12.4s",
+  "  │ query: hello",
+  "  │ result │ one",
+  "  │ result │ two",
+]
+`;
+
+exports[`tool display rendering generic success 40 collapsed 1`] = `
+[
+  "✓ MCP call · one · 12.4s",
+]
+`;
+
+exports[`tool display rendering generic success 40 expanded 1`] = `
+[
+  "✓ MCP call · one · 12.4s",
+  "  │ query: hello",
+  "  │ result │ one",
+  "  │ result │ two",
+]
+`;
+
+exports[`tool display rendering generic success 120 collapsed 1`] = `
+[
+  "✓ MCP call · one · 12.4s",
+]
+`;
+
+exports[`tool display rendering generic success 120 expanded 1`] = `
+[
+  "✓ MCP call · one · 12.4s",
+  "  │ query: hello",
+  "  │ result │ one",
+  "  │ result │ two",
+]
+`;
+
+exports[`tool display rendering search error 40 collapsed 1`] = `
+[
+  "✗ …ching · 12 matches in 4 files · 12.4s",
+  "  │ error: Permission denied",
+]
+`;
+
+exports[`tool display rendering search error 40 expanded 1`] = `
+[
+  "✗ Searching · 12 matches in 4 files · 12",
+  "✗ .4s",
+  "  │ error: Permission denied",
+  "  │ pattern: foo",
+  "  │ scope: src",
+  "  │ src/a.ts: foo",
+]
+`;
+
+exports[`tool display rendering search error 120 collapsed 1`] = `
+[
+  "✗ Searching · 12 matches in 4 files · 12.4s",
+  "  │ error: Permission denied",
+]
+`;
+
+exports[`tool display rendering search error 120 expanded 1`] = `
+[
+  "✗ Searching · 12 matches in 4 files · 12.4s",
+  "  │ error: Permission denied",
+  "  │ pattern: foo",
+  "  │ scope: src",
+  "  │ src/a.ts: foo",
+]
+`;
+
+exports[`tool display rendering search running 40 collapsed 1`] = `
+[
+  "◆ …ching · 12 matches in 4 files · 12.4s",
+]
+`;
+
+exports[`tool display rendering search running 40 expanded 1`] = `
+[
+  "◆ Searching · 12 matches in 4 files · 12",
+  "◆ .4s",
+  "  │ pattern: foo",
+  "  │ scope: src",
+  "  │ src/a.ts: foo",
+]
+`;
+
+exports[`tool display rendering search running 120 collapsed 1`] = `
+[
+  "◆ Searching · 12 matches in 4 files · 12.4s",
+]
+`;
+
+exports[`tool display rendering search running 120 expanded 1`] = `
+[
+  "◆ Searching · 12 matches in 4 files · 12.4s",
+  "  │ pattern: foo",
+  "  │ scope: src",
+  "  │ src/a.ts: foo",
+]
+`;
+
+exports[`tool display rendering search success 40 collapsed 1`] = `
+[
+  "✓ …ching · 12 matches in 4 files · 12.4s",
+]
+`;
+
+exports[`tool display rendering search success 40 expanded 1`] = `
+[
+  "✓ Searching · 12 matches in 4 files · 12",
+  "✓ .4s",
+  "  │ pattern: foo",
+  "  │ scope: src",
+  "  │ src/a.ts: foo",
+]
+`;
+
+exports[`tool display rendering search success 120 collapsed 1`] = `
+[
+  "✓ Searching · 12 matches in 4 files · 12.4s",
+]
+`;
+
+exports[`tool display rendering search success 120 expanded 1`] = `
+[
+  "✓ Searching · 12 matches in 4 files · 12.4s",
+  "  │ pattern: foo",
+  "  │ scope: src",
+  "  │ src/a.ts: foo",
+]
+`;

@@ -493,6 +493,15 @@ async function handleHelpSubmission(
   return null;
 }
 
+async function handleExpandSubmission(
+  text: string,
+  context: InteractiveSubmissionContext,
+): Promise<number | null | undefined> {
+  if (text !== "/expand") return undefined;
+  context.ui.expandLastToolCall();
+  return null;
+}
+
 async function handleClearSubmission(
   trimmedInput: string,
   context: InteractiveSubmissionContext,
@@ -502,6 +511,7 @@ async function handleClearSubmission(
   }
 
   context.agent.clearContext();
+  context.ui.clearToolCallHistory();
   context.ui.success("Session context cleared.");
   context.ui.command("");
   return null;
@@ -956,6 +966,7 @@ export async function handleInteractiveSubmission(
   }
 
   const handlers: InteractiveInputHandler[] = [
+    handleExpandSubmission,
     handleExitSubmission,
     handleHelpSubmission,
     handleClearSubmission,
@@ -1041,6 +1052,7 @@ export async function runInteractiveSession(
       ui.idleFooter(footer);
     },
     refreshPromptFooters: () => getPromptFooters(),
+    onExpandToolCall: () => ui.expandLastToolCall(),
     onToggleToolCalls: () => {
       visibilityState.toggleToolCalls();
       return composer.getState()?.inputMode === "bash"
