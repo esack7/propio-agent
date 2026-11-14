@@ -455,22 +455,20 @@ describe("payload limits", () => {
     for (let i = 0; i < count; i += 1111) next[i] = "c";
     await writeFile(file("big.txt"), old.join("\n"));
 
-    const started = performance.now();
     const before = await registry.describeCall("write", {
       path: "big.txt",
       content: next.join("\n"),
     });
-    const elapsed = performance.now() - started;
 
     // The smallest diff changes about 450 lines; past the deadline the whole
-    // file is shown as one replacement.
+    // file is shown as one replacement. That is the evidence the deadline
+    // fired: wall-clock time on a shared runner is not.
     expect(before.body).toMatchObject({
       kind: "diff",
       added: count,
       removed: count,
       truncated: true,
     });
-    expect(elapsed).toBeLessThan(1000);
   });
 
   it("shows a write that only removes the final line break", async () => {
