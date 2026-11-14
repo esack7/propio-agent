@@ -67,11 +67,6 @@ describe("colors module", () => {
       expect(typeof textColorsModule.inputPlaceholder).toBe("function");
     });
 
-    it("should export tool function", async () => {
-      expect(statusColorsModule.tool).toBeDefined();
-      expect(typeof statusColorsModule.tool).toBe("function");
-    });
-
     it("should export success function", async () => {
       expect(statusColorsModule.success).toBeDefined();
       expect(typeof statusColorsModule.success).toBe("function");
@@ -161,13 +156,6 @@ describe("colors module", () => {
 
     it("inputPlaceholder should return text styled with dark gray (#5C6370)", async () => {
       const result = textColorsModule.inputPlaceholder("test");
-      expect(result).toBeDefined();
-      expect(typeof result).toBe("string");
-      expect(result.length).toBeGreaterThan("test".length);
-    });
-
-    it("tool should return text styled with purple (#C678DD)", async () => {
-      const result = statusColorsModule.tool("test");
       expect(result).toBeDefined();
       expect(typeof result).toBe("string");
       expect(result.length).toBeGreaterThan("test".length);
@@ -297,12 +285,6 @@ describe("colors module", () => {
     it("inputPlaceholder uses hex #5C6370", () => {
       const expected = chalk.hex("#5C6370")("test");
       const actual = colorsModule.inputPlaceholder("test");
-      expect(actual).toBe(expected);
-    });
-
-    it("tool uses hex #C678DD", () => {
-      const expected = chalk.hex("#C678DD")("test");
-      const actual = colorsModule.tool("test");
       expect(actual).toBe(expected);
     });
 

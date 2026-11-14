@@ -241,3 +241,22 @@ it.each(displays)("bounds a ten-call turn for $body.kind", (display) => {
     display.body.kind === "diff" || display.body.kind === "command" ? 120 : 10,
   );
 });
+
+it("colors added and removed diff lines only when color is requested", () => {
+  const colored = renderToolDisplay(
+    displays[0]!,
+    { status: "success", color: true },
+    80,
+    "expanded",
+  ).join("\n");
+  expect(colored).toContain("\x1b[32m  │ + new\x1b[0m");
+  expect(colored).toContain("\x1b[31m  │ - old\x1b[0m");
+  expect(
+    renderToolDisplay(
+      displays[0]!,
+      { status: "success", color: false },
+      80,
+      "expanded",
+    ).join("\n"),
+  ).not.toContain("\x1b");
+});
