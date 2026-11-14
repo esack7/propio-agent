@@ -3,7 +3,9 @@ import type { PathToolOptions } from "./localOptions.js";
 import type { ToolExecutionContext } from "./execution.js";
 import * as fsPromises from "fs/promises";
 import { PresentedTool } from "./interface.js";
-import type { ToolDisplayAdapter } from "./displayAdapter.js";
+import type { SearchDisplay, ToolDisplay } from "./display.js";
+import { describeSearchCall, describeSearchResult } from "./searchDisplay.js";
+import type { ToolExecutionResult } from "./types.js";
 import { ChatTool } from "@propio-ai/providers";
 import {
   formatFileType,
@@ -26,30 +28,27 @@ export class LsTool implements PresentedTool {
     this.resolvePath = options?.resolvePath ?? normalizeToolPath;
   }
 
-  getDisplayAdapter(): ToolDisplayAdapter {
-    return {
-      renderUse(input) {
-        const path = input.path;
-        return typeof path === "string" && path.length > 0 ? path : null;
-      },
-      renderResult(result) {
-        if (result === "Directory is empty") {
-          return "Empty directory";
-        }
-        const lines = result
-          .trim()
-          .split("\n")
-          .filter((l) => l.length > 0);
-        return `${lines.length} item${lines.length === 1 ? "" : "s"}`;
-      },
-    };
+  describeCall(
+    args: Readonly<Record<string, unknown>>,
+  ): ToolDisplay<SearchDisplay> {
+    return describeSearchCall(
+      typeof args.path === "string" && args.path
+        ? `Listing ${args.path}`
+        : "Listing directory",
+      "list",
+      args,
+    );
   }
 
-  getInvocationLabel(args: Record<string, unknown>): string | undefined {
-    const path = args.path;
-    return typeof path === "string" && path.length > 0
-      ? `Listing ${path}`
-      : "Listing directory";
+  describeResult(
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay<SearchDisplay> {
+    return describeSearchResult(
+      this.describeCall(args),
+      result,
+      "Directory is empty",
+    );
   }
 
   getSchema(): ChatTool {

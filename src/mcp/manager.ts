@@ -7,6 +7,8 @@ import {
 } from "./config.js";
 import { McpExecutableTool } from "./tool.js";
 import type { McpConfigFile } from "./types.js";
+import type { ToolDisplay } from "../tools/display.js";
+import type { ToolExecutionResult } from "../tools/types.js";
 
 interface McpManagerOptions {
   configPath?: string;
@@ -72,10 +74,19 @@ export class McpManager extends McpConnectionManager {
     );
   }
 
-  describeToolInvocation(
+  /** How to show a call to one of this manager's tools, if it has that tool. */
+  describeCall(
     name: string,
-    _args: Record<string, unknown>,
-  ): string | undefined {
-    return this.getExecutableTools().get(name)?.getInvocationLabel();
+    args: Readonly<Record<string, unknown>>,
+  ): ToolDisplay | undefined {
+    return this.getExecutableTools().get(name)?.describeCall(args);
+  }
+
+  describeResult(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+  ): ToolDisplay | undefined {
+    return this.getExecutableTools().get(name)?.describeResult(args, result);
   }
 }

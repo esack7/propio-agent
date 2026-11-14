@@ -1,5 +1,6 @@
 import type { ProviderReasoningSummarySource } from "@propio-ai/providers";
 import type { ToolExecutionStatus } from "../tools/types.js";
+import type { ToolDisplay } from "../tools/display.js";
 import type { PromptPlan } from "../context/coreTypes.js";
 export type AgentLifecycleEvent =
   | { type: "turn_started" }
@@ -29,6 +30,8 @@ export type AgentVisibilityEvent =
       args: Record<string, unknown>;
       argumentChars: number;
       argumentPreview: string;
+      /** The call as it would run, described before anyone approved it. */
+      display: ToolDisplay;
     }
   | {
       type: "tool_finished";
@@ -39,6 +42,10 @@ export type AgentVisibilityEvent =
       result: string;
       args: Record<string, unknown>;
       status: ToolExecutionStatus;
+      /** The call with what its result added. */
+      display: ToolDisplay;
+      /** Time spent running the tool, not waiting for approval. */
+      durationMs: number;
     }
   | {
       type: "tool_failed";
@@ -49,6 +56,10 @@ export type AgentVisibilityEvent =
       result: string;
       args: Record<string, unknown>;
       status: ToolExecutionStatus;
+      /** The call with what its result added. */
+      display: ToolDisplay;
+      /** Time spent running the tool, not waiting for approval. */
+      durationMs: number;
     }
   | {
       type: "reasoning_summary";

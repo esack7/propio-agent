@@ -1,71 +1,49 @@
 import { ToolRegistry as ExecutionRegistry } from "./executionRegistry.js";
-import type { PresentedTool } from "./interface.js";
+import { genericDisplay, type ToolDisplay } from "./display.js";
+import type { PresentedTool, ToolDescribeContext } from "./interface.js";
+import type { ToolExecutionResult } from "./types.js";
 export type { ToolSummary } from "./executionRegistry.js";
 
 /** CLI presentation adapter over the public execution registry. */
 export class ToolRegistry extends ExecutionRegistry {
   /**
-   * Render a human-facing summary of a tool result for display.
-   * Uses the tool's display adapter if available, otherwise falls back to a
-   * compact truncated preview of the raw result.
+   * What a call would do, for display before it runs. A tool that describes
+   * nothing, or whose description fails, gets the generic one.
    */
-  renderInvocationResult(
+  async describeCall(
     name: string,
-    args: Record<string, unknown>,
-    rawResult: string,
-  ): string {
-    const tool = this.tools.get(name);
-    const adapter = tool ? displayAdapter(tool) : undefined;
-    if (adapter) {
+    args: Readonly<Record<string, unknown>>,
+    context?: ToolDescribeContext,
+  ): Promise<ToolDisplay> {
+    const tool: PresentedTool | undefined = this.tools.get(name);
+    if (tool?.describeCall) {
       try {
-        const rendered = adapter.renderResult(rawResult, args);
-        if (rendered && rendered.trim().length > 0) {
-          return rendered;
-        }
+        return await tool.describeCall(args, context);
       } catch {
-        // Fall through to raw preview
+        // Fall through to the generic description.
       }
     }
-    const compact = rawResult.replace(/\s+/g, " ").trim();
-    if (compact.length <= 120) return compact;
-    return `${compact.slice(0, 120)}...`;
+    return genericDisplay(name, args);
   }
 
-  renderInvocationUse(
+  /** What a call did, for display once it has a result. */
+  describeResult(
     name: string,
-    args: Record<string, unknown>,
-  ): string | null {
-    const tool = this.tools.get(name);
-    const adapter = tool ? displayAdapter(tool) : undefined;
-    if (adapter) {
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+    before: ToolDisplay,
+  ): ToolDisplay {
+    const tool: PresentedTool | undefined = this.tools.get(name);
+    if (tool?.describeResult) {
       try {
-        return adapter.renderUse(args) ?? null;
+        return tool.describeResult(args, result, before);
       } catch {
-        return null;
+        // Fall through to the generic description.
       }
     }
-    return null;
+    return genericDisplay(before.title, args, {
+      content: result.content,
+      failed: result.status !== "success",
+    });
   }
-
-  /**
-   * Build a human-readable label for a specific tool invocation.
-   */
-  describeToolInvocation(name: string, args: Record<string, unknown>): string {
-    const tool = this.tools.get(name);
-    const customLabel = tool ? invocationLabel(tool, args) : undefined;
-
-    if (customLabel && customLabel.trim().length > 0) {
-      return customLabel;
-    }
-
-    return name;
-  }
-}
-
-function displayAdapter(tool: PresentedTool) {
-  return tool.getDisplayAdapter?.();
-}
-
-function invocationLabel(tool: PresentedTool, args: Record<string, unknown>) {
-  return tool.getInvocationLabel?.(args);
 }

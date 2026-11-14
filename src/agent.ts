@@ -36,6 +36,12 @@ import {
 } from "./config/runtimeConfig.js";
 import { loadProvidersConfig } from "./config/providersConfig.js";
 import { ToolRegistry } from "./tools/registry.js";
+import {
+  displayResultLabel,
+  displayUseLabel,
+  genericDisplay,
+  type ToolDisplay,
+} from "./tools/display.js";
 import { createDefaultToolRegistry } from "./tools/factory.js";
 import type { ApprovalChannel } from "./permissions/approvalChannel.js";
 import {
@@ -727,15 +733,47 @@ export class Agent {
     options?.onEvent?.(event);
   }
 
-  private describeToolInvocation(
-    toolName: string,
-    args: Record<string, unknown>,
-  ): string {
-    if (this.toolRegistry.hasTool(toolName)) {
-      return this.toolRegistry.describeToolInvocation(toolName, args);
+  /** How a call is shown before it runs: the tool's own description, or MCP's. */
+  private async describeToolCall(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+  ): Promise<ToolDisplay> {
+    if (!this.toolRegistry.hasTool(name)) {
+      return (
+        this.mcpManager.describeCall(name, args) ?? genericDisplay(name, args)
+      );
     }
+    return await this.toolRegistry.describeCall(name, args, {
+      // A file is read to preview a change only where reading it would not
+      // itself need the operator's approval.
+      canPreviewRead: (rawPath) =>
+        this.toolPermissions.allowsWithoutAsking({
+          name: "read",
+          args: { path: rawPath },
+          metadata:
+            this.toolRegistry.getToolMetadata("read") ??
+            UNDECLARED_TOOL_METADATA,
+          sessionId: this.sessionId,
+        }),
+    });
+  }
 
-    return this.mcpManager.describeToolInvocation(toolName, args) || toolName;
+  private describeToolResult(
+    name: string,
+    args: Readonly<Record<string, unknown>>,
+    result: Readonly<ToolExecutionResult>,
+    before: ToolDisplay,
+  ): ToolDisplay {
+    if (!this.toolRegistry.hasTool(name)) {
+      return (
+        this.mcpManager.describeResult(name, args, result) ??
+        genericDisplay(before.title, args, {
+          content: result.content,
+          failed: result.status !== "success",
+        })
+      );
+    }
+    return this.toolRegistry.describeResult(name, args, result, before);
   }
 
   private getMergedToolSchemas(allowedTools?: ReadonlySet<string>): ChatTool[] {
@@ -2383,6 +2421,9 @@ export class Agent {
         buildPlan: (instruction, retry, iteration, allowed) =>
           this.buildPlan(instruction, retry, iteration, allowed),
         describePromptPlan: (plan) => this.describePromptPlan(plan),
+        describeToolCall: ({ name, args }) => this.describeToolCall(name, args),
+        describeToolResult: ({ name, args, result, before }) =>
+          this.describeToolResult(name, args, result, before),
         authorizeTool: ({ name, args, scope, toolCallId, signal }) =>
           this.authorizeToolExecution(name, args, scope, toolCallId, signal),
         shrinkContext: (plan) => this.attemptSynchronousShrink(plan),
@@ -2506,13 +2547,13 @@ export class Agent {
     event: RuntimeEvent,
   ): AgentVisibilityEvent | undefined {
     if (isRuntimeOnlyEvent(event)) return undefined;
+    // The labels are what the terminal draws today. They are read off the
+    // description, so the two cannot disagree.
     if (event.type === "tool_started") {
       return {
         ...event,
-        activityLabel: this.describeToolInvocation(event.toolName, event.args),
-        useLabel: this.toolRegistry.hasTool(event.toolName)
-          ? this.toolRegistry.renderInvocationUse(event.toolName, event.args)
-          : null,
+        activityLabel: event.display.title,
+        useLabel: displayUseLabel(event.display),
       };
     }
     if (event.type === "tool_finished" || event.type === "tool_failed") {
@@ -2520,16 +2561,13 @@ export class Agent {
         type: event.type,
         toolName: event.toolName,
         toolCallId: event.toolCallId,
-        activityLabel: this.describeToolInvocation(event.toolName, event.args),
+        activityLabel: event.display.title,
         resultPreview:
-          event.type === "tool_finished" &&
-          this.toolRegistry.hasTool(event.toolName)
-            ? this.toolRegistry.renderInvocationResult(
-                event.toolName,
-                event.args,
-                event.result,
-              )
-            : event.resultPreview,
+          (event.type === "tool_finished"
+            ? displayResultLabel(event.display)
+            : null) ?? event.resultPreview,
+        display: event.display,
+        durationMs: event.durationMs,
       };
     }
     return event;

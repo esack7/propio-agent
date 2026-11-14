@@ -15,6 +15,7 @@ import type {
 } from "../context/coreTypes.js";
 import type { ToolExecutionContext } from "../tools/execution.js";
 import type { ToolExecutionResult } from "../tools/types.js";
+import type { ToolDisplay } from "../tools/display.js";
 import type { AgentDiagnosticEvent } from "../diagnostics.js";
 import type { PromptSubmission } from "./input.js";
 import type { AgentTraceRecorder } from "../trace/types.js";
@@ -118,6 +119,24 @@ export interface AgentIntegrations {
   authorizeTool?(
     request: AgentToolAuthorizationRequest,
   ): AgentToolPolicyDecision | Promise<AgentToolPolicyDecision>;
+  /**
+   * Describe a call for display before it is authorized. It must change
+   * nothing. Without it, or if it throws or is slow, the runtime uses a
+   * generic description of the arguments.
+   */
+  describeToolCall?(request: {
+    readonly name: string;
+    readonly toolCallId: string;
+    readonly args: Readonly<Record<string, unknown>>;
+  }): ToolDisplay | Promise<ToolDisplay>;
+  /** Describe a call once it has a result. `before` is the earlier description. */
+  describeToolResult?(request: {
+    readonly name: string;
+    readonly toolCallId: string;
+    readonly args: Readonly<Record<string, unknown>>;
+    readonly result: Readonly<ToolExecutionResult>;
+    readonly before: ToolDisplay;
+  }): ToolDisplay;
   shrinkContext?(plan: PromptPlan): Promise<boolean>;
   onAssistantResponse?(content: string): void;
   onToolSuccess?(name: string, args: Record<string, unknown>): void;

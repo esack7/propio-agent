@@ -286,6 +286,17 @@ export class ToolPermissions {
     this.options.onChange?.();
   }
 
+  /**
+   * Whether the call would be allowed with nobody asked. Nothing is put to
+   * the operator and nothing is recorded as the last decision.
+   */
+  async allowsWithoutAsking(input: ToolAuthorizationInput): Promise<boolean> {
+    const engine = await this.loadEngine();
+    const decision = engine.evaluate(this.policyRequest(input));
+    if (decision.outcome === "ask") engine.abandon(decision.request.id);
+    return decision.outcome === "allow";
+  }
+
   async authorize(
     input: ToolAuthorizationInput,
   ): Promise<AgentToolPolicyDecision> {

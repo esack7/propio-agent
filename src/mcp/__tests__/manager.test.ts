@@ -74,7 +74,7 @@ describe("McpManager", () => {
     expect(manager.getConnectedToolSchemas()[0].function.description).toBe(
       "Echo tool",
     );
-    manager.describeToolInvocation("mcp__fake__echo", {});
+    manager.describeCall("mcp__fake__echo", {});
     expect(listing).toHaveBeenCalledTimes(1);
     await manager.reconnectServer("fake");
     expect(manager.getConnectedToolSchemas()[0]).not.toBe(schemas[0]);
@@ -95,9 +95,27 @@ describe("McpManager", () => {
     expect(manager.getConnectedToolSchemas()[0]?.function.name).toBe(
       "mcp__fake__echo",
     );
-    expect(manager.describeToolInvocation("mcp__fake__echo", {})).toBe(
-      "fake:echo",
-    );
+    expect(
+      manager.describeCall("mcp__fake__echo", { message: "hello" }),
+    ).toEqual({
+      title: "fake:echo",
+      body: {
+        kind: "generic",
+        fields: [{ key: "message", value: "hello" }],
+        truncated: false,
+      },
+    });
+    expect(
+      manager.describeResult(
+        "mcp__fake__echo",
+        { message: "hello" },
+        execResult,
+      ),
+    ).toMatchObject({
+      title: "fake:echo",
+      body: { kind: "generic", resultPreview: execResult.content },
+    });
+    expect(manager.describeCall("mcp__fake__absent", {})).toBeUndefined();
   });
 
   it("connects using preloaded config", async () => {
