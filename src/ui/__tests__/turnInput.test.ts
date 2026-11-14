@@ -1,4 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals";
+import * as tty from "tty";
+import yoctoSpinner from "yocto-spinner";
+import { getDisplayWidth } from "../displayWidth.js";
 import { createHoldableStream } from "../holdableStream.js";
 import { createTurnInput } from "../turnInput.js";
 import { createTurnInputLine, type TurnInputLine } from "../turnInputLine.js";
@@ -15,6 +18,31 @@ const key = (name: string, extra: Record<string, unknown> = {}) => ({
   shift: false,
   ...extra,
 });
+
+/** Node's own cursor methods, which write through `this.write`. */
+function withRealCursorMethods<T extends NodeJS.WriteStream>(stream: T): T {
+  const real = tty.WriteStream.prototype;
+  return Object.assign(stream, {
+    cursorTo: real.cursorTo,
+    moveCursor: real.moveCursor,
+    clearLine: real.clearLine,
+    clearScreenDown: real.clearScreenDown,
+  });
+}
+
+/** A spinner only hooks the stream when it believes a person is watching. */
+function withInteractiveTerminal<T>(create: () => T): T {
+  const { CI, TERM } = process.env;
+  delete process.env.CI;
+  process.env.TERM = "xterm-256color";
+  try {
+    return create();
+  } finally {
+    if (CI !== undefined) process.env.CI = CI;
+    if (TERM === undefined) delete process.env.TERM;
+    else process.env.TERM = TERM;
+  }
+}
 
 describe("holdable stream", () => {
   it("passes writes through until held, then releases them in order", () => {
@@ -69,8 +97,8 @@ describe("holdable stream", () => {
     expect(seen).toEqual(["a"]);
     expect(target.chunks).toEqual(["<a>"]);
 
-    // Held: both the outside write and the hook's own are kept, and each is
-    // released the way it was headed.
+    // Held: both the outside write and the hook's own are kept, as the
+    // terminal would have received them.
     const hold = holdable.hold()!;
     stream.write("b");
     (original as (chunk: string) => boolean).call(stream, "frame");
@@ -89,6 +117,52 @@ describe("holdable stream", () => {
     }
     stream.write("d");
     expect(target.chunks.at(-1)).toBe("d");
+  });
+
+  it("holds cursor movement and line clearing too", () => {
+    const target = withRealCursorMethods(createTtyTestStream());
+    const holdable = createHoldableStream(target);
+    const { stream } = holdable;
+
+    const hold = holdable.hold()!;
+    stream.cursorTo(0);
+    stream.moveCursor(0, -1);
+    stream.clearLine(1);
+    stream.clearScreenDown();
+    expect(target.chunks).toEqual([]);
+
+    hold.release();
+    expect(target.chunks).toEqual(["\x1b[1G", "\x1b[1A", "\x1b[0K", "\x1b[0J"]);
+  });
+
+  it("works with the real spinner, started and stopped many times", () => {
+    const target = withRealCursorMethods(createTtyTestStream());
+    const holdable = createHoldableStream(target);
+    const { stream } = holdable;
+    const plainWrite = stream.write;
+    const spinner = () =>
+      withInteractiveTerminal(() =>
+        yoctoSpinner({ stream, text: "working", handleSignals: false }),
+      );
+
+    // Each spinner puts back the write it found when it stops.
+    for (let round = 0; round < 200; round++) spinner().start().stop();
+    expect(stream.write).toBe(plainWrite);
+
+    // While held, nothing a spinner draws or erases reaches the terminal.
+    const running = spinner().start();
+    const before = target.chunks.length;
+    const hold = holdable.hold()!;
+    stream.write("streamed\n");
+    running.text = "still working";
+    running.clear();
+    expect(target.chunks.length).toBe(before);
+    running.stop();
+    expect(target.chunks.length).toBe(before);
+
+    hold.release();
+    expect(target.chunks.slice(before).join("")).toContain("streamed\n");
+    expect(stream.write).toBe(plainWrite);
   });
 });
 
@@ -134,6 +208,41 @@ describe("turn input line", () => {
     expect(Array.from(drawn)).toHaveLength(19);
     expect(drawn.startsWith("…")).toBe(true);
     expect(drawn.endsWith("END")).toBe(true);
+    line.close();
+  });
+
+  it("measures the line in terminal cells, keeping characters and styling whole", () => {
+    const target = createTtyTestStream(true, 20);
+    const line = createTurnInputLine(createHoldableStream(target), () => 20);
+    // Ten wide characters take 20 cells: with the prompt, more than a row.
+    line.show(`\x1b[2mguide > \x1b[22m${"界".repeat(10)}`);
+    const drawn = target.chunks.at(-1)!.split("\x1b[2K")[1]!;
+    expect(drawn).toBe(`…\x1b[2m\x1b[22m${"界".repeat(9)}`);
+    expect(getDisplayWidth(drawn)).toBeLessThanOrEqual(19);
+
+    // Emoji are counted wide, and a sequence is never split.
+    line.show(`guide > ${"👍🏽".repeat(6)}`);
+    const emoji = target.chunks.at(-1)!.split("\x1b[2K")[1]!;
+    expect(emoji).toBe(`…${"👍🏽".repeat(4)}`);
+    const family = "👨‍👩‍👧";
+    line.show(`guide > ${family.repeat(4)}`);
+    expect(target.chunks.at(-1)!.split("\x1b[2K")[1]).toBe(
+      `…${family.repeat(2)}`,
+    );
+    line.show(`guide > ${"🇯🇵".repeat(12)}`);
+    expect(target.chunks.at(-1)!.split("\x1b[2K")[1]).toBe(
+      `…${"🇯🇵".repeat(9)}`,
+    );
+    line.close();
+  });
+
+  it("leaves a line that fits as it is", () => {
+    const target = createTtyTestStream(true, 40);
+    const line = createTurnInputLine(createHoldableStream(target), () => 40);
+    line.show("\x1b[2mguide > \x1b[22m界界 ok");
+    expect(target.chunks.at(-1)).toBe(
+      "\x1b8\x1b[1B\r\x1b[0m\x1b[2K\x1b[2mguide > \x1b[22m界界 ok",
+    );
     line.close();
   });
 });

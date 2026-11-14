@@ -18,51 +18,59 @@ export interface OutputHold {
   release(): void;
 }
 
+/**
+ * Terminal methods that produce output by calling `this.write`. Called on
+ * the wrapped stream they would skip the hold, so they run against the
+ * wrapper instead.
+ */
+const WRITING_METHODS: ReadonlySet<PropertyKey> = new Set([
+  "cursorTo",
+  "moveCursor",
+  "clearLine",
+  "clearScreenDown",
+]);
+
 export function createHoldableStream(
   target: NodeJS.WriteStream,
 ): HoldableStream {
   type Write = (...args: unknown[]) => boolean;
-  // Each held chunk remembers the write it was headed for, so a spinner's
-  // own frames are not replayed through the spinner's hook.
-  let pending: Array<{ write: Write; chunk: unknown }> | null = null;
-
-  // The stream's own write, which other code may replace: a spinner hooks
-  // it while it is on screen and puts it back afterwards. The wrapper must
-  // look like the real stream to that code, so it tracks the replacement
-  // and hands out a gate over whichever write is current.
   const rawWrite = target.write as Write;
-  let current = rawWrite;
-  const inner = new WeakMap<Write, Write>();
+  let pending: Array<{ chunk: unknown; encoding: unknown }> | null = null;
 
-  const gate = (write: Write): Write => {
-    const gated: Write = (chunk, encodingOrCallback, callback) => {
-      if (pending === null) {
-        return write.call(target, chunk, encodingOrCallback, callback);
-      }
-      pending.push({ write, chunk });
-      const done =
-        typeof encodingOrCallback === "function"
-          ? encodingOrCallback
-          : callback;
-      if (typeof done === "function") (done as () => void)();
-      return true;
-    };
-    inner.set(gated, write);
-    return gated;
+  // The hold sits at the bottom, on the way out to the terminal. Other code
+  // may install its own write on top (a spinner does while it is on screen)
+  // and that write ends up here, so a hold keeps exactly the bytes the
+  // terminal would have received, in the order it would have received them.
+  const gatedWrite: Write = (chunk, encodingOrCallback, callback) => {
+    if (pending === null) {
+      return rawWrite.call(target, chunk, encodingOrCallback, callback);
+    }
+    const encoding =
+      typeof encodingOrCallback === "function" ? undefined : encodingOrCallback;
+    pending.push({ chunk, encoding });
+    const done =
+      typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    if (typeof done === "function") (done as () => void)();
+    return true;
   };
 
+  // Whatever write was last installed. Reading `write` returns exactly what
+  // was assigned, so code that checks whether its own write is still in
+  // place before putting the previous one back finds it there.
+  let current: Write = gatedWrite;
+
   const stream = new Proxy(target, {
-    get(wrapped, property) {
-      if (property === "write") return gate(current);
+    get(wrapped, property, receiver) {
+      if (property === "write") return current;
       const value = Reflect.get(wrapped, property, wrapped) as unknown;
-      return typeof value === "function"
-        ? (value as (...args: unknown[]) => unknown).bind(wrapped)
-        : value;
+      if (typeof value !== "function") return value;
+      return (value as (...args: unknown[]) => unknown).bind(
+        WRITING_METHODS.has(property) ? receiver : wrapped,
+      );
     },
     set(wrapped, property, value) {
       if (property !== "write") return Reflect.set(wrapped, property, value);
-      // Putting back a write that was read from here must not stack gates.
-      current = inner.get(value as Write) ?? (value as Write);
+      current = value as Write;
       return true;
     },
   });
@@ -85,7 +93,10 @@ export function createHoldableStream(
           released = true;
           const chunks = pending ?? [];
           pending = null;
-          for (const { write, chunk } of chunks) write.call(target, chunk);
+          for (const { chunk, encoding } of chunks) {
+            if (encoding === undefined) rawWrite.call(target, chunk);
+            else rawWrite.call(target, chunk, encoding);
+          }
         },
       };
     },

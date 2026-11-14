@@ -21,6 +21,7 @@ import {
 import { openPromptEditor, type PromptEditorRunner } from "./promptEditor.js";
 import { watchTerminalResize } from "./terminalWriter.js";
 import { formatSubtle } from "./formatting.js";
+import { getDisplayWidth } from "./displayWidth.js";
 import {
   disableBracketedPaste,
   enableBracketedPaste,
@@ -95,77 +96,6 @@ export interface ChatPromptSessionOptions {
 
 export interface ChatPromptSession {
   cleanup(): void;
-}
-
-const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
-
-type CodePointRange = readonly [number, number];
-
-const COMBINING_MARK_RANGES: readonly CodePointRange[] = [
-  [0x0300, 0x036f],
-  [0x1ab0, 0x1aff],
-  [0x1dc0, 0x1dff],
-  [0x20d0, 0x20ff],
-  [0xfe20, 0xfe2f],
-];
-
-const WIDE_CHARACTER_RANGES: readonly CodePointRange[] = [
-  [0x1100, 0x115f],
-  [0x2329, 0x2329],
-  [0x232a, 0x232a],
-  [0x2e80, 0xa4cf],
-  [0xac00, 0xd7a3],
-  [0xf900, 0xfaff],
-  [0xfe10, 0xfe19],
-  [0xfe30, 0xfe6f],
-  [0xff00, 0xff60],
-  [0xffe0, 0xffe6],
-  [0x1f300, 0x1f64f],
-  [0x1f900, 0x1f9ff],
-  [0x20000, 0x3fffd],
-];
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE_PATTERN, "");
-}
-
-function inCodePointRanges(
-  codePoint: number,
-  ranges: readonly CodePointRange[],
-): boolean {
-  return ranges.some(([start, end]) => codePoint >= start && codePoint <= end);
-}
-
-function isCombiningMark(codePoint: number): boolean {
-  return inCodePointRanges(codePoint, COMBINING_MARK_RANGES);
-}
-
-function isWideCharacter(codePoint: number): boolean {
-  return (
-    codePoint !== 0x303f && inCodePointRanges(codePoint, WIDE_CHARACTER_RANGES)
-  );
-}
-
-function getDisplayWidth(text: string): number {
-  let width = 0;
-  for (const character of stripAnsi(text)) {
-    const codePoint = character.codePointAt(0);
-    if (codePoint === undefined) {
-      continue;
-    }
-
-    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
-      continue;
-    }
-
-    if (isCombiningMark(codePoint)) {
-      continue;
-    }
-
-    width += isWideCharacter(codePoint) ? 2 : 1;
-  }
-
-  return width;
 }
 
 function firstLinePreview(text: string): string {

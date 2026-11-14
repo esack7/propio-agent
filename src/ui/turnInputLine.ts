@@ -1,3 +1,4 @@
+import { keepEndWithinDisplayWidth } from "./displayWidth.js";
 import type { HoldableStream, OutputHold } from "./holdableStream.js";
 
 /**
@@ -32,13 +33,8 @@ export function createTurnInputLine(
   let hold: OutputHold | null = null;
 
   /** Keep to one row: a wrapped line would scroll and lose the saved place. */
-  const fit = (text: string): string => {
-    const width = Math.max(10, columns() - 1);
-    const characters = Array.from(text);
-    return characters.length <= width
-      ? text
-      : `…${characters.slice(characters.length - width + 1).join("")}`;
-  };
+  const fit = (text: string): string =>
+    keepEndWithinDisplayWidth(text, Math.max(10, columns() - 1));
 
   return {
     get showing() {
