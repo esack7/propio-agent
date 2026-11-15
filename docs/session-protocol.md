@@ -29,7 +29,9 @@ The protocol stream contains no marker for that omitted event. If it was
 must handle the reported error; complete-recording guarantees await durable
 session storage. Production CLI sessions collect these failures during each turn and emit one
 escaped warning afterward, including the count of additional failures suppressed.
-A supplied `onProtocolError` replaces that summary and receives each failure.
+Between turns, failures are reported immediately and do not carry into the next
+turn’s summary. A supplied `onProtocolError` replaces these warnings and receives
+each failure.
 Sequence seeds must be positive safe integers. Exhaustion reports an error and
 stops protocol delivery rather than emitting duplicate numbers.
 

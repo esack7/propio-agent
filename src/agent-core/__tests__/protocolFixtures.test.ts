@@ -1,8 +1,16 @@
+import type { AgentVisibilityEvent as CliVisibilityEvent } from "../../agent.js";
+import type { SessionEventBody } from "../index.js";
 import { bodySchema } from "../protocolSchemas.js";
 import { normalizeSessionEvent, parseProtocolEvent } from "../index.js";
 import type { AgentVisibilityEvent, SessionOwnEvent } from "../index.js";
 
-type CoreEvent = AgentVisibilityEvent | SessionOwnEvent;
+// Context stats are emitted by the turn renderer directly as protocol data;
+// mode/plan events use the application Agent's visibility contract.
+type CoreEvent =
+  | AgentVisibilityEvent
+  | SessionOwnEvent
+  | CliVisibilityEvent
+  | Extract<SessionEventBody, { type: "context_stats" }>;
 const display = {
   title: "Reading a.ts",
   body: {
@@ -26,6 +34,13 @@ const result = {
 // shape. Keep this map exhaustive when the core/session event unions change.
 const fixtures: { [K in CoreEvent["type"]]: Extract<CoreEvent, { type: K }> } =
   {
+    mode_changed: {
+      type: "mode_changed",
+      mode: "plan",
+      planFilePath: "/workspace/plan.md",
+    },
+    plan_saved: { type: "plan_saved", planFilePath: "/workspace/plan.md" },
+    context_stats: { type: "context_stats", text: "Context: 1 turn" },
     turn_started: { type: "turn_started" },
     assistant_text: { type: "assistant_text", delta: "hello" },
     turn_completed: { type: "turn_completed", result: "done" },
@@ -125,7 +140,7 @@ const fixtures: { [K in CoreEvent["type"]]: Extract<CoreEvent, { type: K }> } =
   };
 
 it.each(Object.entries(fixtures))(
-  "normalizes the %s core/session fixture without a custom wrapper",
+  "normalizes the %s core/session/CLI fixture without a custom wrapper",
   (type, fixture) => {
     const { event, replacedValues } = normalizeSessionEvent(fixture);
     expect(event.type).toBe(type);
@@ -136,15 +151,9 @@ it.each(Object.entries(fixtures))(
   },
 );
 
-it("covers every core/session protocol discriminator", () => {
-  const frontendOnly = new Set([
-    "custom",
-    "mode_changed",
-    "plan_saved",
-    "context_stats",
-  ]);
+it("covers every non-custom protocol discriminator", () => {
   const expected = bodySchema.options
     .map((schema) => schema.shape.type.value)
-    .filter((type) => !frontendOnly.has(type));
+    .filter((type) => type !== "custom");
   expect(Object.keys(fixtures).sort()).toEqual(expected.sort());
 });

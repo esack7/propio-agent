@@ -62,6 +62,7 @@ export function createCliTurnSession(
   // handling of bytes; in one process the originals are handed over as is.
   let original: PromptSubmission | undefined;
   let undelivered: string[] = [];
+  let activeCliTurns = 0;
   let observationFailures = 0;
   let firstObservationFailure: unknown;
   const flushObservationWarning = (): void => {
@@ -88,6 +89,7 @@ export function createCliTurnSession(
       ((error) => {
         if (observationFailures === 0) firstObservationFailure = error;
         observationFailures++;
+        if (!session.running && activeCliTurns === 0) flushObservationWarning();
       }),
     runTurn: async (submission, control) => {
       const given = original ?? submission;
@@ -150,6 +152,7 @@ export function createCliTurnSession(
         }
       };
       abortSignal.addEventListener("abort", interrupt, { once: true });
+      activeCliTurns++;
       try {
         const images = submission.images?.map((image) =>
           image instanceof Uint8Array ? encodeCommandImage(image) : image,
@@ -172,7 +175,8 @@ export function createCliTurnSession(
         throw lastError;
       } finally {
         abortSignal.removeEventListener("abort", interrupt);
-        flushObservationWarning();
+        activeCliTurns--;
+        if (activeCliTurns === 0) flushObservationWarning();
       }
     },
   };

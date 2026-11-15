@@ -644,3 +644,34 @@ it.each([false, true])(
     }
   },
 );
+
+it("reports observer failures between turns immediately and clears them before the next turn", async () => {
+  const { agent, settle } = heldAgent();
+  const ui = createUi();
+  const warn = jest.spyOn(ui, "warn");
+  const turns = createCliTurnSession(agent, ui, visibility);
+  const unsubscribe = turns.session.subscribeProtocol(() => {
+    throw new Error("between turns");
+  });
+  const pendingApproval = turns.session.approvalChannel.request(
+    request("outside"),
+  );
+  expect(turns.session.running).toBe(false);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0][0]).toContain("between turns");
+  turns.session.dispatch({
+    type: "answer_approval",
+    commandId: "answer",
+    answer: { requestId: "outside", decision: "deny" },
+  });
+  await expect(pendingApproval).resolves.toMatchObject({ decision: "deny" });
+  expect(warn).toHaveBeenCalledTimes(2);
+  unsubscribe();
+  const pending = turns.runTurn(
+    { text: "hello" },
+    new AbortController().signal,
+  );
+  settle().resolve("done");
+  await pending;
+  expect(warn).toHaveBeenCalledTimes(2);
+});
