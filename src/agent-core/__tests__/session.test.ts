@@ -789,7 +789,13 @@ describe("isolation and boundary (a7)", () => {
   });
 
   const directory = join(dirname(fileURLToPath(import.meta.url)), "..");
-  const sources = ["commands.ts", "session.ts"].map((name) => ({
+  const sources = [
+    "commands.ts",
+    "session.ts",
+    "protocol.ts",
+    "protocolSchemas.ts",
+    "protocolJson.ts",
+  ].map((name) => ({
     name,
     text: readFileSync(join(directory, name), "utf8"),
   }));
@@ -809,7 +815,7 @@ describe("isolation and boundary (a7)", () => {
       expect(specifiers.length).toBeGreaterThan(0);
       for (const specifier of specifiers) {
         expect(specifier).toMatch(
-          /^(?:\.\/(?:approval|commands|events|input|protocol)\.js|\.\.\/policy\/index\.js)$/,
+          /^(?:\.\/(?:approval|commands|events|input|session|protocol|protocolSchemas|protocolJson)\.js|\.\.\/policy\/index\.js|zod)$/,
         );
       }
       // The policy import is types only, so nothing of it loads at run time.

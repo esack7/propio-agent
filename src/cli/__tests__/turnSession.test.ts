@@ -519,3 +519,40 @@ describe("a real turn approved from the terminal prompt, through commands", () =
     },
   );
 });
+
+it.each(["log", "sequence", "listener"])(
+  "settles CLI completion despite %s observation failures",
+  async (failure) => {
+    const { agent, settle } = heldAgent();
+    const turns = createCliTurnSession(agent, createUi(), visibility, {
+      ...(failure === "sequence"
+        ? { firstSequence: Number.MAX_SAFE_INTEGER }
+        : {}),
+      ...(failure === "log"
+        ? {
+            eventLog: {
+              append: () => {
+                throw new Error("disk full");
+              },
+            },
+          }
+        : {}),
+    });
+    if (failure === "listener") {
+      turns.session.subscribe(() => {
+        throw new Error("raw observer");
+      });
+      turns.session.subscribeProtocol(() => {
+        throw new Error("protocol observer");
+      });
+    }
+    const pending = turns.runTurn(
+      { text: "hello" },
+      new AbortController().signal,
+    );
+    settle().resolve("done");
+    await expect(pending).resolves.toMatchObject({ response: "done" });
+    await turns.session.settled();
+    expect(turns.session.running).toBe(false);
+  },
+);

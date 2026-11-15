@@ -1,7 +1,7 @@
 # Session event protocol
 
 `AgentSession.subscribeProtocol` receives `{ seq, event, replacedValues? }` records.
-Each session starts at `firstSequence ?? 1` and numbers all delivered records,
+Each session starts at `firstSequence`, the supplied log’s `lastSequence + 1`, or 1 and numbers all delivered records,
 including transient command output, across turns. `subscribe` remains the typed
 in-process API; it can carry original errors and non-JSON tool arguments. CLI
 sessions now forward turn visibility events as well as session lifecycle events.
@@ -11,20 +11,30 @@ numeric metadata (no prompt messages), and replaces non-JSON arguments with
 stable diagnostic strings such as `[bigint]` or `[circular reference]`.
 `replacedValues` counts those substitutions. Optional undefined event fields are
 omitted. Custom events from generic session runners use `{ type: "custom", value }`.
-Known event variants must satisfy their schema; malformed known events fail the
-emitting turn rather than silently becoming custom events.
+Generic events whose names collide with built-in variants, including `custom`,
+are wrapped when they do not fit a built-in schema. The untrusted parser still
+rejects malformed built-in protocol records.
 
 Records are detached and recursively frozen, with readonly envelope and
 event properties in TypeScript. Nested data is frozen at runtime.
-The optional synchronous `eventLog.append` runs before notification. A failed
-append does not advance the sequence or notify subscribers. Listeners are trusted
-code: exceptions fail the emitting turn, but remaining listeners and reentrantly
-queued records are still delivered in order. The first listener error is rethrown.
-Sequence seeds must be positive safe integers; exhaustion throws instead of
-emitting duplicate numbers.
+The optional synchronous `eventLog.append` runs before notification. If append
+fails, the log is detached to avoid recording a discontinuous suffix, and live
+delivery continues. `onProtocolError` reports recording, normalization, sequence
+and subscriber failures; exceptions in that callback are isolated too. Subscriber
+failures do not fail the turn or hide events from later subscribers. Reentrant
+notifications remain ordered. If normalization or sequence allocation fails, raw
+subscribers still receive the event; CLI settlement uses this raw lifecycle.
+Sequence seeds must be positive safe integers. Exhaustion reports an error and
+stops protocol delivery rather than emitting duplicate numbers.
+
+The session returns the normalized body from `control.emit` for the live renderer.
+Its immutable records are recognized by the in-memory log without another copy
+or schema parse. Records supplied from elsewhere are validated and detached.
 
 `InMemorySessionEventLog.after(seq)` returns records strictly after the cursor.
-It accepts any initial positive sequence, then requires contiguous appends. The
+It accepts any initial positive sequence, then requires contiguous appends.
+`lastSequence` supports session recreation, and cursor reads slice directly from
+the sequence offset. The
 log is unbounded and process-local; durable storage, retention and shared trace
 numbering belong to the later session-stores work.
 

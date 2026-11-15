@@ -1,5 +1,6 @@
 import {
-  normalizeSessionEvent,
+  createProtocolEvent,
+  type SessionEventBody,
   type ProtocolEvent,
   type SessionEventLog,
 } from "./protocol.js";
@@ -21,7 +22,7 @@ export interface SessionTurnControl<TEvent> {
   /** Guide commands accepted while the turn runs. */
   readonly guidance: GuidanceSource;
   /** Forward one of the turn's own events to the session's subscribers. */
-  emit(event: TEvent): void;
+  emit(event: TEvent): SessionEventBody | undefined;
 }
 
 /** Runs one turn to its final answer. Rejects if the turn fails or is cancelled. */
@@ -73,6 +74,7 @@ interface RunningTurn {
 
 export interface AgentSessionOptions<TEvent> {
   readonly runTurn: SessionTurnRunner<TEvent>;
+  readonly onProtocolError?: (error: unknown) => void;
   readonly firstSequence?: number;
   readonly eventLog?: SessionEventLog;
 }
@@ -90,13 +92,14 @@ export class AgentSession<TEvent = never> {
   private readonly listeners = new Set<(event: SessionEvent<TEvent>) => void>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private nextSequence: number;
-  private readonly eventLog?: SessionEventLog;
+  private eventLog?: SessionEventLog;
+  private readonly onProtocolError?: (error: unknown) => void;
   private readonly protocolListeners = new Set<
     (event: ProtocolEvent) => void
   >();
   private readonly deliveries: {
     raw: SessionEvent<TEvent>;
-    protocol: ProtocolEvent;
+    protocol?: ProtocolEvent;
   }[] = [];
   private delivering = false;
   private turn: RunningTurn | undefined;
@@ -115,7 +118,9 @@ export class AgentSession<TEvent = never> {
 
   constructor(options: AgentSessionOptions<TEvent>) {
     this.runTurn = options.runTurn;
-    this.nextSequence = options.firstSequence ?? 1;
+    this.nextSequence =
+      options.firstSequence ?? (options.eventLog?.lastSequence ?? 0) + 1;
+    this.onProtocolError = options.onProtocolError;
     if (!Number.isSafeInteger(this.nextSequence) || this.nextSequence < 1)
       throw new RangeError("Invalid first sequence");
     this.eventLog = options.eventLog;
@@ -130,7 +135,7 @@ export class AgentSession<TEvent = never> {
     return this.turnSettled;
   }
 
-  /** Listeners are trusted code: one that throws fails the turn it is called from. */
+  /** Observer exceptions are isolated and reported through onProtocolError. */
   subscribe(listener: (event: SessionEvent<TEvent>) => void): () => void {
     this.listeners.add(listener);
     return () => {
@@ -192,28 +197,43 @@ export class AgentSession<TEvent = never> {
     return { commandId, accepted: false, code, message };
   }
 
-  private emit(event: SessionEvent<TEvent>): void {
-    if (!Number.isSafeInteger(this.nextSequence))
-      throw new RangeError("Session sequence exhausted");
-    const normalized = normalizeSessionEvent(event);
-    const protocol: ProtocolEvent = Object.freeze({
-      seq: this.nextSequence,
-      event: normalized.event,
-      ...(normalized.replacedValues
-        ? { replacedValues: normalized.replacedValues }
-        : {}),
-    });
-    this.eventLog?.append(protocol);
-    this.nextSequence++;
+  private emit(event: SessionEvent<TEvent>): SessionEventBody | undefined {
+    let protocol: ProtocolEvent | undefined;
+    try {
+      if (!Number.isSafeInteger(this.nextSequence))
+        throw new RangeError("Session sequence exhausted");
+      protocol = createProtocolEvent(this.nextSequence, event);
+      this.nextSequence++;
+    } catch (error) {
+      this.reportProtocolError(error);
+    }
+    if (protocol) this.record(protocol);
     this.deliveries.push({ raw: event, protocol });
     this.flushDeliveries();
+    return protocol?.event;
+  }
+
+  private record(event: ProtocolEvent): void {
+    try {
+      this.eventLog?.append(event);
+    } catch (error) {
+      // A failed recording cannot be resumed contiguously; detach it once.
+      this.eventLog = undefined;
+      this.reportProtocolError(error);
+    }
+  }
+
+  private reportProtocolError(error: unknown): void {
+    try {
+      this.onProtocolError?.(error);
+    } catch {
+      /* Diagnostics cannot break a turn. */
+    }
   }
 
   private flushDeliveries(): void {
     if (this.delivering) return;
     this.delivering = true;
-    let failure: unknown;
-    let failed = false;
     try {
       while (this.deliveries.length) {
         const delivery = this.deliveries.shift()!;
@@ -221,19 +241,20 @@ export class AgentSession<TEvent = never> {
           try {
             callback();
           } catch (error) {
-            if (!failed) failure = error;
-            failed = true;
+            this.reportProtocolError(error);
           }
         };
-        for (const listener of [...this.protocolListeners])
-          notify(() => listener(delivery.protocol));
+        if (delivery.protocol) {
+          const protocol = delivery.protocol;
+          for (const listener of [...this.protocolListeners])
+            notify(() => listener(protocol));
+        }
         for (const listener of [...this.listeners])
           notify(() => listener(delivery.raw));
       }
     } finally {
       this.delivering = false;
     }
-    if (failed) throw failure;
   }
 
   private submit(

@@ -5,8 +5,7 @@ import {
   type SessionEventBody,
 } from "./protocolSchemas.js";
 import { copyJson, freezeJson } from "./protocolJson.js";
-import type { AgentVisibilityEvent, PromptPlanSnapshot } from "./events.js";
-import type { SessionOwnEvent } from "./session.js";
+import type { PromptPlanSnapshot } from "./events.js";
 export type { ProtocolEvent, SessionEventBody } from "./protocolSchemas.js";
 
 export function summarizePromptPlan(snapshot: PromptPlanSnapshot) {
@@ -21,11 +20,7 @@ export function summarizePromptPlan(snapshot: PromptPlanSnapshot) {
   };
 }
 
-const knownTypes = new Set(
-  bodySchema.options.map((schema) => schema.shape.type.value),
-);
-
-/** Normalize trusted runtime data. Known events must still satisfy their schema. */
+/** Normalize trusted runtime data. Generic events that do not fit a built-in schema are wrapped. */
 export function normalizeSessionEvent(input: unknown): {
   event: SessionEventBody;
   replacedValues: number;
@@ -34,18 +29,11 @@ export function normalizeSessionEvent(input: unknown): {
   const copied = copyJson(normalizeRuntimeFields(input), true);
   const candidate = copied.value;
   const type = eventType(candidate);
-  // This union must fit the schema discriminator set: adding a core/session
-  // variant without its protocol schema is a compile error.
-  const event = bodySchema.parse(
-    knownTypes.has(
-      type as
-        | AgentVisibilityEvent["type"]
-        | SessionOwnEvent["type"]
-        | SessionEventBody["type"],
-    )
-      ? candidate
-      : { type: "custom", value: candidate },
-  );
+  const parsed =
+    type === "custom" ? undefined : bodySchema.safeParse(candidate);
+  const event = parsed?.success
+    ? parsed.data
+    : bodySchema.parse({ type: "custom", value: candidate });
   return { event: freezeJson(event), replacedValues: copied.replacedValues };
 }
 
@@ -87,18 +75,28 @@ function normalizePlanEvent(snapshot: unknown): unknown {
   };
 }
 
+const validatedRecords = new WeakSet<object>();
+
 /** Strict untrusted boundary: no coercion, unknown variants/fields, or non-JSON. */
 export function parseProtocolEvent(value: unknown): ProtocolEvent {
-  return freezeJson(protocolSchema.parse(copyJson(value, false).value));
+  if (value && typeof value === "object" && validatedRecords.has(value))
+    return value as ProtocolEvent;
+  const event = freezeJson(protocolSchema.parse(copyJson(value, false).value));
+  validatedRecords.add(event);
+  return event;
 }
 
 export interface SessionEventLog {
+  readonly lastSequence?: number;
   append(event: ProtocolEvent): void;
 }
 
 /** In-memory spike only; no persistence or retention policy. */
 export class InMemorySessionEventLog implements SessionEventLog {
   private readonly events: ProtocolEvent[] = [];
+  get lastSequence(): number | undefined {
+    return this.events[this.events.length - 1]?.seq;
+  }
   append(value: ProtocolEvent): void {
     const event = parseProtocolEvent(value);
     const previous = this.events[this.events.length - 1];
@@ -109,6 +107,23 @@ export class InMemorySessionEventLog implements SessionEventLog {
   after(seq: number): readonly ProtocolEvent[] {
     if (!Number.isSafeInteger(seq) || seq < 0)
       throw new RangeError("Invalid event cursor");
-    return this.events.filter((event) => event.seq > seq);
+    return this.events.slice(Math.max(0, seq - (this.events[0]?.seq ?? 1) + 1));
   }
+}
+
+/** Build a trusted record once; logs can reuse its validated immutable data. */
+export function createProtocolEvent(
+  seq: number,
+  input: unknown,
+): ProtocolEvent {
+  const normalized = normalizeSessionEvent(input);
+  const record = Object.freeze({
+    seq,
+    event: normalized.event,
+    ...(normalized.replacedValues
+      ? { replacedValues: normalized.replacedValues }
+      : {}),
+  });
+  validatedRecords.add(record);
+  return record;
 }

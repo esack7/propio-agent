@@ -199,7 +199,7 @@ it("does not let a throwing listener starve later observers or queued events", a
     { seq: 1 },
     {
       seq: 2,
-      event: { outcome: "failed", error: { message: "observer failed" } },
+      event: { outcome: "completed", result: "done" },
     },
   ]);
 });
@@ -212,3 +212,115 @@ it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     ).toThrow();
   },
 );
+
+it.each([
+  { type: "custom", name: "x" },
+  { type: "status", status: "x", progress: 0.5 },
+  { type: "tool_started", toolName: "x" },
+])("preserves generic event collisions: %j", async (value) => {
+  const session = new AgentSession({
+    runTurn: async (_input, control) => {
+      control.emit(value);
+      return "done";
+    },
+  });
+  const raw: unknown[] = [];
+  const protocol: unknown[] = [];
+  session.subscribe((event) => raw.push(event));
+  session.subscribeProtocol((event) => protocol.push(event));
+  session.dispatch({ type: "submit", commandId: "a", text: "hello" });
+  await session.settled();
+  expect(raw[1]).toBe(value);
+  expect(protocol[1]).toMatchObject({ event: { type: "custom", value } });
+  expect(raw[2]).toMatchObject({ outcome: "completed" });
+});
+
+it.each([
+  "session_turn_started",
+  "approval_requested",
+  "approval_resolved",
+  "session_turn_ended",
+])(
+  "isolates recording failure at %s and continues live delivery",
+  async (failedType) => {
+    const seen: string[] = [];
+    const errors: unknown[] = [];
+    const session = new AgentSession({
+      eventLog: {
+        append: ({ event }) => {
+          if (event.type === failedType) throw new Error("disk full");
+        },
+      },
+      onProtocolError: (error: unknown) => errors.push(error),
+      runTurn: async () => {
+        const answer = await session.approvalChannel.request({
+          id: "r",
+          toolName: "edit",
+          args: {},
+          capabilities: [],
+          reason: "ask",
+          rule: "ask",
+          suggestions: [],
+        });
+        return answer.decision;
+      },
+    });
+    session.subscribeProtocol(({ event }) => {
+      seen.push(event.type);
+      if (event.type === "approval_requested")
+        expect(
+          session.dispatch({
+            type: "answer_approval",
+            commandId: "answer",
+            answer: { requestId: "r", decision: "allow_once" },
+          }).accepted,
+        ).toBe(true);
+    });
+    session.dispatch({ type: "submit", commandId: "a", text: "hello" });
+    await session.settled();
+    expect(seen).toEqual([
+      "session_turn_started",
+      "approval_requested",
+      "approval_resolved",
+      "session_turn_ended",
+    ]);
+    expect(errors).toHaveLength(1);
+  },
+);
+
+it("resumes numbering from a reused log and slices offset cursors", async () => {
+  const log = new InMemorySessionEventLog();
+  for (const firstSequence of [20, undefined]) {
+    const session = new AgentSession({
+      eventLog: log,
+      firstSequence,
+      runTurn: async () => "done",
+    });
+    session.dispatch({ type: "submit", commandId: "a", text: "hello" });
+    await session.settled();
+  }
+  expect(log.lastSequence).toBe(23);
+  expect(log.after(20).map(({ seq }) => seq)).toEqual([21, 22, 23]);
+  expect(log.after(100)).toEqual([]);
+  expect(log.after(0)).toHaveLength(4);
+});
+
+it("shares the one normalized immutable event between runner, subscribers and log", async () => {
+  const log = new InMemorySessionEventLog();
+  let returned: unknown;
+  let observed: unknown;
+  const session = new AgentSession<{ type: "assistant_text"; delta: string }>({
+    eventLog: log,
+    runTurn: async (_input, control) => {
+      returned = control.emit({ type: "assistant_text", delta: "hello" });
+      return "hello";
+    },
+  });
+  session.subscribeProtocol(({ event }) => {
+    if (event.type === "assistant_text") observed = event;
+  });
+  session.dispatch({ type: "submit", commandId: "a", text: "hello" });
+  await session.settled();
+  expect(returned).toBe(observed);
+  expect(log.after(1)[0].event).toBe(observed);
+});

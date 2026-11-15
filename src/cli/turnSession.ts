@@ -7,6 +7,7 @@ import {
   type PromptSubmission,
   type SessionEventBody,
   type AgentVisibilityEvent,
+  type AgentSessionOptions,
 } from "../agent-core/index.js";
 import type { ApprovalAnswer } from "../policy/index.js";
 import {
@@ -46,6 +47,10 @@ export function createCliTurnSession(
   agent: AssistantTurnAgent,
   ui: TerminalUi,
   visibility: AssistantTurnVisibilitySource,
+  sessionOptions: Pick<
+    AgentSessionOptions<never>,
+    "eventLog" | "firstSequence" | "onProtocolError"
+  > = {},
 ): CliTurnSession {
   // Both sides are in one process, so the rendered result and the original
   // error are kept as they are rather than rebuilt from the ended event.
@@ -59,6 +64,7 @@ export function createCliTurnSession(
   const session = new AgentSession<
     SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
   >({
+    ...sessionOptions,
     runTurn: async (submission, control) => {
       const given = original ?? submission;
       original = undefined;
@@ -98,7 +104,7 @@ export function createCliTurnSession(
       const commandId = randomUUID();
       const ended = new Promise<"completed" | "cancelled" | "failed">(
         (resolve) => {
-          const unsubscribe = session.subscribeProtocol(({ event }) => {
+          const unsubscribe = session.subscribe((event) => {
             if (
               event.type === "session_turn_ended" &&
               event.commandId === commandId

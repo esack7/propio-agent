@@ -47,15 +47,19 @@ export async function streamAssistantTurn(
   guidance?: GuidanceSource,
   onEvent?: (
     event: AgentVisibilityEvent | CliVisibilityEvent | SessionEventBody,
-  ) => void,
+  ) => SessionEventBody | void,
 ): Promise<AssistantTurnResult> {
   const renderer = createTurnEventRenderer(ui, visibility);
   const emit = (
     value: AgentVisibilityEvent | CliVisibilityEvent | SessionEventBody,
   ): void => {
-    const { event } = normalizeSessionEvent(value);
-    onEvent?.(value);
-    renderer.accept(event);
+    let event: SessionEventBody | void = undefined;
+    try {
+      event = onEvent?.(value);
+    } catch {
+      /* Observers cannot replace agent errors. */
+    }
+    renderer.accept(event ?? normalizeSessionEvent(value).event);
   };
   const getVisibility =
     typeof visibility === "function" ? visibility : () => visibility;
