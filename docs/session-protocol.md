@@ -27,8 +27,9 @@ subscribers still receive the event; CLI settlement uses this raw lifecycle.
 The protocol stream contains no marker for that omitted event. If it was
 `session_turn_ended`, a replay client cannot infer that the turn finished. Hosts
 must handle the reported error; complete-recording guarantees await durable
-session storage. Production CLI sessions warn through the terminal by default;
-a supplied `onProtocolError` replaces that warning.
+session storage. Production CLI sessions collect these failures during each turn and emit one
+escaped warning afterward, including the count of additional failures suppressed.
+A supplied `onProtocolError` replaces that summary and receives each failure.
 Sequence seeds must be positive safe integers. Exhaustion reports an error and
 stops protocol delivery rather than emitting duplicate numbers.
 

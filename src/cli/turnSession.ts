@@ -62,6 +62,23 @@ export function createCliTurnSession(
   // handling of bytes; in one process the originals are handed over as is.
   let original: PromptSubmission | undefined;
   let undelivered: string[] = [];
+  let observationFailures = 0;
+  let firstObservationFailure: unknown;
+  const flushObservationWarning = (): void => {
+    if (!observationFailures) return;
+    const error = firstObservationFailure;
+    const suppressed = observationFailures - 1;
+    observationFailures = 0;
+    firstObservationFailure = undefined;
+    try {
+      const message = error instanceof Error ? error.message : String(error);
+      ui.warn(
+        `Session event observation failed: ${visibleText(message)}${suppressed ? ` (${suppressed} more suppressed)` : ""}`,
+      );
+    } catch {
+      /* A failed warning must not replace the turn result or error. */
+    }
+  };
   const session = new AgentSession<
     SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
   >({
@@ -69,8 +86,8 @@ export function createCliTurnSession(
     onProtocolError:
       sessionOptions.onProtocolError ??
       ((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        ui.warn(`Session event observation failed: ${visibleText(message)}`);
+        if (observationFailures === 0) firstObservationFailure = error;
+        observationFailures++;
       }),
     runTurn: async (submission, control) => {
       const given = original ?? submission;
@@ -155,6 +172,7 @@ export function createCliTurnSession(
         throw lastError;
       } finally {
         abortSignal.removeEventListener("abort", interrupt);
+        flushObservationWarning();
       }
     },
   };

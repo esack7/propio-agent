@@ -601,3 +601,46 @@ it("uses an explicit protocol error handler in place of the default warning", as
   expect(onProtocolError).toHaveBeenCalledTimes(1);
   expect(warn).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  "summarizes repeated observer failures once after each turn (failed=%s)",
+  async (failed) => {
+    const ui = createUi();
+    const warn = jest.spyOn(ui, "warn");
+    const failure = new Error("provider failed");
+    const agent = {
+      streamChat: async (
+        _submission: unknown,
+        onToken: (token: string) => void,
+      ) => {
+        const prior = warn.mock.calls.length;
+        for (let i = 0; i < 20; i++) onToken("word ");
+        expect(warn.mock.calls).toHaveLength(prior);
+        if (failed) throw failure;
+        return "word ".repeat(20);
+      },
+      getLastTurnReasoningSummary: () => null,
+      getConversationState: () => {
+        throw new Error("not requested");
+      },
+    } as unknown as Agent;
+    const turns = createCliTurnSession(agent, ui, visibility);
+    turns.session.subscribeProtocol(() => {
+      throw new Error("observer failed\x1b[2J");
+    });
+    for (let i = 0; i < 2; i++) {
+      const pending = turns.runTurn(
+        { text: "hello" },
+        new AbortController().signal,
+      );
+      if (failed) await expect(pending).rejects.toBe(failure);
+      else
+        await expect(pending).resolves.toMatchObject({
+          response: "word ".repeat(20),
+        });
+      expect(warn).toHaveBeenCalledTimes(i + 1);
+      expect(warn.mock.calls[i][0]).toContain("22 more suppressed");
+      expect(warn.mock.calls[i][0]).not.toContain("\x1b");
+    }
+  },
+);
