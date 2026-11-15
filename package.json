@@ -85,6 +85,8 @@
     "npm-shrinkwrap.json",
     "examples/tools-consumer.mjs",
     "examples/agent-core-consumer.mjs",
+    "examples/session-protocol-consumer.mjs",
+    "docs/session-protocol.md",
     "examples/policy-consumer.mjs",
     "benchmarks/traceCapture.mjs",
     "docs/openai-subscription.md"
@@ -110,6 +112,7 @@
     "example:mcp": "node examples/mcp-consumer.mjs",
     "example:tools": "node examples/tools-consumer.mjs",
     "example:agent-core": "node examples/agent-core-consumer.mjs",
+    "example:session-protocol": "node examples/session-protocol-consumer.mjs",
     "example:policy": "node examples/policy-consumer.mjs",
     "benchmark:trace": "npm run build && node benchmarks/traceCapture.mjs",
     "sandbox:host": "node dist/auth/openai/sandboxHost.js"

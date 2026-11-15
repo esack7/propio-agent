@@ -40,3 +40,14 @@ export type {
 } from "./events.js";
 export type { AgentDiagnosticEvent } from "../diagnostics.js";
 export type { AgentTraceRecorder } from "../trace/types.js";
+
+export {
+  normalizeSessionEvent,
+  parseProtocolEvent,
+  InMemorySessionEventLog,
+} from "./protocol.js";
+export type {
+  ProtocolEvent,
+  SessionEventBody,
+  SessionEventLog,
+} from "./protocol.js";

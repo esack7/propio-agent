@@ -1,9 +1,14 @@
+import { visibleText } from "../ui/visibleText.js";
+import type { AgentVisibilityEvent as CliVisibilityEvent } from "../agent.js";
 import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import { randomUUID } from "node:crypto";
 import {
   AgentSession,
   encodeCommandImage,
   type PromptSubmission,
+  type SessionEventBody,
+  type AgentVisibilityEvent,
+  type AgentSessionOptions,
 } from "../agent-core/index.js";
 import type { ApprovalAnswer } from "../policy/index.js";
 import {
@@ -20,7 +25,9 @@ import type { TerminalUi } from "../ui/terminal.js";
  * way another frontend would over a transport.
  */
 export interface CliTurnSession {
-  readonly session: AgentSession;
+  readonly session: AgentSession<
+    SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
+  >;
   /**
    * Submit a message and wait for the turn. Aborting the signal with reason
    * "escape" dispatches an interrupt; any other reason stops the session's
@@ -41,6 +48,10 @@ export function createCliTurnSession(
   agent: AssistantTurnAgent,
   ui: TerminalUi,
   visibility: AssistantTurnVisibilitySource,
+  sessionOptions: Pick<
+    AgentSessionOptions<never>,
+    "eventLog" | "firstSequence" | "onProtocolError"
+  > = {},
 ): CliTurnSession {
   // Both sides are in one process, so the rendered result and the original
   // error are kept as they are rather than rebuilt from the ended event.
@@ -51,7 +62,35 @@ export function createCliTurnSession(
   // handling of bytes; in one process the originals are handed over as is.
   let original: PromptSubmission | undefined;
   let undelivered: string[] = [];
-  const session = new AgentSession({
+  let activeCliTurns = 0;
+  let observationFailures = 0;
+  let firstObservationFailure: unknown;
+  const flushObservationWarning = (): void => {
+    if (!observationFailures) return;
+    const error = firstObservationFailure;
+    const suppressed = observationFailures - 1;
+    observationFailures = 0;
+    firstObservationFailure = undefined;
+    try {
+      const message = error instanceof Error ? error.message : String(error);
+      ui.warn(
+        `Session event observation failed: ${visibleText(message)}${suppressed ? ` (${suppressed} more suppressed)` : ""}`,
+      );
+    } catch {
+      /* A failed warning must not replace the turn result or error. */
+    }
+  };
+  const session = new AgentSession<
+    SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
+  >({
+    ...sessionOptions,
+    onProtocolError:
+      sessionOptions.onProtocolError ??
+      ((error) => {
+        if (observationFailures === 0) firstObservationFailure = error;
+        observationFailures++;
+        if (!session.running && activeCliTurns === 0) flushObservationWarning();
+      }),
     runTurn: async (submission, control) => {
       const given = original ?? submission;
       original = undefined;
@@ -63,6 +102,7 @@ export function createCliTurnSession(
           control.abortSignal,
           visibility,
           control.guidance,
+          control.emit,
         );
         return lastResult.response;
       } catch (error) {
@@ -112,6 +152,7 @@ export function createCliTurnSession(
         }
       };
       abortSignal.addEventListener("abort", interrupt, { once: true });
+      activeCliTurns++;
       try {
         const images = submission.images?.map((image) =>
           image instanceof Uint8Array ? encodeCommandImage(image) : image,
@@ -134,6 +175,8 @@ export function createCliTurnSession(
         throw lastError;
       } finally {
         abortSignal.removeEventListener("abort", interrupt);
+        activeCliTurns--;
+        if (activeCliTurns === 0) flushObservationWarning();
       }
     },
   };
@@ -166,12 +209,12 @@ export function borrowingKeyboard(
  * the terminal prompt. The answer goes back as a command, as it would from
  * any other frontend. Returns a function that stops answering.
  */
-export function answerApprovalsThrough(
-  session: AgentSession,
+export function answerApprovalsThrough<TEvent>(
+  session: AgentSession<TEvent>,
   channel: ApprovalChannel,
 ): () => void {
   const open = new Map<string, AbortController>();
-  const unsubscribe = session.subscribe((event) => {
+  const unsubscribe = session.subscribeProtocol(({ event }) => {
     if (event.type === "approval_resolved") {
       // Withdrawn while the question was showing: close the prompt.
       const asking = open.get(event.requestId);

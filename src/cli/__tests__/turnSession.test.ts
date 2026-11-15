@@ -133,7 +133,11 @@ describe("the CLI's turn session", () => {
       text: "Describe these",
       images: ["data:image/png;base64,aGk=", bytes],
     });
-    expect(commands).toEqual(["session_turn_started", "session_turn_ended"]);
+    expect(commands).toEqual([
+      "session_turn_started",
+      "turn_completed",
+      "session_turn_ended",
+    ]);
   });
 
   it("turns an abort into an interrupt command and rejects with the turn's own error", async () => {
@@ -472,7 +476,7 @@ describe("a real turn approved from the terminal prompt, through commands", () =
       );
       const resolutions: unknown[] = [];
       const sessionTypes: string[] = [];
-      turns.session.subscribe((event) => {
+      turns.session.subscribeProtocol(({ event }) => {
         sessionTypes.push(event.type);
         expect(JSON.parse(JSON.stringify(event))).toEqual(event);
         if (event.type === "approval_resolved")
@@ -484,7 +488,11 @@ describe("a real turn approved from the terminal prompt, through commands", () =
         new AbortController().signal,
       );
 
-      expect(sessionTypes).toEqual([
+      expect(
+        sessionTypes.filter(
+          (type) => type.startsWith("session_") || type.startsWith("approval_"),
+        ),
+      ).toEqual([
         "session_turn_started",
         "approval_requested",
         "approval_resolved",
@@ -510,4 +518,160 @@ describe("a real turn approved from the terminal prompt, through commands", () =
       expect(provider.streamChatCalls).toHaveLength(2);
     },
   );
+});
+
+it.each(["log", "sequence", "listener"])(
+  "settles CLI completion despite %s observation failures",
+  async (failure) => {
+    const { agent, settle } = heldAgent();
+    const turns = createCliTurnSession(agent, createUi(), visibility, {
+      ...(failure === "sequence"
+        ? { firstSequence: Number.MAX_SAFE_INTEGER }
+        : {}),
+      ...(failure === "log"
+        ? {
+            eventLog: {
+              append: () => {
+                throw new Error("disk full");
+              },
+            },
+          }
+        : {}),
+    });
+    if (failure === "listener") {
+      turns.session.subscribe(() => {
+        throw new Error("raw observer");
+      });
+      turns.session.subscribeProtocol(() => {
+        throw new Error("protocol observer");
+      });
+    }
+    const pending = turns.runTurn(
+      { text: "hello" },
+      new AbortController().signal,
+    );
+    settle().resolve("done");
+    await expect(pending).resolves.toMatchObject({ response: "done" });
+    await turns.session.settled();
+    expect(turns.session.running).toBe(false);
+  },
+);
+
+it("warns by default when recording fails, with escaped error text", async () => {
+  const { agent, settle } = heldAgent();
+  const ui = createUi();
+  const warn = jest.spyOn(ui, "warn");
+  const turns = createCliTurnSession(agent, ui, visibility, {
+    eventLog: {
+      append: () => {
+        throw new Error("disk full\x1b[2J");
+      },
+    },
+  });
+  const pending = turns.runTurn(
+    { text: "hello" },
+    new AbortController().signal,
+  );
+  settle().resolve("done");
+  await expect(pending).resolves.toMatchObject({ response: "done" });
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0][0]).toContain("disk full");
+  expect(warn.mock.calls[0][0]).not.toContain("\x1b");
+});
+
+it("uses an explicit protocol error handler in place of the default warning", async () => {
+  const { agent, settle } = heldAgent();
+  const ui = createUi();
+  const warn = jest.spyOn(ui, "warn");
+  const onProtocolError = jest.fn();
+  const turns = createCliTurnSession(agent, ui, visibility, {
+    onProtocolError,
+    eventLog: {
+      append: () => {
+        throw new Error("disk full");
+      },
+    },
+  });
+  const pending = turns.runTurn(
+    { text: "hello" },
+    new AbortController().signal,
+  );
+  settle().resolve("done");
+  await pending;
+  expect(onProtocolError).toHaveBeenCalledTimes(1);
+  expect(warn).not.toHaveBeenCalled();
+});
+
+it.each([false, true])(
+  "summarizes repeated observer failures once after each turn (failed=%s)",
+  async (failed) => {
+    const ui = createUi();
+    const warn = jest.spyOn(ui, "warn");
+    const failure = new Error("provider failed");
+    const agent = {
+      streamChat: async (
+        _submission: unknown,
+        onToken: (token: string) => void,
+      ) => {
+        const prior = warn.mock.calls.length;
+        for (let i = 0; i < 20; i++) onToken("word ");
+        expect(warn.mock.calls).toHaveLength(prior);
+        if (failed) throw failure;
+        return "word ".repeat(20);
+      },
+      getLastTurnReasoningSummary: () => null,
+      getConversationState: () => {
+        throw new Error("not requested");
+      },
+    } as unknown as Agent;
+    const turns = createCliTurnSession(agent, ui, visibility);
+    turns.session.subscribeProtocol(() => {
+      throw new Error("observer failed\x1b[2J");
+    });
+    for (let i = 0; i < 2; i++) {
+      const pending = turns.runTurn(
+        { text: "hello" },
+        new AbortController().signal,
+      );
+      if (failed) await expect(pending).rejects.toBe(failure);
+      else
+        await expect(pending).resolves.toMatchObject({
+          response: "word ".repeat(20),
+        });
+      expect(warn).toHaveBeenCalledTimes(i + 1);
+      expect(warn.mock.calls[i][0]).toContain("22 more suppressed");
+      expect(warn.mock.calls[i][0]).not.toContain("\x1b");
+    }
+  },
+);
+
+it("reports observer failures between turns immediately and clears them before the next turn", async () => {
+  const { agent, settle } = heldAgent();
+  const ui = createUi();
+  const warn = jest.spyOn(ui, "warn");
+  const turns = createCliTurnSession(agent, ui, visibility);
+  const unsubscribe = turns.session.subscribeProtocol(() => {
+    throw new Error("between turns");
+  });
+  const pendingApproval = turns.session.approvalChannel.request(
+    request("outside"),
+  );
+  expect(turns.session.running).toBe(false);
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0][0]).toContain("between turns");
+  turns.session.dispatch({
+    type: "answer_approval",
+    commandId: "answer",
+    answer: { requestId: "outside", decision: "deny" },
+  });
+  await expect(pendingApproval).resolves.toMatchObject({ decision: "deny" });
+  expect(warn).toHaveBeenCalledTimes(2);
+  unsubscribe();
+  const pending = turns.runTurn(
+    { text: "hello" },
+    new AbortController().signal,
+  );
+  settle().resolve("done");
+  await pending;
+  expect(warn).toHaveBeenCalledTimes(2);
 });

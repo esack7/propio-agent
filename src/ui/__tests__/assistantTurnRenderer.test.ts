@@ -1123,3 +1123,40 @@ describe("streamAssistantTurn", () => {
     expect(stdout.chunks.join("")).toBe("");
   });
 });
+
+it("renders tokens and preserves the original agent error when forwarding throws", async () => {
+  const stdout = createTtyTestStream(false);
+  const stderr = createTtyTestStream(false);
+  const ui = new TerminalUi({
+    interactive: false,
+    plain: true,
+    json: false,
+    stdout,
+    stderr,
+  });
+  const original = new TypeError("original provider failure");
+  const agent = {
+    streamChat: async (_input: unknown, onToken: (text: string) => void) => {
+      onToken("Visible answer");
+      throw original;
+    },
+    getLastTurnReasoningSummary: () => null,
+    getConversationState: () => emptyConversationState(),
+  } as AssistantTurnAgent;
+  await expect(
+    streamAssistantTurn(
+      agent,
+      { text: "hello" },
+      ui,
+      new AbortController().signal,
+      defaultVisibility,
+      undefined,
+      () => {
+        throw new Error("observer failure");
+      },
+    ),
+  ).rejects.toBe(original);
+  expect(stdout.chunks.join("") + stderr.chunks.join("")).toContain(
+    "Visible answer",
+  );
+});

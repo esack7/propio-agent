@@ -1,3 +1,7 @@
+import {
+  summarizePromptPlan,
+  type SessionEventBody,
+} from "../agent-core/protocol.js";
 import type {
   ConversationState,
   TurnRecord,
@@ -366,13 +370,21 @@ export function formatPromptPlan(
  * Compact single-line prompt plan summary for --show-prompt-plan live output.
  */
 export function formatPromptPlanCompact(snapshot: PromptPlanSnapshot): string {
-  const { plan } = snapshot;
+  return formatPromptPlanSummary(summarizePromptPlan(snapshot));
+}
+
+export function formatPromptPlanSummary(
+  snapshot: Extract<
+    SessionEventBody,
+    { type: "prompt_plan_built" }
+  >["snapshot"],
+): string {
   return (
     `Prompt plan: ${snapshot.provider}/${snapshot.model} iter=${snapshot.iteration} | ` +
-    `~${plan.estimatedPromptTokens} prompt tokens (est.) | ` +
-    `${plan.includedTurnIds.length} included, ${plan.omittedTurnIds.length} omitted | ` +
-    `retry=${plan.retryLevel} (${retryLevelLabel(plan.retryLevel)}) | ` +
-    `summary=${plan.usedRollingSummary ? "yes" : "no"}`
+    `~${snapshot.estimatedPromptTokens} prompt tokens (est.) | ` +
+    `${snapshot.includedTurns} included, ${snapshot.omittedTurns} omitted | ` +
+    `retry=${snapshot.retryLevel} (${retryLevelLabel(snapshot.retryLevel)}) | ` +
+    `summary=${snapshot.usedRollingSummary ? "yes" : "no"}`
   );
 }
 
