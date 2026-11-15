@@ -1,0 +1,112 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`shows a deterministic cancelled timeline 1`] = `
+"Run run (session session)
+Capture: complete; events: 6; started: 2026-11-14T10:00:00.000Z
+Requests: 1; attempts: 1; retry attempts: 0
+Tokens (complete): input=10 output=2 total=unknown
+Cost: complete; unpriced attempts: 0
+  USD: reported=0.2 estimated=unknown
+Timeline (sequence order; ms relative to first event):
+#1 +0ms agent/turn_started
+  operationId=turn
+#2 +1ms provider/provider_attempt_started
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#3 +2ms provider/provider_usage_reported
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1 availability=reported inputTokens=10 outputT
+okens=2
+#4 +3ms provider/provider_attempt_completed duration=2ms
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#5 +4ms policy/tool_policy_decision
+  operationId=tool parentOperationId=turn toolCallId=call policyRevisionId=policy-1
+  toolName=bash decision=denied actor=user reason=unsafe\\x1b[2J\\u202e
+#6 +5ms agent/turn_cancelled duration=5ms
+  operationId=turn
+"
+`;
+
+exports[`shows a deterministic completed timeline 1`] = `
+"Run run (session session)
+Capture: complete; events: 6; started: 2026-11-14T10:00:00.000Z
+Requests: 1; attempts: 1; retry attempts: 0
+Tokens (complete): input=10 output=2 total=unknown
+Cost: complete; unpriced attempts: 0
+  USD: reported=0.2 estimated=unknown
+Timeline (sequence order; ms relative to first event):
+#1 +0ms agent/turn_started
+  operationId=turn
+#2 +1ms provider/provider_attempt_started
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#3 +2ms provider/provider_usage_reported
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1 availability=reported inputTokens=10 outputT
+okens=2
+#4 +3ms provider/provider_attempt_completed duration=2ms
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#5 +4ms policy/tool_policy_decision
+  operationId=tool parentOperationId=turn toolCallId=call policyRevisionId=policy-1
+  toolName=bash decision=denied actor=user reason=unsafe\\x1b[2J\\u202e
+#6 +5ms agent/turn_completed duration=5ms
+  operationId=turn
+"
+`;
+
+exports[`shows a deterministic failed timeline 1`] = `
+"Run run (session session)
+Capture: complete; events: 6; started: 2026-11-14T10:00:00.000Z
+Requests: 1; attempts: 1; retry attempts: 0
+Tokens (complete): input=10 output=2 total=unknown
+Cost: complete; unpriced attempts: 0
+  USD: reported=0.2 estimated=unknown
+Timeline (sequence order; ms relative to first event):
+#1 +0ms agent/turn_started
+  operationId=turn
+#2 +1ms provider/provider_attempt_started
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#3 +2ms provider/provider_usage_reported
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1 availability=reported inputTokens=10 outputT
+okens=2
+#4 +3ms provider/provider_attempt_completed duration=2ms
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#5 +4ms policy/tool_policy_decision
+  operationId=tool parentOperationId=turn toolCallId=call policyRevisionId=policy-1
+  toolName=bash decision=denied actor=user reason=unsafe\\x1b[2J\\u202e
+#6 +5ms agent/turn_failed duration=5ms
+  operationId=turn
+"
+`;
+
+exports[`shows a deterministic incomplete timeline 1`] = `
+"Run run (session session)
+Capture: incomplete; events: 5; started: 2026-11-14T10:00:00.000Z
+Warning: Capture is incomplete or still in progress
+Requests: 1; attempts: 1; retry attempts: 0
+Tokens (partial): input=10 output=2 total=unknown
+Cost: partial; unpriced attempts: 0
+  USD: reported=0.2 estimated=unknown
+Timeline (sequence order; ms relative to first event):
+#1 +0ms agent/turn_started
+  operationId=turn
+#2 +1ms provider/provider_attempt_started
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#3 +2ms provider/provider_usage_reported
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1 availability=reported inputTokens=10 outputT
+okens=2
+#4 +3ms provider/provider_attempt_completed duration=2ms
+  requestId=request attemptId=attempt operationId=request-operation parentOperationId=turn
+  provider=fixture requestedModel=model attemptNumber=1
+#5 +4ms policy/tool_policy_decision
+  operationId=tool parentOperationId=turn toolCallId=call policyRevisionId=policy-1
+  toolName=bash decision=denied actor=user reason=unsafe\\x1b[2J\\u202e
+"
+`;

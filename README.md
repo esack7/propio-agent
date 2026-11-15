@@ -745,6 +745,73 @@ Inspection also deduplicates cumulative provider reports and aggregates usage ac
 
 The workspace limitation above applies to standard exports.
 
+### Offline trace commands
+
+Run these in the workspace where the agent ran. They read its existing journals
+without loading provider credentials, settings, or MCP servers:
+
+```bash
+propio trace list
+propio trace list --session SESSION_ID --limit 50 --json
+propio trace show RUN_ID
+propio trace show RUN_ID --session SESSION_ID --json
+propio trace export RUN_ID --output ./trace-bundle
+propio trace verify ./trace-bundle
+# Only when private captured material is needed:
+propio trace export RUN_ID --output ./private-trace-bundle --full
+```
+
+`propio trace --help` lists the command syntax. Discovery uses the same workspace
+session directory as normal runs (`~/.propio/sessions/<workspace-hash>/traces`).
+Within Git, the workspace is the repository root; elsewhere it is the current
+directory. Run and session IDs must be exact single path components, not paths or
+prefixes. A run found in more than one session requires `--session`. Discovery
+rejects symlinked trace roots, session directories, and journals. Selection fails
+if skipped/unreadable entries make discovery uncertain.
+
+List shows the newest 20 runs by their first observed timestamp (unknown times
+last), with session/run IDs breaking ties; `--limit` accepts 1–1000. Corrupt or
+unreadable entries produce warnings, including entries outside the displayed
+limit. An empty root is an empty list. Show orders events by sequence and includes
+relative times, operation/request/attempt relationships, tool policy decisions,
+known usage and per-currency reported costs. Text is escaped and wrapped for the
+terminal; metadata previews are capped at 240 characters. Neither command opens
+captured prompts, responses, or workspace material. Missing tokens and times are
+unknown; incomplete or still-running journals are explicitly marked. A complete
+capture can describe a failed or cancelled turn. No default pricing estimates are
+installed yet.
+
+Export requires a **new destination directory** whose parent exists; it refuses
+existing files, directories, and symlinks. Standard export is the default, even
+for a full-capture source. `--full` includes available private material using the
+existing redaction and inventory rules; it cannot recover data that was never
+captured. An export failure can leave a partial destination: inspect it and use a
+new path on retry. Verify checks the existing bundle's integrity, not whether a
+run succeeded or whether all possible material was captured.
+
+Each successful `--json` command emits one JSON object to stdout with `version: 1`
+and `command` (`list`, `show`, `export`, or `verify`):
+
+- `list`: `runs` (sessionId, runId, observedAt or null, complete, eventCount,
+  warnings), `total` discovered journals, `omitted` readable runs beyond the
+  limit, overall `complete`, and `warnings`.
+- `show`: `run` with the same summary fields, `inspection` from the trace API,
+  and `timeline` entries containing sequence, relativeMs/durationMs (null when
+  unavailable or inapplicable), component, type, identity, and bounded metadata.
+- `export`: absolute `destination`, the trace API's `manifest`, and CLI snapshot
+  `warnings`. The manifest describes the export API's subsequent snapshot;
+  a concurrently written journal may advance between inspection and export.
+- `verify`: `valid` and `findings`. Integrity failure still emits this object,
+  with a nonzero exit status.
+
+CLI completeness also checks envelope validity, identity, event sequences, and
+empty journals; it can be stricter than the export manifest's capture status.
+Reads with explicit incompleteness warnings exit 0. Invalid arguments, failed
+selection/I/O/export, and failed verification exit nonzero. Command errors go to
+stderr and leave stdout empty. JSON strings retain their data characters;
+consumers rendering them in a terminal must escape them. `--show-trace` remains
+an unrelated status/reasoning visibility flag and does not change capture.
+
 ### Private full trace capture
 
 Set `PROPIO_TRACE_CAPTURE_LEVEL=full` when starting the CLI to capture the application-visible request, per-attempt provider-adapter payload, streamed provider events, tool arguments and complete tool results, and workspace files. The sandbox wrapper forwards this setting. Each run stores content-addressed material beside its journal in a private `*.materials/` directory. The per-attempt payload is the HTTP JSON body or SDK input object before SDK serialization; it reflects retry-time changes, but it is not a byte-for-byte wire capture and does not include authentication headers. A workspace baseline is captured before the turn, with cumulative changes captured after each committed tool result and at run end. Unchanged files are reused by hash. The workspace scope includes Git-tracked and untracked files that are not ignored; without Git it walks the workspace except `.git`, `node_modules`, `dist`, and `coverage`. Credential-shaped paths such as `.env`, `.npmrc`, and private key files are omitted and reported. A missing or omitted file makes the full export partial.

@@ -123,11 +123,16 @@ import {
 } from "./trace/index.js";
 import { WorkspaceTraceCapture } from "./trace/workspace.js";
 
+import { runTraceCommand } from "./cli/traceCommand.js";
+
 type VisibilityOptions = AssistantTurnVisibilityOptions;
 
 const HELP_TEXT = `Usage: propio [options]
        propio auth <login|accounts|status|enable-plan|logout|import-poc> openai [--account <label>]
        propio setup openai
+       propio trace <list|show|export|verify> [options]
+
+Trace commands inspect local journals offline; use propio trace --help.
 
 OpenAI setup explicitly chooses API billing or Continue with ChatGPT.
 /account manages registrations; /model selects account, access and model.
@@ -1536,6 +1541,16 @@ async function runConfiguredSession(options: {
 async function prepareStartupCommand(
   args: string[],
 ): Promise<{ args: string[]; exit?: number }> {
+  if (args[0] === "trace")
+    return {
+      args,
+      exit: runTraceCommand(args.slice(1), {
+        sessionsDir: getDefaultSessionsDir(),
+        stdout: (text) => process.stdout.write(text),
+        stderr: (text) => process.stderr.write(text),
+        width: process.stdout.columns,
+      }),
+    };
   if (args[0] === "auth")
     return { args, exit: await runOpenAiAuthCommand(args.slice(1)) };
   if (args[0] !== "setup") return { args };

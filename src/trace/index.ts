@@ -9,6 +9,7 @@ export {
   exportTraceJournal,
   inspectTraceExport,
   inspectTraceJournal,
+  inspectTraceReadResult,
   verifyTraceExport,
 } from "./inspection.js";
 export type {

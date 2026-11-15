@@ -13,6 +13,7 @@ import type {
   TraceEventEnvelope,
   TraceMaterialReference,
   TraceReadWarning,
+  TraceReadResult,
 } from "./types.js";
 
 export interface TraceOperationSummary {
@@ -126,8 +127,15 @@ export function inspectTraceJournal(
   journalPath: string,
   options: TraceInspectionOptions = {},
 ): TraceInspection {
-  const { events, warnings } = readTraceJournal(journalPath);
-  return inspectEvents(events, warnings, options);
+  return inspectTraceReadResult(readTraceJournal(journalPath), options);
+}
+
+/** Inspect an already-read snapshot without racing a second journal read. */
+export function inspectTraceReadResult(
+  snapshot: TraceReadResult,
+  options: TraceInspectionOptions = {},
+): TraceInspection {
+  return inspectEvents(snapshot.events, snapshot.warnings, options);
 }
 
 interface TraceExportManifestBase {
