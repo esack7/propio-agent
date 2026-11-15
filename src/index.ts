@@ -1548,7 +1548,7 @@ async function prepareStartupCommand(
         sessionsDir: getDefaultSessionsDir(),
         stdout: (text) => process.stdout.write(text),
         stderr: (text) => process.stderr.write(text),
-        width: process.stdout.columns,
+        width: process.stdout.isTTY ? process.stdout.columns : undefined,
       }),
     };
   if (args[0] === "auth")

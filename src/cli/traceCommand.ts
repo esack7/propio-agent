@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
-import { exportTraceJournal, verifyTraceExport } from "../trace/index.js";
+import { exportTraceReadResult, verifyTraceExport } from "../trace/index.js";
 import {
   discoverTraceRuns,
   readDiscoveredTrace,
   selectTraceRun,
+  traceRunObservedAt,
 } from "./traceDiscovery.js";
 import {
   renderTraceLines,
@@ -67,7 +68,7 @@ function validateTarget(
 function parseArguments(args: readonly string[]): Arguments {
   const [name, ...rest] = args;
   if (!Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, name))
-    throw new Error(TRACE_HELP);
+    throw new Error("Unknown trace command; use propio trace --help");
   const command = name as Command;
   const { values, positionals, tokens } = parseArgs({
     args: rest,
@@ -111,7 +112,28 @@ interface CommandResult {
 function list(root: string, args: Arguments): CommandResult {
   const { runs, warnings } = discoverTraceRuns(root, args.session);
   const summaries: TraceRunSummary[] = [];
-  for (const run of runs) {
+  const candidates = runs.map((run) => {
+    try {
+      return { run, observedAt: traceRunObservedAt(run) };
+    } catch {
+      warnings.push(
+        `Cannot read journal header: ${run.sessionId}/${run.runId}`,
+      );
+      return { run, observedAt: null };
+    }
+  });
+  candidates.sort((a, b) => {
+    const time =
+      (b.observedAt ? Date.parse(b.observedAt) : -Infinity) -
+      (a.observedAt ? Date.parse(a.observedAt) : -Infinity);
+    const left = `${a.run.sessionId}/${a.run.runId}`,
+      right = `${b.run.sessionId}/${b.run.runId}`;
+    return (
+      (Number.isNaN(time) ? 0 : time) ||
+      (left < right ? -1 : left > right ? 1 : 0)
+    );
+  });
+  for (const { run } of candidates.slice(0, args.limit)) {
     try {
       const snapshot = readDiscoveredTrace(run);
       summaries.push(summarizeTraceRun(run.sessionId, run.runId, snapshot));
@@ -122,24 +144,18 @@ function list(root: string, args: Arguments): CommandResult {
       warnings.push(`Cannot read journal: ${run.sessionId}/${run.runId}`);
     }
   }
-  summaries.sort((a, b) => {
-    const time =
-      (b.observedAt ? Date.parse(b.observedAt) : -Infinity) -
-      (a.observedAt ? Date.parse(a.observedAt) : -Infinity);
-    const left = `${a.sessionId}/${a.runId}`,
-      right = `${b.sessionId}/${b.runId}`;
-    return (
-      (Number.isNaN(time) ? 0 : time) ||
-      (left < right ? -1 : left > right ? 1 : 0)
-    );
-  });
   const selected = summaries.slice(0, args.limit);
+  if (candidates.length > args.limit)
+    warnings.push(
+      `${candidates.length - args.limit} journal(s) outside the limit were not fully inspected`,
+    );
   return {
     data: {
       runs: selected,
       total: runs.length,
-      omitted: Math.max(0, summaries.length - selected.length),
-      complete: warnings.length === 0,
+      omitted: runs.length - selected.length,
+      inspectionScope: "listed_runs",
+      complete: warnings.length === 0 && selected.length === runs.length,
       warnings,
     },
     lines: traceListLines(selected, warnings),
@@ -171,13 +187,18 @@ function execute(root: string, args: Arguments): CommandResult {
     };
   }
   // Fail before creating a destination when identity or envelope validation omitted records.
-  if (snapshot.warnings.some((w) => w.includes("record omitted")))
+  if (snapshot.omittedRecordCount > 0)
     throw new Error("Cannot export a journal containing invalid event records");
   const destination = path.resolve(args.output!);
   fs.mkdirSync(destination, { mode: 0o700 }); // Exclusive reservation: never reuse an existing directory or symlink.
-  const manifest = exportTraceJournal(run.journalPath, destination, {
-    captureLevel: args.full ? "full" : "standard",
-  });
+  const manifest = exportTraceReadResult(
+    { events: snapshot.events, warnings: snapshot.readWarnings },
+    run.journalPath,
+    destination,
+    {
+      captureLevel: args.full ? "full" : "standard",
+    },
+  );
   return {
     data: { destination, manifest, warnings: snapshot.warnings },
     lines: [
@@ -198,10 +219,12 @@ export function runTraceCommand(
     width?: number;
   },
 ): number {
-  const width = options.width ?? 100;
+  const width = options.width;
   if (
     args.length === 0 ||
-    (args.length === 1 && ["--help", "-h", "help"].includes(args[0]))
+    (args.length === 1 && ["--help", "-h", "help"].includes(args[0])) ||
+    (Object.prototype.hasOwnProperty.call(COMMAND_OPTIONS, args[0]) &&
+      args.slice(1).some((arg) => arg === "--help" || arg === "-h"))
   ) {
     options.stdout(TRACE_HELP);
     return 0;

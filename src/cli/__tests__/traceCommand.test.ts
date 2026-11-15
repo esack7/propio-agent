@@ -4,8 +4,10 @@ import * as path from "node:path";
 import { runTraceCommand } from "../traceCommand.js";
 import {
   JsonlTraceJournal,
+  exportTraceReadResult,
   type TraceEventEnvelope,
 } from "../../trace/index.js";
+import { readDiscoveredTrace, selectTraceRun } from "../traceDiscovery.js";
 import { getDisplayWidth } from "../../ui/displayWidth.js";
 
 let directory: string;
@@ -104,6 +106,7 @@ it("lists an absent root without creating runtime state", () => {
     runs: [],
     total: 0,
     omitted: 0,
+    inspectionScope: "listed_runs",
     complete: true,
     warnings: [],
   });
@@ -465,4 +468,155 @@ it("exports and verifies an interrupted JSONL with explicit source warnings", ()
   expect(result.manifest.captureComplete).toBe(false);
   expect(result.warnings).toContain("truncated_final_line at line 2");
   expect(json(["verify", destination]).valid).toBe(true);
+});
+
+it("selects and exports despite unrelated discovery warnings", () => {
+  write([event(1, "turn_started"), event(2, "turn_completed")]);
+  fs.writeFileSync(
+    path.join(directory, "traces", ".DS_Store"),
+    "Finder metadata",
+  );
+  fs.mkdirSync(path.join(directory, "traces", "other"));
+  fs.writeFileSync(
+    path.join(directory, "traces", "other", "bad..id.jsonl"),
+    "invalid",
+  );
+  expect(json(["show", "run"]).run.complete).toBe(true);
+  expect(
+    json(["export", "run", "--output", path.join(directory, "bundle")]).manifest
+      .runId,
+  ).toBe("run");
+  expect(json(["list"]).complete).toBe(false);
+});
+
+it.each(["append", "replace", "symlink"])(
+  "exports the validated snapshot after journal %s",
+  (mutation) => {
+    const file = write([event(1, "turn_started"), event(2, "turn_completed")]);
+    const run = selectTraceRun(path.join(directory, "traces"), "run");
+    const snapshot = readDiscoveredTrace(run);
+    expect(snapshot.omittedRecordCount).toBe(0);
+    const bad =
+      JSON.stringify(
+        event(3, "turn_started", {
+          identity: { sessionId: "outside", runId: "outside" },
+        }),
+      ) + "\n";
+    if (mutation === "append") fs.appendFileSync(file, bad);
+    if (mutation === "replace") fs.writeFileSync(file, bad);
+    if (mutation === "symlink") {
+      const outside = path.join(directory, "outside.jsonl");
+      fs.writeFileSync(outside, bad);
+      fs.unlinkSync(file);
+      fs.symlinkSync(outside, file);
+    }
+    const destination = path.join(directory, "bundle");
+    exportTraceReadResult(
+      { events: snapshot.events, warnings: snapshot.readWarnings },
+      file,
+      destination,
+    );
+    expect(
+      fs.readFileSync(path.join(destination, "events.jsonl"), "utf8"),
+    ).not.toContain("outside");
+    expect(json(["verify", destination]).valid).toBe(true);
+    if (mutation === "symlink")
+      expect(() => readDiscoveredTrace(run)).toThrow();
+  },
+);
+
+it("tracks invalid records with a typed omission count", () => {
+  write([event(1, "turn_started"), null, event(2, "turn_completed")]);
+  const run = selectTraceRun(path.join(directory, "traces"), "run");
+  expect(readDiscoveredTrace(run).omittedRecordCount).toBe(1);
+});
+
+it("keeps help readable for unknown commands and every subcommand", () => {
+  for (const command of ["list", "show", "export", "verify"]) {
+    const result = call([command, "--help"]);
+    expect(result.exit).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("\n  propio trace show");
+  }
+  const unknown = call(["unknown"]);
+  expect(unknown.exit).toBe(1);
+  expect(unknown.stderr).not.toContain("\\n");
+  expect(unknown.stderr).toContain("propio trace --help");
+});
+
+it("preserves whole UUIDs and destination paths when stdout has no terminal width", () => {
+  const id = "abc12345-abcd-4567-8901-234567890123";
+  write([
+    event(1, "turn_started", {
+      identity: {
+        sessionId: "session",
+        runId: "run",
+        operationId: id,
+        requestId: id,
+        parentOperationId: id,
+        attemptId: id,
+      },
+    }),
+    event(2, "turn_completed"),
+  ]);
+  let output = "";
+  expect(
+    runTraceCommand(["show", "run"], {
+      sessionsDir: directory,
+      stdout: (text) => {
+        output += text;
+      },
+      stderr: () => {},
+    }),
+  ).toBe(0);
+  expect(
+    output
+      .split("\n")
+      .some(
+        (line) =>
+          line.includes(`requestId=${id}`) && line.includes(`attemptId=${id}`),
+      ),
+  ).toBe(true);
+  expect(output.split("\n").some((line) => line.length > 100)).toBe(true);
+});
+
+it("renders a single duration for terminal provider events", () => {
+  write([
+    event(1, "turn_started"),
+    provider(2, "provider_attempt_started"),
+    provider(3, "provider_attempt_completed", { durationMs: 999 }),
+    event(4, "turn_completed"),
+  ]);
+  const result = call(["show", "run"]);
+  expect(result.stdout).toContain("duration=1ms");
+  expect(result.stdout).not.toContain("durationMs=");
+});
+
+it("inspects only selected journals and reconciles counts including unreadable runs", () => {
+  write([event(1, "turn_started"), event(2, "turn_completed")]);
+  const old = event(1, "turn_started", {
+    observedAt: "2025-01-01T00:00:00Z",
+    identity: { sessionId: "session", runId: "old", operationId: "turn" },
+  });
+  write([old], "session", "old", "null\n".repeat(100000));
+  const unreadable = write([], "session", "unreadable");
+  fs.chmodSync(unreadable, 0);
+  try {
+    const result = json(["list", "--limit", "1"]);
+    expect(result.runs.map((run: { runId: string }) => run.runId)).toEqual([
+      "run",
+    ]);
+    expect(result.total).toBe(3);
+    expect(result.omitted).toBe(2);
+    expect(result.total).toBe(result.runs.length + result.omitted);
+    expect(result.inspectionScope).toBe("listed_runs");
+    expect(result.complete).toBe(false);
+    expect(
+      result.warnings.some((warning: string) =>
+        warning.includes("record omitted"),
+      ),
+    ).toBe(false);
+  } finally {
+    fs.chmodSync(unreadable, 0o600);
+  }
 });

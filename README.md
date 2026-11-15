@@ -766,16 +766,16 @@ session directory as normal runs (`~/.propio/sessions/<workspace-hash>/traces`).
 Within Git, the workspace is the repository root; elsewhere it is the current
 directory. Run and session IDs must be exact single path components, not paths or
 prefixes. A run found in more than one session requires `--session`. Discovery
-rejects symlinked trace roots, session directories, and journals. Selection fails
-if skipped/unreadable entries make discovery uncertain.
+rejects symlinked trace roots, session directories, and journals. Selection ignores unrelated stray files and invalid journal names; an unreadable
+or linked session that could hide a duplicate still requires `--session`.
 
 List shows the newest 20 runs by their first observed timestamp (unknown times
-last), with session/run IDs breaking ties; `--limit` accepts 1–1000. Corrupt or
-unreadable entries produce warnings, including entries outside the displayed
-limit. An empty root is an empty list. Show orders events by sequence and includes
+last), with session/run IDs breaking ties; `--limit` accepts 1–1000. List probes at most 64 KiB of each journal header for ordering and fully
+inspects only the selected rows. Header read failures produce warnings even
+outside the limit; corruption after an unselected header is not inspected.
+Uninspected runs are reported explicitly and make overall completeness false. An empty root is an empty list. Show orders events by sequence and includes
 relative times, operation/request/attempt relationships, tool policy decisions,
-known usage and per-currency reported costs. Text is escaped and wrapped for the
-terminal; metadata previews are capped at 240 characters. Neither command opens
+known usage and per-currency reported costs. Text is escaped and wrapped for TTY output; piped output preserves whole lines; metadata previews are capped at 240 characters. Neither command opens
 captured prompts, responses, or workspace material. Missing tokens and times are
 unknown; incomplete or still-running journals are explicitly marked. A complete
 capture can describe a failed or cancelled turn. No default pricing estimates are
@@ -793,14 +793,15 @@ Each successful `--json` command emits one JSON object to stdout with `version: 
 and `command` (`list`, `show`, `export`, or `verify`):
 
 - `list`: `runs` (sessionId, runId, observedAt or null, complete, eventCount,
-  warnings), `total` discovered journals, `omitted` readable runs beyond the
-  limit, overall `complete`, and `warnings`.
+  warnings), `total` discovered journals, `omitted` all discovered journals not returned
+  (including unreadable selected journals), `inspectionScope: "listed_runs"`,
+  overall `complete`, and `warnings`. `total = runs.length + omitted`.
 - `show`: `run` with the same summary fields, `inspection` from the trace API,
   and `timeline` entries containing sequence, relativeMs/durationMs (null when
   unavailable or inapplicable), component, type, identity, and bounded metadata.
 - `export`: absolute `destination`, the trace API's `manifest`, and CLI snapshot
-  `warnings`. The manifest describes the export API's subsequent snapshot;
-  a concurrently written journal may advance between inspection and export.
+  `warnings`. Export uses the same validated event snapshot as inspection;
+  subsequent journal appends or replacement do not change exported events.
 - `verify`: `valid` and `findings`. Integrity failure still emits this object,
   with a nonzero exit status.
 

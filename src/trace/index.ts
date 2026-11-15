@@ -7,6 +7,9 @@ export type { JsonlTraceJournalOptions } from "./journal.js";
 export { RunTraceRecorder } from "./recorder.js";
 export {
   exportTraceJournal,
+  exportTraceReadResult,
+  isTraceOperationStart,
+  isTraceOperationTerminal,
   inspectTraceExport,
   inspectTraceJournal,
   inspectTraceReadResult,

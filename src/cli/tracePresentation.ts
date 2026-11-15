@@ -1,5 +1,9 @@
 import type { TraceEventEnvelope, TraceInspection } from "../trace/index.js";
-import { redactTraceValue } from "../trace/index.js";
+import {
+  isTraceOperationStart,
+  isTraceOperationTerminal,
+  redactTraceValue,
+} from "../trace/index.js";
 import {
   keepStartWithinDisplayWidth,
   wrapVisibleText,
@@ -26,7 +30,6 @@ const METADATA_KEYS = [
   "availability",
   "retryAfterMs",
   "delayMs",
-  "durationMs",
 ] as const;
 
 function metadata(
@@ -94,11 +97,8 @@ export function traceTimeline(snapshot: TraceSnapshot) {
       : event.identity.operationId
         ? `operation:${event.identity.operationId}`
         : undefined;
-    if (key && /_(started|dispatched)$/.test(event.type))
-      starts.set(key, clock(event));
-    const terminal = /_(completed|failed|cancelled|interrupted)$/.test(
-      event.type,
-    );
+    if (key && isTraceOperationStart(event.type)) starts.set(key, clock(event));
+    const terminal = isTraceOperationTerminal(event.type);
     return {
       sequence: event.sequence,
       relativeMs: elapsed(origin, clock(event)),
@@ -140,8 +140,9 @@ export function summarizeTraceRun(
 
 export function renderTraceLines(
   lines: readonly string[],
-  width: number,
+  width?: number,
 ): string {
+  if (width === undefined) return lines.map(visibleText).join("\n") + "\n";
   const columns = Number.isFinite(width)
     ? Math.max(20, Math.min(240, Math.floor(width)))
     : 100;

@@ -5,6 +5,7 @@ import {
   summarizeProviderMeasurements,
   type TraceEventEnvelope,
   type TraceInspection,
+  type TraceReadWarning,
 } from "../trace/index.js";
 
 const envelopeSchema = z.object({
@@ -70,22 +71,26 @@ export interface TraceSnapshot {
   readonly inspection: TraceInspection;
   readonly warnings: readonly string[];
   readonly complete: boolean;
+  readonly omittedRecordCount: number;
+  readonly readWarnings: readonly TraceReadWarning[];
 }
 
 /** Read once: inspection and timeline describe the same append-only snapshot. */
 export function readTraceSnapshot(
-  journalPath: string,
+  journalPath: string | number,
   sessionId: string,
   runId: string,
 ): TraceSnapshot {
   const read = readTraceJournal(journalPath);
   const warnings = read.warnings.map((w) => `${w.type} at line ${w.line}`);
   const events: TraceEventEnvelope[] = [];
+  let omittedRecordCount = 0;
   for (const candidate of read.events) {
     if (
       !envelopeSchema.safeParse(candidate).success ||
       !validProviderMetadata(candidate)
     ) {
+      omittedRecordCount++;
       warnings.push(
         "Invalid event envelope or provider metadata; record omitted",
       );
@@ -95,6 +100,7 @@ export function readTraceSnapshot(
       candidate.identity.sessionId !== sessionId ||
       candidate.identity.runId !== runId
     ) {
+      omittedRecordCount++;
       warnings.push(
         "Event identity does not match the journal location; record omitted",
       );
@@ -115,6 +121,8 @@ export function readTraceSnapshot(
   const complete = warnings.length === 0;
   return {
     events,
+    omittedRecordCount,
+    readWarnings: read.warnings,
     warnings,
     complete,
     inspection: complete

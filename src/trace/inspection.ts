@@ -50,11 +50,11 @@ function terminalOutcome(type: string): TraceOperationSummary["outcome"] {
   return "completed";
 }
 
-function isOperationStart(type: string): boolean {
+export function isTraceOperationStart(type: string): boolean {
   return type.endsWith("_started") || type.endsWith("_dispatched");
 }
 
-function isOperationTerminal(type: string): boolean {
+export function isTraceOperationTerminal(type: string): boolean {
   return ["completed", "failed", "cancelled", "interrupted"].some((suffix) =>
     type.endsWith(`_${suffix}`),
   );
@@ -67,7 +67,7 @@ function applyOperationEvent(
   if (event.identity.attemptId) return;
   const operationId = event.identity.operationId;
   if (!operationId) return;
-  if (isOperationStart(event.type)) {
+  if (isTraceOperationStart(event.type)) {
     operations.set(operationId, {
       operationId,
       component: event.component,
@@ -77,7 +77,7 @@ function applyOperationEvent(
     return;
   }
   const existing = operations.get(operationId);
-  if (!existing || !isOperationTerminal(event.type)) return;
+  if (!existing || !isTraceOperationTerminal(event.type)) return;
   operations.set(operationId, {
     ...existing,
     terminalType: event.type,
@@ -752,7 +752,21 @@ export function exportTraceJournal(
   destinationDirectory: string,
   options: TraceInspectionOptions = {},
 ): TraceExportManifestV3 | TraceExportManifestV4 {
-  const snapshot = readTraceJournal(journalPath);
+  return exportTraceReadResult(
+    readTraceJournal(journalPath),
+    journalPath,
+    destinationDirectory,
+    options,
+  );
+}
+
+/** Export these exact events; journalPath is used only to locate full-capture material. */
+export function exportTraceReadResult(
+  snapshot: TraceReadResult,
+  journalPath: string,
+  destinationDirectory: string,
+  options: TraceInspectionOptions = {},
+): TraceExportManifestV3 | TraceExportManifestV4 {
   const captureLevel = options.captureLevel ?? "standard";
   const safeEvents = snapshot.events.map((event) =>
     exportEvent(event, captureLevel),

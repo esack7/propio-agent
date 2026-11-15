@@ -75,39 +75,113 @@ export function discoverTraceRuns(
   return { runs, warnings };
 }
 
+function matchSessionRun(
+  root: string,
+  sessionId: string,
+  runId: string,
+): TraceRun | undefined {
+  const journalPath = path.join(root, sessionId, `${runId}.jsonl`);
+  const stat = fs.lstatSync(journalPath, { throwIfNoEntry: false });
+  if (!stat) return undefined;
+  if (!stat.isFile() || stat.isSymbolicLink())
+    throw new Error(`Cannot safely select run: ${sessionId}/${runId}`);
+  return { sessionId, runId, journalPath };
+}
+
 export function selectTraceRun(
   root: string,
   runId: string,
   sessionId?: string,
 ): TraceRun {
   validateTraceId(runId);
-  const discovery = discoverTraceRuns(root, sessionId);
-  const matches = discovery.runs.filter((run) => run.runId === runId);
-  if (discovery.warnings.length)
-    throw new Error(
-      `Cannot safely select a run: ${discovery.warnings.join("; ")}`,
-    );
+  if (sessionId !== undefined) validateTraceId(sessionId);
+  const matches: TraceRun[] = [];
+  for (const session of directoryEntries(root)) {
+    if (sessionId !== undefined && session.name !== sessionId) continue;
+    if (!isSafeSessionId(session.name)) continue;
+    if (session.isSymbolicLink())
+      throw new Error(
+        `Cannot safely select a run: linked session ${session.name}; use --session`,
+      );
+    if (!session.isDirectory()) continue;
+    const match = matchSessionRun(root, session.name, runId);
+    if (match) matches.push(match);
+  }
   if (matches.length === 0) throw new Error(`Trace run not found: ${runId}`);
   if (matches.length > 1)
     throw new Error(`Ambiguous trace run: ${runId}; use --session <id>`);
   return matches[0];
 }
 
-export function readDiscoveredTrace(run: TraceRun): TraceSnapshot {
-  // Recheck immediately before reading: entries may have changed during discovery.
-  const root = fs.lstatSync(path.dirname(path.dirname(run.journalPath)));
-  const parent = fs.lstatSync(path.dirname(run.journalPath));
-  const stat = fs.lstatSync(run.journalPath);
+function withTraceFile<T>(run: TraceRun, read: (fd: number) => T): T {
+  const rootPath = path.dirname(path.dirname(run.journalPath));
+  const parentPath = path.dirname(run.journalPath);
+  const directories = [rootPath, parentPath];
+  checkTraceDirectories(directories);
+  const fd = fs.openSync(
+    run.journalPath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+  );
+  try {
+    checkTraceDirectories(directories);
+    return readCheckedFile(run, fd, read);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function checkTraceDirectories(directories: string[]): void {
+  for (const directory of directories) {
+    const stat = fs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error("Trace directory changed during discovery");
+  }
+}
+
+function readCheckedFile<T>(
+  run: TraceRun,
+  fd: number,
+  read: (fd: number) => T,
+): T {
+  const rootPath = path.dirname(path.dirname(run.journalPath));
+  const parentPath = path.dirname(run.journalPath);
+  const stat = fs.fstatSync(fd);
+  const current = fs.lstatSync(run.journalPath);
   if (
-    !root.isDirectory() ||
-    root.isSymbolicLink() ||
-    !parent.isDirectory() ||
-    parent.isSymbolicLink() ||
     !stat.isFile() ||
-    stat.isSymbolicLink()
+    current.isSymbolicLink() ||
+    stat.ino !== current.ino ||
+    stat.dev !== current.dev ||
+    fs.realpathSync(parentPath) !==
+      path.join(fs.realpathSync(rootPath), run.sessionId)
   )
-    throw new Error(
-      "Trace journal is no longer a regular file in a real session directory",
+    throw new Error("Trace journal changed during discovery");
+  return read(fd);
+}
+
+export function readDiscoveredTrace(run: TraceRun): TraceSnapshot {
+  return withTraceFile(run, (fd) =>
+    readTraceSnapshot(fd, run.sessionId, run.runId),
+  );
+}
+
+/** Bounded header probe: list ordering never scans whole unselected journals. */
+export function traceRunObservedAt(run: TraceRun): string | null {
+  return withTraceFile(run, (fd) => {
+    const buffer = Buffer.alloc(64 * 1024);
+    const length = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    const newline = buffer.indexOf(10, 0);
+    if (newline < 0 && length === buffer.length)
+      throw new Error("Trace header exceeds 64 KiB");
+    const first: unknown = JSON.parse(
+      buffer.subarray(0, newline < 0 ? length : newline).toString("utf8"),
     );
-  return readTraceSnapshot(run.journalPath, run.sessionId, run.runId);
+    if (!first || typeof first !== "object")
+      throw new Error("Invalid trace header");
+    const observedAt = (first as { observedAt?: unknown }).observedAt;
+    return typeof observedAt === "string" &&
+      Number.isFinite(Date.parse(observedAt))
+      ? observedAt
+      : null;
+  });
 }
