@@ -809,7 +809,7 @@ describe("isolation and boundary (a7)", () => {
       expect(specifiers.length).toBeGreaterThan(0);
       for (const specifier of specifiers) {
         expect(specifier).toMatch(
-          /^(?:\.\/(?:approval|commands|events|input)\.js|\.\.\/policy\/index\.js)$/,
+          /^(?:\.\/(?:approval|commands|events|input|protocol)\.js|\.\.\/policy\/index\.js)$/,
         );
       }
       // The policy import is types only, so nothing of it loads at run time.

@@ -1,9 +1,12 @@
+import type { AgentVisibilityEvent as CliVisibilityEvent } from "../agent.js";
 import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import { randomUUID } from "node:crypto";
 import {
   AgentSession,
   encodeCommandImage,
   type PromptSubmission,
+  type SessionEventBody,
+  type AgentVisibilityEvent,
 } from "../agent-core/index.js";
 import type { ApprovalAnswer } from "../policy/index.js";
 import {
@@ -20,7 +23,9 @@ import type { TerminalUi } from "../ui/terminal.js";
  * way another frontend would over a transport.
  */
 export interface CliTurnSession {
-  readonly session: AgentSession;
+  readonly session: AgentSession<
+    SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
+  >;
   /**
    * Submit a message and wait for the turn. Aborting the signal with reason
    * "escape" dispatches an interrupt; any other reason stops the session's
@@ -51,7 +56,9 @@ export function createCliTurnSession(
   // handling of bytes; in one process the originals are handed over as is.
   let original: PromptSubmission | undefined;
   let undelivered: string[] = [];
-  const session = new AgentSession({
+  const session = new AgentSession<
+    SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
+  >({
     runTurn: async (submission, control) => {
       const given = original ?? submission;
       original = undefined;
@@ -63,6 +70,7 @@ export function createCliTurnSession(
           control.abortSignal,
           visibility,
           control.guidance,
+          control.emit,
         );
         return lastResult.response;
       } catch (error) {
@@ -90,7 +98,7 @@ export function createCliTurnSession(
       const commandId = randomUUID();
       const ended = new Promise<"completed" | "cancelled" | "failed">(
         (resolve) => {
-          const unsubscribe = session.subscribe((event) => {
+          const unsubscribe = session.subscribeProtocol(({ event }) => {
             if (
               event.type === "session_turn_ended" &&
               event.commandId === commandId
@@ -166,12 +174,12 @@ export function borrowingKeyboard(
  * the terminal prompt. The answer goes back as a command, as it would from
  * any other frontend. Returns a function that stops answering.
  */
-export function answerApprovalsThrough(
-  session: AgentSession,
+export function answerApprovalsThrough<TEvent>(
+  session: AgentSession<TEvent>,
   channel: ApprovalChannel,
 ): () => void {
   const open = new Map<string, AbortController>();
-  const unsubscribe = session.subscribe((event) => {
+  const unsubscribe = session.subscribeProtocol(({ event }) => {
     if (event.type === "approval_resolved") {
       // Withdrawn while the question was showing: close the prompt.
       const asking = open.get(event.requestId);

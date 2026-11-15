@@ -133,7 +133,11 @@ describe("the CLI's turn session", () => {
       text: "Describe these",
       images: ["data:image/png;base64,aGk=", bytes],
     });
-    expect(commands).toEqual(["session_turn_started", "session_turn_ended"]);
+    expect(commands).toEqual([
+      "session_turn_started",
+      "turn_completed",
+      "session_turn_ended",
+    ]);
   });
 
   it("turns an abort into an interrupt command and rejects with the turn's own error", async () => {
@@ -472,7 +476,7 @@ describe("a real turn approved from the terminal prompt, through commands", () =
       );
       const resolutions: unknown[] = [];
       const sessionTypes: string[] = [];
-      turns.session.subscribe((event) => {
+      turns.session.subscribeProtocol(({ event }) => {
         sessionTypes.push(event.type);
         expect(JSON.parse(JSON.stringify(event))).toEqual(event);
         if (event.type === "approval_resolved")
@@ -484,7 +488,11 @@ describe("a real turn approved from the terminal prompt, through commands", () =
         new AbortController().signal,
       );
 
-      expect(sessionTypes).toEqual([
+      expect(
+        sessionTypes.filter(
+          (type) => type.startsWith("session_") || type.startsWith("approval_"),
+        ),
+      ).toEqual([
         "session_turn_started",
         "approval_requested",
         "approval_resolved",

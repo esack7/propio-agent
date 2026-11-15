@@ -1794,3 +1794,6 @@ a final flush precedes normal completion, while cancellation discards pending
 text. Dropping
 live telemetry does not truncate the separately collected tool result. Event
 sequence numbering is planned for the protocol-events slice.
+
+For numbered JSON session events, in-memory recording, and terminal replay, see
+[the session protocol guide](docs/session-protocol.md).

@@ -1,3 +1,8 @@
+import {
+  normalizeSessionEvent,
+  type ProtocolEvent,
+  type SessionEventLog,
+} from "./protocol.js";
 import type { ApprovalAnswer } from "../policy/index.js";
 import type { ApprovalRequest } from "./approval.js";
 import {
@@ -68,6 +73,8 @@ interface RunningTurn {
 
 export interface AgentSessionOptions<TEvent> {
   readonly runTurn: SessionTurnRunner<TEvent>;
+  readonly firstSequence?: number;
+  readonly eventLog?: SessionEventLog;
 }
 
 /**
@@ -82,6 +89,16 @@ export class AgentSession<TEvent = never> {
   private readonly runTurn: SessionTurnRunner<TEvent>;
   private readonly listeners = new Set<(event: SessionEvent<TEvent>) => void>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private nextSequence: number;
+  private readonly eventLog?: SessionEventLog;
+  private readonly protocolListeners = new Set<
+    (event: ProtocolEvent) => void
+  >();
+  private readonly deliveries: {
+    raw: SessionEvent<TEvent>;
+    protocol: ProtocolEvent;
+  }[] = [];
+  private delivering = false;
   private turn: RunningTurn | undefined;
   private turnSettled: Promise<void> = Promise.resolve();
 
@@ -98,6 +115,10 @@ export class AgentSession<TEvent = never> {
 
   constructor(options: AgentSessionOptions<TEvent>) {
     this.runTurn = options.runTurn;
+    this.nextSequence = options.firstSequence ?? 1;
+    if (!Number.isSafeInteger(this.nextSequence) || this.nextSequence < 1)
+      throw new RangeError("Invalid first sequence");
+    this.eventLog = options.eventLog;
   }
 
   get running(): boolean {
@@ -114,6 +135,14 @@ export class AgentSession<TEvent = never> {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  }
+
+  /** Numbered, detached JSON events. Reentrant dispatch is delivered in sequence order. */
+  subscribeProtocol(listener: (event: ProtocolEvent) => void): () => void {
+    this.protocolListeners.add(listener);
+    return () => {
+      this.protocolListeners.delete(listener);
     };
   }
 
@@ -164,7 +193,47 @@ export class AgentSession<TEvent = never> {
   }
 
   private emit(event: SessionEvent<TEvent>): void {
-    for (const listener of [...this.listeners]) listener(event);
+    if (!Number.isSafeInteger(this.nextSequence))
+      throw new RangeError("Session sequence exhausted");
+    const normalized = normalizeSessionEvent(event);
+    const protocol: ProtocolEvent = Object.freeze({
+      seq: this.nextSequence,
+      event: normalized.event,
+      ...(normalized.replacedValues
+        ? { replacedValues: normalized.replacedValues }
+        : {}),
+    });
+    this.eventLog?.append(protocol);
+    this.nextSequence++;
+    this.deliveries.push({ raw: event, protocol });
+    this.flushDeliveries();
+  }
+
+  private flushDeliveries(): void {
+    if (this.delivering) return;
+    this.delivering = true;
+    let failure: unknown;
+    let failed = false;
+    try {
+      while (this.deliveries.length) {
+        const delivery = this.deliveries.shift()!;
+        const notify = (callback: () => void) => {
+          try {
+            callback();
+          } catch (error) {
+            if (!failed) failure = error;
+            failed = true;
+          }
+        };
+        for (const listener of [...this.protocolListeners])
+          notify(() => listener(delivery.protocol));
+        for (const listener of [...this.listeners])
+          notify(() => listener(delivery.raw));
+      }
+    } finally {
+      this.delivering = false;
+    }
+    if (failed) throw failure;
   }
 
   private submit(

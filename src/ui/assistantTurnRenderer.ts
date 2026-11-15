@@ -1,14 +1,20 @@
 import type {
   Agent,
-  AgentVisibilityEvent,
+  AgentVisibilityEvent as CliVisibilityEvent,
   TurnReasoningSummary,
 } from "../agent.js";
-import {
-  formatContextStats,
-  formatPromptPlanCompact,
-} from "./contextInspector.js";
+import { formatContextStats } from "./contextInspector.js";
 import { TerminalUi } from "./terminal.js";
-import type { GuidanceSource, PromptSubmission } from "../agent-core/index.js";
+import type {
+  AgentVisibilityEvent,
+  GuidanceSource,
+  PromptSubmission,
+} from "../agent-core/index.js";
+import {
+  normalizeSessionEvent,
+  type SessionEventBody,
+} from "../agent-core/protocol.js";
+import { createTurnEventRenderer } from "./turnEventRenderer.js";
 
 export interface AssistantTurnVisibilityOptions {
   showToolCalls: boolean;
@@ -39,328 +45,53 @@ export async function streamAssistantTurn(
   abortSignal: AbortSignal,
   visibility: AssistantTurnVisibilitySource,
   guidance?: GuidanceSource,
+  onEvent?: (
+    event: AgentVisibilityEvent | CliVisibilityEvent | SessionEventBody,
+  ) => void,
 ): Promise<AssistantTurnResult> {
-  const mdStream = ui.createMarkdownStream();
-  let hiddenToolStatusVisible = false;
-  let hiddenToolCallInProgress = false;
-  let hiddenThinkingStatusActive = false;
-  let assistantResponseStarted = false;
-  let visibleThinkingLineOpen = false;
-  let pendingThinkingText = "";
-  let thinkingFlushScheduled = false;
-  let thinkingFlushTimerId: NodeJS.Timeout | null = null;
+  const renderer = createTurnEventRenderer(ui, visibility);
+  const emit = (
+    value: AgentVisibilityEvent | CliVisibilityEvent | SessionEventBody,
+  ): void => {
+    const { event } = normalizeSessionEvent(value);
+    onEvent?.(value);
+    renderer.accept(event);
+  };
   const getVisibility =
     typeof visibility === "function" ? visibility : () => visibility;
-
-  const beginAssistantResponseIfNeeded = (): void => {
-    if (assistantResponseStarted || ui.isJsonMode()) {
-      return;
-    }
-
-    assistantResponseStarted = true;
-    ui.beginAssistantResponse();
-  };
-
-  const clearHiddenToolStatus = (): void => {
-    if (!hiddenToolStatusVisible) {
-      return;
-    }
-
-    hiddenToolStatusVisible = false;
-    hiddenToolCallInProgress = false;
-    ui.done();
-  };
-
-  const clearHiddenThinkingStatus = (): void => {
-    if (!hiddenThinkingStatusActive) {
-      return;
-    }
-
-    hiddenThinkingStatusActive = false;
-    ui.done();
-  };
-
-  const flushThinkingText = (): void => {
-    if (pendingThinkingText.length === 0) {
-      return;
-    }
-
-    if (!visibleThinkingLineOpen) {
-      ui.beginThinkingResponse();
-    }
-
-    ui.writeThinking(pendingThinkingText);
-    visibleThinkingLineOpen = true;
-    pendingThinkingText = "";
-  };
-
-  const scheduleThinkingFlush = (): void => {
-    if (thinkingFlushScheduled || pendingThinkingText.length === 0) {
-      return;
-    }
-
-    thinkingFlushScheduled = true;
-    thinkingFlushTimerId = setTimeout(() => {
-      thinkingFlushTimerId = null;
-      thinkingFlushScheduled = false;
-      if (pendingThinkingText.length === 0) {
-        return;
-      }
-
-      flushThinkingText();
-    }, 40);
-    thinkingFlushTimerId.unref();
-  };
-
-  const clearThinkingStatusForAnswer = (): void => {
-    clearHiddenThinkingStatus();
-    if (pendingThinkingText.length > 0) {
-      flushThinkingText();
-    }
-    if (visibleThinkingLineOpen) {
-      ui.newline();
-      visibleThinkingLineOpen = false;
-    }
-  };
-
-  const canRenderVisibleThinking = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-  ): boolean => currentVisibility.showThinking && ui.supportsVisibleThinking();
-
-  const renderVisibleThinkingDelta = (
-    event: Extract<AgentVisibilityEvent, { type: "thinking_delta" }>,
-  ): void => {
-    clearHiddenThinkingStatus();
-    if (assistantResponseStarted) {
-      mdStream.flush();
-    }
-    pendingThinkingText += event.delta;
-    scheduleThinkingFlush();
-  };
-
-  const renderHiddenThinkingStatus = (): void => {
-    if (hiddenToolCallInProgress || !ui.supportsEphemeralStatus()) {
-      return;
-    }
-
-    if (hiddenToolStatusVisible) {
-      clearHiddenToolStatus();
-    }
-    if (!hiddenThinkingStatusActive) {
-      mdStream.flush();
-      hiddenThinkingStatusActive = true;
-      ui.status("Thinking", "thinking");
-    }
-  };
-
-  const renderStatusEvent = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<AgentVisibilityEvent, { type: "status" }>,
-  ): void => {
-    if (
-      currentVisibility.showThinking &&
-      ui.supportsVisibleThinking() &&
-      pendingThinkingText.length > 0
-    ) {
-      flushThinkingText();
-    }
-    if (currentVisibility.showStatus) {
-      mdStream.flush();
-      ui.traceStatus(event.status);
-    }
-  };
-
-  const renderThinkingDeltaEvent = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<AgentVisibilityEvent, { type: "thinking_delta" }>,
-  ): void => {
-    if (canRenderVisibleThinking(currentVisibility)) {
-      renderVisibleThinkingDelta(event);
-      return;
-    }
-
-    if (currentVisibility.showThinking) {
-      return;
-    }
-
-    renderHiddenThinkingStatus();
-  };
-
-  const startHiddenToolStatus = (): void => {
-    clearHiddenThinkingStatus();
-    hiddenToolCallInProgress = true;
-    if (!hiddenToolStatusVisible) {
-      mdStream.flush();
-      hiddenToolStatusVisible = true;
-      ui.status("Working", "tool call");
-    }
-  };
-
-  const finishHiddenToolStatus = (): void => {
-    hiddenToolCallInProgress = false;
-  };
-
-  const renderToolEvent = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<
-      AgentVisibilityEvent,
-      { type: "tool_started" | "tool_finished" | "tool_failed" }
-    >,
-  ): void => {
-    if (!currentVisibility.showToolCalls) {
-      if (event.type === "tool_started") {
-        startHiddenToolStatus();
-      } else {
-        ui.removeRunningToolCall(event.toolCallId);
-        finishHiddenToolStatus();
-      }
-      return;
-    }
-
-    clearThinkingStatusForAnswer();
-    mdStream.flush();
-    ui.renderToolCall({
-      id: event.toolCallId,
-      toolName: event.toolName,
-      display: event.display,
-      status:
-        event.type === "tool_started"
-          ? "running"
-          : event.type === "tool_failed"
-            ? "error"
-            : "success",
-      ...(event.type === "tool_started"
-        ? {}
-        : {
-            durationMs: event.durationMs,
-            fullOutputPath: event.fullOutputPath,
-          }),
-    });
-  };
-
-  const renderPromptPlanEvent = (
-    currentVisibility: AssistantTurnVisibilityOptions,
-    event: Extract<AgentVisibilityEvent, { type: "prompt_plan_built" }>,
-  ): void => {
-    clearThinkingStatusForAnswer();
-    if (currentVisibility.showPromptPlan) {
-      mdStream.flush();
-      ui.newline();
-      ui.subtle(formatPromptPlanCompact(event.snapshot));
-    }
-  };
-
-  const renderOutputEvent = (
-    visible: boolean,
-    event: Extract<AgentVisibilityEvent, { type: "tool_output" }>,
-  ) => {
-    if (visible)
-      ui.updateToolOutput(
-        event.toolCallId,
-        event.stream,
-        event.text,
-        event.elapsedMs,
-        event.droppedBytes,
-      );
-  };
-
-  const renderVisibilityEvent = (event: AgentVisibilityEvent): void => {
-    const currentVisibility = getVisibility();
-
-    if (event.type === "tool_output") {
-      renderOutputEvent(currentVisibility.showToolCalls, event);
-      return;
-    }
-
-    if (event.type === "status") {
-      renderStatusEvent(currentVisibility, event);
-      return;
-    }
-
-    if (event.type === "thinking_delta") {
-      renderThinkingDeltaEvent(currentVisibility, event);
-      return;
-    }
-
-    if (
-      event.type === "tool_started" ||
-      event.type === "tool_finished" ||
-      event.type === "tool_failed"
-    ) {
-      renderToolEvent(currentVisibility, event);
-      return;
-    }
-
-    if (event.type === "guidance_delivered") {
-      // Shown where the model received it, after what it had said so far.
-      mdStream.flush();
-      clearThinkingStatusForAnswer();
-      ui.guidanceDelivered(event.text);
-      return;
-    }
-
-    if (event.type === "prompt_plan_built") {
-      renderPromptPlanEvent(currentVisibility, event);
-    }
-  };
-
-  let response = "";
+  let response: string;
   try {
     response = await agent.streamChat(
       submission,
-      (token) => {
-        if (!ui.isJsonMode()) {
-          if (token.trim().length > 0) {
-            clearThinkingStatusForAnswer();
-            clearHiddenToolStatus();
-          }
-          beginAssistantResponseIfNeeded();
-          mdStream.push(token);
-        }
-      },
+      (delta) => emit({ type: "assistant_text", delta }),
       {
         abortSignal,
-        onEvent: renderVisibilityEvent,
+        // The final summary is emitted after the answer, as in the existing CLI.
+        onEvent: (event) => {
+          if (event.type !== "reasoning_summary") emit(event);
+        },
         requestReasoning: getVisibility().showThinking,
         ...(guidance ? { guidance } : {}),
       },
     );
+  } catch (error) {
+    emit(
+      abortSignal.aborted
+        ? { type: "turn_cancelled" }
+        : { type: "turn_failed", error },
+    );
+    throw error;
   } finally {
-    ui.clearRunningToolCalls();
-    clearThinkingStatusForAnswer();
-    clearHiddenToolStatus();
-    if (thinkingFlushTimerId) {
-      clearTimeout(thinkingFlushTimerId);
-      thinkingFlushTimerId = null;
-      thinkingFlushScheduled = false;
-    }
-    mdStream.finish();
-    ui.done();
+    renderer.finish();
   }
-
-  if (!ui.isJsonMode()) {
-    if (response.trim().length === 0) {
-      ui.warn(
-        "Assistant returned an empty response. Re-run with --debug-llm or --debug-llm-file <path> to inspect provider events.",
-      );
-    }
-    ui.newline();
-  }
-
+  emit({ type: "turn_completed", result: response });
   const reasoningSummary = agent.getLastTurnReasoningSummary() ?? undefined;
-  const finalVisibility = getVisibility();
-  if (
-    finalVisibility.showReasoningSummary &&
-    reasoningSummary &&
-    !ui.isJsonMode()
-  ) {
-    ui.reasoningSummary(reasoningSummary.summary, reasoningSummary.source);
-  }
-
-  if (!ui.isJsonMode() && finalVisibility.showContextStats) {
-    const state = agent.getConversationState();
-    ui.subtle(formatContextStats(state));
-  }
-
+  if (reasoningSummary)
+    emit({ type: "reasoning_summary", ...reasoningSummary });
+  if (getVisibility().showContextStats)
+    emit({
+      type: "context_stats",
+      text: formatContextStats(agent.getConversationState()),
+    });
   return { response, reasoningSummary };
 }
