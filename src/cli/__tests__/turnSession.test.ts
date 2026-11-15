@@ -556,3 +556,48 @@ it.each(["log", "sequence", "listener"])(
     expect(turns.session.running).toBe(false);
   },
 );
+
+it("warns by default when recording fails, with escaped error text", async () => {
+  const { agent, settle } = heldAgent();
+  const ui = createUi();
+  const warn = jest.spyOn(ui, "warn");
+  const turns = createCliTurnSession(agent, ui, visibility, {
+    eventLog: {
+      append: () => {
+        throw new Error("disk full\x1b[2J");
+      },
+    },
+  });
+  const pending = turns.runTurn(
+    { text: "hello" },
+    new AbortController().signal,
+  );
+  settle().resolve("done");
+  await expect(pending).resolves.toMatchObject({ response: "done" });
+  expect(warn).toHaveBeenCalledTimes(1);
+  expect(warn.mock.calls[0][0]).toContain("disk full");
+  expect(warn.mock.calls[0][0]).not.toContain("\x1b");
+});
+
+it("uses an explicit protocol error handler in place of the default warning", async () => {
+  const { agent, settle } = heldAgent();
+  const ui = createUi();
+  const warn = jest.spyOn(ui, "warn");
+  const onProtocolError = jest.fn();
+  const turns = createCliTurnSession(agent, ui, visibility, {
+    onProtocolError,
+    eventLog: {
+      append: () => {
+        throw new Error("disk full");
+      },
+    },
+  });
+  const pending = turns.runTurn(
+    { text: "hello" },
+    new AbortController().signal,
+  );
+  settle().resolve("done");
+  await pending;
+  expect(onProtocolError).toHaveBeenCalledTimes(1);
+  expect(warn).not.toHaveBeenCalled();
+});

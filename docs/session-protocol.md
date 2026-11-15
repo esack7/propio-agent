@@ -24,10 +24,18 @@ and subscriber failures; exceptions in that callback are isolated too. Subscribe
 failures do not fail the turn or hide events from later subscribers. Reentrant
 notifications remain ordered. If normalization or sequence allocation fails, raw
 subscribers still receive the event; CLI settlement uses this raw lifecycle.
+The protocol stream contains no marker for that omitted event. If it was
+`session_turn_ended`, a replay client cannot infer that the turn finished. Hosts
+must handle the reported error; complete-recording guarantees await durable
+session storage. Production CLI sessions warn through the terminal by default;
+a supplied `onProtocolError` replaces that warning.
 Sequence seeds must be positive safe integers. Exhaustion reports an error and
 stops protocol delivery rather than emitting duplicate numbers.
 
-The session returns the normalized body from `control.emit` for the live renderer.
+`SessionTurnControl.emit` now returns `SessionEventBody | undefined` instead of
+`void`, so the live renderer can reuse the normalized body. Existing callers can
+ignore the return value. This is an additive change to the provisional agent-core
+API; implementations of the control interface must allow the new return type.
 Its immutable records are recognized by the in-memory log without another copy
 or schema parse. Records supplied from elsewhere are validated and detached.
 

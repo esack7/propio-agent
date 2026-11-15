@@ -5,7 +5,8 @@ import {
   type SessionEventBody,
 } from "./protocolSchemas.js";
 import { copyJson, freezeJson } from "./protocolJson.js";
-import type { PromptPlanSnapshot } from "./events.js";
+import type { AgentVisibilityEvent, PromptPlanSnapshot } from "./events.js";
+import type { SessionOwnEvent } from "./session.js";
 export type { ProtocolEvent, SessionEventBody } from "./protocolSchemas.js";
 
 export function summarizePromptPlan(snapshot: PromptPlanSnapshot) {
@@ -20,9 +21,20 @@ export function summarizePromptPlan(snapshot: PromptPlanSnapshot) {
   };
 }
 
+// The constraint fails compilation when a core/session discriminator has no schema.
+// Generic runner events still retain the custom-envelope fallback below.
+type ProtocolBody<T extends SessionEventBody["type"]> = Extract<
+  SessionEventBody,
+  { type: T }
+>;
+
 /** Normalize trusted runtime data. Generic events that do not fit a built-in schema are wrapped. */
 export function normalizeSessionEvent(input: unknown): {
-  event: SessionEventBody;
+  event: ProtocolBody<
+    | AgentVisibilityEvent["type"]
+    | SessionOwnEvent["type"]
+    | SessionEventBody["type"]
+  >;
   replacedValues: number;
 } {
   // Optional undefined properties are omitted; undefined inside args is counted.

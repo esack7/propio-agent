@@ -1,3 +1,4 @@
+import { visibleText } from "../ui/visibleText.js";
 import type { AgentVisibilityEvent as CliVisibilityEvent } from "../agent.js";
 import type { ApprovalChannel } from "../permissions/approvalChannel.js";
 import { randomUUID } from "node:crypto";
@@ -65,6 +66,12 @@ export function createCliTurnSession(
     SessionEventBody | AgentVisibilityEvent | CliVisibilityEvent
   >({
     ...sessionOptions,
+    onProtocolError:
+      sessionOptions.onProtocolError ??
+      ((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        ui.warn(`Session event observation failed: ${visibleText(message)}`);
+      }),
     runTurn: async (submission, control) => {
       const given = original ?? submission;
       original = undefined;
