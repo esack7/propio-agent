@@ -17,6 +17,15 @@ export type AgentLifecycleEvent =
 
 export type AgentVisibilityEvent =
   | AgentLifecycleEvent
+  | {
+      type: "tool_output";
+      toolCallId: string;
+      stream: "stdout" | "stderr";
+      text: string;
+      droppedBytes: number;
+      elapsedMs: number;
+      transient: true;
+    }
   | { type: "status"; status: string; phase?: string }
   | { type: "thinking_delta"; delta: string }
   /** Operator guidance entered the conversation before the given request. */
@@ -77,6 +86,8 @@ export type AgentEventOptions = {
 };
 
 export type AgentToolOptions = AgentEventOptions & {
+  /** Disable transient output while retaining other event observations. */
+  readonly streamToolOutput?: boolean;
   readonly abortSignal?: AbortSignal;
 };
 

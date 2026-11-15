@@ -55,6 +55,31 @@ describe("runShellCommand", () => {
     jest.useRealTimers();
   });
 
+  it("streams decoded stdout/stderr before completion without changing the result", async () => {
+    const child = createMockChildProcess();
+    jest.mocked(spawn).mockReturnValue(child as never);
+    const chunks: unknown[] = [];
+    const pending = runShellCommand({
+      command: "test",
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+    const encoded = Buffer.from("界");
+    child.stdout.emit("data", encoded.subarray(0, 1));
+    expect(chunks).toEqual([]);
+    child.stdout.emit("data", encoded.subarray(1));
+    child.stderr.emit("data", Buffer.from("warning"));
+    expect(chunks).toEqual([
+      { stream: "stdout", text: "界" },
+      { stream: "stderr", text: "warning" },
+    ]);
+    child.emit("close", 0, null);
+    await expect(pending).resolves.toMatchObject({
+      stdout: "界",
+      stderr: "warning",
+      exitCode: 0,
+    });
+  });
+
   it("uses execFile when no abort signal is provided", async () => {
     mockExecFileAsync.mockResolvedValue({ stdout: "ok", stderr: "" });
 

@@ -374,3 +374,24 @@ it.each([0, 1, 2, -1, NaN, Infinity])(
     expect(lines.join("\n")).toContain("more lines");
   },
 );
+
+it("retains cwd in expanded live commands and labels live drops separately", () => {
+  const display: ToolDisplay = {
+    title: "Run",
+    body: { kind: "command", command: "run", cwd: "/work", truncated: false },
+  };
+  const lines = renderToolDisplay(
+    display,
+    {
+      status: "running",
+      liveOutput: [{ stream: "stdout", text: "recent", open: false }],
+      liveDroppedBytes: 20,
+    },
+    80,
+    "expanded",
+  );
+  expect(lines.join("\n")).toContain("cwd: /work");
+  expect(lines.join("\n")).toContain("stdout │ recent");
+  expect(lines.join("\n")).toContain("20 bytes elided");
+  expect(lines.join("\n")).not.toContain("payload truncated");
+});

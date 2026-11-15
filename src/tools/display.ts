@@ -182,7 +182,7 @@ export function utf8Head(text: string, maxBytes: number): string {
 }
 
 /** The longest end of the text within `maxBytes` UTF-8 bytes, never splitting a character. */
-function utf8Tail(text: string, maxBytes: number): string {
+export function utf8Tail(text: string, maxBytes: number): string {
   let bytes = 0;
   let start = text.length;
   while (start > 0) {

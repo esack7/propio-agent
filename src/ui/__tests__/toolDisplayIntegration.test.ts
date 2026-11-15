@@ -255,3 +255,41 @@ it.each(["allow", "deny", "abort", "finish"])(
     ui.cleanup();
   },
 );
+
+it("updates a bounded escaped live tail through the output hold, preserving hidden state", () => {
+  const { ui, stderr } = harness();
+  const store = (ui as unknown as { retainedStore: ReplUiStore }).retainedStore;
+  ui.renderToolCall({ ...call, status: "running" });
+  const hold = (
+    ui as unknown as { holdableStderr: { hold(): { release(): void } } }
+  ).holdableStderr.hold();
+  stderr.chunks.length = 0;
+  ui.updateToolOutput(
+    "a",
+    "stdout",
+    Array.from({ length: 30 }, (_, i) => `live ${i}`).join("\n") + "\x1b[2J",
+    1200,
+    100,
+  );
+  expect(stderr.chunks.join("")).toBe("");
+  hold.release();
+  const output = stripAnsi(stderr.chunks.join(""));
+  expect(output).toContain("live 29");
+  expect(output).not.toContain("live 0\n");
+  expect(output).toContain("\\x1b[2J");
+  expect(output).toContain("1.2s");
+  expect(
+    store.getState().toolCallDisplays.get("a")?.display.body,
+  ).toMatchObject({ truncated: false });
+  expect(store.getState().toolCallDisplays.get("a")?.liveDroppedBytes).toBe(
+    100,
+  );
+  const restore = ui.hideRunningToolCall("a");
+  ui.updateToolOutput("a", "stderr", "still running", 1400, 0);
+  expect(store.getState().toolCallDisplays.get("a")?.hidden).toBe(true);
+  restore();
+  ui.renderToolCall(call);
+  ui.updateToolOutput("a", "stdout", "late", 1500, 0);
+  expect(store.getState().toolCallDisplays.has("a")).toBe(false);
+  ui.cleanup();
+});

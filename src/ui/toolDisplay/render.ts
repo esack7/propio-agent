@@ -12,6 +12,13 @@ export interface DisplayState {
   durationMs?: number;
   color?: boolean;
   collapsedLimit?: number;
+  liveDroppedBytes?: number;
+  liveOutput?: readonly {
+    stream: "stdout" | "stderr";
+    text: string;
+    open: boolean;
+    replacePending?: boolean;
+  }[];
   readonly fullOutputPath?: string;
 }
 export type DisplayMode = "collapsed" | "expanded";
@@ -164,12 +171,7 @@ export function renderToolDisplay(
           `error: ${visibleText(mode === "expanded" ? display.error : display.error.split("\n")[0]!)}`,
         ]
       : []),
-    ...body.details.filter(
-      (line) =>
-        mode === "expanded" ||
-        display.body.kind !== "command" ||
-        !line.startsWith("cwd: "),
-    ),
+    ...liveDetails(display, state, body.details, mode),
   ];
   if ("truncated" in display.body && display.body.truncated)
     details.push("… payload truncated");
@@ -255,4 +257,31 @@ function collapsedDetails(
 
 function collapsedCap(limit = 12): number {
   return Number.isFinite(limit) ? Math.max(3, Math.floor(limit)) : 12;
+}
+
+function liveDetails(
+  display: ToolDisplay,
+  state: DisplayState,
+  details: string[],
+  mode: DisplayMode,
+): string[] {
+  const lines = state.liveOutput
+    ? [
+        ...details.filter((line) => line.startsWith("cwd: ")),
+        ...state.liveOutput.flatMap((line) =>
+          streamLines(line.text, line.stream),
+        ),
+      ]
+    : details;
+  return [
+    ...(state.liveDroppedBytes
+      ? [`Live output: ${state.liveDroppedBytes} bytes elided`]
+      : []),
+    ...lines.filter(
+      (line) =>
+        mode === "expanded" ||
+        display.body.kind !== "command" ||
+        !line.startsWith("cwd: "),
+    ),
+  ];
 }

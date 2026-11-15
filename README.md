@@ -1779,3 +1779,18 @@ in place of `activityLabel`, `useLabel`, `argumentPreview`, and `resultPreview`.
 Completion events may include `fullOutputPath`. The temporary `displayUseLabel`
 and `displayResultLabel` exports have been removed. The execution contract is
 unchanged.
+
+While a command runs in an interactive terminal, its live stdout/stderr tail
+shows up to five lines and the elapsed time at the latest update. Output waits
+while you type guidance. Completed calls retain their final output, exit status,
+and duration. Plain and JSON terminal modes do not print transient live updates.
+
+The execution context now accepts `onOutput({stream, text})`. Runtime
+`tool_output` events are transient and contain `toolCallId`, `stream`, `text`,
+`elapsedMs`, and `droppedBytes`. Each 100 ms window retains the latest 4 KiB
+of text in arrival order,
+coalescing adjacent chunks with a maximum of 32 events. Evicted bytes are counted;
+a final flush precedes normal completion, while cancellation discards pending
+text. Dropping
+live telemetry does not truncate the separately collected tool result. Event
+sequence numbering is planned for the protocol-events slice.

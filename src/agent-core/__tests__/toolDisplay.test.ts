@@ -103,7 +103,7 @@ function setup(
     events.filter((event): event is ToolEvent =>
       ["tool_started", "tool_finished", "tool_failed"].includes(event.type),
     );
-  return { run, events, toolEvents, execute, requests };
+  return { runtime, run, events, toolEvents, execute, requests };
 }
 
 const GENERIC_BEFORE: ToolDisplay = {
@@ -463,4 +463,11 @@ describe("display payloads on tool events (a8)", () => {
       },
     });
   });
+});
+
+it("does not install an output observer when no events are requested", async () => {
+  const { runtime, execute } = setup();
+  await runtime.streamChat({ text: "Go" }, () => {});
+  expect(execute).toHaveBeenCalled();
+  expect(execute.mock.calls[0][1]?.onOutput).toBeUndefined();
 });

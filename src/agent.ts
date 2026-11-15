@@ -1,3 +1,4 @@
+import type { ToolExecutionContext } from "./tools/execution.js";
 import type { ProviderRuntimeOptions } from "@propio-ai/providers";
 import { subscriptionAccountId } from "./auth/openai/runtime.js";
 import { stripProviderContinuation } from "./auth/openai/continuation.js";
@@ -800,10 +801,10 @@ export class Agent {
   private async executeToolWithStatus(
     name: string,
     args: Record<string, unknown>,
-    signal?: AbortSignal,
+    context?: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     if (this.toolRegistry.hasTool(name)) {
-      return await this.toolRegistry.executeWithStatus(name, args, { signal });
+      return await this.toolRegistry.executeWithStatus(name, args, context);
     }
 
     if (this.mcpManager.hasTool(name)) {
@@ -2326,6 +2327,9 @@ export class Agent {
       const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
+        streamToolOutput:
+          Boolean(options?.onEvent) &&
+          runtimeOptions.streamToolOutput !== false,
         abortSignal: subscriptionAccountId(this.resolvedProviderConfig)
           ? options?.abortSignal
             ? AbortSignal.any([options.abortSignal, controller.signal])
@@ -2392,7 +2396,7 @@ export class Agent {
             ? this.toolRegistry.validateArguments(name, args)
             : this.mcpManager.validateToolArguments(name, args),
         executeWithStatus: (name, args, context) =>
-          this.executeToolWithStatus(name, args, context?.signal),
+          this.executeToolWithStatus(name, args, context),
       },
       onDiagnosticEvent: (event) => {
         this.emitDiagnostic(event);
