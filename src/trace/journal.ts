@@ -245,7 +245,9 @@ export class JsonlTraceJournal implements TraceSink {
   }
 }
 
-export function readTraceJournal(journalPath: string): TraceReadResult {
+export function readTraceJournal(
+  journalPath: string | number,
+): TraceReadResult {
   const content = fs.readFileSync(journalPath, "utf8");
   const lines = content.split("\n");
   const endsWithNewline = content.endsWith("\n");
