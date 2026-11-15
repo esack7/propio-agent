@@ -88,6 +88,14 @@ function elapsed(
   return Number.isSafeInteger(Math.trunc(ms)) ? ms : null;
 }
 
+function reportedDuration(event: TraceEventEnvelope): number | null {
+  if (!event.payload || typeof event.payload !== "object") return null;
+  const value = (event.payload as { durationMs?: unknown }).durationMs;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
 export function traceTimeline(snapshot: TraceSnapshot) {
   const origin = clock(snapshot.events[0]);
   const starts = new Map<string, bigint | undefined>();
@@ -102,8 +110,10 @@ export function traceTimeline(snapshot: TraceSnapshot) {
     return {
       sequence: event.sequence,
       relativeMs: elapsed(origin, clock(event)),
-      durationMs:
-        terminal && key ? elapsed(starts.get(key), clock(event)) : null,
+      durationMs: terminal
+        ? ((key ? elapsed(starts.get(key), clock(event)) : null) ??
+          reportedDuration(event))
+        : null,
       component: event.component,
       type: event.type,
       identity: event.identity,

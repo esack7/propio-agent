@@ -620,3 +620,77 @@ it("inspects only selected journals and reconciles counts including unreadable r
     fs.chmodSync(unreadable, 0o600);
   }
 });
+
+it("treats the list limit as truncation rather than incomplete capture", () => {
+  for (let i = 0; i < 21; i++) {
+    const runId = `run-${i}`;
+    const identity = { sessionId: "session", runId, operationId: "turn" };
+    write(
+      [
+        event(1, "turn_started", { identity }),
+        event(2, "turn_completed", { identity }),
+      ],
+      "session",
+      runId,
+    );
+  }
+  const result = json(["list"]);
+  expect(result.runs).toHaveLength(20);
+  expect(result.omitted).toBe(1);
+  expect(result.inspectionScope).toBe("listed_runs");
+  expect(result.complete).toBe(true);
+  expect(result.warnings).toEqual([]);
+  expect(call(["list"]).stdout).not.toContain("Warning:");
+});
+
+it("ignores linked sessions in unscoped selection and refuses an explicitly named link", () => {
+  write([event(1, "turn_started"), event(2, "turn_completed")]);
+  const outside = path.join(directory, "outside");
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, "run.jsonl"), "private outside data");
+  fs.symlinkSync(outside, path.join(directory, "traces", "linked-session"));
+  expect(json(["show", "run"]).run.complete).toBe(true);
+  expect(
+    json(["export", "run", "--output", path.join(directory, "bundle")]).manifest
+      .runId,
+  ).toBe("run");
+  for (const command of ["show", "export"]) {
+    const result = call([
+      command,
+      "run",
+      "--session",
+      "linked-session",
+      ...(command === "export"
+        ? ["--output", path.join(directory, "refused")]
+        : []),
+    ]);
+    expect(result.exit).toBe(1);
+    expect(result.stderr).toContain("linked session");
+  }
+  expect(fs.existsSync(path.join(directory, "refused"))).toBe(false);
+});
+
+it.each([42, 0, -1, "42", null, Infinity])(
+  "falls back only to valid reported terminal duration %j",
+  (durationMs) => {
+    // No matching start exists in this partial journal.
+    write([
+      event(1, "provider_attempt_completed", {
+        component: "agent",
+        payload: { durationMs },
+      }),
+    ]);
+    const result = json(["show", "run"]);
+    const expected =
+      typeof durationMs === "number" &&
+      Number.isFinite(durationMs) &&
+      durationMs >= 0
+        ? durationMs
+        : null;
+    expect(result.timeline[0].durationMs).toBe(expected);
+    const text = call(["show", "run"]).stdout;
+    expect(text).not.toContain("durationMs=");
+    if (expected !== null) expect(text).toContain(`duration=${expected}ms`);
+    else expect(text).not.toContain("duration=");
+  },
+);

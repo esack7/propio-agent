@@ -88,6 +88,16 @@ function matchSessionRun(
   return { sessionId, runId, journalPath };
 }
 
+function isSearchableSession(session: fs.Dirent, sessionId?: string): boolean {
+  if (sessionId !== undefined && session.name !== sessionId) return false;
+  if (!isSafeSessionId(session.name)) return false;
+  if (session.isSymbolicLink() && sessionId !== undefined)
+    throw new Error(
+      `Cannot safely select a run: linked session ${session.name}`,
+    );
+  return session.isDirectory() && !session.isSymbolicLink();
+}
+
 export function selectTraceRun(
   root: string,
   runId: string,
@@ -97,13 +107,7 @@ export function selectTraceRun(
   if (sessionId !== undefined) validateTraceId(sessionId);
   const matches: TraceRun[] = [];
   for (const session of directoryEntries(root)) {
-    if (sessionId !== undefined && session.name !== sessionId) continue;
-    if (!isSafeSessionId(session.name)) continue;
-    if (session.isSymbolicLink())
-      throw new Error(
-        `Cannot safely select a run: linked session ${session.name}; use --session`,
-      );
-    if (!session.isDirectory()) continue;
+    if (!isSearchableSession(session, sessionId)) continue;
     const match = matchSessionRun(root, session.name, runId);
     if (match) matches.push(match);
   }

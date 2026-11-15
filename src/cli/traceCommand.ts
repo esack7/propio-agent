@@ -145,17 +145,13 @@ function list(root: string, args: Arguments): CommandResult {
     }
   }
   const selected = summaries.slice(0, args.limit);
-  if (candidates.length > args.limit)
-    warnings.push(
-      `${candidates.length - args.limit} journal(s) outside the limit were not fully inspected`,
-    );
   return {
     data: {
       runs: selected,
       total: runs.length,
       omitted: runs.length - selected.length,
       inspectionScope: "listed_runs",
-      complete: warnings.length === 0 && selected.length === runs.length,
+      complete: warnings.length === 0,
       warnings,
     },
     lines: traceListLines(selected, warnings),
