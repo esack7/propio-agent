@@ -95,12 +95,12 @@ describe("a settings file that is a symbolic link on the host", () => {
     });
   });
 
-  it("copies only the permissions object, the part the container reads", async () => {
+  it("copies permissions and capture without unrelated runtime or secret fields", async () => {
     const target = join(directory, "dotfiles-settings.json");
     await writeFile(
       target,
       JSON.stringify({
-        runtime: { maxIterations: 4 },
+        runtime: { maxIterations: 4, traceCaptureLevel: "full" },
         token: "not for the container",
         permissions: { deny: ["bash"] },
       }),
@@ -111,7 +111,10 @@ describe("a settings file that is a symbolic link on the host", () => {
 
     expect(
       JSON.parse(await readFile(join(view, "settings.json"), "utf8")),
-    ).toEqual({ permissions: { deny: ["bash"] } });
+    ).toEqual({
+      permissions: { deny: ["bash"] },
+      runtime: { traceCaptureLevel: "full" },
+    });
   });
 
   it("copies an empty object for linked settings without permissions", async () => {

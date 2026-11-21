@@ -68,6 +68,7 @@ function createRuntimeConfig(
     outputTokenRecoveryLimit: 3,
     consecutive529FallbackLimit: 3,
     rollingSummaryTargetTokens: 2048,
+    traceCaptureLevel: "standard",
     allowGlobalInstallsWithoutPrompt: false,
     ...overrides,
   };

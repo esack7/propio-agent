@@ -35,6 +35,7 @@ export interface ParsedCliArgs {
     showContextStats: boolean;
     showPromptPlan: boolean;
     showTrace: boolean;
+    traceCaptureLevel?: "standard" | "full";
     debugLlm: boolean;
     debugLlmFile?: string;
     help: boolean;
@@ -98,6 +99,7 @@ const BOOL_FLAG_MAP: ReadonlyMap<string, BoolFlagKeys> = new Map([
   [CLI_FLAG_SHOW_CONTEXT_STATS, "showContextStats"],
   [CLI_FLAG_SHOW_PROMPT_PLAN, "showPromptPlan"],
   [CLI_FLAG_SHOW_TRACE, "showTrace"],
+  ["--show-turn-details", "showTrace"],
   [CLI_FLAG_DEBUG_LLM, "debugLlm"],
   [CLI_FLAG_HELP, "help"],
   [CLI_FLAG_HELP_SHORT, "help"],
@@ -258,6 +260,19 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
 
     if (arg === CLI_FLAG_SANDBOX) {
       flags.sandbox = true;
+      continue;
+    }
+
+    if (arg === "--trace-capture" || arg.startsWith("--trace-capture=")) {
+      const inline = arg.startsWith("--trace-capture=");
+      const value = inline ? arg.slice("--trace-capture=".length) : args[i + 1];
+      if (value === "standard" || value === "full") {
+        flags.traceCaptureLevel = value;
+        forwardedArgs.push("--trace-capture", value);
+        if (!inline) i++;
+      } else {
+        parseErrors.push("--trace-capture requires standard or full");
+      }
       continue;
     }
 

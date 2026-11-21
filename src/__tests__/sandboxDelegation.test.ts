@@ -61,7 +61,13 @@ describe("sandbox delegation", () => {
     });
 
     const result = await maybeRunSandboxDelegation(
-      ["--sandbox", "--help", "--foo", "bar"],
+      [
+        "--sandbox",
+        "--help",
+        "--trace-capture=full",
+        "--show-turn-details",
+        "--show-trace",
+      ],
       {
         resolveWrapperPath: () => wrapperPath,
         validateWrapper: () => {},
@@ -72,7 +78,13 @@ describe("sandbox delegation", () => {
     expect(result).toBe(0);
     expect(spawnProcess).toHaveBeenCalledWith(
       wrapperPath,
-      ["--help", "--foo", "bar"],
+      [
+        "--help",
+        "--trace-capture",
+        "full",
+        "--show-turn-details",
+        "--show-trace",
+      ],
       {
         cwd: process.cwd(),
         shell: false,

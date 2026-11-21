@@ -207,3 +207,35 @@ describe("cli args parsing", () => {
     ]);
   });
 });
+
+it.each(["--show-turn-details", "--show-trace"])(
+  "keeps %s visibility separate from capture",
+  (flag) => {
+    const parsed = parseCliArgs([flag]);
+    expect(parsed.flags.showTrace).toBe(true);
+    expect(parsed.flags.traceCaptureLevel).toBeUndefined();
+    expect(parsed.parseErrors).toEqual([]);
+  },
+);
+it.each([["--trace-capture", "full"], ["--trace-capture=standard"]])(
+  "parses capture %p",
+  (...args) => {
+    const parsed = parseCliArgs(args);
+    expect(parsed.parseErrors).toEqual([]);
+    expect(parsed.flags.traceCaptureLevel).toBe(
+      args.length === 2 ? "full" : "standard",
+    );
+    expect(parseSandboxArgs(["--sandbox", ...args]).forwardedArgs).toEqual([
+      "--trace-capture",
+      parsed.flags.traceCaptureLevel,
+    ]);
+  },
+);
+it.each([[[]], [["off"]], [[""]], [["FULL"]], [["--json"]]])(
+  "rejects invalid capture input %p",
+  (value) => {
+    expect(parseCliArgs(["--trace-capture", ...value]).parseErrors).toEqual([
+      "--trace-capture requires standard or full",
+    ]);
+  },
+);

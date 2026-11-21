@@ -136,3 +136,72 @@ describe("RuntimeConfig", () => {
     expect(config.allowGlobalInstallsWithoutPrompt).toBe(true);
   });
 });
+
+describe("trace capture configuration", () => {
+  const original = process.env.PROPIO_TRACE_CAPTURE_LEVEL;
+  let directory: string;
+  let settingsPath: string;
+  beforeEach(() => {
+    delete process.env.PROPIO_TRACE_CAPTURE_LEVEL;
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "capture-settings-"));
+    settingsPath = path.join(directory, "settings.json");
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env.PROPIO_TRACE_CAPTURE_LEVEL;
+    else process.env.PROPIO_TRACE_CAPTURE_LEVEL = original;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  it("resolves CLI > environment > settings > privacy default with origins", () => {
+    const read = (cliOverrides = {}) =>
+      loadRuntimeConfigWithOrigins({ settingsPath, cliOverrides });
+    const expectCapture = (
+      value: string,
+      origin: string,
+      cliOverrides = {},
+    ) => {
+      const result = read(cliOverrides);
+      expect(result.config.traceCaptureLevel).toBe(value);
+      expect(result.origins.traceCaptureLevel).toBe(origin);
+    };
+    expectCapture("standard", "default");
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        runtime: { traceCaptureLevel: "full", maxRetries: 8 },
+        unrelated: true,
+      }),
+    );
+    expectCapture("full", "settings");
+    expect(read().config.maxRetries).toBe(8);
+    process.env.PROPIO_TRACE_CAPTURE_LEVEL = "standard";
+    expectCapture("standard", "environment");
+    expectCapture("full", "cli", { traceCaptureLevel: "full" });
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8")).unrelated).toBe(
+      true,
+    );
+  });
+  it.each(["", "off", "FULL", null, 1])(
+    "rejects invalid effective settings: %p",
+    (value) => {
+      fs.writeFileSync(
+        settingsPath,
+        JSON.stringify({ runtime: { traceCaptureLevel: value } }),
+      );
+      expect(() => loadRuntimeConfigWithOrigins({ settingsPath })).toThrow(
+        "traceCaptureLevel (settings) must be standard or full",
+      );
+    },
+  );
+  it("rejects invalid environment input and allows an explicit CLI override", () => {
+    process.env.PROPIO_TRACE_CAPTURE_LEVEL = "off";
+    expect(() => loadRuntimeConfigWithOrigins({ settingsPath })).toThrow(
+      "environment",
+    );
+    expect(
+      loadRuntimeConfigWithOrigins({
+        settingsPath,
+        cliOverrides: { traceCaptureLevel: "standard" },
+      }).config.traceCaptureLevel,
+    ).toBe("standard");
+  });
+});

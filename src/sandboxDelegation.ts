@@ -96,7 +96,7 @@ export async function maybeRunSandboxDelegation(
   args: ReadonlyArray<string>,
   overrides: Partial<SandboxDelegationDeps> = {},
 ): Promise<number | null> {
-  const { flags, forwardedArgs } = parseCliArgs(args);
+  const { flags, forwardedArgs, parseErrors } = parseCliArgs(args);
   if (!flags.sandbox) {
     return null;
   }
@@ -105,6 +105,10 @@ export async function maybeRunSandboxDelegation(
     ...createDefaultSandboxDeps(),
     ...overrides,
   };
+  if (parseErrors.length > 0) {
+    deps.logError(parseErrors.join("\n"));
+    return 1;
+  }
   const wrapperPath = deps.resolveWrapperPath();
 
   try {
