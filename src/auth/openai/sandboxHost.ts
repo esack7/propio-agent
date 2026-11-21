@@ -71,6 +71,23 @@ async function credentialLocations(source: string): Promise<string[]> {
   ];
 }
 
+/** Only these settings may enter the linked-settings sandbox view. */
+function containerSettingsView(settings: object): {
+  permissions?: unknown;
+  runtime?: { traceCaptureLevel: unknown };
+} {
+  const { permissions, runtime } = settings as {
+    permissions?: unknown;
+    runtime?: { traceCaptureLevel?: unknown };
+  };
+  return {
+    ...(permissions !== undefined ? { permissions } : {}),
+    ...(runtime?.traceCaptureLevel !== undefined
+      ? { runtime: { traceCaptureLevel: runtime.traceCaptureLevel } }
+      : {}),
+  };
+}
+
 /**
  * Links are left out of the view so that one cannot carry an arbitrary host
  * file into the container. A linked settings file is the exception that has
@@ -123,17 +140,7 @@ async function includeLinkedSettings(
         "The sandbox will not start without your permission rules.",
     );
   }
-  // The container checks this object itself when it loads its rules.
-  const { permissions, runtime } = settings as {
-    permissions?: unknown;
-    runtime?: { traceCaptureLevel?: unknown };
-  };
-  const copied = {
-    ...(permissions !== undefined ? { permissions } : {}),
-    ...(runtime?.traceCaptureLevel !== undefined
-      ? { runtime: { traceCaptureLevel: runtime.traceCaptureLevel } }
-      : {}),
-  };
+  const copied = containerSettingsView(settings);
   await writeFile(
     join(view, SETTINGS_FILE),
     `${JSON.stringify(copied, null, 2)}\n`,

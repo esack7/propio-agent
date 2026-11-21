@@ -151,7 +151,8 @@ Options:
                       Show a concise reasoning summary after each turn
   --show-turn-details Enable --show-status and --show-reasoning-summary
   --show-trace        Deprecated alias for --show-turn-details (visibility only)
-  --trace-capture <standard|full> Capture level: CLI > env > runtime settings > standard
+  --trace-capture <standard|full>
+                      Capture level: CLI > env > runtime settings > standard
   --show-context-stats
                       Print compact context stats after each turn
   --show-prompt-plan  Print prompt plan summary each time a request is built
@@ -1302,13 +1303,15 @@ function deriveCliRuntimeOptions(
 function reportParseErrors(
   ui: TerminalUi,
   parseErrors: readonly string[],
+  jsonMode: boolean,
 ): boolean {
   if (parseErrors.length === 0) {
     return false;
   }
 
   for (const error of parseErrors) {
-    ui.error(error);
+    if (jsonMode) process.stderr.write(`${error}\n`);
+    else ui.error(error);
   }
   return true;
 }
@@ -1599,7 +1602,7 @@ async function main(): Promise<number> {
     json: runtime.jsonMode,
   });
 
-  if (reportParseErrors(ui, parsedArgs.parseErrors)) {
+  if (reportParseErrors(ui, parsedArgs.parseErrors, runtime.jsonMode)) {
     ui.cleanup();
     return 1;
   }

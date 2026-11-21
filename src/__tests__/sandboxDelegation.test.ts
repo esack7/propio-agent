@@ -64,6 +64,8 @@ describe("sandbox delegation", () => {
       [
         "--sandbox",
         "--help",
+        "--foo",
+        "bar",
         "--trace-capture=full",
         "--show-turn-details",
         "--show-trace",
@@ -80,6 +82,8 @@ describe("sandbox delegation", () => {
       wrapperPath,
       [
         "--help",
+        "--foo",
+        "bar",
         "--trace-capture",
         "full",
         "--show-turn-details",
@@ -90,6 +94,20 @@ describe("sandbox delegation", () => {
         shell: false,
         stdio: "inherit",
       },
+    );
+  });
+
+  it("rejects invalid capture before spawning the sandbox", async () => {
+    const spawnProcess = jest.fn() as unknown as SpawnProcess;
+    const logError = jest.fn();
+    const result = await maybeRunSandboxDelegation(
+      ["--sandbox", "--trace-capture", "off"],
+      { spawnProcess, logError },
+    );
+    expect(result).toBe(1);
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(logError).toHaveBeenCalledWith(
+      "--trace-capture requires standard or full",
     );
   });
 

@@ -194,6 +194,19 @@ function parsePermissionsArg(
   };
 }
 
+function parseTraceCaptureArg(
+  arg: string,
+  next: string | undefined,
+): { value?: "standard" | "full"; consumed: boolean } | null {
+  const inline = arg.startsWith("--trace-capture=");
+  if (!inline && arg !== "--trace-capture") return null;
+  const value = inline ? arg.slice("--trace-capture=".length) : next;
+  if (value === "standard" || value === "full") {
+    return { value, consumed: !inline };
+  }
+  return { consumed: false };
+}
+
 // fallow-ignore-next-line complexity
 export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const forwardedArgs: string[] = [];
@@ -263,16 +276,15 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
       continue;
     }
 
-    if (arg === "--trace-capture" || arg.startsWith("--trace-capture=")) {
-      const inline = arg.startsWith("--trace-capture=");
-      const value = inline ? arg.slice("--trace-capture=".length) : args[i + 1];
-      if (value === "standard" || value === "full") {
-        flags.traceCaptureLevel = value;
-        forwardedArgs.push("--trace-capture", value);
-        if (!inline) i++;
+    const capture = parseTraceCaptureArg(arg, args[i + 1]);
+    if (capture) {
+      if (capture.value) {
+        flags.traceCaptureLevel = capture.value;
+        forwardedArgs.push("--trace-capture", capture.value);
       } else {
         parseErrors.push("--trace-capture requires standard or full");
       }
+      if (capture.consumed) i++;
       continue;
     }
 

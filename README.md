@@ -482,24 +482,24 @@ Start the agent and type messages at the prompt. Session context is maintained a
 
 ### CLI flags
 
-| Flag                       | Description                                          |
-| -------------------------- | ---------------------------------------------------- |
-| `--help`, `-h`             | Show CLI help                                        |
-| `--version`, `-v`          | Print package version and exit                       |
-| `--sandbox`                | Run in Docker sandbox mode                           |
-| `--json`                   | Read one prompt from stdin, print JSON to stdout     |
-| `--plain`                  | Disable ANSI colors and spinner                      |
-| `--no-interactive`         | Disable prompts/spinners, read one prompt from stdin |
-| `--permissions <preset>`   | Tool permissions for this run; see below             |
-| `--show-status`            | Show high-level agent status updates                 |
-| `--show-reasoning-summary` | Show the turn reasoning summary after each response  |
-| `--show-turn-details`      | Enable status and reasoning summary output           |
-| `--show-trace`             | Deprecated alias for `--show-turn-details`; visibility only |
-| `--trace-capture <standard|full>` | Select capture level for this run |
-| `--show-context-stats`     | Print compact context stats after each turn          |
-| `--show-prompt-plan`       | Print a compact prompt-plan summary for each request |
-| `--debug-llm`              | Emit provider diagnostics to stderr                  |
-| `--debug-llm-file <path>`  | Append provider diagnostics to a file                |
+| Flag                               | Description                                                 |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `--help`, `-h`                     | Show CLI help                                               |
+| `--version`, `-v`                  | Print package version and exit                              |
+| `--sandbox`                        | Run in Docker sandbox mode                                  |
+| `--json`                           | Read one prompt from stdin, print JSON to stdout            |
+| `--plain`                          | Disable ANSI colors and spinner                             |
+| `--no-interactive`                 | Disable prompts/spinners, read one prompt from stdin        |
+| `--permissions <preset>`           | Tool permissions for this run; see below                    |
+| `--show-status`                    | Show high-level agent status updates                        |
+| `--show-reasoning-summary`         | Show the turn reasoning summary after each response         |
+| `--show-turn-details`              | Enable status and reasoning summary output                  |
+| `--show-trace`                     | Deprecated alias for `--show-turn-details`; visibility only |
+| `--trace-capture <standard\|full>` | Select capture level for this run                           |
+| `--show-context-stats`             | Print compact context stats after each turn                 |
+| `--show-prompt-plan`               | Print a compact prompt-plan summary for each request        |
+| `--debug-llm`                      | Emit provider diagnostics to stderr                         |
+| `--debug-llm-file <path>`          | Append provider diagnostics to a file                       |
 
 ```bash
 # One-shot non-interactive
