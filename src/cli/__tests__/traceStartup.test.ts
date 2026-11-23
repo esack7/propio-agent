@@ -147,3 +147,69 @@ it("rejects invalid CLI capture before provider initialization", () => {
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("--trace-capture requires standard or full");
 });
+
+it("scripts session slash commands and a JSON foreground failure without credentials", () => {
+  const source = (file: string) =>
+    new URL(file, new URL("../../../", import.meta.url)).href;
+  const script = `
+    import { handleInteractiveSubmission, runNonInteractiveSession } from ${JSON.stringify(source("src/index.ts"))};
+    import { TerminalUi } from ${JSON.stringify(source("src/ui/terminal.ts"))};
+    import { createPlainSubmission } from ${JSON.stringify(source("src/ui/input/promptSubmission.ts"))};
+    import { PassThrough } from 'node:stream';
+    const lines = [];
+    const sink = { isTTY: false, write(text) { lines.push(String(text)); return true; }, on() {}, off() {} };
+    const ui = new TerminalUi({ interactive: false, plain: true, json: false, stdout: sink, stderr: sink });
+    let runId = 'run';
+    const agent = {
+      getSessionTraceIdentity: () => ({ sessionId: 'session', runId }),
+      streamChat: async () => { runId = 'run'; throw new Error('fixture foreground failure'); },
+      getLastTurnReasoningSummary: () => null,
+      getConversationState: () => ({ preamble: [], turns: [], artifacts: [], pinnedMemory: [], invokedSkills: [], rollingSummary: null }),
+    };
+    const visibility = { showToolCalls: false, showThinking: false, showStatus: false, showReasoningSummary: false, showContextStats: false, showPromptPlan: false };
+    const context = { agent, ui, composer: {}, configPath: 'unused', inputStream: new PassThrough(), interactiveInput: false, setCurrentAbortController() {}, cancelActiveTurn() {}, shouldExit: () => false, getVisibility: () => visibility };
+    await handleInteractiveSubmission(createPlainSubmission('/trace', 'prompt'), context);
+    await handleInteractiveSubmission(createPlainSubmission('/usage', 'prompt'), context);
+    const jsonUi = new TerminalUi({ interactive: false, plain: true, json: true, stdout: sink, stderr: sink });
+    runId = undefined;
+    const code = await runNonInteractiveSession(agent, jsonUi, () => {}, visibility, { stdinIsTTY: false, readInput: async () => 'fail' });
+    console.log(JSON.stringify({ lines, code }));
+  `;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      path.join(repo, "node_modules/tsx/dist/loader.mjs"),
+      "--input-type=module",
+      "-e",
+      script,
+    ],
+    {
+      cwd: workspace,
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        USERPROFILE: home,
+        NODE_NO_WARNINGS: "1",
+      },
+      encoding: "utf8",
+      timeout: 15000,
+    },
+  );
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+  const output = JSON.parse(result.stdout);
+  expect(output.code).toBe(1);
+  expect(output.lines.join("")).toContain("Run run (session session)");
+  expect(output.lines.join("")).toContain("Session session: 1 runs");
+  expect(output.lines.join("")).toContain(
+    '"error":"fixture foreground failure"',
+  );
+  expect(output.lines.join("")).toContain('"trace":{"available":true');
+  expect(output.lines.join("")).toContain(
+    "propio trace show 'run' --session 'session'",
+  );
+  const readme = fs.readFileSync(path.join(repo, "README.md"), "utf8");
+  for (const command of ["trace", "usage"])
+    expect(readme).toMatch(new RegExp("^\\| `/" + command + "`\\s*\\|", "m"));
+});

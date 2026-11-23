@@ -2941,6 +2941,7 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      latestForegroundRunId: this.latestForegroundRunId,
       lastTraceRunId:
         this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
       agentMode: this.modeState.mode,
@@ -3088,7 +3089,7 @@ export class Agent {
     this.adoptImportedSessionId(persisted.metadata.sessionId);
 
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
-    this.latestForegroundRunId = undefined;
+    this.latestForegroundRunId = persisted.metadata.latestForegroundRunId;
 
     this.contextManager.importState(state);
     this.recoveryCheckpointRequested =

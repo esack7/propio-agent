@@ -56,3 +56,123 @@ test("readable foreground failure supplies an exact shell-safe offline command",
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test.each([false, true])(
+  "noninteractive failure preserves original error (json=%s)",
+  async (json) => {
+    const { runNonInteractiveSession } = await import("../../index.js");
+    const { TerminalUi } = await import("../../ui/terminal.js");
+    const { createMockWriteStream } =
+      await import("../../__tests__/testHelpers.js");
+    const stdout = createMockWriteStream();
+    const stderr = createMockWriteStream();
+    const ui = new TerminalUi({
+      interactive: false,
+      plain: true,
+      json,
+      stdout,
+      stderr,
+    });
+    const agent = {
+      getSessionTraceIdentity: () => ({
+        sessionId: "session",
+        runId: "previous-success",
+      }),
+      streamChat: async () => {
+        throw new Error("original failure");
+      },
+      getLastTurnReasoningSummary: () => null,
+      getConversationState: () => ({
+        preamble: [],
+        turns: [],
+        artifacts: [],
+        pinnedMemory: [],
+        invokedSkills: [],
+        rollingSummary: null,
+      }),
+    } as unknown as import("../../agent.js").Agent;
+    const code = await runNonInteractiveSession(
+      agent,
+      ui,
+      () => {},
+      {
+        showToolCalls: false,
+        showThinking: false,
+        showStatus: false,
+        showReasoningSummary: false,
+        showContextStats: false,
+        showPromptPlan: false,
+      },
+      { stdinIsTTY: false, readInput: async () => "hello" },
+    );
+    expect(code).toBe(1);
+    if (json)
+      expect(JSON.parse(stdout.chunks.join(""))).toEqual({
+        error: "original failure",
+        trace: { available: false },
+      });
+    else {
+      expect(stderr.chunks.join("")).toContain("original failure");
+      expect([...stdout.chunks, ...stderr.chunks].join("")).not.toContain(
+        "previous-success",
+      );
+    }
+  },
+);
+
+test("interactive pre-turn failure cannot identify the previous turn", async () => {
+  const { runInteractiveTurn } = await import("../../index.js");
+  const { TerminalUi } = await import("../../ui/terminal.js");
+  const { createMockWriteStream } =
+    await import("../../__tests__/testHelpers.js");
+  const { PassThrough } = await import("node:stream");
+  const { createPlainSubmission } =
+    await import("../../ui/input/promptSubmission.js");
+  const stdout = createMockWriteStream();
+  const stderr = createMockWriteStream();
+  const ui = new TerminalUi({
+    interactive: false,
+    plain: true,
+    json: false,
+    stdout,
+    stderr,
+  });
+  const agent = {
+    getSessionTraceIdentity: () => ({
+      sessionId: "session",
+      runId: "previous-success",
+    }),
+  } as unknown as import("../../agent.js").Agent;
+  await runInteractiveTurn(
+    createPlainSubmission("hello", "prompt"),
+    {
+      agent,
+      ui,
+      composer: {} as never,
+      configPath: "unused",
+      inputStream: new PassThrough() as never,
+      interactiveInput: false,
+      setCurrentAbortController: () => {},
+      cancelActiveTurn: () => {},
+      shouldExit: () => false,
+      getVisibility: () => ({
+        showToolCalls: false,
+        showThinking: false,
+        showStatus: false,
+        showReasoningSummary: false,
+        showContextStats: false,
+        showPromptPlan: false,
+      }),
+    },
+    {
+      beforeTurn: async () => {
+        throw new Error("missing skill");
+      },
+      errorPrefix: "Error: ",
+    },
+  );
+  const output = [...stdout.chunks, ...stderr.chunks].join("");
+  expect(output).toContain("missing skill");
+  expect(output).toContain("No usable foreground trace");
+  expect(output).not.toContain("previous-success");
+});

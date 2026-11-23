@@ -126,6 +126,7 @@ export interface ProviderMeasurementSummary {
 }
 
 export interface ProviderMeasurementOptions {
+  /** @deprecated Apply historical pricing in downstream consumers instead. */
   readonly pricingResolver?: ProviderPricingResolver;
   readonly captureComplete?: boolean;
 }

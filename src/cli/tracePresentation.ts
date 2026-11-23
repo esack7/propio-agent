@@ -109,6 +109,7 @@ export function traceTimeline(snapshot: TraceSnapshot) {
     const terminal = isTraceOperationTerminal(event.type);
     return {
       sequence: event.sequence,
+      observedAt: event.observedAt,
       relativeMs: elapsed(origin, clock(event)),
       durationMs: terminal
         ? ((key ? elapsed(starts.get(key), clock(event)) : null) ??
@@ -169,6 +170,7 @@ function measurementLines(inspection: TraceInspection): string[] {
   return [
     `Requests: ${m.requestCount}; attempts: ${m.attemptCount}; retry attempts: ${m.retries.attemptCount}`,
     `Tokens (${m.usage.completeness}): input=${tokens?.inputTokens ?? "unknown"} output=${tokens?.outputTokens ?? "unknown"} total=${tokens?.totalTokens ?? "unknown"}`,
+    `reasoning=${tokens?.reasoningTokens ?? "unknown"} cache-read=${tokens?.cacheReadInputTokens ?? "unknown"} cache-write=${tokens?.cacheWriteInputTokens ?? "unknown"}`,
   ];
 }
 

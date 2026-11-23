@@ -270,8 +270,10 @@ function writeNonInteractiveSuccessResponse(
   });
 }
 
-function failureTrace(agent: AgentType) {
+function failureTrace(agent: AgentType, previousRunId?: string) {
   try {
+    if (agent.getSessionTraceIdentity().runId === previousRunId)
+      return { available: false as const };
     return foregroundTraceHint(
       path.join(getDefaultSessionsDir(), "traces"),
       agent.getSessionTraceIdentity(),
@@ -281,8 +283,12 @@ function failureTrace(agent: AgentType) {
   }
 }
 
-function writeFailureTrace(agent: AgentType, ui: TerminalUi): void {
-  const trace = failureTrace(agent);
+function writeFailureTrace(
+  agent: AgentType,
+  ui: TerminalUi,
+  previousRunId?: string,
+): void {
+  const trace = failureTrace(agent, previousRunId);
   ui.info(
     trace.available
       ? `Trace ${trace.runId}: ${trace.command}`
@@ -295,6 +301,7 @@ function handleNonInteractiveStreamError(
   abortController: AbortController,
   ui: TerminalUi,
   agent: AgentType,
+  previousRunId?: string,
 ): number {
   if (abortController.signal.aborted || isAbortError(error)) {
     return 130;
@@ -302,10 +309,10 @@ function handleNonInteractiveStreamError(
   const message = error instanceof Error ? error.message : "Unknown error";
   ui.setMode("error");
   if (ui.isJsonMode()) {
-    ui.writeJson({ error: message, trace: failureTrace(agent) });
+    ui.writeJson({ error: message, trace: failureTrace(agent, previousRunId) });
   } else {
     ui.error(`Error: ${message}`);
-    writeFailureTrace(agent, ui);
+    writeFailureTrace(agent, ui, previousRunId);
   }
   return 1;
 }
@@ -333,6 +340,7 @@ export async function runNonInteractiveSession(
     return 1;
   }
 
+  const previousRunId = agent.getSessionTraceIdentity?.().runId;
   const abortController = new AbortController();
   setCurrentAbortController(abortController);
   ui.setMode("running");
@@ -350,7 +358,13 @@ export async function runNonInteractiveSession(
     writeNonInteractiveSuccessResponse(result, ui, visibility);
     return 0;
   } catch (error) {
-    return handleNonInteractiveStreamError(error, abortController, ui, agent);
+    return handleNonInteractiveStreamError(
+      error,
+      abortController,
+      ui,
+      agent,
+      previousRunId,
+    );
   } finally {
     setCurrentAbortController(null);
   }
@@ -414,6 +428,7 @@ export async function runInteractiveTurn(
   },
 ): Promise<number | null> {
   const { agent, ui, setCurrentAbortController } = context;
+  const previousRunId = agent.getSessionTraceIdentity?.().runId;
   const visibility = context.getVisibility();
   const abortController = new AbortController();
   const turnStartedAtMs = Date.now();
@@ -475,7 +490,7 @@ export async function runInteractiveTurn(
       `${options.errorPrefix}${error instanceof Error ? error.message : "Unknown error"}`,
     );
     ui.command("");
-    writeFailureTrace(agent, ui);
+    writeFailureTrace(agent, ui, previousRunId);
     ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
     context.setActiveTurnInput?.(null);

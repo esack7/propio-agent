@@ -715,6 +715,8 @@ not attached.
 
 | Command              | Description                                          |
 | -------------------- | ---------------------------------------------------- |
+| `/trace`             | Inspect the latest foreground turn                   |
+| `/usage`             | Inspect current-session token and cache usage        |
 | `/help`              | Show slash-command help                              |
 | `/clear`             | Clear session context                                |
 | `/model`             | Switch the current provider/model or update defaults |
@@ -783,7 +785,7 @@ relative times, operation/request/attempt relationships, tool policy decisions,
 known token and cache usage. Text is escaped and wrapped for TTY output; piped output preserves whole lines; metadata previews are capped at 240 characters. Neither command opens
 captured prompts, responses, or workspace material. Missing tokens and times are
 unknown; incomplete or still-running journals are explicitly marked. A complete
-capture can describe a failed or cancelled turn. Monetary totals are not presented by the CLI.
+capture can describe a failed or cancelled turn. Monetary totals are not presented in CLI text output. JSON inspection retains deprecated cost fields for historical compatibility.
 
 Export requires a **new destination directory** whose parent exists; it refuses
 existing files, directories, and symlinks. Standard export is the default, even

@@ -40,6 +40,7 @@ export interface SessionMetadata {
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
   readonly lastTraceRunId?: string;
+  readonly latestForegroundRunId?: string;
   /** A tool-boundary checkpoint from an interrupted run. */
   readonly recoveryCheckpoint?: boolean;
   readonly agentMode?: AgentMode;
@@ -296,6 +297,9 @@ function validateMetadata(metadata: unknown): void {
   assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
   if (meta.sessionId !== undefined) {
     assertString(meta.sessionId, "metadata.sessionId");
+  }
+  if (meta.latestForegroundRunId !== undefined) {
+    assertString(meta.latestForegroundRunId, "metadata.latestForegroundRunId");
   }
   if (meta.lastTraceRunId !== undefined) {
     assertString(meta.lastTraceRunId, "metadata.lastTraceRunId");
