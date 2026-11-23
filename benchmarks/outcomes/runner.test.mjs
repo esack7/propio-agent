@@ -137,7 +137,11 @@ for (const workspaceOnly of [true, false]) {
       const entry = new URL("../../dist/index.js", import.meta.url).href;
       await writeFile(
         cliPath,
-        `process.argv = process.argv.filter(arg => arg !== "--workspace-instructions-only"); await import(${JSON.stringify(entry)});`,
+        // Preserve the real entrypoint identity so the import runs CLI startup.
+        `import { fileURLToPath } from "node:url";
+process.argv = process.argv.filter(arg => arg !== "--workspace-instructions-only");
+process.argv[1] = fileURLToPath(${JSON.stringify(entry)});
+await import(${JSON.stringify(entry)});`,
       );
     }
     const rows = await runTrials({
