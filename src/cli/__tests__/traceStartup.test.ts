@@ -170,10 +170,12 @@ it("scripts session slash commands and a JSON foreground failure without credent
     const context = { agent, ui, composer: {}, configPath: 'unused', inputStream: new PassThrough(), interactiveInput: false, setCurrentAbortController() {}, cancelActiveTurn() {}, shouldExit: () => false, getVisibility: () => visibility };
     await handleInteractiveSubmission(createPlainSubmission('/trace', 'prompt'), context);
     await handleInteractiveSubmission(createPlainSubmission('/usage', 'prompt'), context);
-    const jsonUi = new TerminalUi({ interactive: false, plain: true, json: true, stdout: sink, stderr: sink });
+    const jsonLines = [];
+    const jsonSink = { ...sink, write(text) { jsonLines.push(String(text)); return true; } };
+    const jsonUi = new TerminalUi({ interactive: false, plain: true, json: true, stdout: jsonSink, stderr: jsonSink });
     runId = undefined;
     const code = await runNonInteractiveSession(agent, jsonUi, () => {}, visibility, { stdinIsTTY: false, readInput: async () => 'fail' });
-    console.log(JSON.stringify({ lines, code }));
+    console.log(JSON.stringify({ lines, code, json: jsonLines.join('') }));
   `;
   const result = spawnSync(
     process.execPath,
@@ -202,13 +204,16 @@ it("scripts session slash commands and a JSON foreground failure without credent
   expect(output.code).toBe(1);
   expect(output.lines.join("")).toContain("Run run (session session)");
   expect(output.lines.join("")).toContain("Session session: 1 runs");
-  expect(output.lines.join("")).toContain(
-    '"error":"fixture foreground failure"',
-  );
-  expect(output.lines.join("")).toContain('"trace":{"available":true');
-  expect(output.lines.join("")).toContain(
-    "propio trace show 'run' --session 'session'",
-  );
+  expect(JSON.parse(output.json)).toEqual({
+    error: "fixture foreground failure",
+    trace: {
+      available: true,
+      sessionId: "session",
+      runId: "run",
+      complete: true,
+      command: "propio trace show 'run' --session 'session'",
+    },
+  });
   const readme = fs.readFileSync(path.join(repo, "README.md"), "utf8");
   for (const command of ["trace", "usage"])
     expect(readme).toMatch(new RegExp("^\\| `/" + command + "`\\s*\\|", "m"));
