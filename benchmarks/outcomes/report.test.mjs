@@ -102,36 +102,56 @@ test("documented run and compare commands persist repeated credential-free repor
   }
 });
 
-test("explicit provider reports omit private fields and malformed selection values", async () => {
-  const root = await mkdtemp(join(tmpdir(), "outcome-explicit-report-"));
-  const provider = await startScriptedProvider("fix-media-type");
-  const originalExitCode = process.exitCode;
-  const config = join(root, "provider.json");
-  const selected = {
-    default: "local",
-    providers: [
-      {
-        name: "local",
-        type: "ollama",
-        host: provider.host,
-        apiKey: "SECRET_API_CANARY",
-        customOption: "SECRET_OPTION_CANARY",
-        models: [
-          { name: "Harness", key: "scripted", contextWindowTokens: 32768 },
-        ],
-        defaultModel: "scripted",
-      },
-    ],
-  };
-  try {
-    for (const variant of ["valid", "default", "defaultModel"]) {
+function providerSelection(configuration, variant) {
+  return variant === "defaultModel"
+    ? configuration.providers[0]
+    : configuration;
+}
+
+function assertProviderSelection(report, variant, provider) {
+  assert.equal(
+    report.trials[0].outcome,
+    variant === "valid" ? "passed" : "error",
+  );
+  if (variant === "valid") {
+    assert.ok(provider.received.length > 0);
+  } else {
+    assert.equal(
+      providerSelection(report.configuration.effective.settings, variant)[
+        variant
+      ],
+      undefined,
+    );
+  }
+}
+
+for (const variant of ["valid", "default", "defaultModel"]) {
+  test(`explicit provider report sanitizes ${variant} selection`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "outcome-explicit-report-"));
+    const provider = await startScriptedProvider("fix-media-type");
+    const originalExitCode = process.exitCode;
+    const config = join(root, "provider.json");
+    const selected = {
+      default: "local",
+      providers: [
+        {
+          name: "local",
+          type: "ollama",
+          host: provider.host,
+          apiKey: "SECRET_API_CANARY",
+          customOption: "SECRET_OPTION_CANARY",
+          models: [
+            { name: "Harness", key: "scripted", contextWindowTokens: 32768 },
+          ],
+          defaultModel: "scripted",
+        },
+      ],
+    };
+    try {
       const configuration = structuredClone(selected);
-      if (variant === "default")
-        configuration.default = { apiKey: "SECRET_SELECTION_CANARY" };
-      if (variant === "defaultModel")
-        configuration.providers[0].defaultModel = {
-          apiKey: "SECRET_SELECTION_CANARY",
-        };
+      const selection = providerSelection(configuration, variant);
+      if (variant !== "valid")
+        selection[variant] = { apiKey: "SECRET_SELECTION_CANARY" };
       await writeFile(config, JSON.stringify(configuration));
       const output = join(root, `${variant}.json`);
       await runCommand(["run", output, "1", "--provider-config", config], {
@@ -148,28 +168,14 @@ test("explicit provider reports omit private fields and malformed selection valu
         report.trials[0].configurationIdentity,
         report.configuration.identity,
       );
-      assert.equal(
-        report.trials[0].outcome,
-        variant === "valid" ? "passed" : "error",
-      );
-      if (variant === "default")
-        assert.equal(
-          report.configuration.effective.settings.default,
-          undefined,
-        );
-      if (variant === "defaultModel")
-        assert.equal(
-          report.configuration.effective.settings.providers[0].defaultModel,
-          undefined,
-        );
+      assertProviderSelection(report, variant, provider);
+    } finally {
+      process.exitCode = originalExitCode;
+      await provider.close();
+      await rm(root, { recursive: true, force: true });
     }
-    assert.ok(provider.received.length > 0);
-  } finally {
-    process.exitCode = originalExitCode;
-    await provider.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+  });
+}
 
 test("offline mixed outcomes retain scheduled denominators and configuration labels", () => {
   const report = {
