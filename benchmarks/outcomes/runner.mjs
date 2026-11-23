@@ -161,6 +161,19 @@ async function executeTrial(row, root, provider, options) {
   await recordGrade(row, trial, state, options);
 }
 
+async function observeResult(root, row, options) {
+  if (!root || !options.observeTrial) return;
+  try {
+    row.trace = await options.observeTrial(join(root, "home"));
+  } catch {
+    row.trace = {
+      observedAt: new Date().toISOString(),
+      completeness: "unavailable",
+      runs: [],
+    };
+  }
+}
+
 async function runTrial(task, index, options) {
   const row = {
     task,
@@ -180,17 +193,7 @@ async function runTrial(task, index, options) {
   } catch (error) {
     row.reason = `trial failed: ${error.message}`;
   } finally {
-    if (root && options.observeTrial) {
-      try {
-        row.trace = await options.observeTrial(join(root, "home"));
-      } catch {
-        row.trace = {
-          observedAt: new Date().toISOString(),
-          completeness: "unavailable",
-          runs: [],
-        };
-      }
-    }
+    await observeResult(root, row, options);
     await cleanupTrial(provider, root, row);
     row.endedAt = new Date().toISOString();
   }

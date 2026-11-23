@@ -11,29 +11,37 @@ const tasks = [
   "permission-denial",
 ];
 
+function sanitizedSettings(selected) {
+  return {
+    default: selected.default,
+    providers: selected.providers?.map(
+      ({ name, type, defaultModel, models }) => ({
+        name,
+        type,
+        defaultModel,
+        models: models?.map(({ key, contextWindowTokens }) => ({
+          key,
+          contextWindowTokens,
+        })),
+      }),
+    ),
+  };
+}
+
+function scriptedSettings({ scriptedMode = "repair" }) {
+  return { provider: "scripted", model: "scripted", mode: scriptedMode };
+}
+
+function reportLabel({ label, providerConfig }) {
+  return label ?? (providerConfig ? "explicit-provider" : "scripted");
+}
+
 // Deliberately omit free-form provider fields, endpoints, credentials and prompts.
 function configuration(options) {
   const selected = options.providerConfig;
   const settings = selected
-    ? {
-        default: selected.default,
-        providers: selected.providers?.map(
-          ({ name, type, defaultModel, models }) => ({
-            name,
-            type,
-            defaultModel,
-            models: models?.map(({ key, contextWindowTokens }) => ({
-              key,
-              contextWindowTokens,
-            })),
-          }),
-        ),
-      }
-    : {
-        provider: "scripted",
-        model: "scripted",
-        mode: options.scriptedMode ?? "repair",
-      };
+    ? sanitizedSettings(selected)
+    : scriptedSettings(options);
   const effective = {
     settings,
     permissions: "accept-edits",
@@ -42,7 +50,7 @@ function configuration(options) {
     safetyRules: "fixture-v1",
   };
   return {
-    label: options.label ?? (selected ? "explicit-provider" : "scripted"),
+    label: reportLabel(options),
     identity: createHash("sha256")
       .update(JSON.stringify(effective))
       .digest("hex"),
@@ -51,7 +59,7 @@ function configuration(options) {
 }
 
 async function observeTrial(home) {
-  const { inspectTraceJournal } = await import("../../dist/trace/index.js");
+  const { inspectTraceJournal } = await import("@propio-ai/agent/trace");
   const root = join(home, ".propio/sessions");
   const names = await readdir(root, { recursive: true });
   const runs = [];
@@ -105,10 +113,14 @@ export function summarize(report) {
   };
 }
 
-export async function runReport(options = {}) {
-  const repeats = options.repeats ?? 2;
+function repeatCount({ repeats = 2 }) {
   if (!Number.isSafeInteger(repeats) || repeats < 1)
     throw new Error("repeats must be a positive integer");
+  return repeats;
+}
+
+export async function runReport(options = {}) {
+  const repeats = repeatCount(options);
   const selectedTasks = options.tasks ?? tasks;
   const report = {
     version: 1,
@@ -131,22 +143,46 @@ export async function runReport(options = {}) {
     tasks: scheduledTasks,
     observeTrial,
   });
+  for (const row of report.trials) {
+    row.configuration = report.configuration.label;
+    row.configurationIdentity = report.configuration.identity;
+  }
   report.endedAt = new Date().toISOString();
   report.summary = summarize(report);
   return report;
 }
 
-export function compareReports(left, right) {
+function matchingFixtures(left, right) {
+  return (
+    left.taskSetVersion === right.taskSetVersion &&
+    JSON.stringify(left.tasks) === JSON.stringify(right.tasks)
+  );
+}
+
+function reportDeltas(a, b, tasks) {
+  return {
+    percentagePoints: 100 * (b.overall.passRate - a.overall.passRate),
+    tasks: Object.fromEntries(
+      tasks.map((task) => [
+        task,
+        100 * (b.tasks[task].passRate - a.tasks[task].passRate),
+      ]),
+    ),
+  };
+}
+
+function compatibilityIssues(left, right) {
   const issues = [];
-  if (left.version !== 1 || right.version !== 1)
+  if (![left.version, right.version].every((version) => version === 1))
     issues.push("unsupported report version");
-  if (
-    left.taskSetVersion !== right.taskSetVersion ||
-    JSON.stringify(left.tasks) !== JSON.stringify(right.tasks)
-  )
-    issues.push("incompatible fixtures");
+  if (!matchingFixtures(left, right)) issues.push("incompatible fixtures");
   if (JSON.stringify(left.schedule) !== JSON.stringify(right.schedule))
     issues.push("incompatible trial schedules");
+  return issues;
+}
+
+export function compareReports(left, right) {
+  const issues = compatibilityIssues(left, right);
   const a = summarize(left),
     b = summarize(right);
   if (a.overall.missing || b.overall.missing) issues.push("missing trials");
@@ -156,38 +192,40 @@ export function compareReports(left, right) {
     configurations: [left.configuration, right.configuration],
     left: a,
     right: b,
-    percentagePoints: issues.length
-      ? null
-      : 100 * (b.overall.passRate - a.overall.passRate),
-    tasks: issues.length
-      ? null
-      : Object.fromEntries(
-          left.tasks.map((task) => [
-            task,
-            100 * (b.tasks[task].passRate - a.tasks[task].passRate),
-          ]),
-        ),
+    ...(issues.length
+      ? { percentagePoints: null, tasks: null }
+      : reportDeltas(a, b, left.tasks)),
   };
 }
 
-async function main(args) {
-  if (args[0] === "compare" && args.length === 3) {
-    const reports = await Promise.all(
-      args
-        .slice(1)
-        .map(async (path) => JSON.parse(await readFile(path, "utf8"))),
-    );
-    const comparison = compareReports(...reports);
-    console.log(JSON.stringify(comparison, null, 2));
-    if (!comparison.compatible) process.exitCode = 1;
-    return;
-  }
-  if (args[0] !== "run" || !args[1] || (args.length !== 3 && args.length !== 5))
+async function compareCommand(args) {
+  const reports = await Promise.all(
+    args.slice(1).map(async (path) => JSON.parse(await readFile(path, "utf8"))),
+  );
+  const comparison = compareReports(...reports);
+  console.log(JSON.stringify(comparison, null, 2));
+  if (!comparison.compatible) process.exitCode = 1;
+}
+
+function validRunPrefix(args) {
+  return args[0] === "run" && Boolean(args[1]);
+}
+
+function validRunShape(args) {
+  return [3, 5].includes(args.length) && validRunPrefix(args);
+}
+
+function validateRunArguments(args) {
+  if (!validRunShape(args))
     throw new Error(
       "Usage: report.mjs run OUTPUT REPEATS [--provider-config PATH] | compare LEFT RIGHT",
     );
   if (args.length === 5 && args[3] !== "--provider-config")
     throw new Error("Expected --provider-config");
+}
+
+async function runCommand(args) {
+  validateRunArguments(args);
   const providerConfig = args[4]
     ? JSON.parse(await readFile(args[4], "utf8"))
     : undefined;
@@ -198,6 +236,11 @@ async function main(args) {
   console.log(JSON.stringify(report.summary, null, 2));
   if (report.trials.some((row) => row.outcome !== "passed"))
     process.exitCode = 1;
+}
+
+async function main(args) {
+  if (args[0] === "compare" && args.length === 3) return compareCommand(args);
+  return runCommand(args);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url))

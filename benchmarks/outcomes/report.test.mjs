@@ -1,3 +1,8 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compareReports, runReport, summarize } from "./report.mjs";
@@ -58,4 +63,60 @@ test("failed and errored trials remain in denominators and configurations differ
       "incompatible trial schedules",
     ),
   );
+});
+
+test("documented run and compare commands persist repeated credential-free reports", async () => {
+  const root = await mkdtemp(join(tmpdir(), "outcome-report-command-"));
+  const execute = promisify(execFile);
+  const command = "benchmarks/outcomes/report.mjs";
+  const left = join(root, "left.json");
+  const right = join(root, "right.json");
+  try {
+    for (const output of [left, right]) {
+      await execute(process.execPath, [command, "run", output, "2"], {
+        timeout: 60000,
+      });
+      const report = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(report.summary.overall.scheduled, 8);
+      assert.equal(report.summary.overall.passed, 8);
+    }
+    const { stdout } = await execute(process.execPath, [
+      command,
+      "compare",
+      left,
+      right,
+    ]);
+    const comparison = JSON.parse(stdout);
+    assert.equal(comparison.compatible, true);
+    assert.equal(comparison.percentagePoints, 0);
+    assert.equal(Object.keys(comparison.tasks).length, 4);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline mixed outcomes retain scheduled denominators and configuration labels", () => {
+  const report = {
+    version: 1,
+    taskSetVersion: 1,
+    tasks: ["fixture"],
+    configuration: { label: "mixed", identity: "configuration-a" },
+    schedule: [1, 2, 3, 4].map((trial) => ({ task: "fixture", trial })),
+    trials: ["passed", "failed", "error"].map((outcome, index) => ({
+      task: "fixture",
+      trial: index + 1,
+      outcome,
+    })),
+  };
+  assert.deepEqual(summarize(report).overall, {
+    scheduled: 4,
+    passed: 1,
+    missing: 1,
+    errors: 1,
+    passRate: 0.25,
+  });
+  const comparison = compareReports(report, report);
+  assert.equal(comparison.percentagePoints, null);
+  assert.deepEqual(comparison.issues, ["missing trials"]);
+  assert.equal(comparison.configurations[0].identity, "configuration-a");
 });

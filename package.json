@@ -120,7 +120,9 @@
     "sandbox:host": "node dist/auth/openai/sandboxHost.js",
     "eval:outcomes": "node benchmarks/outcomes/runner.mjs",
     "test:outcomes:safety": "node --test benchmarks/outcomes/safety.test.mjs",
-    "test:outcomes:runner": "node --test benchmarks/outcomes/runner.test.mjs"
+    "test:outcomes:runner": "node --test benchmarks/outcomes/runner.test.mjs",
+    "eval:outcomes:report": "node benchmarks/outcomes/report.mjs",
+    "test:outcomes:report": "node --test benchmarks/outcomes/report.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
