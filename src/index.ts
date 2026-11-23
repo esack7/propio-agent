@@ -138,7 +138,8 @@ const HELP_TEXT = `Usage: propio [options]
        propio setup openai
        propio trace <list|show|export|verify> [options]
 
-Trace commands inspect local journals offline; use propio trace --help.
+Use propio trace --help for the diagnostic workflow, /trace, /usage, and
+shell journals. Trace commands inspect local journals offline.
 
 OpenAI setup explicitly chooses API billing or Continue with ChatGPT.
 /account manages registrations; /model selects account, access and model.
@@ -159,6 +160,8 @@ Options:
   --show-trace        Deprecated alias for --show-turn-details (visibility only)
   --trace-capture <standard|full>
                       Capture level: CLI > env > runtime settings > standard
+                      Full capture can store private prompts, commands, output,
+                      and workspace files. See propio trace --help.
   --show-context-stats
                       Print compact context stats after each turn
   --show-prompt-plan  Print prompt plan summary each time a request is built

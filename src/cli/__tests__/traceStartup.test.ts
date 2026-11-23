@@ -125,7 +125,19 @@ it("prints trace help without normal startup", () => {
   const help = cli(["trace", "--help"]);
   expect(help.status).toBe(0);
   expect(help.stderr).toBe("");
-  expect(help.stdout).toContain("propio trace list");
+  for (const text of [
+    "propio trace list",
+    "propio trace show",
+    "propio trace export",
+    "propio trace verify",
+    "failed turn with its trace show hint",
+    "/trace opens the latest foreground turn",
+    "/usage shows",
+    "! shell command has its own journal",
+    "private prompts, shell commands and output",
+    "Reasoning and cache counts can overlap",
+  ])
+    expect(help.stdout).toContain(text);
 });
 it.each(["--show-turn-details", "--show-trace"])(
   "accepts %s with capture in credential-free help without startup",
@@ -133,6 +145,8 @@ it.each(["--show-turn-details", "--show-trace"])(
     const result = cli(["--help", flag, "--trace-capture", "standard"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Full capture can store private prompts");
+    expect(result.stdout).toContain("propio trace --help");
     for (const name of [
       "--trace-capture",
       "--show-turn-details",
