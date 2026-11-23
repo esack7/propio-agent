@@ -23,9 +23,21 @@ const TRACE_HELP = `Usage:
   propio trace export <run> --output <new-directory> [--session <id>] [--full] [--json]
   propio trace verify <bundle-directory> [--json]
 
-Offline commands use the current workspace's journals. Run IDs are exact.
-Export defaults to standard redacted metadata; --full includes captured private material.
-Show and list never read captured material. Missing measurements remain unknown.
+Diagnose a failed turn with its trace show hint. Use list to find an exact run ID,
+show to inspect its timeline, export to save a bundle, and verify to check it.
+Offline commands use the current workspace's journals. Add --session to
+disambiguate a run. List and show read metadata without opening private material.
+
+At the prompt, /trace opens the latest foreground turn and /usage shows
+provider usage across the current session, including summaries and retries.
+Missing measurements are unknown. Reasoning and cache counts can overlap
+with input or output totals, so keep those counts separate when summing tokens.
+
+Each nonempty ! shell command has its own journal in the active session.
+Standard capture keeps shell metadata and lengths. Full capture can store
+private prompts, shell commands and output, tool output, and workspace files.
+Export defaults to redacted metadata. Use --full to include captured private
+material only when needed.
 `;
 
 type Command = "list" | "show" | "export" | "verify";

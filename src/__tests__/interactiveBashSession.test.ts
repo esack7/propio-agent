@@ -1,3 +1,10 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Agent } from "../agent.js";
+import { testProvidersConfig, userSubmission } from "./testHelpers.js";
+import { JsonlTraceJournal, RunTraceRecorder } from "../trace/index.js";
+import { inspectSessionUsage } from "../cli/sessionInspection.js";
 import { submittedPromptResult } from "../ui/__tests__/promptComposerTestHelpers.js";
 import {
   jest,
@@ -29,6 +36,8 @@ jest.unstable_mockModule("../ui/promptComposer.js", () => ({
   })),
 }));
 
+const { processBashCommand: actualProcessBashCommand } =
+  await import("../ui/processBashCommand.js");
 jest.unstable_mockModule("../ui/processBashCommand.js", () => ({
   processBashCommand: mockProcessBashCommand,
 }));
@@ -78,6 +87,11 @@ function createMockUi() {
   return {
     isJsonMode: () => false,
     getPromptOutputStream: () => process.stderr,
+    error: jest.fn(),
+    status: jest.fn(),
+    bashCommand: jest.fn(),
+    bashOutput: jest.fn(),
+    clearEphemeralSurfaces: jest.fn(),
     command: jest.fn(),
     info: jest.fn(),
     success: jest.fn(),
@@ -92,6 +106,13 @@ function createMockUi() {
 
 function createMockAgent() {
   return {
+    createOperatorShellTraceRun: jest.fn(() => ({
+      recorder: {
+        identity: { sessionId: "active", runId: "shell" },
+        record: jest.fn(),
+      },
+      close: jest.fn(),
+    })),
     streamChat: jest.fn(),
     listUserInvocableSkills: () => [],
     setApprovalChannel: jest.fn(),
@@ -171,6 +192,68 @@ describe("runInteractiveSession bash routing", () => {
 
     return { agent, ui };
   }
+
+  it("wires an actual credential-free shell command to the active agent journal", async () => {
+    mockProcessBashCommand.mockImplementation(actualProcessBashCommand);
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "shell-wiring-"));
+    try {
+      const root = path.join(directory, "traces");
+      const agent = new Agent({
+        providersConfig: testProvidersConfig,
+        cwd: directory,
+        homeDir: directory,
+        mcpConfig: { mcpServers: {} },
+        sessionsDir: directory,
+        createTraceRun: (identity) => {
+          const journal = new JsonlTraceJournal(
+            path.join(root, identity.sessionId, `${identity.runId}.jsonl`),
+          );
+          return {
+            recorder: new RunTraceRecorder(identity, journal),
+            close: () => journal.close(),
+          };
+        },
+      });
+      Object.assign(agent, {
+        provider: {
+          name: "fixture",
+          getCapabilities: () => ({ contextWindowTokens: 128000 }),
+          async *streamChat() {
+            yield { delta: "ok" };
+          },
+        },
+      });
+      await agent.streamChat(userSubmission("hello"), () => {});
+      const foreground = agent.getSessionTraceIdentity();
+      expect(foreground.runId).toBeDefined();
+      const ui = createMockUi();
+      await runInteractiveSession(
+        agent,
+        ui as never,
+        "/tmp/providers.json",
+        createAbortStateController(ui as never),
+        {
+          showToolCalls: true,
+          showThinking: true,
+          showStatus: false,
+          showReasoningSummary: false,
+          showContextStats: false,
+          showPromptPlan: false,
+        },
+        createRuntimeConfig(),
+      );
+      expect(agent.getSessionTraceIdentity()).toEqual(foreground);
+      const usage = inspectSessionUsage(root, foreground.sessionId);
+      const shell = usage.runs.find((run) =>
+        run.events.some((e) => e.type === "operator_shell_started"),
+      );
+      expect(shell?.complete).toBe(true);
+      expect(shell?.events.at(-1)?.type).toBe("operator_shell_completed");
+      expect(ui.bashOutput).toHaveBeenCalledWith(expect.any(String), "", 0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it("returns to prompt mode after a bash submission", async () => {
     const { agent } = await runBashRoutingSession();

@@ -821,6 +821,38 @@ stderr and leave stdout empty. JSON strings retain their data characters;
 consumers rendering them in a terminal must escape them. `--show-trace` remains
 an unrelated status/reasoning visibility flag and does not change capture.
 
+### Operator shell journals
+
+Each nonempty `!` command creates a separate run in the active session, attributed
+with `actor: user` and `source: operator_shell`. Mode policy is checked before
+execution. The journal records the working directory relative to the workspace root (`.`
+at the root and `[outside workspace]` for external directories), configured
+limits, elapsed duration, exit status, termination signal and output lengths.
+Each run has one terminal outcome, such as success, nonzero exit, timeout,
+launch failure, cancellation, policy denial or output truncation. Empty input
+creates no journal. Shell runs add no provider usage and leave the foreground
+model run available through `/trace`.
+
+Standard capture omits command and output text. Explicit full capture stores the
+already bounded shell output and command through the existing redacted private
+material path. Shell exports report the workspace baseline and diff as missing.
+Truncation cannot be recovered by exporting. Capture and sink failures preserve
+command execution, its output and its original error.
+
+After a shell command, use `propio trace list` to find its run, then
+`propio trace show RUN_ID --session SESSION_ID`. Diagnose before exporting:
+`propio trace export RUN_ID --session SESSION_ID --output ./shell-bundle`, then
+`propio trace verify ./shell-bundle`. Standard export omits private material;
+add `--full` only when it is needed and was captured. `/usage` continues to show
+measured provider tokens, with unknown metrics and overlapping cache/reasoning
+categories preserved, without monetary estimates. `--show-turn-details` and its
+deprecated `--show-trace` alias affect visibility only.
+
+Credential-free acceptance uses local shell execution and scripted provider/journal
+fixtures: `src/ui/__tests__/operatorShellTrace.test.ts`,
+`src/__tests__/interactiveBashSession.test.ts`, and the offline trace CLI tests.
+These require no provider credentials or paid calls.
+
 ### Private full trace capture
 
 Capture resolves `--trace-capture` > `PROPIO_TRACE_CAPTURE_LEVEL` > `runtime.traceCaptureLevel` in `~/.propio/settings.json` > `standard`. Values must be exactly `standard` or `full`; invalid effective values stop startup. Runtime configuration records the selected value and its origin. For example:

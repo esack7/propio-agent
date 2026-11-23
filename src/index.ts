@@ -84,6 +84,8 @@ import {
 } from "./ui/contextInspector.js";
 import {
   getDefaultSessionsDir,
+  getWorkspaceSessionsDir,
+  resolveWorkspaceRoot,
   findStaleMarkers,
   clearInProgressMarker,
 } from "./sessions/sessionHistory.js";
@@ -136,7 +138,8 @@ const HELP_TEXT = `Usage: propio [options]
        propio setup openai
        propio trace <list|show|export|verify> [options]
 
-Trace commands inspect local journals offline; use propio trace --help.
+Use propio trace --help for the diagnostic workflow, /trace, /usage, and
+shell journals. Trace commands inspect local journals offline.
 
 OpenAI setup explicitly chooses API billing or Continue with ChatGPT.
 /account manages registrations; /model selects account, access and model.
@@ -157,6 +160,8 @@ Options:
   --show-trace        Deprecated alias for --show-turn-details (visibility only)
   --trace-capture <standard|full>
                       Capture level: CLI > env > runtime settings > standard
+                      Full capture can store private prompts, commands, output,
+                      and workspace files. See propio trace --help.
   --show-context-stats
                       Print compact context stats after each turn
   --show-prompt-plan  Print prompt plan summary each time a request is built
@@ -1100,6 +1105,7 @@ export async function runInteractiveSession(
   visibility: VisibilityOptions,
   runtimeConfig: RuntimeConfig,
   sessionsDir = getDefaultSessionsDir(),
+  workspaceRoot = resolveWorkspaceRoot(),
 ): Promise<number> {
   const visibilityState = createSessionVisibilityState(visibility);
   const inputStream = process.stdin;
@@ -1235,7 +1241,9 @@ export async function runInteractiveSession(
         bashCancelListener.attach();
         try {
           await processBashCommand(trimmedText, ui, {
+            createTraceRun: () => agent.createOperatorShellTraceRun?.(),
             cwd: process.cwd(),
+            workspaceRoot,
             abortSignal: bashAbort.signal,
             agentMode: agent.getAgentMode?.() ?? "execute",
             ...shellRunOptions,
@@ -1505,6 +1513,7 @@ async function runInteractiveMode(options: {
   visibility: VisibilityOptions;
   runtimeConfig: RuntimeConfig;
   sessionsDir: string;
+  workspaceRoot: string;
 }): Promise<number> {
   return await runInteractiveSession(
     options.agent,
@@ -1514,6 +1523,7 @@ async function runInteractiveMode(options: {
     options.visibility,
     options.runtimeConfig,
     options.sessionsDir,
+    options.workspaceRoot,
   );
 }
 
@@ -1546,7 +1556,8 @@ async function runConfiguredSession(options: {
     options.ui.command("");
   }
 
-  const sessionsDir = getDefaultSessionsDir();
+  const workspaceRoot = resolveWorkspaceRoot();
+  const sessionsDir = getWorkspaceSessionsDir(workspaceRoot);
   handleStaleMarkers(sessionsDir, options.ui, options.diagnosticLogger);
   const resolvedRuntimeConfig = loadRuntimeConfigWithOrigins({
     cliOverrides: {
@@ -1600,6 +1611,7 @@ async function runConfiguredSession(options: {
           visibility: options.runtime.visibility,
           runtimeConfig,
           sessionsDir,
+          workspaceRoot,
         })
       : await handlePipeMode({
           agent,
