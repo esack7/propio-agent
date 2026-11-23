@@ -1,5 +1,21 @@
 import { createServer } from "node:http";
 
+function repairFiles(task) {
+  return;
+  task === "fix-media-type"
+    ? {
+        "types.json": {
+          html: "text/html",
+          png: "image/png",
+          svg: "image/svg+xml",
+        },
+      }
+    : {
+        "en.json": { open: "Open", close: "Close", save: "Save" },
+        "es.json": { open: "Abrir", close: "Cerrar", save: "Guardar" },
+      };
+}
+
 // A local Ollama-compatible endpoint: responses exercise the CLI's real tools.
 export async function startScriptedProvider(task, mode = "repair") {
   let requests = 0;
@@ -12,19 +28,7 @@ export async function startScriptedProvider(task, mode = "repair") {
       response.end(JSON.stringify({ error: "scripted startup failure" }));
       return;
     }
-    const files =
-      task === "fix-media-type"
-        ? {
-            "types.json": {
-              html: "text/html",
-              png: "image/png",
-              svg: "image/svg+xml",
-            },
-          }
-        : {
-            "en.json": { open: "Open", close: "Close", save: "Save" },
-            "es.json": { open: "Abrir", close: "Cerrar", save: "Guardar" },
-          };
+    const files = repairFiles(task);
     const tool_calls =
       requests === 1 && mode !== "noop"
         ? Object.entries(files).map(([path, value]) => ({

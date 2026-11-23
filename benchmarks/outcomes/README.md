@@ -14,7 +14,7 @@ Run the actual built CLI against both tasks with a credential-free, loopback-onl
 scripted Ollama endpoint:
 
 ```sh
-npm run build && node benchmarks/outcomes/runner.mjs
+npm run build && npm run eval:outcomes
 ```
 
 Each scheduled trial starts a separate CLI process in JSON/stdin mode with
@@ -32,4 +32,4 @@ selected configuration rather than inherited environment variables. Configuratio
 and raw CLI output are never printed in outcomes. The same deadline applies.
 
 After building, run runner integration coverage with
-`node --test benchmarks/outcomes/runner.test.mjs`.
+`npm run test:outcomes:runner`.

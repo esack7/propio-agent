@@ -42,6 +42,10 @@ test("missing startup workspace is visible and the next scheduled CLI trial runs
   });
   assert.equal(rows[0].outcome, "error");
   assert.match(rows[0].reason, /launch failed/);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].task, "extend-locales");
+  assert.equal(rows[1].trial, 2);
+  assert.equal(rows[1].code, 0);
   assert.equal(rows[1].outcome, "passed");
 });
 
@@ -62,6 +66,11 @@ test("grader I/O failure is visible and the next scheduled CLI trial runs", asyn
   });
   assert.equal(rows[0].outcome, "error");
   assert.match(rows[0].reason, /ELOOP/);
+  assert.equal(rows[0].code, 0, "CLI completed before grading failed");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].task, "extend-locales");
+  assert.equal(rows[1].trial, 2);
+  assert.equal(rows[1].code, 0);
   assert.equal(rows[1].outcome, "passed");
 });
 

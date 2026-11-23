@@ -9,32 +9,40 @@ import { startScriptedProvider } from "./scripted.mjs";
 const cli = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 
 function execute(workspace, home, prompt, timeoutMs, cliPath) {
+  const child = spawn(
+    process.execPath,
+    [cliPath, "--json", "--permissions", "accept-edits", "--max-retries", "0"],
+    {
+      cwd: workspace,
+      env: {
+        HOME: home,
+        USERPROFILE: home,
+        PATH: dirname(process.execPath),
+        TMPDIR: home,
+        NO_COLOR: "1",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  return waitForExit(child, prompt, timeoutMs);
+}
+
+function exitResult(code, signal, timedOut) {
+  if (timedOut) return { code, signal, error: "CLI timed out" };
+  if (code !== 0)
+    return {
+      code,
+      signal,
+      error: `CLI exited ${code} (${signal ?? "no signal"})`,
+    };
+  return { code, signal };
+}
+
+function waitForExit(child, prompt, timeoutMs) {
   return new Promise((resolve) => {
     let outputBytes = 0;
     let timedOut = false;
     let settled = false;
-    const child = spawn(
-      process.execPath,
-      [
-        cliPath,
-        "--json",
-        "--permissions",
-        "accept-edits",
-        "--max-retries",
-        "0",
-      ],
-      {
-        cwd: workspace,
-        env: {
-          HOME: home,
-          USERPROFILE: home,
-          PATH: dirname(process.execPath),
-          TMPDIR: home,
-          NO_COLOR: "1",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
     const finish = (result) => {
       if (settled) return;
       settled = true;
@@ -55,15 +63,7 @@ function execute(workspace, home, prompt, timeoutMs, cliPath) {
       finish({ error: `launch failed: ${error.message}` }),
     );
     child.on("close", (code, signal) =>
-      finish({
-        code,
-        signal,
-        ...(timedOut
-          ? { error: "CLI timed out" }
-          : code !== 0
-            ? { error: `CLI exited ${code} (${signal ?? "no signal"})` }
-            : {}),
-      }),
+      finish(exitResult(code, signal, timedOut)),
     );
     child.stdin.on("error", () => {});
     child.stdin.end(prompt);
@@ -76,6 +76,56 @@ async function configure(home, configuration) {
     join(home, ".propio/providers.json"),
     JSON.stringify(configuration),
   );
+}
+
+function trialConfiguration(explicit, provider) {
+  if (explicit) return explicit;
+  return {
+    default: "scripted",
+    providers: [
+      {
+        name: "scripted",
+        type: "ollama",
+        host: provider.host,
+        models: [
+          {
+            name: "Scripted harness",
+            key: "scripted",
+            contextWindowTokens: 32768,
+          },
+        ],
+        defaultModel: "scripted",
+      },
+    ],
+  };
+}
+
+async function recordGrade(row, result, trial, state, options) {
+  if (result.error) {
+    row.reason = result.error;
+    return;
+  }
+  await options.beforeGrade?.({ ...trial, ...state });
+  const grade = await (options.gradeTrial ?? gradeCodingTrial)(
+    trial.workspace,
+    row.task,
+  );
+  row.outcome = grade.passed ? "passed" : "failed";
+  if (grade.reason) row.reason = grade.reason;
+}
+
+async function cleanupTrial(provider, root, row) {
+  for (const cleanup of [
+    () => provider?.close(),
+    () => root && rm(root, { recursive: true, force: true }),
+  ]) {
+    try {
+      await cleanup();
+    } catch (error) {
+      row.cleanupError = error.message;
+      row.outcome = "error";
+    }
+  }
 }
 
 async function runTrial(task, index, options) {
@@ -94,24 +144,7 @@ async function runTrial(task, index, options) {
     const trial = await createCodingTrial(root, task);
     if (!options.providerConfig)
       provider = await startScriptedProvider(task, options.scriptedMode);
-    const configuration = options.providerConfig ?? {
-      default: "scripted",
-      providers: [
-        {
-          name: "scripted",
-          type: "ollama",
-          host: provider.host,
-          models: [
-            {
-              name: "Scripted harness",
-              key: "scripted",
-              contextWindowTokens: 32768,
-            },
-          ],
-          defaultModel: "scripted",
-        },
-      ],
-    };
+    const configuration = trialConfiguration(options.providerConfig, provider);
     await configure(home, configuration);
     await options.beforeRun?.({ ...trial, home, root, index });
     const result = await execute(
@@ -122,30 +155,11 @@ async function runTrial(task, index, options) {
       options.cliPath ?? cli,
     );
     Object.assign(row, result);
-    if (result.error) row.reason = result.error;
-    else {
-      await options.beforeGrade?.({ ...trial, home, root, index });
-      const grade = await (options.gradeTrial ?? gradeCodingTrial)(
-        trial.workspace,
-        task,
-      );
-      row.outcome = grade.passed ? "passed" : "failed";
-      if (grade.reason) row.reason = grade.reason;
-    }
+    await recordGrade(row, result, trial, { home, root, index }, options);
   } catch (error) {
     row.reason = `trial failed: ${error.message}`;
   } finally {
-    for (const cleanup of [
-      () => provider?.close(),
-      () => root && rm(root, { recursive: true, force: true }),
-    ]) {
-      try {
-        await cleanup();
-      } catch (error) {
-        row.cleanupError = error.message;
-        row.outcome = "error";
-      }
-    }
+    await cleanupTrial(provider, root, row);
   }
   return row;
 }
