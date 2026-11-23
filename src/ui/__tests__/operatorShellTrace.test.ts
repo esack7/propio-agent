@@ -78,14 +78,12 @@ describe("operator shell journal", () => {
 
   it("passes command and bounded result to full material capture", async () => {
     const f = fixture(true);
-    jest
-      .mocked(runShellCommand)
-      .mockResolvedValue({
-        stdout: "bounded",
-        stderr: "error",
-        exitCode: 1,
-        durationMs: 2,
-      });
+    jest.mocked(runShellCommand).mockResolvedValue({
+      stdout: "bounded",
+      stderr: "error",
+      exitCode: 1,
+      durationMs: 2,
+    });
     await processBashCommand("echo token", f.ui as never, {
       createTraceRun: f.createTraceRun,
     });
