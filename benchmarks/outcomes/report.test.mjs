@@ -102,6 +102,11 @@ test("documented run and compare commands persist repeated credential-free repor
   }
 });
 
+function reportHost(persisted) {
+  return JSON.parse(persisted).configuration.effective.settings.providers[0]
+    .host;
+}
+
 function providerSelection(configuration, variant) {
   return variant === "defaultModel"
     ? configuration.providers[0]
@@ -154,13 +159,24 @@ for (const variant of ["valid", "default", "defaultModel"]) {
         selection[variant] = { apiKey: "SECRET_SELECTION_CANARY" };
       await writeFile(config, JSON.stringify(configuration));
       const output = join(root, `${variant}.json`);
-      await runCommand(["run", output, "1", "--provider-config", config], {
-        tasks: ["fix-media-type"],
-        label: "local-evaluation",
-      });
+      await runCommand(
+        [
+          "run",
+          output,
+          "1",
+          "--provider-config",
+          config,
+          "--label",
+          "local-evaluation",
+        ],
+        {
+          tasks: ["fix-media-type"],
+          label: "local-evaluation",
+        },
+      );
       const persisted = await readFile(output, "utf8");
       assert.equal(persisted.includes("SECRET_"), false);
-      assert.equal(persisted.includes(provider.host), false);
+      assert.equal(reportHost(persisted), provider.host);
       const report = JSON.parse(persisted);
       assert.equal(report.configuration.label, "local-evaluation");
       assert.match(report.configuration.identity, /^[a-f0-9]{64}$/);
@@ -296,7 +312,10 @@ test("empty and gapped journals cannot claim complete measurements", async () =>
     assert.equal((await observeTrial(home)).completeness, "unavailable");
     const path = join(directory, "run.jsonl");
     await writeFile(path, "");
-    assert.equal((await observeTrial(home)).runs[0].captureComplete, false);
+    const emptyRun = (await observeTrial(home)).runs[0];
+    assert.equal(emptyRun.captureComplete, false);
+    assert.equal(emptyRun.runId, "run");
+    assert.equal(emptyRun.sessionId, "session");
     const event = (sequence, type) => ({
       version: 1,
       eventId: String(sequence),
@@ -359,5 +378,61 @@ test("empty and gapped journals cannot claim complete measurements", async () =>
     assert.notEqual(run.usage.completeness, "complete");
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("behavior settings distinguish identities without retaining endpoint secrets", async () => {
+  const provider = {
+    name: "local",
+    type: "ollama",
+    models: [],
+    host: "https://user:SECRET_PASSWORD@example.com/SECRET_PATH?token=SECRET_QUERY",
+    apiKey: "SECRET_KEY",
+  };
+  const report = (changes) =>
+    runReport({
+      tasks: [],
+      providerConfig: { providers: [{ ...provider, ...changes }] },
+    });
+  const baseline = await report({});
+  for (const changes of [
+    { region: "us-west-2" },
+    { fallbackModels: ["other"] },
+    { provider: { order: ["other"] } },
+    { host: "https://other.example.com" },
+  ]) {
+    assert.notEqual(
+      (await report(changes)).configuration.identity,
+      baseline.configuration.identity,
+    );
+  }
+  assert.equal(JSON.stringify(baseline).includes("SECRET_"), false);
+  assert.equal(
+    baseline.configuration.effective.settings.providers[0].host,
+    "https://example.com",
+  );
+  assert.equal(
+    (await report({ apiKey: "different-secret" })).configuration.identity,
+    baseline.configuration.identity,
+  );
+});
+
+test("empty provider path is rejected before trials or output creation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "outcome-empty-provider-"));
+  try {
+    const output = join(root, "report.json");
+    let started = false;
+    await assert.rejects(
+      runCommand(["run", output, "2", "--provider-config", ""], {
+        beforeRun: () => {
+          started = true;
+        },
+      }),
+      /nonempty/,
+    );
+    assert.equal(started, false);
+    await assert.rejects(readFile(output), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

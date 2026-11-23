@@ -62,7 +62,7 @@ node benchmarks/outcomes/report.mjs run /tmp/outcomes-b.json 2
 node benchmarks/outcomes/report.mjs compare /tmp/outcomes-a.json /tmp/outcomes-b.json
 ```
 
-Append `--provider-config /path/to/providers.json` to the run command to explicitly
+Append `--provider-config /path/to/providers.json --label candidate` to the run command to explicitly
 opt into external evaluation. Scripted reports measure harness behavior only.
 Reports retain all scheduled outcomes, including errors, start/end timestamps,
 configuration identity and sanitized settings. Trace snapshots retain run/request/
@@ -75,8 +75,13 @@ Pass rates use every scheduled trial, including missing rows, as the denominator
 Comparison reports per-task and overall percentage-point changes, retains both
 configuration identities, and refuses a delta for incompatible fixture versions,
 schedules or missing trials. Configuration labels may differ intentionally.
-Reports omit endpoints and free-form provider options; their identity covers the
-reported settings, not secret values. Keep the original selected configuration
+Reports allowlist provider/model selections, region, fallback models, routing order
+and routing booleans. HTTP(S) endpoints retain only their origin (scheme, host and
+port); user information, paths, queries and fragments are omitted. Free-form
+options and credentials are omitted. Identity covers these reported settings,
+not secret values. Use distinct `--label` values for configurations whose behavior
+differs in omitted options or endpoint paths. Empty provider paths are rejected.
+The run summary includes the configuration label and identity. Keep the original selected configuration
 privately when reproducing external runs. Task set version 1 names these four
 fixtures; increment it when their inputs or grading semantics change.
 

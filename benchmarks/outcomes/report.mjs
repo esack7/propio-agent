@@ -15,22 +15,60 @@ const tasks = [
   "permission-denial",
 ];
 
+function endpointIdentity(value) {
+  if (typeof value !== "string") return undefined;
+  try {
+    const endpoint = new URL(value);
+    return ["http:", "https:"].includes(endpoint.protocol)
+      ? endpoint.origin
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function stringList(value) {
+  return Array.isArray(value)
+    ? value.filter((item) => typeof item === "string")
+    : undefined;
+}
+
+function typedValue(value, type) {
+  return typeof value === type ? value : undefined;
+}
+
+function sanitizedRouting(routing) {
+  if (!routing) return undefined;
+  return {
+    order: stringList(routing.order),
+    allowFallbacks: typedValue(routing.allowFallbacks, "boolean"),
+    requireParameters: typedValue(routing.requireParameters, "boolean"),
+  };
+}
+
+function sanitizedProvider(provider) {
+  const { name, type, defaultModel, models, region, fallbackModels } = provider;
+  return {
+    name,
+    type,
+    defaultModel: typedValue(defaultModel, "string"),
+    models: models?.map(({ key, contextWindowTokens }) => ({
+      key,
+      contextWindowTokens,
+    })),
+    region: typedValue(region, "string"),
+    fallbackModels: stringList(fallbackModels),
+    host: endpointIdentity(provider.host),
+    baseURL: endpointIdentity(provider.baseURL),
+    provider: sanitizedRouting(provider.provider),
+  };
+}
+
 function sanitizedSettings(selected) {
   return {
     default:
       typeof selected.default === "string" ? selected.default : undefined,
-    providers: selected.providers?.map(
-      ({ name, type, defaultModel, models }) => ({
-        name,
-        type,
-        defaultModel:
-          typeof defaultModel === "string" ? defaultModel : undefined,
-        models: models?.map(({ key, contextWindowTokens }) => ({
-          key,
-          contextWindowTokens,
-        })),
-      }),
-    ),
+    providers: selected.providers?.map(sanitizedProvider),
   };
 }
 
@@ -42,7 +80,7 @@ function reportLabel({ label, providerConfig }) {
   return label ?? (providerConfig ? "explicit-provider" : "scripted");
 }
 
-// Deliberately omit free-form provider fields, endpoints, credentials and prompts.
+// Hash only the allowlisted report settings, never raw credentials or prompts.
 function configuration(options) {
   const selected = options.providerConfig;
   const settings = selected
@@ -71,9 +109,17 @@ function traceCompleteness(runs) {
   return runs.every((run) => run.captureComplete) ? "complete" : "partial";
 }
 
+function traceIdentity(inspection, sessionId, filename) {
+  return {
+    sessionId: inspection.sessionId ?? sessionId,
+    runId: inspection.runId ?? filename.slice(0, -6),
+  };
+}
+
 export async function observeTrial(home) {
+  const modulePath = "../../dist/cli/traceSnapshot.js";
   const { readTraceSnapshot } = await import(
-    new URL("../../dist/cli/traceSnapshot.js", import.meta.url).href
+    new URL(modulePath, import.meta.url).href
   );
   const root = join(home, ".propio/sessions");
   const names = await readdir(root, { recursive: true });
@@ -89,8 +135,7 @@ export async function observeTrial(home) {
     );
     const measurements = inspection.providerMeasurements;
     runs.push({
-      sessionId: inspection.sessionId,
-      runId: inspection.runId,
+      ...traceIdentity(inspection, sessionId, filename),
       firstObservedAt: inspection.firstObservedAt ?? null,
       lastObservedAt: inspection.lastObservedAt ?? null,
       captureComplete: inspection.captureComplete,
@@ -236,24 +281,41 @@ function validRunPrefix(args) {
   return args[0] === "run" && Boolean(args[1]);
 }
 
+function validateRunOption(flag, value, flags) {
+  if (!["--provider-config", "--label"].includes(flag) || flag in flags)
+    throw new Error("Unexpected or duplicate run option");
+  if (!value?.trim()) throw new Error(`${flag} requires a nonempty value`);
+}
+
 function validRunShape(args) {
-  return [3, 5].includes(args.length) && validRunPrefix(args);
+  return validRunPrefix(args) && args.length >= 3 && args.length % 2 === 1;
 }
 
 function validateRunArguments(args) {
   if (!validRunShape(args))
     throw new Error(
-      "Usage: report.mjs run OUTPUT REPEATS [--provider-config PATH] | compare LEFT RIGHT",
+      "Usage: report.mjs run OUTPUT REPEATS [--provider-config PATH] [--label LABEL] | compare LEFT RIGHT",
     );
-  if (args.length === 5 && args[3] !== "--provider-config")
-    throw new Error("Expected --provider-config");
+  const flags = {};
+  for (let index = 3; index < args.length; index += 2) {
+    const flag = args[index];
+    validateRunOption(flag, args[index + 1], flags);
+    flags[flag] = args[index + 1];
+  }
+  return flags;
+}
+
+function labeledOptions(options, flags) {
+  return { ...options, label: flags["--label"] ?? options.label };
 }
 
 export async function runCommand(args, options = {}) {
-  validateRunArguments(args);
-  const providerConfig = args[4]
-    ? await readConfigurationJson(args[4])
-    : undefined;
+  const flags = validateRunArguments(args);
+  options = labeledOptions(options, flags);
+  const providerConfig =
+    flags["--provider-config"] !== undefined
+      ? await readConfigurationJson(flags["--provider-config"])
+      : undefined;
   const repeats = repeatCount({ repeats: Number(args[2]) });
   configuration({ ...options, repeats, providerConfig });
   const output = await open(args[1], "wx");
@@ -267,7 +329,13 @@ export async function runCommand(args, options = {}) {
   } finally {
     await output.close();
   }
-  console.log(JSON.stringify(report.summary, null, 2));
+  console.log(
+    JSON.stringify(
+      { configuration: report.configuration, ...report.summary },
+      null,
+      2,
+    ),
+  );
   if (report.trials.some((row) => row.outcome !== "passed"))
     process.exitCode = 1;
 }
