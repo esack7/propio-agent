@@ -100,11 +100,7 @@ function trialConfiguration(explicit, provider) {
   };
 }
 
-async function recordGrade(row, result, trial, state, options) {
-  if (result.error) {
-    row.reason = result.error;
-    return;
-  }
+async function recordGrade(row, trial, state, options) {
   await options.beforeGrade?.({ ...trial, ...state });
   const grade = await (options.gradeTrial ?? gradeCodingTrial)(
     trial.workspace,
@@ -128,6 +124,28 @@ async function cleanupTrial(provider, root, row) {
   }
 }
 
+async function executeTrial(row, root, provider, options) {
+  const home = join(root, "home");
+  await mkdir(home);
+  const trial = await createCodingTrial(root, row.task);
+  const state = { home, root, index: row.trial - 1 };
+  await configure(home, trialConfiguration(options.providerConfig, provider));
+  await options.beforeRun?.({ ...trial, ...state });
+  const result = await execute(
+    trial.workspace,
+    home,
+    trial.prompt,
+    options.timeoutMs ?? 15000,
+    options.cliPath ?? cli,
+  );
+  Object.assign(row, result);
+  if (result.error) {
+    row.reason = result.error;
+    return;
+  }
+  await recordGrade(row, trial, state, options);
+}
+
 async function runTrial(task, index, options) {
   const row = {
     task,
@@ -139,23 +157,9 @@ async function runTrial(task, index, options) {
   let provider;
   try {
     root = await mkdtemp(join(options.parent ?? tmpdir(), "propio-eval-"));
-    const home = join(root, "home");
-    await mkdir(home);
-    const trial = await createCodingTrial(root, task);
     if (!options.providerConfig)
       provider = await startScriptedProvider(task, options.scriptedMode);
-    const configuration = trialConfiguration(options.providerConfig, provider);
-    await configure(home, configuration);
-    await options.beforeRun?.({ ...trial, home, root, index });
-    const result = await execute(
-      trial.workspace,
-      home,
-      trial.prompt,
-      options.timeoutMs ?? 15000,
-      options.cliPath ?? cli,
-    );
-    Object.assign(row, result);
-    await recordGrade(row, result, trial, { home, root, index }, options);
+    await executeTrial(row, root, provider, options);
   } catch (error) {
     row.reason = `trial failed: ${error.message}`;
   } finally {
