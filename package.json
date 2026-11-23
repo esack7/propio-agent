@@ -117,7 +117,9 @@
     "example:session-protocol": "node examples/session-protocol-consumer.mjs",
     "example:policy": "node examples/policy-consumer.mjs",
     "benchmark:trace": "npm run build && node benchmarks/traceCapture.mjs",
-    "sandbox:host": "node dist/auth/openai/sandboxHost.js"
+    "sandbox:host": "node dist/auth/openai/sandboxHost.js",
+    "eval:outcomes": "node benchmarks/outcomes/runner.mjs",
+    "test:outcomes:runner": "node --test benchmarks/outcomes/runner.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",

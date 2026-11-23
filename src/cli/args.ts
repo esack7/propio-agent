@@ -27,6 +27,7 @@ export type CliAgentMode = "execute" | "plan" | "discover";
 export interface ParsedCliArgs {
   flags: {
     sandbox: boolean;
+    workspaceInstructionsOnly: boolean;
     json: boolean;
     plain: boolean;
     noInteractive: boolean;
@@ -92,6 +93,7 @@ type BoolFlagKeys = {
 
 const BOOL_FLAG_MAP: ReadonlyMap<string, BoolFlagKeys> = new Map([
   [CLI_FLAG_JSON, "json"],
+  ["--workspace-instructions-only", "workspaceInstructionsOnly"],
   [CLI_FLAG_PLAIN, "plain"],
   [CLI_FLAG_NO_INTERACTIVE, "noInteractive"],
   [CLI_FLAG_SHOW_STATUS, "showStatus"],
@@ -213,6 +215,7 @@ export function parseCliArgs(args: ReadonlyArray<string>): ParsedCliArgs {
   const parseErrors: string[] = [];
   const flags: ParsedCliArgs["flags"] = {
     sandbox: false,
+    workspaceInstructionsOnly: false,
     json: false,
     plain: false,
     noInteractive: false,
