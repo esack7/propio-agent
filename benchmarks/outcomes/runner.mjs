@@ -201,6 +201,7 @@ async function runTrial(task, index, options) {
 }
 
 export async function runTrials(options = {}) {
+  validateProviderConfiguration(options.providerConfig);
   const {
     tasks = [
       "fix-media-type",
@@ -253,12 +254,15 @@ function isConfigurationObject(configuration) {
   );
 }
 
-async function readConfigurationJson(path) {
+export function validateProviderConfiguration(configuration) {
+  if (configuration !== undefined && !isConfigurationObject(configuration))
+    throw new Error("Expected a provider configuration object");
+}
+
+export async function readConfigurationJson(path) {
   try {
     const configuration = JSON.parse(await readFile(path, "utf8"));
-    if (!isConfigurationObject(configuration)) {
-      throw new Error("Expected a provider configuration object");
-    }
+    validateProviderConfiguration(configuration);
     return configuration;
   } catch {
     throw new Error("Unable to read provider configuration as JSON");

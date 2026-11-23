@@ -48,7 +48,7 @@ function toolCalls(task, mode, requests) {
   }));
 }
 
-function sendResponse(response, calls) {
+function sendResponse(response, calls, mode, requests) {
   response.setHeader("Content-Type", "application/x-ndjson");
   response.end(
     JSON.stringify({
@@ -58,6 +58,9 @@ function sendResponse(response, calls) {
         content: calls ? "" : "Done",
         ...(calls ? { tool_calls: calls } : {}),
       },
+      ...(mode === "partial-usage" && requests === 1
+        ? { prompt_eval_count: 7 }
+        : {}),
       done: true,
       done_reason: "stop",
     }) + "\n",
@@ -79,7 +82,7 @@ export async function startScriptedProvider(task, mode = "repair") {
       response.end(JSON.stringify({ error: "scripted startup failure" }));
       return;
     }
-    sendResponse(response, toolCalls(task, mode, requests));
+    sendResponse(response, toolCalls(task, mode, requests), mode, requests);
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);

@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, open } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runTrials } from "./runner.mjs";
+import {
+  readConfigurationJson,
+  runTrials,
+  validateProviderConfiguration,
+} from "./runner.mjs";
 
 const tasks = [
   "fix-media-type",
@@ -47,7 +51,9 @@ function configuration(options) {
     permissions: "accept-edits",
     timeoutMs: options.timeoutMs ?? 15000,
     traceCapture: "standard",
-    safetyRules: "fixture-v1",
+    safetyRules: options.permitSafetyWrite
+      ? "fixture-v1-permit-safety-write"
+      : "fixture-v1",
   };
   return {
     label: reportLabel(options),
@@ -120,6 +126,7 @@ function repeatCount({ repeats = 2 }) {
 }
 
 export async function runReport(options = {}) {
+  validateProviderConfiguration(options.providerConfig);
   const repeats = repeatCount(options);
   const selectedTasks = options.tasks ?? tasks;
   const report = {
@@ -224,15 +231,20 @@ function validateRunArguments(args) {
     throw new Error("Expected --provider-config");
 }
 
-async function runCommand(args) {
+export async function runCommand(args, options = {}) {
   validateRunArguments(args);
   const providerConfig = args[4]
-    ? JSON.parse(await readFile(args[4], "utf8"))
+    ? await readConfigurationJson(args[4])
     : undefined;
-  const report = await runReport({ repeats: Number(args[2]), providerConfig });
-  await writeFile(args[1], JSON.stringify(report, null, 2) + "\n", {
-    flag: "wx",
-  });
+  const repeats = repeatCount({ repeats: Number(args[2]) });
+  const output = await open(args[1], "wx");
+  let report;
+  try {
+    report = await runReport({ ...options, repeats, providerConfig });
+    await output.writeFile(JSON.stringify(report, null, 2) + "\n");
+  } finally {
+    await output.close();
+  }
   console.log(JSON.stringify(report.summary, null, 2));
   if (report.trials.some((row) => row.outcome !== "passed"))
     process.exitCode = 1;

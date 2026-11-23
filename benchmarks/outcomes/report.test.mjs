@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compareReports, runReport, summarize } from "./report.mjs";
+import { compareReports, runCommand, runReport, summarize } from "./report.mjs";
 
 test("repeated scripted trials retain trace observation and unknown usage", async () => {
   const report = await runReport({ tasks: ["fix-media-type"], repeats: 2 });
@@ -119,4 +119,89 @@ test("offline mixed outcomes retain scheduled denominators and configuration lab
   assert.equal(comparison.percentagePoints, null);
   assert.deepEqual(comparison.issues, ["missing trials"]);
   assert.equal(comparison.configurations[0].identity, "configuration-a");
+});
+
+test("non-object provider configurations are rejected before scheduling", async () => {
+  for (const providerConfig of [null, [], "scripted", 1, false]) {
+    await assert.rejects(runReport({ providerConfig }), /configuration object/);
+  }
+  const root = await mkdtemp(join(tmpdir(), "outcome-invalid-config-"));
+  try {
+    const config = join(root, "provider.json");
+    const output = join(root, "report.json");
+    await writeFile(config, "null");
+    let started = false;
+    await assert.rejects(
+      runCommand(["run", output, "1", "--provider-config", config], {
+        beforeRun: () => {
+          started = true;
+        },
+      }),
+      /provider configuration/,
+    );
+    assert.equal(started, false);
+    await assert.rejects(readFile(output), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("safety override records a distinct effective configuration", async () => {
+  const denied = await runReport({ tasks: [], repeats: 1 });
+  const permitted = await runReport({
+    tasks: [],
+    repeats: 1,
+    permitSafetyWrite: true,
+  });
+  assert.notEqual(
+    denied.configuration.identity,
+    permitted.configuration.identity,
+  );
+  assert.equal(denied.configuration.effective.safetyRules, "fixture-v1");
+  assert.equal(
+    permitted.configuration.effective.safetyRules,
+    "fixture-v1-permit-safety-write",
+  );
+});
+
+test("existing report output prevents trials and preserves its contents", async () => {
+  const root = await mkdtemp(join(tmpdir(), "outcome-existing-output-"));
+  try {
+    const output = join(root, "report.json");
+    await writeFile(output, "existing report");
+    let started = false;
+    await assert.rejects(
+      runCommand(["run", output, "1"], {
+        beforeRun: () => {
+          started = true;
+        },
+      }),
+      { code: "EEXIST" },
+    );
+    assert.equal(started, false);
+    assert.equal(await readFile(output, "utf8"), "existing report");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("partial scripted usage retains measured input without inventing other metrics", async () => {
+  const report = await runReport({
+    tasks: ["fix-media-type"],
+    repeats: 1,
+    scriptedMode: "partial-usage",
+  });
+  assert.equal(report.summary.overall.passed, 1);
+  const { usage } = report.trials[0].trace.runs[0];
+  assert.equal(usage.usage.inputTokens, 7);
+  assert.equal(usage.completeness, "partial");
+  assert.equal(usage.metricCompleteness.inputTokens, "partial");
+  assert.equal(usage.metricCompleteness.outputTokens, "unavailable");
+  assert.equal(usage.usage.outputTokens, undefined);
+  for (const [metric, completeness] of Object.entries(
+    usage.metricCompleteness,
+  )) {
+    if (completeness === "unavailable")
+      assert.equal(usage.usage[metric], undefined);
+  }
 });
