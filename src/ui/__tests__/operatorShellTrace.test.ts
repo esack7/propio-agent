@@ -188,8 +188,8 @@ function expectShellTraceOutput(directory: string, sessionId: string): void {
     if (json) {
       const shown = JSON.parse(output);
       expect(shown.timeline.at(-1).durationMs).toEqual(expect.any(Number));
-      expect(shown.timeline[0].metadata.cwd).toBe(".");
-    } else expect(output).toContain("decision=allow");
+      expect(shown.timeline[0].metadata.cwd).toBe("nested");
+    } else expect(output).toContain("decision=allowed");
   }
 }
 
@@ -211,6 +211,25 @@ function expectFullShellMaterial(
   expect(materialFiles).toHaveLength(2);
   for (const file of materialFiles)
     expect(fs.existsSync(path.join(destination, file.path))).toBe(true);
+}
+
+function expectStandardShellOmission(journalPath: string, destination: string) {
+  const manifest = exportTraceJournal(journalPath, destination);
+  expect(verifyTraceExport(destination)).toEqual([]);
+  expect(manifest.files.map((file) => file.path)).toEqual(["events.jsonl"]);
+  expect(manifest.material).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ kind: "tool_arguments", status: "omitted" }),
+      expect.objectContaining({ kind: "tool_result", status: "omitted" }),
+    ]),
+  );
+  const contents = fs.readFileSync(
+    path.join(destination, "events.jsonl"),
+    "utf8",
+  );
+  expect(contents).not.toMatch(
+    /"material":|\.materials\/|echo private|private output/,
+  );
 }
 
 it.each(["standard", "full"] as const)(
@@ -276,7 +295,8 @@ it.each(["standard", "full"] as const)(
         durationMs: 4,
       });
       await processBashCommand("echo private", f.ui as never, {
-        cwd: process.cwd(),
+        cwd: path.join(directory, "nested"),
+        workspaceRoot: directory,
         createTraceRun: () => ({
           recorder: new RunTraceRecorder(
             { sessionId, runId: "shell" },
@@ -292,10 +312,17 @@ it.each(["standard", "full"] as const)(
       const shell = usage.runs.find((run) => run.runId === "shell")!;
       expect(shell.complete).toBe(true);
       expect(shell.events[0]?.payload).toMatchObject({
-        cwd: ".",
+        cwd: "nested",
         source: "operator_shell",
       });
-      expect(shell.events[1]?.payload).toMatchObject({ decision: "allow" });
+      expect(shell.events[1]).toMatchObject({
+        component: "policy",
+        payload: {
+          decision: "allowed",
+          actor: "application",
+          source: "operator_shell",
+        },
+      });
       expect(shell.events.at(-1)?.payload).toMatchObject({ durationMs: 4 });
       expect(fs.readFileSync(journalPath, "utf8")).not.toContain(
         "private output",
@@ -306,8 +333,13 @@ it.each(["standard", "full"] as const)(
         captureLevel: "full",
       });
       expect(verifyTraceExport(destination)).toEqual([]);
-      if (captureLevel === "full")
+      if (captureLevel === "full") {
         expectFullShellMaterial(manifest, destination);
+        expectStandardShellOmission(
+          journalPath,
+          path.join(directory, "standard-bundle"),
+        );
+      }
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -356,10 +388,59 @@ it.each(["policy_denied", "cancelled"])(
       expect(events).toHaveLength(3);
       expect(events.at(-1)?.payload).toMatchObject({ outcome });
       expect(events[1]?.payload).toMatchObject({
-        decision: outcome === "policy_denied" ? "deny" : "allow",
+        decision: outcome === "policy_denied" ? "denied" : "allowed",
       });
       expect(runShellCommand).toHaveBeenCalledTimes(
         outcome === "policy_denied" ? 0 : 1,
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(["policy_denied", "launch_failed"] as const)(
+  "full exports do not expect shell output for %s",
+  async (outcome) => {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "operator-no-output-"),
+    );
+    try {
+      const journalPath = path.join(directory, "shell.jsonl");
+      const journal = new JsonlTraceJournal(journalPath, {
+        captureLevel: "full",
+      });
+      const f = fixture();
+      const error = new Error("spawn failed");
+      jest.mocked(runShellCommand).mockRejectedValue(error);
+      const command = processBashCommand("rm file", f.ui as never, {
+        agentMode: outcome === "policy_denied" ? "plan" : "execute",
+        cwd: path.join(directory, "outside"),
+        workspaceRoot: path.join(directory, "workspace"),
+        createTraceRun: () => ({
+          recorder: new RunTraceRecorder(
+            { sessionId: "session", runId: "shell" },
+            journal,
+          ),
+          close: () => journal.close(),
+        }),
+      });
+      if (outcome === "launch_failed")
+        await expect(command).rejects.toBe(error);
+      else await command;
+      const destination = path.join(directory, "bundle");
+      const manifest = exportTraceJournal(journalPath, destination, {
+        captureLevel: "full",
+      });
+      expect(verifyTraceExport(destination)).toEqual([]);
+      expect(manifest.material).toContainEqual(
+        expect.objectContaining({ kind: "tool_arguments", status: "included" }),
+      );
+      expect(manifest.material).not.toContainEqual(
+        expect.objectContaining({ kind: "tool_result" }),
+      );
+      expect(fs.readFileSync(journalPath, "utf8")).toContain(
+        '"cwd":"[outside workspace]"',
       );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

@@ -12,10 +12,23 @@ import type { TerminalUi } from "./terminal.js";
 export interface ProcessBashCommandOptions {
   createTraceRun?: () => AgentTraceRun | undefined;
   cwd?: string;
+  workspaceRoot?: string;
   abortSignal?: AbortSignal;
   timeoutMs?: number;
   maxBuffer?: number;
   agentMode?: AgentMode;
+}
+
+function traceWorkingDirectory(cwd: string, workspaceRoot: string): string {
+  const relative = path.relative(workspaceRoot, cwd);
+  if (
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    return "[outside workspace]";
+  }
+  return relative || ".";
 }
 
 export async function processBashCommand(
@@ -29,8 +42,9 @@ export async function processBashCommand(
   }
 
   const mode = options.agentMode ?? "execute";
+  const cwd = options.cwd ?? process.cwd();
   const trace = startOperatorShellTrace(options.createTraceRun, trimmed, {
-    cwd: path.relative(process.cwd(), options.cwd ?? process.cwd()) || ".",
+    cwd: traceWorkingDirectory(cwd, options.workspaceRoot ?? process.cwd()),
     mode,
     timeoutMs: options.timeoutMs,
     maxBuffer: options.maxBuffer,
@@ -52,7 +66,7 @@ export async function processBashCommand(
     launchAttempted = true;
     const result = await runShellCommand({
       command: trimmed,
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       timeoutMs: options.timeoutMs,
       maxBuffer: options.maxBuffer,
       abortSignal: options.abortSignal,

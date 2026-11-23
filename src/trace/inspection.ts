@@ -256,7 +256,35 @@ function exportRevisions(events: ReadonlyArray<TraceEventEnvelope>) {
   };
 }
 
+function operatorShellMaterialKind(
+  event: TraceEventEnvelope,
+): "tool_arguments" | "tool_result" | undefined {
+  if (event.type === "operator_shell_started") return "tool_arguments";
+  if (
+    !event.type.startsWith("operator_shell_") ||
+    !isTraceOperationTerminal(event.type)
+  )
+    return undefined;
+  const payload = payloadRecord(event);
+  // A returned shell result carries lengths even when its material sink failed.
+  if (
+    payload.outcome !== "launch_failed" &&
+    typeof payload.stdoutLength === "number"
+  )
+    return "tool_result";
+}
+
 function eventMaterial(event: TraceEventEnvelope): TraceExportMaterial[] {
+  const shellKind = operatorShellMaterialKind(event);
+  if (shellKind)
+    return [
+      {
+        kind: shellKind,
+        status: "omitted",
+        eventId: event.eventId,
+        reason: "operator_shell_material_excluded_by_standard_capture",
+      },
+    ];
   if (
     event.type === "tool_execution_completed" ||
     event.type === "tool_execution_failed"
@@ -380,6 +408,15 @@ function capturedMaterial(
   const captures: CapturedMaterial[] = [];
   for (const event of events) {
     const payload = payloadRecord(event);
+    const shellKind = operatorShellMaterialKind(event);
+    if (shellKind) {
+      captures.push({
+        kind: shellKind,
+        eventId: event.eventId,
+        ref: materialReference(payload.material),
+      });
+      continue;
+    }
     const fields: ReadonlyArray<{
       type: string;
       key: string;
@@ -413,22 +450,6 @@ function capturedMaterial(
       {
         type: "tool_execution_failed",
         key: "resultMaterial",
-        kind: "tool_result",
-      },
-      {
-        type: "operator_shell_started",
-        key: "material",
-        kind: "tool_arguments",
-      },
-      {
-        type: "operator_shell_completed",
-        key: "material",
-        kind: "tool_result",
-      },
-      { type: "operator_shell_failed", key: "material", kind: "tool_result" },
-      {
-        type: "operator_shell_cancelled",
-        key: "material",
         kind: "tool_result",
       },
       {

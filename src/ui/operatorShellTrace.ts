@@ -45,7 +45,7 @@ export function startOperatorShellTrace(
     observe(() =>
       run?.recorder.record(
         {
-          component: "cli",
+          component: type === "tool_policy_decision" ? "policy" : "cli",
           type,
           identity: { operationId },
           payload: {
@@ -75,7 +75,8 @@ export function startOperatorShellTrace(
   return {
     policy(allowed: boolean) {
       record("tool_policy_decision", {
-        decision: allowed ? "allow" : "deny",
+        decision: allowed ? "allowed" : "denied",
+        actor: "application",
         rule: `mode:${metadata.mode}`,
         toolName: "bash",
       });
@@ -93,9 +94,10 @@ export function startOperatorShellTrace(
           outcome,
           durationMs: result?.durationMs ?? performance.now() - started,
           ...resultMetadata(result),
-          material: result
-            ? capture({ stdout: result.stdout, stderr: result.stderr })
-            : undefined,
+          material:
+            result && !result.launchFailed
+              ? capture({ stdout: result.stdout, stderr: result.stderr })
+              : undefined,
         },
       );
       observe(() => run?.close?.());
