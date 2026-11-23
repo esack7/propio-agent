@@ -169,11 +169,6 @@ function measurementLines(inspection: TraceInspection): string[] {
   return [
     `Requests: ${m.requestCount}; attempts: ${m.attemptCount}; retry attempts: ${m.retries.attemptCount}`,
     `Tokens (${m.usage.completeness}): input=${tokens?.inputTokens ?? "unknown"} output=${tokens?.outputTokens ?? "unknown"} total=${tokens?.totalTokens ?? "unknown"}`,
-    `Cost: ${m.cost.completeness}; unpriced attempts: ${m.cost.unpricedAttempts.length}`,
-    ...m.cost.currencies.map(
-      (cost) =>
-        `  ${cost.currency ?? "unknown currency"}: reported=${cost.providerReportedAmount ?? "unknown"} estimated=${cost.locallyEstimatedAmount ?? "unknown"}`,
-    ),
   ];
 }
 

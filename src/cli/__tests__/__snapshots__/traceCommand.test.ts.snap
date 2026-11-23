@@ -5,8 +5,6 @@ exports[`shows a deterministic cancelled timeline 1`] = `
 Capture: complete; events: 6; started: 2026-11-14T10:00:00.000Z
 Requests: 1; attempts: 1; retry attempts: 0
 Tokens (complete): input=10 output=2 total=unknown
-Cost: complete; unpriced attempts: 0
-  USD: reported=0.2 estimated=unknown
 Timeline (sequence order; ms relative to first event):
 #1 +0ms agent/turn_started
   operationId=turn
@@ -33,8 +31,6 @@ exports[`shows a deterministic completed timeline 1`] = `
 Capture: complete; events: 6; started: 2026-11-14T10:00:00.000Z
 Requests: 1; attempts: 1; retry attempts: 0
 Tokens (complete): input=10 output=2 total=unknown
-Cost: complete; unpriced attempts: 0
-  USD: reported=0.2 estimated=unknown
 Timeline (sequence order; ms relative to first event):
 #1 +0ms agent/turn_started
   operationId=turn
@@ -61,8 +57,6 @@ exports[`shows a deterministic failed timeline 1`] = `
 Capture: complete; events: 6; started: 2026-11-14T10:00:00.000Z
 Requests: 1; attempts: 1; retry attempts: 0
 Tokens (complete): input=10 output=2 total=unknown
-Cost: complete; unpriced attempts: 0
-  USD: reported=0.2 estimated=unknown
 Timeline (sequence order; ms relative to first event):
 #1 +0ms agent/turn_started
   operationId=turn
@@ -90,8 +84,6 @@ Capture: incomplete; events: 5; started: 2026-11-14T10:00:00.000Z
 Warning: Capture is incomplete or still in progress
 Requests: 1; attempts: 1; retry attempts: 0
 Tokens (partial): input=10 output=2 total=unknown
-Cost: partial; unpriced attempts: 0
-  USD: reported=0.2 estimated=unknown
 Timeline (sequence order; ms relative to first event):
 #1 +0ms agent/turn_started
   operationId=turn

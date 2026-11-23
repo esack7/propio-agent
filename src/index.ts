@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import {
+  sessionInspectionLines,
+  foregroundTraceHint,
+} from "./cli/sessionInspection.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { runOpenAiAuthCommand, runOpenAiSetup } from "./auth/openai/cli.js";
@@ -266,10 +270,31 @@ function writeNonInteractiveSuccessResponse(
   });
 }
 
+function failureTrace(agent: AgentType) {
+  try {
+    return foregroundTraceHint(
+      path.join(getDefaultSessionsDir(), "traces"),
+      agent.getSessionTraceIdentity(),
+    );
+  } catch {
+    return { available: false as const };
+  }
+}
+
+function writeFailureTrace(agent: AgentType, ui: TerminalUi): void {
+  const trace = failureTrace(agent);
+  ui.info(
+    trace.available
+      ? `Trace ${trace.runId}: ${trace.command}`
+      : "No usable foreground trace available.",
+  );
+}
+
 function handleNonInteractiveStreamError(
   error: unknown,
   abortController: AbortController,
   ui: TerminalUi,
+  agent: AgentType,
 ): number {
   if (abortController.signal.aborted || isAbortError(error)) {
     return 130;
@@ -277,9 +302,10 @@ function handleNonInteractiveStreamError(
   const message = error instanceof Error ? error.message : "Unknown error";
   ui.setMode("error");
   if (ui.isJsonMode()) {
-    ui.writeJson({ error: message });
+    ui.writeJson({ error: message, trace: failureTrace(agent) });
   } else {
     ui.error(`Error: ${message}`);
+    writeFailureTrace(agent, ui);
   }
   return 1;
 }
@@ -324,7 +350,7 @@ export async function runNonInteractiveSession(
     writeNonInteractiveSuccessResponse(result, ui, visibility);
     return 0;
   } catch (error) {
-    return handleNonInteractiveStreamError(error, abortController, ui);
+    return handleNonInteractiveStreamError(error, abortController, ui, agent);
   } finally {
     setCurrentAbortController(null);
   }
@@ -449,6 +475,7 @@ export async function runInteractiveTurn(
       `${options.errorPrefix}${error instanceof Error ? error.message : "Unknown error"}`,
     );
     ui.command("");
+    writeFailureTrace(agent, ui);
     ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
     context.setActiveTurnInput?.(null);
@@ -982,6 +1009,22 @@ export async function handleInteractiveSubmission(
     handleSkillSubmission,
     handleModeSubmission,
     handlePlanSubmission,
+    async (text, { agent, ui }) => {
+      if (text !== "/trace" && text !== "/usage") return undefined;
+      try {
+        for (const line of sessionInspectionLines(
+          path.join(getDefaultSessionsDir(), "traces"),
+          agent.getSessionTraceIdentity(),
+          text,
+        ))
+          ui.info(line);
+      } catch (error) {
+        ui.error(
+          error instanceof Error ? error.message : "Trace inspection failed",
+        );
+      }
+      return null;
+    },
     handleContextSubmission,
     handleSessionSubmission,
     handleToolsSubmission,

@@ -35,7 +35,7 @@ export interface ProviderPriceCalculation {
   readonly calculationInputs: Readonly<Record<string, unknown>>;
 }
 
-/** Application-owned pricing. The trace layer never infers rates or free usage. */
+/** @deprecated Compatibility only. New consumers should price exported measurements externally. */
 export interface ProviderPricingResolver {
   readonly metadata: ProviderPricingResolverMetadata;
   resolve(input: ProviderPricingInput): ProviderPriceCalculation | undefined;

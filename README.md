@@ -743,7 +743,7 @@ Tool policy records include a keyed fingerprint of the reviewed arguments, match
 
 The provisional `@propio-ai/agent/trace` entry point exposes explicit-path `JsonlTraceJournal`, `RunTraceRecorder`, tolerant journal reading, offline inspection, portable export, and bundle hash verification. Importing it performs no discovery or provider/tool execution. `inspectTraceJournal` retains valid records when the final JSONL line is truncated and marks unresolved operations unknown. `exportTraceJournal` writes a versioned manifest, its `manifest.sha256` checksum, and relative `events.jsonl`; `verifyTraceExport` rejects unsafe paths, file hash/size mismatches, changed manifests, and v3 run claims that disagree with the exported events. For offline bundle inspection, call `inspectTraceExport(bundleDirectory)`: it verifies the bundle and applies the source-journal warnings retained in the manifest. Calling `inspectTraceJournal` on the bundle's `events.jsonl` alone sees only its valid exported events and cannot know that a malformed source line was dropped. Export re-applies standard redaction and omits malformed journal lines while recording their warnings, so an interrupted bundle remains inspectable after moving it away from the original machine. Consequently, `events.jsonl` is a redacted re-serialization, not a byte-for-byte copy of the source journal. The checksum and consistency checks detect accidental or one-sided edits, but a bundle is not authenticated against someone who can rewrite both its contents and checksums; that requires a signature or an externally trusted digest.
 
-Inspection also deduplicates cumulative provider reports and aggregates usage across the run, request purpose, and retry attempts. Completeness is reported as `complete`, `partial`, or `unavailable`, including for each token metric; a missing metric never becomes zero, and unfinished or truncated captures cannot claim complete totals. Provider-reported charges remain separate from local estimates. Applications may pass a `ProviderPricingResolver` to `inspectTraceJournal` or `exportTraceJournal`; every persisted estimate includes the resolver source, version, effective date, requested and actual model context, endpoint class, usage, and redacted calculation inputs. No default resolver is installed, and locally hosted inference is not assumed to be free. Export manifest version 3 adds operation summaries, configuration/prompt and package revision metadata, a per-event material inventory, and completeness warnings; verification still accepts versions 1 and 2 with their weaker legacy checks. The journal material entry is marked `partial` when malformed source lines were dropped. Standard exports intentionally omit raw tool results, prompt artifacts, and provider payloads. The optional `artifact_pruned` reason code allows embedding applications to report pruning, but the built-in agent does not currently emit artifact-pruning records. Workspace baseline and diff are currently reported as missing because they are not recorded; a bundle must not be interpreted as a full workspace snapshot.
+Inspection also deduplicates cumulative provider reports and aggregates usage across the run, request purpose, and retry attempts. Completeness is reported as `complete`, `partial`, or `unavailable`, including for each token metric; a missing metric never becomes zero, and unfinished or truncated captures cannot claim complete totals. Historical provider-reported charges remain separate from local estimates for compatibility. The deprecated pricing interface lets existing applications pass a `ProviderPricingResolver` to `inspectTraceJournal` or `exportTraceJournal`; every persisted estimate includes the resolver source, version, effective date, requested and actual model context, endpoint class, usage, and redacted calculation inputs. No default resolver is installed, and locally hosted inference is not assumed to be free. Export manifest version 3 adds operation summaries, configuration/prompt and package revision metadata, a per-event material inventory, and completeness warnings; verification still accepts versions 1 and 2 with their weaker legacy checks. The journal material entry is marked `partial` when malformed source lines were dropped. Standard exports intentionally omit raw tool results, prompt artifacts, and provider payloads. The optional `artifact_pruned` reason code allows embedding applications to report pruning, but the built-in agent does not currently emit artifact-pruning records. Workspace baseline and diff are currently reported as missing because they are not recorded; a bundle must not be interpreted as a full workspace snapshot.
 
 The workspace limitation above applies to standard exports.
 
@@ -780,11 +780,10 @@ outside the limit; corruption after an unselected header is not inspected.
 The `omitted` count and `inspectionScope` describe runs outside the limit; normal
 truncation produces no warning and does not make the listed runs incomplete. An empty root is an empty list. Show orders events by sequence and includes
 relative times, operation/request/attempt relationships, tool policy decisions,
-known usage and per-currency reported costs. Text is escaped and wrapped for TTY output; piped output preserves whole lines; metadata previews are capped at 240 characters. Neither command opens
+known token and cache usage. Text is escaped and wrapped for TTY output; piped output preserves whole lines; metadata previews are capped at 240 characters. Neither command opens
 captured prompts, responses, or workspace material. Missing tokens and times are
 unknown; incomplete or still-running journals are explicitly marked. A complete
-capture can describe a failed or cancelled turn. No default pricing estimates are
-installed yet.
+capture can describe a failed or cancelled turn. Monetary totals are not presented by the CLI.
 
 Export requires a **new destination directory** whose parent exists; it refuses
 existing files, directories, and symlinks. Standard export is the default, even
@@ -1885,3 +1884,26 @@ sequence numbering is planned for the protocol-events slice.
 
 For numbered JSON session events, in-memory recording, and terminal replay, see
 [the session protocol guide](docs/session-protocol.md).
+
+### Current session diagnostics
+
+At the idle prompt, `/trace` inspects the latest foreground turn, even when a
+background summary finishes later. `/usage` reads only the current session's
+journals, including summary requests and retry attempts. Each metric retains its
+own completeness; unknown is not zero. Reasoning and cache categories may overlap
+input/output counts and must not be added into a synthetic total. In-progress
+summary journals are partial. Offline `trace show RUN_ID --session SESSION_ID
+--json` retains identities and observation timestamps for downstream analysis.
+
+Failed foreground turns retain their original error and, when a journal is
+readable, print a shell-safe `propio trace show` command. JSON errors include
+structured `trace` metadata; `available: false` means no usable journal was found.
+Cancellation remains distinct from failure.
+
+Pricing compatibility: `ProviderPricingResolver` and optional pricing arguments
+are deprecated compatibility interfaces. Existing recorded costs, estimates and
+old export fields remain readable and verifiable. No price tables or monetary
+CLI estimates are supplied. New consumers should export provider/model, purpose,
+request/attempt identities, timestamps, token/cache metrics and completeness, then
+apply their own historical prices outside this CLI. Cache-write duration is not
+measured and must not be inferred.
