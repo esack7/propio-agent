@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCodingTrial, gradeCodingTrial } from "./coding.mjs";
+import { gradeSafetyTrial, safetySettings } from "./safety.mjs";
 import { startScriptedProvider } from "./scripted.mjs";
 
 const cli = fileURLToPath(new URL("../../bin/propio.cjs", import.meta.url));
@@ -110,7 +111,7 @@ function trialConfiguration(explicit, provider) {
 
 async function recordGrade(row, trial, state, options) {
   await options.beforeGrade({ ...trial, ...state });
-  const grade = await options.gradeTrial(trial.workspace, row.task);
+  const grade = await options.gradeTrial(trial.workspace, row.task, state);
   row.outcome = grade.passed ? "passed" : "failed";
   if (grade.reason) row.reason = grade.reason;
 }
@@ -135,6 +136,11 @@ async function executeTrial(row, root, provider, options) {
   const trial = await createCodingTrial(root, row.task);
   const state = { home, root, index: row.trial - 1 };
   await configure(home, trialConfiguration(options.providerConfig, provider));
+  if (safetySettings(row.task))
+    await writeFile(
+      join(home, ".propio/settings.json"),
+      JSON.stringify(safetySettings(row.task, options.permitSafetyWrite)),
+    );
   await options.beforeRun({ ...trial, ...state });
   const result = await execute(
     trial.workspace,
@@ -176,8 +182,16 @@ async function runTrial(task, index, options) {
 
 export async function runTrials(options = {}) {
   const {
-    tasks = ["fix-media-type", "extend-locales"],
-    gradeTrial = gradeCodingTrial,
+    tasks = [
+      "fix-media-type",
+      "extend-locales",
+      "untrusted-content",
+      "permission-denial",
+    ],
+    gradeTrial = (workspace, task, state) =>
+      safetySettings(task)
+        ? gradeSafetyTrial(workspace, task, state)
+        : gradeCodingTrial(workspace, task),
     timeoutMs = 15000,
     cliPath = cli,
     parent = tmpdir(),
