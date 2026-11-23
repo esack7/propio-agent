@@ -48,16 +48,18 @@ function toolCalls(task, mode, requests) {
   }));
 }
 
+function assistantMessage(calls) {
+  return calls
+    ? { role: "assistant", content: "", tool_calls: calls }
+    : { role: "assistant", content: "Done" };
+}
+
 function sendResponse(response, calls, mode, requests) {
   response.setHeader("Content-Type", "application/x-ndjson");
   response.end(
     JSON.stringify({
       model: "scripted",
-      message: {
-        role: "assistant",
-        content: calls ? "" : "Done",
-        ...(calls ? { tool_calls: calls } : {}),
-      },
+      message: assistantMessage(calls),
       ...(mode === "partial-usage" && requests === 1
         ? { prompt_eval_count: 7 }
         : {}),
