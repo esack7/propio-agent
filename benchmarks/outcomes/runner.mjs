@@ -15,6 +15,8 @@ function execute(workspace, home, prompt, timeoutMs, cliPath) {
     [
       cliPath,
       "--json",
+      "--trace-capture",
+      "standard",
       "--workspace-instructions-only",
       "--permissions",
       "accept-edits",
@@ -113,7 +115,9 @@ async function recordGrade(row, trial, state, options) {
   await options.beforeGrade({ ...trial, ...state });
   const grade = await options.gradeTrial(trial.workspace, row.task, state);
   row.outcome = grade.passed ? "passed" : "failed";
-  if (grade.reason) row.reason = grade.reason;
+  row.reason =
+    grade.reason ??
+    (grade.passed ? "workspace grade passed" : "workspace grade failed");
 }
 
 async function cleanupTrial(provider, root, row) {
@@ -164,6 +168,7 @@ async function runTrial(task, index, options) {
     configuration:
       options.providerConfig === undefined ? "scripted" : "explicit-provider",
     outcome: "error",
+    startedAt: new Date().toISOString(),
   };
   let root;
   let provider;
@@ -175,7 +180,19 @@ async function runTrial(task, index, options) {
   } catch (error) {
     row.reason = `trial failed: ${error.message}`;
   } finally {
+    if (root && options.observeTrial) {
+      try {
+        row.trace = await options.observeTrial(join(root, "home"));
+      } catch {
+        row.trace = {
+          observedAt: new Date().toISOString(),
+          completeness: "unavailable",
+          runs: [],
+        };
+      }
+    }
     await cleanupTrial(provider, root, row);
+    row.endedAt = new Date().toISOString();
   }
   return row;
 }
