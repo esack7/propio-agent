@@ -42,6 +42,7 @@ export function discoverAgentsMdFiles(startDir?: string): string[] {
  */
 export async function discoverAgentsMdFilesAsync(
   startDir?: string,
+  workspaceOnly = false,
 ): Promise<string[]> {
   const start = startDir || process.cwd();
   const found: string[] = [];
@@ -58,7 +59,7 @@ export async function discoverAgentsMdFilesAsync(
     }
 
     const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) {
+    if (workspaceOnly || parentDir === currentDir) {
       break;
     }
 

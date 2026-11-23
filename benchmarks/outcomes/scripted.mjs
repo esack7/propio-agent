@@ -44,8 +44,11 @@ function sendResponse(response, calls) {
 // A local Ollama-compatible endpoint: responses exercise the CLI's real tools.
 export async function startScriptedProvider(task, mode = "repair") {
   let requests = 0;
+  const received = [];
   const server = createServer(async (request, response) => {
-    for await (const chunk of request) void chunk;
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    received.push(JSON.parse(body));
     requests++;
     if (mode === "hang") return;
     if (mode === "fail") {
@@ -60,6 +63,7 @@ export async function startScriptedProvider(task, mode = "repair") {
     server.listen(0, "127.0.0.1", resolve);
   });
   return {
+    received,
     host: `http://127.0.0.1:${server.address().port}`,
     close: () =>
       new Promise((resolve) => {

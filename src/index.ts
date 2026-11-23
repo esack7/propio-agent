@@ -148,6 +148,7 @@ Options:
   --sandbox           Run inside the Docker sandbox wrapper
   --json              Emit only JSON response payloads on stdout
   --plain             Disable ANSI color styling and spinner animation
+  --workspace-instructions-only  Load AGENTS.md only from the current directory
   --no-interactive    Disable prompts/spinners and read one prompt from stdin
   --permissions <preset>
                       Tool permissions: read-only, ask (default), accept-edits,
@@ -1415,9 +1416,10 @@ async function createInitializedAgent(
         ? Promise.resolve(setupProvidersConfig)
         : loadProvidersConfigAsync(configPath),
       loadMcpConfigAsync(mcpConfigPath),
-      discoverAgentsMdFilesAsync().then((agentsMdFiles) =>
-        loadAgentsMdContentAsync(agentsMdFiles),
-      ),
+      discoverAgentsMdFilesAsync(
+        undefined,
+        parsedArgs.flags.workspaceInstructionsOnly,
+      ).then((agentsMdFiles) => loadAgentsMdContentAsync(agentsMdFiles)),
     ]);
 
   const { providerRuntimeOptions, label } =

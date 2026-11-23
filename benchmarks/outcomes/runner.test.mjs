@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { gradeCodingTrial } from "./coding.mjs";
+import { startScriptedProvider } from "./scripted.mjs";
 import { runTrials } from "./runner.mjs";
 
 async function run(t, options = {}) {
@@ -119,5 +120,59 @@ for (const kind of [
     assert.equal(result.stdout, "");
     assert.ok(result.stderr.length > 0);
     assert.ok(!result.stderr.includes(secret));
+  });
+}
+
+for (const workspaceOnly of [true, false]) {
+  test(`built CLI ${workspaceOnly ? "excludes" : "retains"} ancestor instructions with explicit loopback config`, async (t) => {
+    const parent = await mkdtemp(join(tmpdir(), "propio-instructions-test-"));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    const marker = "INERT_ANCESTOR_INSTRUCTION_MARKER";
+    const control = "INERT_WORKSPACE_INSTRUCTION_CONTROL";
+    await writeFile(join(parent, "AGENTS.md"), marker);
+    const provider = await startScriptedProvider("fix-media-type");
+    t.after(() => provider.close());
+    const cliPath = join(parent, "ordinary-cli.mjs");
+    if (!workspaceOnly) {
+      const entry = new URL("../../dist/index.js", import.meta.url).href;
+      await writeFile(
+        cliPath,
+        `process.argv = process.argv.filter(arg => arg !== "--workspace-instructions-only"); await import(${JSON.stringify(entry)});`,
+      );
+    }
+    const rows = await runTrials({
+      parent,
+      tasks: ["fix-media-type"],
+      ...(workspaceOnly ? {} : { cliPath }),
+      providerConfig: {
+        default: "loopback",
+        providers: [
+          {
+            name: "loopback",
+            type: "ollama",
+            host: provider.host,
+            models: [
+              { name: "Scripted", key: "scripted", contextWindowTokens: 32768 },
+            ],
+            defaultModel: "scripted",
+          },
+        ],
+      },
+      beforeRun: ({ workspace }) =>
+        writeFile(join(workspace, "AGENTS.md"), control),
+      // The extra control file is deliberately outside the coding fixture manifest.
+      beforeGrade: ({ workspace }) => rm(join(workspace, "AGENTS.md")),
+    });
+    assert.equal(rows[0].configuration, "explicit-provider");
+    assert.equal(rows[0].outcome, "passed");
+    assert.ok(provider.received.length >= 2);
+    for (const request of provider.received) {
+      const system = request.messages
+        .filter((message) => message.role === "system")
+        .map((message) => message.content)
+        .join("\n");
+      assert.ok(system.includes(control));
+      assert.equal(system.includes(marker), !workspaceOnly);
+    }
   });
 }

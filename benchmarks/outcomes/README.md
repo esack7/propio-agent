@@ -19,16 +19,18 @@ npm run build && npm run eval:outcomes
 
 Each scheduled trial starts a separate CLI process in JSON/stdin mode with
 `accept-edits`, a fresh workspace and home, no inherited credentials or MCP
-configuration, and a 15-second deadline. Temporary state is removed after grading.
+configuration, workspace-only project instruction discovery, and a 15-second deadline. Temporary state is removed after grading.
 The JSON output retains failures and errors, including startup failure, nonzero
 exit, timeout, and grader I/O failure; later scheduled trials continue. Cleanup
-failures are reported separately. Scripted passes validate the harness and tool
+failures are reported as cleanupError and override the outcome to error. Scripted passes validate the harness and tool
 path, not model quality.
 
 External calls require explicit selection of a complete provider configuration:
 `node benchmarks/outcomes/runner.mjs --provider-config /path/to/providers.json`.
 Only that file is copied into the trial home; credentials must be supplied in the
-selected configuration rather than inherited environment variables. Configurations
+selected configuration rather than inherited environment variables. Providers relying
+on ambient credentials (for example Bedrock profiles) are not supported by this
+runner. Configurations
 and raw CLI output are never printed in outcomes. The same deadline applies.
 
 After building, run runner integration coverage with

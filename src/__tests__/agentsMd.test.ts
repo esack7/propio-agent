@@ -125,6 +125,20 @@ describe("agentsMd", () => {
   });
 
   describe("discoverAgentsMdFilesAsync()", () => {
+    it("limits opt-in discovery to the workspace while retaining default ancestors", async () => {
+      const testDir = fs.mkdtempSync(path.join(tempDir, "boundary-"));
+      const workspace = path.join(testDir, "isolated");
+      fs.mkdirSync(workspace, { recursive: true });
+      const ancestor = path.join(testDir, "AGENTS.md");
+      const local = path.join(workspace, "AGENTS.md");
+      fs.writeFileSync(ancestor, "INERT_ANCESTOR");
+      fs.writeFileSync(local, "INERT_CONTROL");
+      await expect(
+        discoverAgentsMdFilesAsync(workspace, true),
+      ).resolves.toEqual([local]);
+      expect(await discoverAgentsMdFilesAsync(workspace)).toContain(ancestor);
+    });
+
     it("should match sync discovery order for multiple AGENTS.md files", async () => {
       const rootDir = path.join(tempDir, "async-multi-level");
       const midDir = path.join(rootDir, "packages");

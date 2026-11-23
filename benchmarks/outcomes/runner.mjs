@@ -11,7 +11,15 @@ const cli = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
 function execute(workspace, home, prompt, timeoutMs, cliPath) {
   const child = spawn(
     process.execPath,
-    [cliPath, "--json", "--permissions", "accept-edits", "--max-retries", "0"],
+    [
+      cliPath,
+      "--json",
+      "--workspace-instructions-only",
+      "--permissions",
+      "accept-edits",
+      "--max-retries",
+      "0",
+    ],
     {
       cwd: workspace,
       env: {
