@@ -1914,10 +1914,10 @@ measured and must not be inferred.
 
 Each nonempty `!` command creates a separate run in the active session, attributed
 with `actor: user` and `source: operator_shell`. Mode policy is checked before
-execution. The journal records cwd, configured limits, elapsed duration, exit
+execution. The journal records cwd relative to the CLI working directory (`.` at its root), configured limits, elapsed duration, exit
 status, termination signal and output lengths, with one terminal outcome for
 success, nonzero exit, timeout, launch failure, cancellation, policy denial or
-output truncation. Empty commands create no journal. Shell runs add no provider
+output truncation (or an application failure before launch). Empty commands create no journal. Shell runs add no provider
 usage and do not replace the foreground model run selected by `/trace`.
 
 Standard capture omits command and output text. Explicit full capture stores the

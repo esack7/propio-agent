@@ -416,6 +416,22 @@ function capturedMaterial(
         kind: "tool_result",
       },
       {
+        type: "operator_shell_started",
+        key: "material",
+        kind: "tool_arguments",
+      },
+      {
+        type: "operator_shell_completed",
+        key: "material",
+        kind: "tool_result",
+      },
+      { type: "operator_shell_failed", key: "material", kind: "tool_result" },
+      {
+        type: "operator_shell_cancelled",
+        key: "material",
+        kind: "tool_result",
+      },
+      {
         type: "workspace_baseline_captured",
         key: "material",
         kind: "workspace_baseline",

@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import type { AgentTraceRun } from "../agent.js";
 import {
   startOperatorShellTrace,
@@ -29,7 +30,7 @@ export async function processBashCommand(
 
   const mode = options.agentMode ?? "execute";
   const trace = startOperatorShellTrace(options.createTraceRun, trimmed, {
-    cwd: options.cwd ?? process.cwd(),
+    cwd: path.relative(process.cwd(), options.cwd ?? process.cwd()) || ".",
     mode,
     timeoutMs: options.timeoutMs,
     maxBuffer: options.maxBuffer,
@@ -42,11 +43,13 @@ export async function processBashCommand(
     return;
   }
 
+  let launchAttempted = false;
   try {
     ui.setMode("running");
     ui.status(`Running: ${trimmed}`);
     ui.bashCommand(trimmed);
 
+    launchAttempted = true;
     const result = await runShellCommand({
       command: trimmed,
       cwd: options.cwd ?? process.cwd(),
@@ -58,7 +61,13 @@ export async function processBashCommand(
     trace.finish(operatorShellOutcome(result), result);
     ui.bashOutput(result.stdout, result.stderr, result.exitCode);
   } catch (error) {
-    trace.finish(options.abortSignal?.aborted ? "cancelled" : "launch_failed");
+    trace.finish(
+      options.abortSignal?.aborted
+        ? "cancelled"
+        : launchAttempted
+          ? "launch_failed"
+          : "failed",
+    );
     throw error;
   } finally {
     ui.clearEphemeralSurfaces();
