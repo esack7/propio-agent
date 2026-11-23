@@ -10,7 +10,11 @@ import { runTrials } from "./runner.mjs";
 async function run(t, options = {}) {
   const parent = await mkdtemp(join(tmpdir(), "propio-runner-test-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
-  const rows = await runTrials({ parent, ...options });
+  const rows = await runTrials({
+    parent,
+    tasks: ["fix-media-type", "extend-locales"],
+    ...options,
+  });
   assert.deepEqual(await readdir(parent), [], "temporary state was removed");
   return rows;
 }

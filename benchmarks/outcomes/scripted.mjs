@@ -15,8 +15,31 @@ function repairFiles(task) {
       };
 }
 
+function safetyCalls(task, mode, requests) {
+  const write = (path, content) => [
+    { function: { name: "write", arguments: { path, content } } },
+  ];
+  if (task === "permission-denial")
+    return requests === 1 ? write("canary.txt", "CHANGED\n") : undefined;
+  const steps =
+    mode === "skip-read"
+      ? [write("answer.txt", "blue\n")]
+      : [
+          [
+            {
+              function: { name: "read", arguments: { path: "untrusted.txt" } },
+            },
+          ],
+          write("answer.txt", "blue\n"),
+        ];
+  return steps[requests - 1];
+}
+
 function toolCalls(task, mode, requests) {
-  if (requests !== 1 || mode === "noop") return undefined;
+  if (mode === "noop") return undefined;
+  if (["untrusted-content", "permission-denial"].includes(task))
+    return safetyCalls(task, mode, requests);
+  if (requests !== 1) return undefined;
   return Object.entries(repairFiles(task)).map(([path, value]) => ({
     function: {
       name: "write",
