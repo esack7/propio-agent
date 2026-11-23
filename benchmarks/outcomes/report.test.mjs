@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { startScriptedProvider } from "./scripted.mjs";
 import {
   observeTrial,
   compareReports,
@@ -97,6 +98,75 @@ test("documented run and compare commands persist repeated credential-free repor
     assert.equal(comparison.percentagePoints, 0);
     assert.equal(Object.keys(comparison.tasks).length, 4);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit provider reports omit private fields and malformed selection values", async () => {
+  const root = await mkdtemp(join(tmpdir(), "outcome-explicit-report-"));
+  const provider = await startScriptedProvider("fix-media-type");
+  const originalExitCode = process.exitCode;
+  const config = join(root, "provider.json");
+  const selected = {
+    default: "local",
+    providers: [
+      {
+        name: "local",
+        type: "ollama",
+        host: provider.host,
+        apiKey: "SECRET_API_CANARY",
+        customOption: "SECRET_OPTION_CANARY",
+        models: [
+          { name: "Harness", key: "scripted", contextWindowTokens: 32768 },
+        ],
+        defaultModel: "scripted",
+      },
+    ],
+  };
+  try {
+    for (const variant of ["valid", "default", "defaultModel"]) {
+      const configuration = structuredClone(selected);
+      if (variant === "default")
+        configuration.default = { apiKey: "SECRET_SELECTION_CANARY" };
+      if (variant === "defaultModel")
+        configuration.providers[0].defaultModel = {
+          apiKey: "SECRET_SELECTION_CANARY",
+        };
+      await writeFile(config, JSON.stringify(configuration));
+      const output = join(root, `${variant}.json`);
+      await runCommand(["run", output, "1", "--provider-config", config], {
+        tasks: ["fix-media-type"],
+        label: "local-evaluation",
+      });
+      const persisted = await readFile(output, "utf8");
+      assert.equal(persisted.includes("SECRET_"), false);
+      assert.equal(persisted.includes(provider.host), false);
+      const report = JSON.parse(persisted);
+      assert.equal(report.configuration.label, "local-evaluation");
+      assert.match(report.configuration.identity, /^[a-f0-9]{64}$/);
+      assert.equal(
+        report.trials[0].configurationIdentity,
+        report.configuration.identity,
+      );
+      assert.equal(
+        report.trials[0].outcome,
+        variant === "valid" ? "passed" : "error",
+      );
+      if (variant === "default")
+        assert.equal(
+          report.configuration.effective.settings.default,
+          undefined,
+        );
+      if (variant === "defaultModel")
+        assert.equal(
+          report.configuration.effective.settings.providers[0].defaultModel,
+          undefined,
+        );
+    }
+    assert.ok(provider.received.length > 0);
+  } finally {
+    process.exitCode = originalExitCode;
+    await provider.close();
     await rm(root, { recursive: true, force: true });
   }
 });

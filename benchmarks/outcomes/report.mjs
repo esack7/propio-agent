@@ -17,12 +17,14 @@ const tasks = [
 
 function sanitizedSettings(selected) {
   return {
-    default: selected.default,
+    default:
+      typeof selected.default === "string" ? selected.default : undefined,
     providers: selected.providers?.map(
       ({ name, type, defaultModel, models }) => ({
         name,
         type,
-        defaultModel,
+        defaultModel:
+          typeof defaultModel === "string" ? defaultModel : undefined,
         models: models?.map(({ key, contextWindowTokens }) => ({
           key,
           contextWindowTokens,
