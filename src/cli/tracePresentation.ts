@@ -167,10 +167,24 @@ export function renderTraceLines(
 function measurementLines(inspection: TraceInspection): string[] {
   const { providerMeasurements: m } = inspection;
   const tokens = m.usage.usage;
+  const formatTokens = (
+    fields: readonly [string, keyof NonNullable<typeof tokens>][],
+  ) =>
+    fields
+      .map(([label, key]) => `${label}=${tokens?.[key] ?? "unknown"}`)
+      .join(" ");
   return [
     `Requests: ${m.requestCount}; attempts: ${m.attemptCount}; retry attempts: ${m.retries.attemptCount}`,
-    `Tokens (${m.usage.completeness}): input=${tokens?.inputTokens ?? "unknown"} output=${tokens?.outputTokens ?? "unknown"} total=${tokens?.totalTokens ?? "unknown"}`,
-    `reasoning=${tokens?.reasoningTokens ?? "unknown"} cache-read=${tokens?.cacheReadInputTokens ?? "unknown"} cache-write=${tokens?.cacheWriteInputTokens ?? "unknown"}`,
+    `Tokens (${m.usage.completeness}): ${formatTokens([
+      ["input", "inputTokens"],
+      ["output", "outputTokens"],
+      ["total", "totalTokens"],
+    ])}`,
+    formatTokens([
+      ["reasoning", "reasoningTokens"],
+      ["cache-read", "cacheReadInputTokens"],
+      ["cache-write", "cacheWriteInputTokens"],
+    ]),
   ];
 }
 

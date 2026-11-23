@@ -47,7 +47,7 @@ test("session usage preserves incomplete journals and excludes other sessions", 
   ).not.toMatch(/Cost:|estimated=/);
 });
 
-test("foreground, summary and retry measurements reconcile with offline snapshots", () => {
+function writeUsageJournals() {
   fs.mkdirSync(path.join(root, "session"));
   for (const runId of ["foreground", "summary"]) {
     const events = [
@@ -108,6 +108,10 @@ test("foreground, summary and retry measurements reconcile with offline snapshot
       events.map((e) => JSON.stringify(e)).join("\n") + "\n",
     );
   }
+}
+
+test("foreground and summary journals reconcile with offline snapshots", () => {
+  writeUsageJournals();
   const result = inspectSessionUsage(root, "session");
   const lines = sessionInspectionLines(
     root,
@@ -140,6 +144,19 @@ test("foreground, summary and retry measurements reconcile with offline snapshot
       ),
     ).toBe(true);
   }
+  expect(result.runs[0].events[0].observedAt).toBe("2026-11-15T00:00:00.000Z");
+  expect(
+    sessionInspectionLines(
+      root,
+      { sessionId: "session", runId: "foreground" },
+      "/trace",
+    )[0],
+  ).toContain("foreground");
+});
+
+test("usage totals preserve retry, purpose and metric completeness", () => {
+  writeUsageJournals();
+  const result = inspectSessionUsage(root, "session");
   expect(result.measurements.requestCount).toBe(2);
   expect(result.measurements.attemptCount).toBe(4);
   for (const [metric, expected] of Object.entries({
@@ -170,14 +187,6 @@ test("foreground, summary and retry measurements reconcile with offline snapshot
     0,
   );
   expect(result.measurements.usage.usage?.inputTokens).toBe(offlineInput);
-  expect(result.runs[0].events[0].observedAt).toBe("2026-11-15T00:00:00.000Z");
-  expect(
-    sessionInspectionLines(
-      root,
-      { sessionId: "session", runId: "foreground" },
-      "/trace",
-    )[0],
-  ).toContain("foreground");
 });
 
 test("Agent retains foreground identity after a separately closed summary and session load", async () => {
