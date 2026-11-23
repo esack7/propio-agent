@@ -203,14 +203,18 @@ async function readProviderConfiguration(args) {
   return readConfigurationJson(args[1]);
 }
 
+function isConfigurationObject(configuration) {
+  return (
+    configuration !== null &&
+    typeof configuration === "object" &&
+    !Array.isArray(configuration)
+  );
+}
+
 async function readConfigurationJson(path) {
   try {
     const configuration = JSON.parse(await readFile(path, "utf8"));
-    if (
-      configuration === null ||
-      typeof configuration !== "object" ||
-      Array.isArray(configuration)
-    ) {
+    if (!isConfigurationObject(configuration)) {
       throw new Error("Expected a provider configuration object");
     }
     return configuration;
