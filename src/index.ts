@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import {
+  sessionInspectionLines,
+  foregroundTraceHint,
+} from "./cli/sessionInspection.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { runOpenAiAuthCommand, runOpenAiSetup } from "./auth/openai/cli.js";
@@ -247,6 +251,7 @@ async function readStdinInput(): Promise<string> {
 export interface NonInteractiveSessionDeps {
   readonly stdinIsTTY?: boolean;
   readonly readInput?: () => Promise<string>;
+  readonly sessionsDir?: string;
 }
 
 function writeNonInteractiveSuccessResponse(
@@ -266,10 +271,41 @@ function writeNonInteractiveSuccessResponse(
   });
 }
 
+function failureTrace(
+  agent: AgentType,
+  sessionsDir: string,
+  previousRunId?: string,
+) {
+  try {
+    const identity = agent.getSessionTraceIdentity();
+    if (identity.runId === previousRunId) return { available: false as const };
+    return foregroundTraceHint(path.join(sessionsDir, "traces"), identity);
+  } catch {
+    return { available: false as const };
+  }
+}
+
+function writeFailureTrace(
+  agent: AgentType,
+  ui: TerminalUi,
+  sessionsDir: string,
+  previousRunId?: string,
+): void {
+  const trace = failureTrace(agent, sessionsDir, previousRunId);
+  ui.warn(
+    trace.available
+      ? `Trace ${trace.runId}: ${trace.command}`
+      : "No usable foreground trace available.",
+  );
+}
+
 function handleNonInteractiveStreamError(
   error: unknown,
   abortController: AbortController,
   ui: TerminalUi,
+  agent: AgentType,
+  sessionsDir: string,
+  previousRunId?: string,
 ): number {
   if (abortController.signal.aborted || isAbortError(error)) {
     return 130;
@@ -277,9 +313,13 @@ function handleNonInteractiveStreamError(
   const message = error instanceof Error ? error.message : "Unknown error";
   ui.setMode("error");
   if (ui.isJsonMode()) {
-    ui.writeJson({ error: message });
+    ui.writeJson({
+      error: message,
+      trace: failureTrace(agent, sessionsDir, previousRunId),
+    });
   } else {
     ui.error(`Error: ${message}`);
+    writeFailureTrace(agent, ui, sessionsDir, previousRunId);
   }
   return 1;
 }
@@ -293,6 +333,7 @@ export async function runNonInteractiveSession(
 ): Promise<number> {
   const stdinIsTTY = deps.stdinIsTTY ?? process.stdin.isTTY;
   const readInput = deps.readInput ?? readStdinInput;
+  const sessionsDir = deps.sessionsDir ?? getDefaultSessionsDir();
 
   if (stdinIsTTY) {
     ui.error(
@@ -307,6 +348,7 @@ export async function runNonInteractiveSession(
     return 1;
   }
 
+  const previousRunId = agent.getSessionTraceIdentity?.().runId;
   const abortController = new AbortController();
   setCurrentAbortController(abortController);
   ui.setMode("running");
@@ -324,7 +366,14 @@ export async function runNonInteractiveSession(
     writeNonInteractiveSuccessResponse(result, ui, visibility);
     return 0;
   } catch (error) {
-    return handleNonInteractiveStreamError(error, abortController, ui);
+    return handleNonInteractiveStreamError(
+      error,
+      abortController,
+      ui,
+      agent,
+      sessionsDir,
+      previousRunId,
+    );
   } finally {
     setCurrentAbortController(null);
   }
@@ -371,6 +420,7 @@ interface InteractiveSubmissionContext {
   cancelActiveTurn: AbortStateController["cancelActiveTurn"];
   shouldExit: () => boolean;
   getVisibility: () => VisibilityOptions;
+  sessionsDir?: string;
   /** The session turns are dispatched to; one is made per turn if absent. */
   turnSession?: CliTurnSession;
   /** Told which turn input is live, so a prompt can borrow the keyboard. */
@@ -388,6 +438,8 @@ export async function runInteractiveTurn(
   },
 ): Promise<number | null> {
   const { agent, ui, setCurrentAbortController } = context;
+  const sessionsDir = context.sessionsDir ?? getDefaultSessionsDir();
+  const previousRunId = agent.getSessionTraceIdentity?.().runId;
   const visibility = context.getVisibility();
   const abortController = new AbortController();
   const turnStartedAtMs = Date.now();
@@ -449,6 +501,7 @@ export async function runInteractiveTurn(
       `${options.errorPrefix}${error instanceof Error ? error.message : "Unknown error"}`,
     );
     ui.command("");
+    writeFailureTrace(agent, ui, sessionsDir, previousRunId);
     ui.turnFailed(Date.now() - turnStartedAtMs);
   } finally {
     context.setActiveTurnInput?.(null);
@@ -982,6 +1035,22 @@ export async function handleInteractiveSubmission(
     handleSkillSubmission,
     handleModeSubmission,
     handlePlanSubmission,
+    async (text, { agent, ui, sessionsDir }) => {
+      if (text !== "/trace" && text !== "/usage") return undefined;
+      try {
+        for (const line of sessionInspectionLines(
+          path.join(sessionsDir ?? getDefaultSessionsDir(), "traces"),
+          agent.getSessionTraceIdentity(),
+          text,
+        ))
+          ui.info(line);
+      } catch (error) {
+        ui.error(
+          error instanceof Error ? error.message : "Trace inspection failed",
+        );
+      }
+      return null;
+    },
     handleContextSubmission,
     handleSessionSubmission,
     handleToolsSubmission,
@@ -1030,6 +1099,7 @@ export async function runInteractiveSession(
   abortState: AbortStateController,
   visibility: VisibilityOptions,
   runtimeConfig: RuntimeConfig,
+  sessionsDir = getDefaultSessionsDir(),
 ): Promise<number> {
   const visibilityState = createSessionVisibilityState(visibility);
   const inputStream = process.stdin;
@@ -1188,6 +1258,7 @@ export async function runInteractiveSession(
         cancelActiveTurn: abortState.cancelActiveTurn,
         shouldExit: abortState.shouldExit,
         getVisibility: () => visibilityState.getSnapshot(),
+        sessionsDir,
         turnSession,
         setActiveTurnInput: (input) => {
           activeTurnInput = input;
@@ -1433,6 +1504,7 @@ async function runInteractiveMode(options: {
   abortState: AbortStateController;
   visibility: VisibilityOptions;
   runtimeConfig: RuntimeConfig;
+  sessionsDir: string;
 }): Promise<number> {
   return await runInteractiveSession(
     options.agent,
@@ -1441,6 +1513,7 @@ async function runInteractiveMode(options: {
     options.abortState,
     options.visibility,
     options.runtimeConfig,
+    options.sessionsDir,
   );
 }
 
@@ -1449,12 +1522,14 @@ async function handlePipeMode(options: {
   ui: TerminalUi;
   abortState: AbortStateController;
   visibility: VisibilityOptions;
+  sessionsDir: string;
 }): Promise<number> {
   const exitCode = await runNonInteractiveSession(
     options.agent,
     options.ui,
     options.abortState.setCurrentAbortController,
     options.visibility,
+    { sessionsDir: options.sessionsDir },
   );
   return options.abortState.shouldExit() ? 130 : exitCode;
 }
@@ -1524,12 +1599,14 @@ async function runConfiguredSession(options: {
           abortState: options.abortState,
           visibility: options.runtime.visibility,
           runtimeConfig,
+          sessionsDir,
         })
       : await handlePipeMode({
           agent,
           ui: options.ui,
           abortState: options.abortState,
           visibility: options.runtime.visibility,
+          sessionsDir,
         });
   } finally {
     await agent.close();

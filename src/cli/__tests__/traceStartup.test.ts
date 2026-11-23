@@ -147,3 +147,103 @@ it("rejects invalid CLI capture before provider initialization", () => {
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("--trace-capture requires standard or full");
 });
+
+it("keeps session commands and failure hints on the startup trace root without credentials", () => {
+  const source = (file: string) =>
+    new URL(file, new URL("../../../", import.meta.url)).href;
+  const script = `
+    import { handleInteractiveSubmission, runNonInteractiveSession, runInteractiveTurn } from ${JSON.stringify(source("src/index.ts"))};
+    import { getDefaultSessionsDir } from ${JSON.stringify(source("src/sessions/sessionHistory.ts"))};
+    import { TerminalUi } from ${JSON.stringify(source("src/ui/terminal.ts"))};
+    import { createPlainSubmission } from ${JSON.stringify(source("src/ui/input/promptSubmission.ts"))};
+    import { PassThrough } from 'node:stream';
+    import { execFileSync } from 'node:child_process';
+    import { dirname } from 'node:path';
+    const sessionsDir = getDefaultSessionsDir();
+    execFileSync('git', ['init', '-q', dirname(process.cwd())], { stdio: 'pipe' });
+    if (sessionsDir === getDefaultSessionsDir()) throw new Error('fixture did not change the workspace root');
+    const lines = [];
+    const sink = { isTTY: false, write(text) { lines.push(String(text)); return true; }, on() {}, off() {} };
+    const errors = [];
+    const errorSink = { ...sink, write(text) { errors.push(String(text)); return true; } };
+    const ui = new TerminalUi({ interactive: false, plain: true, json: false, stdout: sink, stderr: errorSink });
+    let controller;
+    let runId = 'run';
+    const agent = {
+      getSessionTraceIdentity: () => ({ sessionId: 'session', runId }),
+      streamChat: async () => {
+        runId = 'run';
+        controller?.abort();
+        throw new Error('fixture foreground failure');
+      },
+      getLastTurnReasoningSummary: () => null,
+      getConversationState: () => ({ preamble: [], turns: [], artifacts: [], pinnedMemory: [], invokedSkills: [], rollingSummary: null }),
+    };
+    const visibility = { showToolCalls: false, showThinking: false, showStatus: false, showReasoningSummary: false, showContextStats: false, showPromptPlan: false };
+    const context = { agent, ui, composer: {}, configPath: 'unused', sessionsDir, inputStream: new PassThrough(), interactiveInput: false, setCurrentAbortController() {}, cancelActiveTurn() {}, shouldExit: () => false, getVisibility: () => visibility };
+    await handleInteractiveSubmission(createPlainSubmission('/trace', 'prompt'), context);
+    await handleInteractiveSubmission(createPlainSubmission('/usage', 'prompt'), context);
+    const sessionOutput = [...lines.splice(0), ...errors.splice(0)].join('');
+    const jsonLines = [];
+    const jsonSink = { ...sink, write(text) { jsonLines.push(String(text)); return true; } };
+    const jsonUi = new TerminalUi({ interactive: false, plain: true, json: true, stdout: jsonSink, stderr: jsonSink });
+    const deps = { stdinIsTTY: false, readInput: async () => 'fail', sessionsDir };
+    runId = undefined;
+    const code = await runNonInteractiveSession(agent, jsonUi, () => {}, visibility, deps);
+    runId = undefined;
+    await runNonInteractiveSession(agent, ui, () => {}, visibility, deps);
+    const pipeError = errors.splice(0).join('');
+    runId = undefined;
+    await runInteractiveTurn(createPlainSubmission('fail', 'prompt'), context, { errorPrefix: 'Error: ' });
+    const interactiveError = errors.splice(0).join('');
+    runId = undefined;
+    const cancelCode = await runNonInteractiveSession(agent, ui, (active) => { controller = active; }, visibility, deps);
+    console.log(JSON.stringify({ sessionOutput, code, json: jsonLines.join(''), pipeError, interactiveError, cancelCode, cancelledStderr: errors.join('') }));
+  `;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      path.join(repo, "node_modules/tsx/dist/loader.mjs"),
+      "--input-type=module",
+      "-e",
+      script,
+    ],
+    {
+      cwd: workspace,
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        USERPROFILE: home,
+        NODE_NO_WARNINGS: "1",
+      },
+      encoding: "utf8",
+      timeout: 15000,
+    },
+  );
+  expect(result.stderr).toBe("");
+  expect(result.status).toBe(0);
+  const output = JSON.parse(result.stdout);
+  expect(output.code).toBe(1);
+  expect(output.sessionOutput).toContain("Run run (session session)");
+  expect(output.sessionOutput).toContain("Session session: 1 runs");
+  for (const error of [output.pipeError, output.interactiveError]) {
+    expect(error).toContain("fixture foreground failure");
+    expect(error).toContain("propio trace show 'run' --session 'session'");
+  }
+  expect(output.cancelCode).toBe(130);
+  expect(output.cancelledStderr).toBe("");
+  expect(JSON.parse(output.json)).toEqual({
+    error: "fixture foreground failure",
+    trace: {
+      available: true,
+      sessionId: "session",
+      runId: "run",
+      complete: true,
+      command: "propio trace show 'run' --session 'session'",
+    },
+  });
+  const readme = fs.readFileSync(path.join(repo, "README.md"), "utf8");
+  for (const command of ["trace", "usage"])
+    expect(readme).toMatch(new RegExp("^\\| `/" + command + "`\\s*\\|", "m"));
+});

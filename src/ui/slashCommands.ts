@@ -101,6 +101,11 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
   {
     name: "Sessions",
     commands: [
+      { command: "/trace", description: "inspect latest foreground trace" },
+      {
+        command: "/usage",
+        description: "inspect current session token and cache usage",
+      },
       {
         command: "/session list",
         description: "list saved sessions and recovery checkpoints",

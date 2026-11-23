@@ -521,6 +521,11 @@ export class Agent {
   private readonly pendingConfigurationChanges: PendingConfigurationChange[] =
     [];
   private lastTraceRunId?: string;
+  private latestForegroundRunId?: string;
+
+  getSessionTraceIdentity() {
+    return { sessionId: this.sessionId, runId: this.latestForegroundRunId };
+  }
   private pendingRecoveredToolCallIds: string[] = [];
   private recoveryCheckpointRequested = false;
   private recoveryJournalPosition?: RecoveryJournalPosition;
@@ -2323,7 +2328,9 @@ export class Agent {
     const runId = randomUUID();
     let traceRun: AgentTraceRun | undefined;
     try {
+      this.latestForegroundRunId = undefined;
       traceRun = this.tryStartTraceRun(runId);
+      if (traceRun) this.latestForegroundRunId = runId;
       const runtime = this.createRuntime(onToolStart);
       return await runtime.streamChat(submission, onToken, {
         ...runtimeOptions,
@@ -2934,6 +2941,7 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      latestForegroundRunId: this.latestForegroundRunId,
       lastTraceRunId:
         this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
       agentMode: this.modeState.mode,
@@ -3081,6 +3089,7 @@ export class Agent {
     this.adoptImportedSessionId(persisted.metadata.sessionId);
 
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
+    this.latestForegroundRunId = persisted.metadata.latestForegroundRunId;
 
     this.contextManager.importState(state);
     this.recoveryCheckpointRequested =

@@ -109,6 +109,7 @@ export function traceTimeline(snapshot: TraceSnapshot) {
     const terminal = isTraceOperationTerminal(event.type);
     return {
       sequence: event.sequence,
+      observedAt: event.observedAt,
       relativeMs: elapsed(origin, clock(event)),
       durationMs: terminal
         ? ((key ? elapsed(starts.get(key), clock(event)) : null) ??
@@ -166,14 +167,24 @@ export function renderTraceLines(
 function measurementLines(inspection: TraceInspection): string[] {
   const { providerMeasurements: m } = inspection;
   const tokens = m.usage.usage;
+  const formatTokens = (
+    fields: readonly [string, keyof NonNullable<typeof tokens>][],
+  ) =>
+    fields
+      .map(([label, key]) => `${label}=${tokens?.[key] ?? "unknown"}`)
+      .join(" ");
   return [
     `Requests: ${m.requestCount}; attempts: ${m.attemptCount}; retry attempts: ${m.retries.attemptCount}`,
-    `Tokens (${m.usage.completeness}): input=${tokens?.inputTokens ?? "unknown"} output=${tokens?.outputTokens ?? "unknown"} total=${tokens?.totalTokens ?? "unknown"}`,
-    `Cost: ${m.cost.completeness}; unpriced attempts: ${m.cost.unpricedAttempts.length}`,
-    ...m.cost.currencies.map(
-      (cost) =>
-        `  ${cost.currency ?? "unknown currency"}: reported=${cost.providerReportedAmount ?? "unknown"} estimated=${cost.locallyEstimatedAmount ?? "unknown"}`,
-    ),
+    `Tokens (${m.usage.completeness}): ${formatTokens([
+      ["input", "inputTokens"],
+      ["output", "outputTokens"],
+      ["total", "totalTokens"],
+    ])}`,
+    formatTokens([
+      ["reasoning", "reasoningTokens"],
+      ["cache-read", "cacheReadInputTokens"],
+      ["cache-write", "cacheWriteInputTokens"],
+    ]),
   ];
 }
 
