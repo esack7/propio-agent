@@ -91,9 +91,7 @@ export function sessionInspectionLines(
       `Purpose ${purpose.purpose}: requests=${purpose.requestCount}; attempts=${purpose.attemptCount}`,
       ...metricLines(purpose.usage),
     ]),
-    ...modelUsageLines([
-      { events: result.events, complete: result.warnings.length === 0 },
-    ]),
+    ...modelUsageLines(result.events, m.attempts, !result.warnings.length),
     ...result.runs.flatMap((run) =>
       run.inspection.providerMeasurements.attempts.flatMap((a) => [
         `${a.provider}/${a.actualModel ?? a.requestedModel} purpose=${a.purpose} run=${run.runId} request=${a.requestId} attempt=${a.attemptId ?? "unknown"}`,
@@ -152,39 +150,41 @@ function metricLines(
 }
 
 function modelUsageLines(
-  runs: ReadonlyArray<{ events: TraceEventEnvelope[]; complete: boolean }>,
+  events: TraceEventEnvelope[],
+  attempts: ReturnType<typeof summarizeProviderMeasurements>["attempts"],
+  captureComplete: boolean,
 ): string[] {
   const groups = new Map<string, TraceEventEnvelope[]>();
-  for (const run of runs) {
-    const attempts = summarizeProviderMeasurements(run.events).attempts;
-    for (const event of run.events) {
-      if (event.component !== "provider") continue;
-      const payload = event.payload as {
-        provider?: string;
-        actualModel?: string;
-        requestedModel?: string;
-        attemptId?: string;
-        trace?: { requestId?: string };
-      };
-      const attempt = attempts.find(
-        (attempt) =>
-          attempt.requestId === payload.trace?.requestId &&
-          attempt.attemptId === payload.attemptId,
-      );
-      const key = attempt
-        ? `${attempt.provider}/${attempt.actualModel ?? attempt.requestedModel}`
-        : `${payload.provider}/${payload.actualModel ?? payload.requestedModel}`;
-      const events = groups.get(key) ?? [];
-      events.push(event);
-      groups.set(key, events);
-    }
+  const models = new Map(
+    attempts.map(
+      ({ requestId, attemptId, provider, actualModel, requestedModel }) => [
+        JSON.stringify([requestId, attemptId]),
+        `${provider}/${actualModel ?? requestedModel}`,
+      ],
+    ),
+  );
+  for (const event of events) {
+    if (
+      event.component !== "provider" ||
+      event.type.startsWith("provider_request_")
+    )
+      continue;
+    const payload = event.payload as {
+      attemptId?: string;
+      trace?: { requestId?: string };
+    } | null;
+    const model = models.get(
+      JSON.stringify([payload?.trace?.requestId, payload?.attemptId]),
+    );
+    if (!model) continue;
+    const group = groups.get(model) ?? [];
+    group.push(event);
+    groups.set(model, group);
   }
   return [...groups].flatMap(([model, events]) => [
     `Model ${model}`,
     ...metricLines(
-      summarizeProviderMeasurements(events, {
-        captureComplete: runs.every((run) => run.complete),
-      }).usage,
+      summarizeProviderMeasurements(events, { captureComplete }).usage,
     ),
   ]);
 }

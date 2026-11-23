@@ -189,6 +189,94 @@ test("usage totals preserve retry, purpose and metric completeness", () => {
   expect(result.measurements.usage.usage?.inputTokens).toBe(offlineInput);
 });
 
+test("model totals use routed identities and preserve retry attempts without response metadata", () => {
+  const rows = [
+    {
+      type: "provider_request_started",
+      requestId: "routed",
+      requestedModel: "alias",
+    },
+    {
+      type: "provider_response_metadata",
+      requestId: "routed",
+      requestedModel: "alias",
+      attemptId: "a",
+      actualModel: "dated",
+    },
+    {
+      type: "provider_usage_reported",
+      requestId: "routed",
+      requestedModel: "alias",
+      attemptId: "a",
+      availability: "reported",
+      usage: { inputTokens: 7 },
+      reportKind: "cumulative",
+    },
+    {
+      type: "provider_attempt_completed",
+      requestId: "routed",
+      requestedModel: "alias",
+      attemptId: "a",
+    },
+    {
+      type: "provider_request_completed",
+      requestId: "routed",
+      requestedModel: "alias",
+    },
+    {
+      type: "provider_attempt_failed",
+      requestId: "retried",
+      requestedModel: "fallback",
+      attemptId: "b",
+      attemptNumber: 1,
+    },
+    {
+      type: "provider_attempt_failed",
+      requestId: "retried",
+      requestedModel: "fallback",
+      attemptId: "c",
+      attemptNumber: 2,
+    },
+  ];
+  fs.mkdirSync(path.join(root, "session"));
+  const events = rows.map(({ requestId, ...payload }, i) => ({
+    version: 1,
+    eventId: `event-${i}`,
+    sequence: i + 1,
+    observedAt: "2026-11-15T00:00:00.000Z",
+    monotonicNanoseconds: String(i),
+    component: "provider",
+    type: payload.type,
+    identity: { sessionId: "session", runId: "run" },
+    payload: {
+      ...payload,
+      provider: "fixture",
+      trace: { requestId, purpose: "answer" },
+    },
+  }));
+  fs.writeFileSync(
+    path.join(root, "session", "run.jsonl"),
+    events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+  );
+  const usage = inspectSessionUsage(root, "session");
+  expect(usage.measurements.retries.attemptCount).toBe(1);
+  const lines = sessionInspectionLines(
+    root,
+    { sessionId: "session" },
+    "/usage",
+  );
+  expect(lines.filter((line) => line.startsWith("Model "))).toEqual([
+    "Model fixture/dated",
+    "Model fixture/fallback",
+  ]);
+  expect(lines[lines.indexOf("Model fixture/dated") + 1]).toMatch(
+    /^inputTokens: 7 \(/,
+  );
+  expect(lines[lines.indexOf("Model fixture/fallback") + 1]).toBe(
+    "inputTokens: unknown (unavailable)",
+  );
+});
+
 test("Agent retains foreground identity after a separately closed summary and session load", async () => {
   const { createTestAgent, userSubmission } =
     await import("../../__tests__/testHelpers.js");

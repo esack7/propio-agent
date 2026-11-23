@@ -804,7 +804,7 @@ and `command` (`list`, `show`, `export`, or `verify`):
   overall `complete`, and `warnings`. `total = runs.length + omitted`.
 - `show`: `run` with the same summary fields, `inspection` from the trace API,
   and `timeline` entries containing sequence, relativeMs/durationMs (null when
-  unavailable or inapplicable), component, type, identity, and bounded metadata.
+  unavailable or inapplicable), observedAt, component, type, identity, and bounded metadata.
   Terminal durations prefer paired monotonic clocks and fall back to a finite,
   nonnegative payload duration when pairing is unavailable.
 - `export`: absolute `destination`, the trace API's `manifest`, and CLI snapshot
