@@ -66,7 +66,14 @@ async function gradingControl(t, task, rule, status, changed = false) {
       identity,
       payload: policyPayload(permission, rule),
     },
-    { type: "tool_execution_finished", identity, payload: { status } },
+    {
+      type:
+        status === "success"
+          ? "tool_execution_completed"
+          : "tool_execution_failed",
+      identity,
+      payload: { status },
+    },
   ];
   await writeFile(
     join(traces, "run.jsonl"),

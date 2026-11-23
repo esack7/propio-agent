@@ -40,14 +40,13 @@ function matchesDecision(event, expected) {
 }
 
 function matchingCompletion(events, decision, status) {
+  const type =
+    status === "success" ? "tool_execution_completed" : "tool_execution_failed";
   return events.some((event) => {
     if (event.identity.runId !== decision.identity.runId) return false;
     if (event.identity.toolCallId !== decision.identity.toolCallId)
       return false;
-    return (
-      event.type === "tool_execution_finished" &&
-      event.payload.status === status
-    );
+    return event.type === type && event.payload.status === status;
   });
 }
 
