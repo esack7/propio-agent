@@ -1,7 +1,7 @@
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { withCredentialLock } from "../lock.js";
 import { atomicPrivateWrite } from "../secureFiles.js";
@@ -17,42 +17,106 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-it("serializes independent OS processes and releases a killed owner without age or PID inference", async () => {
-  const path = join(directory, "process.lock");
-  const script = `import { withCredentialLock } from ${JSON.stringify(new URL("../lock.ts", import.meta.url).href)}; await withCredentialLock(process.argv[1],async()=>{console.log('locked');setInterval(()=>{},1000);await new Promise(()=>{});});`;
-  const child = spawn(process.execPath, [
-    "--import",
-    "tsx",
-    "--input-type=module",
-    "-e",
-    script,
-    path,
-  ]);
-  const exit = new Promise<void>((resolve) =>
-    child.once("exit", () => resolve()),
-  );
-  try {
-    await new Promise<void>((resolve, reject) => {
-      child.stdout.once("data", () => resolve());
-      child.once("error", reject);
-      child.stderr.once("data", (value) => reject(new Error(String(value))));
-    });
-    const controller = new AbortController();
-    const blocked = withCredentialLock(
-      path,
-      async () => "unexpected",
-      controller.signal,
+function waitForOwnership(child: ChildProcess, token: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => finish(new Error("Lock owner readiness timed out")),
+      5000,
     );
-    setTimeout(() => controller.abort(), 150);
-    await expect(blocked).rejects.toThrow();
+    const onMessage = (message: unknown) => {
+      if (message === token) finish();
+    };
+    const onError = (error: Error) => finish(error);
+    const onExit = (code: number | null, signal: string | null) =>
+      finish(
+        new Error(`Lock owner exited before readiness: ${code}/${signal}`),
+      );
+    function finish(error?: Error) {
+      clearTimeout(timer);
+      child.off("message", onMessage);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      if (error) reject(error);
+      else resolve();
+    }
+    child.on("message", onMessage);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}
+
+async function stopOwner(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null || !child.pid)
+    return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      reject(new Error("Lock owner did not exit after SIGKILL"));
+    }, 3000);
+    function onExit() {
+      clearTimeout(timer);
+      resolve();
+    }
+    child.once("exit", onExit);
     child.kill("SIGKILL");
-    await exit;
-    expect(await withCredentialLock(path, async () => "recovered")).toBe(
-      "recovered",
+  });
+}
+
+function spawnOwner(script: string) {
+  return spawn(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", script],
+    {
+      stdio: ["ignore", "ignore", "inherit", "ipc"],
+    },
+  );
+}
+
+it("does not treat startup output or unrelated IPC as lock ownership", async () => {
+  const child = spawnOwner(`console.log('locked'); process.send('startup');`);
+  try {
+    await expect(waitForOwnership(child, "owned")).rejects.toThrow(
+      "exited before readiness",
     );
   } finally {
-    child.kill("SIGKILL");
-    await exit;
+    await stopOwner(child);
+  }
+});
+
+it("serializes independent OS processes and releases a killed owner without age or PID inference", async () => {
+  const path = join(directory, "process.lock");
+  const token = randomUUID();
+  // Pass the path literally: readiness also proves the exact target was locked,
+  // independently of eval/loader argv conventions across Node versions.
+  const script = `import { withCredentialLock } from ${JSON.stringify(new URL("../lock.ts", import.meta.url).href)}; await withCredentialLock(${JSON.stringify(path)},async()=>{process.send(${JSON.stringify(token)});setInterval(()=>{},1000);await new Promise(()=>{});});`;
+  const child = spawnOwner(script);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await waitForOwnership(child, token);
+    const operation = jest.fn(async () => "unexpected");
+    const blocked = withCredentialLock(path, operation, controller.signal);
+    timer = setTimeout(() => controller.abort(), 150);
+    await expect(blocked).rejects.toMatchObject({ name: "AbortError" });
+    expect(operation).not.toHaveBeenCalled();
+    await stopOwner(child);
+    const recovery = new AbortController();
+    const recoveryTimer = setTimeout(() => recovery.abort(), 3000);
+    try {
+      expect(
+        await withCredentialLock(
+          path,
+          async () => "recovered",
+          recovery.signal,
+        ),
+      ).toBe("recovered");
+    } finally {
+      clearTimeout(recoveryTimer);
+    }
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+    await stopOwner(child);
   }
 }, 15000);
 
