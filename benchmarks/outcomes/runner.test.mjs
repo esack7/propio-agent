@@ -134,13 +134,10 @@ for (const workspaceOnly of [true, false]) {
     t.after(() => provider.close());
     const cliPath = join(parent, "ordinary-cli.mjs");
     if (!workspaceOnly) {
-      const entry = new URL("../../dist/index.js", import.meta.url).href;
+      const entry = new URL("../../bin/propio.cjs", import.meta.url).href;
       await writeFile(
         cliPath,
-        // Preserve the real entrypoint identity so the import runs CLI startup.
-        `import { fileURLToPath } from "node:url";
-process.argv = process.argv.filter(arg => arg !== "--workspace-instructions-only");
-process.argv[1] = fileURLToPath(${JSON.stringify(entry)});
+        `process.argv = process.argv.filter(arg => arg !== "--workspace-instructions-only");
 await import(${JSON.stringify(entry)});`,
       );
     }

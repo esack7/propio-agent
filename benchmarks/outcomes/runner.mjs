@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createCodingTrial, gradeCodingTrial } from "./coding.mjs";
 import { startScriptedProvider } from "./scripted.mjs";
 
-const cli = fileURLToPath(new URL("../../dist/index.js", import.meta.url));
+const cli = fileURLToPath(new URL("../../bin/propio.cjs", import.meta.url));
 
 function execute(workspace, home, prompt, timeoutMs, cliPath) {
   const child = spawn(
