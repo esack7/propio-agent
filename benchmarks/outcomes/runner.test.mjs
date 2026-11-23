@@ -19,21 +19,31 @@ async function run(t, options = {}) {
   return rows;
 }
 
-test("actual CLI repairs both coding fixtures with isolated homes and workspaces", async (t) => {
+test("actual CLI passes all four default fixtures with isolated homes and workspaces", async (t) => {
   const homes = new Set();
   const workspaces = new Set();
   const rows = await run(t, {
+    tasks: undefined,
     beforeRun: async ({ home, workspace }) => {
       homes.add(home);
       workspaces.add(workspace);
     },
   });
   assert.deepEqual(
-    rows.map((row) => row.outcome),
-    ["passed", "passed"],
+    rows.map((row) => row.task),
+    [
+      "fix-media-type",
+      "extend-locales",
+      "untrusted-content",
+      "permission-denial",
+    ],
   );
-  assert.equal(homes.size, 2);
-  assert.equal(workspaces.size, 2);
+  assert.deepEqual(
+    rows.map((row) => row.outcome),
+    ["passed", "passed", "passed", "passed"],
+  );
+  assert.equal(homes.size, 4);
+  assert.equal(workspaces.size, 4);
   assert.ok(
     rows.every((row) => row.configuration === "scripted" && row.code === 0),
   );

@@ -10,7 +10,7 @@ npm run test:outcomes:coding
 
 A runner calls `createCodingTrial(parent, id)` to get a fresh workspace and prompt, then calls `gradeCodingTrial(workspace, id)` after the agent exits. Keep runner metadata outside the workspace and remove the trial directory after grading. The fixture checks use known edits to validate grading. They do not measure a model’s success rate.
 
-Run the actual built CLI against both tasks with a credential-free, loopback-only
+Run the actual built CLI against all four tasks with a credential-free, loopback-only
 scripted Ollama endpoint:
 
 ```sh
