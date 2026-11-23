@@ -9,6 +9,8 @@ import * as os from "os";
  * Environment variable naming convention: PROPIO_* (e.g., PROPIO_MAX_ITERATIONS).
  */
 export interface RuntimeConfig {
+  readonly traceCaptureLevel: "standard" | "full";
+
   // Iteration and loop control
   readonly maxIterations: number;
   readonly maxRetries: number;
@@ -66,6 +68,7 @@ export interface ResolvedRuntimeConfig {
  * Default configuration values.
  */
 const DEFAULTS: RuntimeConfig = {
+  traceCaptureLevel: "standard",
   maxIterations: 50,
   maxRetries: 10,
   useNoProgressDetector: true,
@@ -96,6 +99,7 @@ const DEFAULTS: RuntimeConfig = {
 };
 
 const RUNTIME_CONFIG_KEYS = [
+  "traceCaptureLevel",
   "maxIterations",
   "maxRetries",
   "useNoProgressDetector",
@@ -123,6 +127,7 @@ const RUNTIME_CONFIG_KEYS = [
  * CLI flag overrides (passed in by the index.ts).
  */
 export interface CLIOverrides {
+  readonly traceCaptureLevel?: "standard" | "full";
   readonly maxIterations?: number;
   readonly maxRetries?: number;
   readonly bashDefaultTimeoutMs?: number;
@@ -179,6 +184,13 @@ export function loadRuntimeConfigWithOrigins(overrides?: {
       [key, resolveConfigValue(key, cliValues, envVars, settingsFile)] as const,
   );
 
+  const capture = resolved.find(([key]) => key === "traceCaptureLevel")![1];
+  if (capture.value !== "standard" && capture.value !== "full") {
+    throw new Error(
+      `traceCaptureLevel (${capture.source}) must be standard or full`,
+    );
+  }
+
   return {
     config: Object.fromEntries(
       resolved.map(([key, entry]) => [key, entry.value]),
@@ -199,7 +211,8 @@ export function loadRuntimeConfig(overrides?: {
 
 /**
  * Parse PROPIO_* environment variables into a typed object.
- * Invalid values are silently ignored (fallback to next source in precedence).
+ * Invalid numeric values fall back to the next source. Capture is validated
+ * after precedence resolution so invalid effective values fail explicitly.
  */
 function parseEnvVars(): ConfigSourceValues {
   const result: Record<string, unknown> = {};
@@ -217,6 +230,7 @@ function parseEnvVars(): ConfigSourceValues {
     return val === "true" || val === "1";
   };
 
+  result.traceCaptureLevel = process.env.PROPIO_TRACE_CAPTURE_LEVEL;
   result.maxIterations = parseNum("PROPIO_MAX_ITERATIONS");
   result.maxRetries = parseNum("PROPIO_MAX_RETRIES");
   result.useNoProgressDetector = parseBoolean(
@@ -278,6 +292,7 @@ function loadSettingsFile(settingsPath?: string): ConfigSourceValues {
     const runtime = json.runtime ?? {};
 
     return {
+      traceCaptureLevel: runtime.traceCaptureLevel,
       maxIterations: runtime.maxIterations,
       maxRetries: runtime.maxRetries,
       useNoProgressDetector: runtime.useNoProgressDetector,

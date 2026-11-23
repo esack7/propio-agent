@@ -61,7 +61,15 @@ describe("sandbox delegation", () => {
     });
 
     const result = await maybeRunSandboxDelegation(
-      ["--sandbox", "--help", "--foo", "bar"],
+      [
+        "--sandbox",
+        "--help",
+        "--foo",
+        "bar",
+        "--trace-capture=full",
+        "--show-turn-details",
+        "--show-trace",
+      ],
       {
         resolveWrapperPath: () => wrapperPath,
         validateWrapper: () => {},
@@ -72,12 +80,34 @@ describe("sandbox delegation", () => {
     expect(result).toBe(0);
     expect(spawnProcess).toHaveBeenCalledWith(
       wrapperPath,
-      ["--help", "--foo", "bar"],
+      [
+        "--help",
+        "--foo",
+        "bar",
+        "--trace-capture",
+        "full",
+        "--show-turn-details",
+        "--show-trace",
+      ],
       {
         cwd: process.cwd(),
         shell: false,
         stdio: "inherit",
       },
+    );
+  });
+
+  it("rejects invalid capture before spawning the sandbox", async () => {
+    const spawnProcess = jest.fn() as unknown as SpawnProcess;
+    const logError = jest.fn();
+    const result = await maybeRunSandboxDelegation(
+      ["--sandbox", "--trace-capture", "off"],
+      { spawnProcess, logError },
+    );
+    expect(result).toBe(1);
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(logError).toHaveBeenCalledWith(
+      "--trace-capture requires standard or full",
     );
   });
 

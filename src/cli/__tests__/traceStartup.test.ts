@@ -127,3 +127,23 @@ it("prints trace help without normal startup", () => {
   expect(help.stderr).toBe("");
   expect(help.stdout).toContain("propio trace list");
 });
+it.each(["--show-turn-details", "--show-trace"])(
+  "accepts %s with capture in credential-free help without startup",
+  (flag) => {
+    const result = cli(["--help", flag, "--trace-capture", "standard"]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    for (const name of [
+      "--trace-capture",
+      "--show-turn-details",
+      "--show-trace",
+    ])
+      expect(result.stdout).toContain(name);
+  },
+);
+it("rejects invalid CLI capture before provider initialization", () => {
+  const result = cli(["--json", "--trace-capture=off"]);
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("--trace-capture requires standard or full");
+});

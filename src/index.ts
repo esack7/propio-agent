@@ -149,7 +149,10 @@ Options:
   --show-status       Show high-level agent lifecycle status updates
   --show-reasoning-summary
                       Show a concise reasoning summary after each turn
-  --show-trace        Enable --show-status and --show-reasoning-summary
+  --show-turn-details Enable --show-status and --show-reasoning-summary
+  --show-trace        Deprecated alias for --show-turn-details (visibility only)
+  --trace-capture <standard|full>
+                      Capture level: CLI > env > runtime settings > standard
   --show-context-stats
                       Print compact context stats after each turn
   --show-prompt-plan  Print prompt plan summary each time a request is built
@@ -1300,23 +1303,17 @@ function deriveCliRuntimeOptions(
 function reportParseErrors(
   ui: TerminalUi,
   parseErrors: readonly string[],
+  jsonMode: boolean,
 ): boolean {
   if (parseErrors.length === 0) {
     return false;
   }
 
   for (const error of parseErrors) {
-    ui.error(error);
+    if (jsonMode) process.stderr.write(`${error}\n`);
+    else ui.error(error);
   }
   return true;
-}
-
-function traceCaptureLevel(): "standard" | "full" {
-  const value = process.env.PROPIO_TRACE_CAPTURE_LEVEL ?? "standard";
-  if (value !== "standard" && value !== "full") {
-    throw new Error("PROPIO_TRACE_CAPTURE_LEVEL must be standard or full");
-  }
-  return value;
 }
 
 async function createInitializedAgent(
@@ -1329,7 +1326,7 @@ async function createInitializedAgent(
   onTraceCaptureFailure: (failure: TraceCaptureFailure) => void,
   onRecoveryCheckpointFailure: (error: Error) => void,
 ): Promise<{ agent: AgentType; configPath: string }> {
-  const captureLevel = traceCaptureLevel();
+  const captureLevel = runtimeConfig.traceCaptureLevel;
   const configPath = getConfigPath();
   const mcpConfigPath = getMcpConfigPath();
   const [agentModule, providersConfig, mcpConfig, agentsMdContent] =
@@ -1478,6 +1475,7 @@ async function runConfiguredSession(options: {
   handleStaleMarkers(sessionsDir, options.ui, options.diagnosticLogger);
   const resolvedRuntimeConfig = loadRuntimeConfigWithOrigins({
     cliOverrides: {
+      traceCaptureLevel: options.parsedArgs.flags.traceCaptureLevel,
       maxIterations: options.parsedArgs.flags.maxIterations,
       maxRetries: options.parsedArgs.flags.maxRetries,
       bashDefaultTimeoutMs: options.parsedArgs.flags.bashTimeoutMs,
@@ -1604,7 +1602,7 @@ async function main(): Promise<number> {
     json: runtime.jsonMode,
   });
 
-  if (reportParseErrors(ui, parsedArgs.parseErrors)) {
+  if (reportParseErrors(ui, parsedArgs.parseErrors, runtime.jsonMode)) {
     ui.cleanup();
     return 1;
   }

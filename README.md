@@ -420,7 +420,7 @@ The `apiKey` can also be set via the `META_API_KEY` environment variable. Inline
 When Muse Spark provides a reasoning summary or `commentary`, interactive
 sessions show it in the separate Thinking presentation before or between tool
 calls; final answer text remains separate. `--show-reasoning-summary` (or
-`--show-trace`) retains the complete provider summary for the completed turn
+`--show-turn-details`, with `--show-trace` as a deprecated alias) retains the complete provider summary for the completed turn
 and labels its source as `provider`. Plain and non-interactive output keeps
 live thinking out of the answer stream, while JSON includes the retained
 summary only when that flag is set. Encrypted reasoning continuation data is
@@ -482,22 +482,24 @@ Start the agent and type messages at the prompt. Session context is maintained a
 
 ### CLI flags
 
-| Flag                       | Description                                          |
-| -------------------------- | ---------------------------------------------------- |
-| `--help`, `-h`             | Show CLI help                                        |
-| `--version`, `-v`          | Print package version and exit                       |
-| `--sandbox`                | Run in Docker sandbox mode                           |
-| `--json`                   | Read one prompt from stdin, print JSON to stdout     |
-| `--plain`                  | Disable ANSI colors and spinner                      |
-| `--no-interactive`         | Disable prompts/spinners, read one prompt from stdin |
-| `--permissions <preset>`   | Tool permissions for this run; see below             |
-| `--show-status`            | Show high-level agent status updates                 |
-| `--show-reasoning-summary` | Show the turn reasoning summary after each response  |
-| `--show-trace`             | Enable status and reasoning summary output           |
-| `--show-context-stats`     | Print compact context stats after each turn          |
-| `--show-prompt-plan`       | Print a compact prompt-plan summary for each request |
-| `--debug-llm`              | Emit provider diagnostics to stderr                  |
-| `--debug-llm-file <path>`  | Append provider diagnostics to a file                |
+| Flag                               | Description                                                 |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `--help`, `-h`                     | Show CLI help                                               |
+| `--version`, `-v`                  | Print package version and exit                              |
+| `--sandbox`                        | Run in Docker sandbox mode                                  |
+| `--json`                           | Read one prompt from stdin, print JSON to stdout            |
+| `--plain`                          | Disable ANSI colors and spinner                             |
+| `--no-interactive`                 | Disable prompts/spinners, read one prompt from stdin        |
+| `--permissions <preset>`           | Tool permissions for this run; see below                    |
+| `--show-status`                    | Show high-level agent status updates                        |
+| `--show-reasoning-summary`         | Show the turn reasoning summary after each response         |
+| `--show-turn-details`              | Enable status and reasoning summary output                  |
+| `--show-trace`                     | Deprecated alias for `--show-turn-details`; visibility only |
+| `--trace-capture <standard\|full>` | Select capture level for this run                           |
+| `--show-context-stats`             | Print compact context stats after each turn                 |
+| `--show-prompt-plan`               | Print a compact prompt-plan summary for each request        |
+| `--debug-llm`                      | Emit provider diagnostics to stderr                         |
+| `--debug-llm-file <path>`          | Append provider diagnostics to a file                       |
 
 ```bash
 # One-shot non-interactive
@@ -613,7 +615,7 @@ with a deny or ask rule that uses one, since that rule would match nothing.
 
 `settings.json` may be a symbolic link, for example into a dotfiles checkout.
 It is read through the link, and saving rewrites the file it points to and
-keeps the link. Sandbox mode copies in only its `permissions` object, and
+keeps the link. Sandbox mode copies in only its `permissions` object and `runtime.traceCaptureLevel`, and
 refuses to start if the link leads into a directory that holds credentials
 (`~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
 or to something that is not a settings object, is an error natively and stops
@@ -820,7 +822,20 @@ an unrelated status/reasoning visibility flag and does not change capture.
 
 ### Private full trace capture
 
-Set `PROPIO_TRACE_CAPTURE_LEVEL=full` when starting the CLI to capture the application-visible request, per-attempt provider-adapter payload, streamed provider events, tool arguments and complete tool results, and workspace files. The sandbox wrapper forwards this setting. Each run stores content-addressed material beside its journal in a private `*.materials/` directory. The per-attempt payload is the HTTP JSON body or SDK input object before SDK serialization; it reflects retry-time changes, but it is not a byte-for-byte wire capture and does not include authentication headers. A workspace baseline is captured before the turn, with cumulative changes captured after each committed tool result and at run end. Unchanged files are reused by hash. The workspace scope includes Git-tracked and untracked files that are not ignored; without Git it walks the workspace except `.git`, `node_modules`, `dist`, and `coverage`. Credential-shaped paths such as `.env`, `.npmrc`, and private key files are omitted and reported. A missing or omitted file makes the full export partial.
+Capture resolves `--trace-capture` > `PROPIO_TRACE_CAPTURE_LEVEL` > `runtime.traceCaptureLevel` in `~/.propio/settings.json` > `standard`. Values must be exactly `standard` or `full`; invalid effective values stop startup. Runtime configuration records the selected value and its origin. For example:
+
+```bash
+propio --trace-capture full
+propio --trace-capture standard # override a persistent full setting
+```
+
+```json
+{ "runtime": { "traceCaptureLevel": "standard" } }
+```
+
+Both visibility names (`--show-turn-details` and deprecated `--show-trace`) enable status and reasoning summaries without changing capture. They emit no deprecation warning into answers or JSON. Standard capture and standard export remain the privacy defaults. The sandbox forwards the CLI flag, environment fallback, and persistent capture setting, including linked settings files.
+
+Select full capture explicitly when starting the CLI to capture the application-visible request, per-attempt provider-adapter payload, streamed provider events, tool arguments and complete tool results, and workspace files. The sandbox wrapper forwards this setting. Each run stores content-addressed material beside its journal in a private `*.materials/` directory. The per-attempt payload is the HTTP JSON body or SDK input object before SDK serialization; it reflects retry-time changes, but it is not a byte-for-byte wire capture and does not include authentication headers. A workspace baseline is captured before the turn, with cumulative changes captured after each committed tool result and at run end. Unchanged files are reused by hash. The workspace scope includes Git-tracked and untracked files that are not ignored; without Git it walks the workspace except `.git`, `node_modules`, `dist`, and `coverage`. Credential-shaped paths such as `.env`, `.npmrc`, and private key files are omitted and reported. A missing or omitted file makes the full export partial.
 
 To create an offline bundle that includes the captured material, call `exportTraceJournal(journalPath, destinationDirectory, { captureLevel: "full" })` from `@propio-ai/agent/trace`. The version 4 manifest inventories the included files and their SHA-256 hashes and names the source run's material directory; references into sibling runs are not copied and make the export incomplete. `verifyTraceExport` checks the bundle and `inspectTraceExport` works after the source directory is moved. The existing call without `captureLevel` continues to produce a standard version 3 bundle. `loadRecordedProviderResponse(bundleDirectory, requestId)` returns the completed normalized stream events from a verified full bundle; `playRecordedProviderResponse(bundleDirectory, requestId)` yields them as an async iterable. Both are read-only and make no provider or tool calls. An incomplete or missing response is rejected. Full bundles can contain source files, prompts, and tool output, including secrets embedded in ordinary text, so treat them as private data.
 
