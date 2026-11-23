@@ -211,15 +211,26 @@ async function run(): Promise<void> {
         { mode: 0o600 },
       );
     }
-    await writeFile(join(channel, "config-path"), view, { mode: 0o600 });
-    await writeFile(join(channel, "ready"), "ready", { mode: 0o600 });
-    await waitForSandboxOwner();
+    // Install shutdown handlers before publishing readiness: the owner may
+    // terminate us as soon as it observes the ready file.
+    const ownerWatcher = new AbortController();
+    const ownerFinished = waitForSandboxOwner(ownerWatcher.signal);
+    try {
+      await writeFile(join(channel, "config-path"), view, { mode: 0o600 });
+      await writeFile(join(channel, "ready"), "ready", { mode: 0o600 });
+      await ownerFinished;
+    } finally {
+      // Also release the owner watcher if publishing readiness fails.
+      ownerWatcher.abort();
+      await ownerFinished;
+    }
   } finally {
     await close();
   }
 }
 
-export async function waitForSandboxOwner(): Promise<void> {
+export async function waitForSandboxOwner(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
   const parent = process.ppid;
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
@@ -235,10 +246,12 @@ export async function waitForSandboxOwner(): Promise<void> {
       clearInterval(timer);
       process.off("SIGTERM", finish);
       process.off("SIGINT", finish);
+      signal?.removeEventListener("abort", finish);
       resolve();
     };
     process.once("SIGTERM", finish);
     process.once("SIGINT", finish);
+    signal?.addEventListener("abort", finish, { once: true });
   });
 }
 
