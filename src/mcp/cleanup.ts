@@ -2,8 +2,6 @@ import type { ChildProcess } from "node:child_process";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-const pendingCloses = new WeakMap<Client, Promise<void>>();
-
 async function waitBestEffort(
   promise: Promise<unknown>,
   timeoutMs: number,
@@ -36,19 +34,7 @@ async function waitBestEffort(
  * The public PID/onclose API cannot distinguish exit from inherited-pipe closure.
  * Keep this private-field dependency isolated and covered by real-process tests.
  */
-export function closeClientBestEffort(
-  client: Client,
-  transport: StdioClientTransport | undefined,
-  timeoutMs: number,
-): Promise<void> {
-  const pending = pendingCloses.get(client);
-  if (pending) return pending;
-  const closing = closeConnection(client, transport, timeoutMs);
-  pendingCloses.set(client, closing);
-  return closing;
-}
-
-async function closeConnection(
+export async function closeClientBestEffort(
   client: Client,
   transport: StdioClientTransport | undefined,
   timeoutMs: number,
@@ -57,9 +43,8 @@ async function closeConnection(
     transport as unknown as { _process?: ChildProcess } | undefined
   )?._process;
   const closing = Promise.resolve().then(() => client.close());
-  await waitBestEffort(closing, timeoutMs);
-  // A resolved SDK close is not proof that the original child has exited.
-  if (child?.exitCode === null && child.signalCode === null) {
+  const completed = await waitBestEffort(closing, timeoutMs);
+  if (!completed && child?.exitCode === null && child.signalCode === null) {
     try {
       child.kill("SIGKILL");
     } catch {

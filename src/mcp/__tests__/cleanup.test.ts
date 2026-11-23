@@ -4,21 +4,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { ChildProcess } from "node:child_process";
 import { closeClientBestEffort } from "../cleanup.js";
 
-it("shares concurrent cleanup and kills a child left alive by SDK close", async () => {
-  const client = new Client({ name: "cleanup-test", version: "1" });
-  const close = jest.spyOn(client, "close").mockResolvedValue(undefined);
-  const kill = jest.fn();
-  const transport = {
-    _process: { exitCode: null, signalCode: null, kill },
-  } as unknown as StdioClientTransport;
-
-  const first = closeClientBestEffort(client, transport, 100);
-  expect(closeClientBestEffort(client, transport, 100)).toBe(first);
-  await first;
-  expect(close).toHaveBeenCalledTimes(1);
-  expect(kill).toHaveBeenCalledWith("SIGKILL");
-});
-
 it("does not signal an exited child whose helper still owns the stdio pipes", async () => {
   const script = `
     const { spawn } = require("node:child_process");
