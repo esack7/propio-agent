@@ -255,8 +255,39 @@ function isConfigurationObject(configuration) {
 }
 
 export function validateProviderConfiguration(configuration) {
-  if (configuration !== undefined && !isConfigurationObject(configuration))
+  if (configuration === undefined) return;
+  if (!isConfigurationObject(configuration))
     throw new Error("Expected a provider configuration object");
+  if (!validProviders(configuration.providers))
+    throw new Error(
+      "Expected provider configuration with provider and model arrays",
+    );
+}
+
+function validProviders(providers) {
+  return Array.isArray(providers) && providers.every(validProvider);
+}
+
+function validModel(model) {
+  return (
+    isConfigurationObject(model) &&
+    typeof model.key === "string" &&
+    Number.isFinite(model.contextWindowTokens) &&
+    model.contextWindowTokens > 0
+  );
+}
+
+function validProvider(provider) {
+  if (!isConfigurationObject(provider)) return false;
+  return (
+    typeof provider.name === "string" &&
+    typeof provider.type === "string" &&
+    validModels(provider.models)
+  );
+}
+
+function validModels(models) {
+  return Array.isArray(models) && models.every(validModel);
 }
 
 export async function readConfigurationJson(path) {

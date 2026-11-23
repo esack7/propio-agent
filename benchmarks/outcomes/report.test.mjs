@@ -1,11 +1,17 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compareReports, runCommand, runReport, summarize } from "./report.mjs";
+import {
+  observeTrial,
+  compareReports,
+  runCommand,
+  runReport,
+  summarize,
+} from "./report.mjs";
 
 test("repeated scripted trials retain trace observation and unknown usage", async () => {
   const report = await runReport({ tasks: ["fix-media-type"], repeats: 2 });
@@ -129,7 +135,7 @@ test("non-object provider configurations are rejected before scheduling", async 
   try {
     const config = join(root, "provider.json");
     const output = join(root, "report.json");
-    await writeFile(config, "null");
+    await writeFile(config, JSON.stringify({ providers: {} }));
     let started = false;
     await assert.rejects(
       runCommand(["run", output, "1", "--provider-config", config], {
@@ -203,5 +209,79 @@ test("partial scripted usage retains measured input without inventing other metr
   )) {
     if (completeness === "unavailable")
       assert.equal(usage.usage[metric], undefined);
+  }
+});
+
+test("empty and gapped journals cannot claim complete measurements", async () => {
+  const home = await mkdtemp(join(tmpdir(), "outcome-trace-"));
+  const directory = join(home, ".propio/sessions/workspace/traces/session");
+  try {
+    await mkdir(directory, { recursive: true });
+    assert.equal((await observeTrial(home)).completeness, "unavailable");
+    const path = join(directory, "run.jsonl");
+    await writeFile(path, "");
+    assert.equal((await observeTrial(home)).runs[0].captureComplete, false);
+    const event = (sequence, type) => ({
+      version: 1,
+      eventId: String(sequence),
+      sequence,
+      observedAt: new Date().toISOString(),
+      monotonicNanoseconds: "1",
+      component: "agent",
+      type,
+      identity: {
+        sessionId: "session",
+        runId: "run",
+        operationId: "operation",
+      },
+      payload: {},
+    });
+    await writeFile(
+      path,
+      [event(1, "run_started"), event(3, "run_completed")]
+        .map(JSON.stringify)
+        .join("\n") + "\n",
+    );
+    const usage = {
+      ...event(4, "provider_usage_reported"),
+      component: "provider",
+      identity: {
+        sessionId: "session",
+        runId: "run",
+        requestId: "request",
+        attemptId: "attempt",
+      },
+      payload: {
+        type: "provider_usage_reported",
+        provider: "scripted",
+        requestedModel: "requested",
+        actualModel: "observed",
+        trace: { requestId: "request", purpose: "answer" },
+        attemptId: "attempt",
+        availability: "partial",
+        usage: { inputTokens: 7 },
+      },
+    };
+    await writeFile(path, JSON.stringify(usage) + "\n", { flag: "a" });
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...usage,
+        sequence: 5,
+        eventId: "5",
+        type: "provider_response_metadata",
+        payload: { ...usage.payload, type: "provider_response_metadata" },
+      }) + "\n",
+      { flag: "a" },
+    );
+    const run = (await observeTrial(home)).runs[0];
+    assert.equal(run.usage.usage.inputTokens, 7);
+    assert.equal(run.usage.metricCompleteness.inputTokens, "partial");
+    assert.equal(run.models[0].actualModel, "observed");
+    assert.equal(run.models[0].requestedModel, "requested");
+    assert.equal(run.captureComplete, false);
+    assert.notEqual(run.usage.completeness, "complete");
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });

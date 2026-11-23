@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, open } from "node:fs/promises";
+import { readFile, readdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -64,15 +64,27 @@ function configuration(options) {
   };
 }
 
-async function observeTrial(home) {
-  const { inspectTraceJournal } = await import("@propio-ai/agent/trace");
+function traceCompleteness(runs) {
+  if (!runs.length) return "unavailable";
+  return runs.every((run) => run.captureComplete) ? "complete" : "partial";
+}
+
+export async function observeTrial(home) {
+  const { readTraceSnapshot } = await import(
+    new URL("../../dist/cli/traceSnapshot.js", import.meta.url).href
+  );
   const root = join(home, ".propio/sessions");
   const names = await readdir(root, { recursive: true });
   const runs = [];
   for (const name of names.filter(
     (name) => name.includes("traces/") && name.endsWith(".jsonl"),
   )) {
-    const inspection = await inspectTraceJournal(join(root, name));
+    const [filename, sessionId] = name.split("/").reverse();
+    const { inspection } = readTraceSnapshot(
+      join(root, name),
+      sessionId,
+      filename.slice(0, -6),
+    );
     const measurements = inspection.providerMeasurements;
     runs.push({
       sessionId: inspection.sessionId,
@@ -92,7 +104,11 @@ async function observeTrial(home) {
       ),
     });
   }
-  return { observedAt: new Date().toISOString(), runs };
+  return {
+    observedAt: new Date().toISOString(),
+    completeness: traceCompleteness(runs),
+    runs,
+  };
 }
 
 export function summarize(report) {
@@ -237,11 +253,15 @@ export async function runCommand(args, options = {}) {
     ? await readConfigurationJson(args[4])
     : undefined;
   const repeats = repeatCount({ repeats: Number(args[2]) });
+  configuration({ ...options, repeats, providerConfig });
   const output = await open(args[1], "wx");
   let report;
   try {
     report = await runReport({ ...options, repeats, providerConfig });
     await output.writeFile(JSON.stringify(report, null, 2) + "\n");
+  } catch (error) {
+    await rm(args[1], { force: true });
+    throw error;
   } finally {
     await output.close();
   }
