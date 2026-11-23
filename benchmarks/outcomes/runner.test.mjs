@@ -90,3 +90,25 @@ for (const [name, options, outcome, reason] of [
     assert.match(rows[0].reason, reason);
   });
 }
+
+for (const kind of ["argument", "configuration"]) {
+  test(`${kind} errors do not echo credentials`, async (t) => {
+    const { spawnSync } = await import("node:child_process");
+    const { writeFile } = await import("node:fs/promises");
+    const parent = await mkdtemp(join(tmpdir(), "propio-config-test-"));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    const secret = "synthetic-secret-never-print";
+    const path = join(parent, "provider.json");
+    await writeFile(path, `{ "apiKey": "${secret}", invalid }`);
+    const args = kind === "argument" ? [secret] : ["--provider-config", path];
+    const result = spawnSync(
+      process.execPath,
+      ["benchmarks/outcomes/runner.mjs", ...args],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.ok(result.stderr.length > 0);
+    assert.ok(!result.stderr.includes(secret));
+  });
+}

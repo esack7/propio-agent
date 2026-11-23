@@ -101,11 +101,8 @@ function trialConfiguration(explicit, provider) {
 }
 
 async function recordGrade(row, trial, state, options) {
-  await options.beforeGrade?.({ ...trial, ...state });
-  const grade = await (options.gradeTrial ?? gradeCodingTrial)(
-    trial.workspace,
-    row.task,
-  );
+  await options.beforeGrade({ ...trial, ...state });
+  const grade = await options.gradeTrial(trial.workspace, row.task);
   row.outcome = grade.passed ? "passed" : "failed";
   if (grade.reason) row.reason = grade.reason;
 }
@@ -130,13 +127,13 @@ async function executeTrial(row, root, provider, options) {
   const trial = await createCodingTrial(root, row.task);
   const state = { home, root, index: row.trial - 1 };
   await configure(home, trialConfiguration(options.providerConfig, provider));
-  await options.beforeRun?.({ ...trial, ...state });
+  await options.beforeRun({ ...trial, ...state });
   const result = await execute(
     trial.workspace,
     home,
     trial.prompt,
-    options.timeoutMs ?? 15000,
-    options.cliPath ?? cli,
+    options.timeoutMs,
+    options.cliPath,
   );
   Object.assign(row, result);
   if (result.error) {
@@ -156,7 +153,7 @@ async function runTrial(task, index, options) {
   let root;
   let provider;
   try {
-    root = await mkdtemp(join(options.parent ?? tmpdir(), "propio-eval-"));
+    root = await mkdtemp(join(options.parent, "propio-eval-"));
     if (!options.providerConfig)
       provider = await startScriptedProvider(task, options.scriptedMode);
     await executeTrial(row, root, provider, options);
@@ -169,26 +166,60 @@ async function runTrial(task, index, options) {
 }
 
 export async function runTrials(options = {}) {
+  const {
+    tasks = ["fix-media-type", "extend-locales"],
+    gradeTrial = gradeCodingTrial,
+    timeoutMs = 15000,
+    cliPath = cli,
+    parent = tmpdir(),
+    beforeRun = () => {},
+    beforeGrade = () => {},
+  } = options;
+  const normalized = {
+    ...options,
+    tasks,
+    gradeTrial,
+    timeoutMs,
+    cliPath,
+    parent,
+    beforeRun,
+    beforeGrade,
+  };
   const rows = [];
-  for (const [index, task] of (
-    options.tasks ?? ["fix-media-type", "extend-locales"]
-  ).entries()) {
-    rows.push(await runTrial(task, index, options));
+  for (const [index, task] of normalized.tasks.entries()) {
+    rows.push(await runTrial(task, index, normalized));
   }
   return rows;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  if (args.length && (args.length !== 2 || args[0] !== "--provider-config")) {
+async function readProviderConfiguration(args) {
+  if (args.length === 0) return undefined;
+  if (args.length !== 2 || args[0] !== "--provider-config") {
     throw new Error(
       "Usage: node benchmarks/outcomes/runner.mjs [--provider-config PATH]",
     );
   }
-  const providerConfig = args.length
-    ? JSON.parse(await readFile(args[1], "utf8"))
-    : undefined;
+  return readConfigurationJson(args[1]);
+}
+
+async function readConfigurationJson(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    throw new Error("Unable to read provider configuration as JSON");
+  }
+}
+
+async function main() {
+  const providerConfig = await readProviderConfiguration(process.argv.slice(2));
   const rows = await runTrials({ providerConfig });
   console.log(JSON.stringify(rows, null, 2));
   if (rows.some((row) => row.outcome !== "passed")) process.exitCode = 1;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }
