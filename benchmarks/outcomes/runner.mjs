@@ -79,7 +79,7 @@ async function configure(home, configuration) {
 }
 
 function trialConfiguration(explicit, provider) {
-  if (explicit) return explicit;
+  if (explicit !== undefined) return explicit;
   return {
     default: "scripted",
     providers: [
@@ -147,14 +147,15 @@ async function runTrial(task, index, options) {
   const row = {
     task,
     trial: index + 1,
-    configuration: options.providerConfig ? "explicit-provider" : "scripted",
+    configuration:
+      options.providerConfig === undefined ? "scripted" : "explicit-provider",
     outcome: "error",
   };
   let root;
   let provider;
   try {
     root = await mkdtemp(join(options.parent, "propio-eval-"));
-    if (!options.providerConfig)
+    if (options.providerConfig === undefined)
       provider = await startScriptedProvider(task, options.scriptedMode);
     await executeTrial(row, root, provider, options);
   } catch (error) {
@@ -204,7 +205,15 @@ async function readProviderConfiguration(args) {
 
 async function readConfigurationJson(path) {
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    const configuration = JSON.parse(await readFile(path, "utf8"));
+    if (
+      configuration === null ||
+      typeof configuration !== "object" ||
+      Array.isArray(configuration)
+    ) {
+      throw new Error("Expected a provider configuration object");
+    }
+    return configuration;
   } catch {
     throw new Error("Unable to read provider configuration as JSON");
   }

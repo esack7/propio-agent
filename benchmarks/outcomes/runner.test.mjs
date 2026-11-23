@@ -76,12 +76,7 @@ test("grader I/O failure is visible and the next scheduled CLI trial runs", asyn
 
 for (const [name, options, outcome, reason] of [
   ["no-op", { scriptedMode: "noop" }, "failed", /catalog values differ/],
-  [
-    "nonzero exit",
-    { cliPath: "/nonexistent/propio-cli.js" },
-    "error",
-    /CLI exited/,
-  ],
+  ["nonzero exit", { scriptedMode: "fail" }, "error", /CLI exited/],
   ["timeout", { scriptedMode: "hang", timeoutMs: 1500 }, "error", /timed out/],
 ]) {
   test(`${name} produces a bounded visible outcome`, async (t) => {
@@ -91,7 +86,16 @@ for (const [name, options, outcome, reason] of [
   });
 }
 
-for (const kind of ["argument", "configuration"]) {
+for (const kind of [
+  "argument",
+  "configuration",
+  "null",
+  "false",
+  "0",
+  '""',
+  "[]",
+  '"text"',
+]) {
   test(`${kind} errors do not echo credentials`, async (t) => {
     const { spawnSync } = await import("node:child_process");
     const { writeFile } = await import("node:fs/promises");
@@ -99,7 +103,12 @@ for (const kind of ["argument", "configuration"]) {
     t.after(() => rm(parent, { recursive: true, force: true }));
     const secret = "synthetic-secret-never-print";
     const path = join(parent, "provider.json");
-    await writeFile(path, `{ "apiKey": "${secret}", invalid }`);
+    await writeFile(
+      path,
+      kind === "configuration" || kind === "argument"
+        ? `{ "apiKey": "${secret}", invalid }`
+        : kind,
+    );
     const args = kind === "argument" ? [secret] : ["--provider-config", path];
     const result = spawnSync(
       process.execPath,
