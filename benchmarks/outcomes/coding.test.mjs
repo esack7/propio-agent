@@ -36,9 +36,40 @@ test("the registry fixture starts red, a real fix turns it green, and changing t
   await update("types.json", { svg: "image/svg+xml" });
   assert.equal(run().status, 0);
   assert.deepEqual(await grade(), { passed: true });
+  await update("types.json", { png: "text/plain" });
+  assert.equal((await grade()).passed, false);
+  await update("types.json", { png: "image/png" });
   await writeFile(join(workspace, "check.mjs"), "");
   assert.match((await grade()).reason, /protected file changed/);
 });
+
+for (const id of ["fix-media-type", "extend-locales"]) {
+  test(`${id} restores original inputs after an earlier trial is tampered with`, async (t) => {
+    const parent = await mkdtemp(join(tmpdir(), "propio-outcome-reset-"));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    const first = await createCodingTrial(parent, id);
+    const names =
+      id === "fix-media-type"
+        ? ["types.json", "check.mjs"]
+        : ["en.json", "es.json"];
+    const originals = await Promise.all(
+      names.map((name) => readFile(join(first.workspace, name), "utf8")),
+    );
+    for (const name of names) {
+      await writeFile(join(first.workspace, name), "tampered");
+    }
+    const fresh = await createCodingTrial(parent, id);
+    assert.notEqual(fresh.workspace, first.workspace);
+    assert.equal(fresh.prompt, first.prompt);
+    assert.deepEqual(
+      await Promise.all(
+        names.map((name) => readFile(join(fresh.workspace, name), "utf8")),
+      ),
+      originals,
+    );
+    assert.equal((await gradeCodingTrial(fresh.workspace, id)).passed, false);
+  });
+}
 
 test("locale grading requires both translations, unchanged existing keys, and the exact file set", async (t) => {
   const { workspace, update, grade } = await trial(t, "extend-locales");
