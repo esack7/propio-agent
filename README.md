@@ -1909,3 +1909,32 @@ CLI estimates are supplied. New consumers should export provider/model, purpose,
 request/attempt identities, timestamps, token/cache metrics and completeness, then
 apply their own historical prices outside this CLI. Cache-write duration is not
 measured and must not be inferred.
+
+### Operator shell journals
+
+Each nonempty `!` command creates a separate run in the active session, attributed
+with `actor: user` and `source: operator_shell`. Mode policy is checked before
+execution. The journal records cwd, configured limits, elapsed duration, exit
+status, termination signal and output lengths, with one terminal outcome for
+success, nonzero exit, timeout, launch failure, cancellation, policy denial or
+output truncation. Empty commands create no journal. Shell runs add no provider
+usage and do not replace the foreground model run selected by `/trace`.
+
+Standard capture omits command and output text. Explicit full capture stores the
+already bounded shell output and command through the existing redacted private
+material path; truncation cannot be recovered by exporting. Capture and sink
+failures do not change command execution, its output, or its original error.
+
+After a shell command, use `propio trace list` to find its run, then
+`propio trace show RUN_ID --session SESSION_ID`. Diagnose before exporting:
+`propio trace export RUN_ID --session SESSION_ID --output ./shell-bundle`, then
+`propio trace verify ./shell-bundle`. Standard export omits private material;
+add `--full` only when it is needed and was captured. `/usage` continues to show
+measured provider tokens, with unknown metrics and overlapping cache/reasoning
+categories preserved, without monetary estimates. `--show-turn-details` and its
+deprecated `--show-trace` alias affect visibility only.
+
+Credential-free acceptance uses local shell execution and scripted provider/journal
+fixtures: `src/ui/__tests__/operatorShellTrace.test.ts`,
+`src/__tests__/interactiveBashSession.test.ts`, and the offline trace CLI tests.
+These require no provider credentials or paid calls.

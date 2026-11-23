@@ -29,6 +29,8 @@ jest.unstable_mockModule("../ui/promptComposer.js", () => ({
   })),
 }));
 
+const { processBashCommand: actualProcessBashCommand } =
+  await import("../ui/processBashCommand.js");
 jest.unstable_mockModule("../ui/processBashCommand.js", () => ({
   processBashCommand: mockProcessBashCommand,
 }));
@@ -78,6 +80,11 @@ function createMockUi() {
   return {
     isJsonMode: () => false,
     getPromptOutputStream: () => process.stderr,
+    error: jest.fn(),
+    status: jest.fn(),
+    bashCommand: jest.fn(),
+    bashOutput: jest.fn(),
+    clearEphemeralSurfaces: jest.fn(),
     command: jest.fn(),
     info: jest.fn(),
     success: jest.fn(),
@@ -92,6 +99,13 @@ function createMockUi() {
 
 function createMockAgent() {
   return {
+    createOperatorShellTraceRun: jest.fn(() => ({
+      recorder: {
+        identity: { sessionId: "active", runId: "shell" },
+        record: jest.fn(),
+      },
+      close: jest.fn(),
+    })),
     streamChat: jest.fn(),
     listUserInvocableSkills: () => [],
     setApprovalChannel: jest.fn(),
@@ -171,6 +185,25 @@ describe("runInteractiveSession bash routing", () => {
 
     return { agent, ui };
   }
+
+  it("wires an actual credential-free shell command to the active agent journal", async () => {
+    mockProcessBashCommand.mockImplementation(actualProcessBashCommand);
+    const { agent, ui } = await runBashRoutingSession();
+    expect(agent.createOperatorShellTraceRun).toHaveBeenCalledTimes(1);
+    const run = agent.createOperatorShellTraceRun.mock.results[0]!.value;
+    expect(run.recorder.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "run_closed",
+        payload: expect.objectContaining({
+          outcome: "success",
+          source: "operator_shell",
+        }),
+      }),
+      { durable: true },
+    );
+    expect(run.close).toHaveBeenCalledTimes(1);
+    expect(ui.bashOutput).toHaveBeenCalledWith(expect.any(String), "", 0);
+  });
 
   it("returns to prompt mode after a bash submission", async () => {
     const { agent } = await runBashRoutingSession();

@@ -1027,6 +1027,14 @@ export class Agent {
     };
   }
 
+  createOperatorShellTraceRun(): AgentTraceRun | undefined {
+    return this.createTraceRun?.({
+      sessionId: this.sessionId,
+      runId: randomUUID(),
+      configurationRevisionId: this.configurationRevisionId,
+    });
+  }
+
   private tryStartTraceRun(runId: string): AgentTraceRun | undefined {
     let traceRun: AgentTraceRun | undefined;
     try {

@@ -1235,6 +1235,7 @@ export async function runInteractiveSession(
         bashCancelListener.attach();
         try {
           await processBashCommand(trimmedText, ui, {
+            createTraceRun: () => agent.createOperatorShellTraceRun?.(),
             cwd: process.cwd(),
             abortSignal: bashAbort.signal,
             agentMode: agent.getAgentMode?.() ?? "execute",
