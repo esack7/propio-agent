@@ -289,11 +289,12 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
     });
     const clearing = b.clearServerCredentials("protected");
     await disposing;
-    await b.reconnectServer("protected");
-    await b.setServerEnabled("protected", true);
+    const reconnecting = b.reconnectServer("protected");
+    const enabling = b.setServerEnabled("protected", true);
     releaseDisposal();
-    await clearing;
+    await Promise.all([clearing, reconnecting, enabling]);
     expect(b.getServerSummaries()[0].status).not.toBe("connected");
+    expect(b.getServerSummaries()[0].lastError).toContain("sign in explicitly");
     expect(b.listTools()).toHaveLength(0);
     expect(local.sessions.size).toBe(sessionCount - 1);
   } finally {
