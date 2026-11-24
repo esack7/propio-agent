@@ -40,6 +40,12 @@ function toErrorMessage(error: unknown): string {
 
 function connectionError(config: McpServerConfigEntry, error: unknown): string {
   if (config.transport !== "streamable-http") return toErrorMessage(error);
+  if (
+    error instanceof McpError &&
+    error.code !== ErrorCode.RequestTimeout &&
+    error.code !== ErrorCode.ConnectionClosed
+  )
+    return `MCP HTTP protocol rejection (code ${error.code})`;
   return error instanceof Error && error.name === "TimeoutError"
     ? "MCP HTTP connection timed out"
     : "MCP HTTP request failed; reconnect explicitly before retrying an uncertain call";
@@ -366,6 +372,8 @@ export class McpConnectionManager {
     const transport =
       config.transport === "streamable-http"
         ? new StreamableHTTPClientTransport(new URL(config.url), {
+            fetch: (input, init) =>
+              fetch(input, { ...init, redirect: "error" }),
             reconnectionOptions: {
               maxRetries: 0,
               initialReconnectionDelay: 1000,
@@ -584,6 +592,7 @@ export class McpConnectionManager {
       const failure = classifyMcpCallError(error);
       if (
         runtime.config.transport === "streamable-http" &&
+        failure.classification !== "remote_error" &&
         runtime.connectionId === connectionId
       ) {
         runtime.connectionId++;

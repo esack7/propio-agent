@@ -79,11 +79,15 @@ function renderDetail(
   );
   if (detail.transport === "streamable-http")
     ui.info(`Endpoint: ${detail.url}`);
-  else ui.info(`Command: ${detail.command}`);
-  ui.info(`Args: ${detail.args.length > 0 ? detail.args.join(" ") : "(none)"}`);
-  ui.info(
-    `Env keys: ${detail.envKeys.length > 0 ? detail.envKeys.join(", ") : "(none)"}`,
-  );
+  else {
+    ui.info(`Command: ${detail.command}`);
+    ui.info(
+      `Args: ${detail.args.length > 0 ? detail.args.join(" ") : "(none)"}`,
+    );
+    ui.info(
+      `Env keys: ${detail.envKeys.length > 0 ? detail.envKeys.join(", ") : "(none)"}`,
+    );
+  }
 
   if (detail.instructions) {
     ui.info(`Instructions: ${detail.instructions}`);

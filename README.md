@@ -448,8 +448,12 @@ Command entries remain valid. Streamable HTTP entries can share the same file:
 
 Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
 Embedded URL credentials are rejected. Endpoint diagnostics show only the origin.
-OAuth login and tool filters are not supported yet. Failed or timed-out HTTP calls
-have unknown completion and are never automatically replayed; reconnect explicitly.
+OAuth login and tool filters are not supported yet. A `tools` field is rejected
+on command entries too, rather than silently ignoring a requested filter. HTTP
+redirects are rejected. Timed-out calls and transport failures have unknown
+completion and are never automatically replayed; reconnect explicitly. Protocol
+rejections preserve the connection. Closing a connection attempts a bounded,
+best-effort session termination before releasing local resources.
 
 A legacy command example:
 
