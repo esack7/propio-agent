@@ -11,8 +11,6 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
-export class McpAuthorizationError extends Error {}
-
 export interface McpCredentialKey {
   readonly owner: string;
   readonly serverName: string;
@@ -113,10 +111,14 @@ export class InMemoryMcpCredentialStore implements McpCredentialStore {
   }
 }
 export class McpLoginRequiredError extends Error {
-  constructor() {
-    super("MCP authorization required; sign in explicitly");
+  constructor(
+    message = "MCP authorization required; sign in explicitly with /mcp login <server>",
+  ) {
+    super(message);
   }
 }
+export class McpAuthorizationError extends McpLoginRequiredError {}
+
 function assertSecureOAuthUrl(url: URL): void {
   const loopback =
     ["localhost", "[::1]"].includes(url.hostname) ||

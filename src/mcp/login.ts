@@ -42,7 +42,11 @@ export async function withMcpLogin<T>(
       return;
     }
     const code = url.searchParams.get("code");
-    response.end("Sign-in received. Return to Propio.");
+    response.end(
+      code && !url.searchParams.has("error")
+        ? "Sign-in received. Return to Propio."
+        : "Sign-in rejected. Return to Propio to retry /mcp login.",
+    );
     if (code && !url.searchParams.has("error")) complete!({ code, state });
     else fail!(new Error("Sign-in rejected; retry /mcp login"));
   });

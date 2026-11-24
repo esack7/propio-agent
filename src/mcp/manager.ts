@@ -12,6 +12,7 @@ import type { McpConfigFile, McpServerSummary } from "./types.js";
 import type { ToolDisplay } from "../tools/display.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 
+import { resolveSettingsLocation } from "../config/permissionStore.js";
 import { FileMcpCredentialStore } from "../config/mcpCredentialStore.js";
 import { withMcpLogin } from "./login.js";
 
@@ -75,6 +76,10 @@ export class McpManager extends McpConnectionManager {
   }
 
   private assertHttpServer(name: string): void {
+    if (resolveSettingsLocation().sandbox)
+      throw new McpAuthorizationError(
+        "MCP login and logout are unavailable in sandbox mode; run /mcp login <server> or /mcp logout <server> on the host",
+      );
     const detail = this.getServerDetail(name);
     if (!detail)
       throw new McpAuthorizationError("Unknown MCP server; use /mcp list");

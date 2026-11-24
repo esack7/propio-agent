@@ -178,7 +178,11 @@ async function handleMcpReconnect(
       ui.success(`Reconnected ${summary.name}: ${formatSummary(summary)}.`);
     else ui.error(formatActionFailure("Reconnected", summary));
   } catch (error) {
-    ui.error(error instanceof Error ? error.message : String(error));
+    ui.error(
+      error instanceof McpAuthorizationError
+        ? error.message
+        : "MCP connection update failed; check private storage permissions and /mcp list",
+    );
   }
 }
 
@@ -200,7 +204,11 @@ async function handleMcpEnableDisable(
       ui.success(`${label} ${summary.name}: ${formatSummary(summary)}.`);
     else ui.error(formatActionFailure(label, summary));
   } catch (error) {
-    ui.error(error instanceof Error ? error.message : String(error));
+    ui.error(
+      error instanceof McpAuthorizationError
+        ? error.message
+        : "MCP connection update failed; check private storage permissions and /mcp list",
+    );
   }
 }
 

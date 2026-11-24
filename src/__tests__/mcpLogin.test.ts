@@ -1,3 +1,4 @@
+import { McpLoginRequiredError } from "../mcp/index.js";
 import { createAbortStateController } from "../ui/abortState.js";
 import { request } from "node:http";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
@@ -107,6 +108,8 @@ test("CLI login survives restart, refreshes, and logout rejects a late refresh",
     error: (text: string) => messages.push(text),
   };
   let browsers = 0;
+  let deny = false;
+  let redirect = "";
   const options = {
     configPath,
     credentialStore: new FileMcpCredentialStore(directory),
@@ -115,7 +118,11 @@ test("CLI login survives restart, refreshes, and logout rejects a late refresh",
       const url = new URL(address);
       const callback = new URL(url.searchParams.get("redirect_uri")!);
       callback.searchParams.set("state", url.searchParams.get("state")!);
-      callback.searchParams.set("code", "synthetic-code");
+      redirect = callback.href;
+      callback.searchParams.set(
+        deny ? "error" : "code",
+        deny ? "access_denied" : "synthetic-code",
+      );
       await fetch(callback);
     },
   };
@@ -135,7 +142,16 @@ test("CLI login survives restart, refreshes, and logout rejects a late refresh",
       ui as never,
     );
   try {
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: false,
+    });
     await manager.initialize();
+    expect(browsers).toBe(0);
+    Object.defineProperty(process.stdin, "isTTY", {
+      configurable: true,
+      value: true,
+    });
     expect(manager.getServerSummaries()[0].lastError).toContain(
       "authorization required",
     );
@@ -148,9 +164,24 @@ test("CLI login survives restart, refreshes, and logout rejects a late refresh",
     expect(manager.getServerSummaries()[0].status).toBe("connected");
     expect(local.refreshes()).toBe(1);
     expect(browsers).toBe(1);
+    const key = {
+      owner: "local",
+      serverName: "docs",
+      resource: config.mcpServers.docs.url,
+    };
+    const prior = await options.credentialStore.load(key);
+    deny = true;
+    await expect(manager.loginCliServer("docs")).rejects.toBeInstanceOf(
+      McpLoginRequiredError,
+    );
+    await expect(fetch(redirect)).rejects.toThrow();
+    expect((await options.credentialStore.load(key)).tokens).toEqual(
+      prior.tokens,
+    );
+    deny = false;
     // A second explicit login has a fresh callback port and registration.
     await command("/mcp login docs");
-    expect(browsers).toBe(2);
+    expect(browsers).toBe(3);
     local.tokens.clear();
     const started = local.pause();
     const reconnect = manager.reconnectServer("docs");
@@ -166,6 +197,15 @@ test("CLI login survives restart, refreshes, and logout rejects a late refresh",
     expect(record.tokens).toBeUndefined();
     expect(await readFile(configPath, "utf8")).not.toContain("synthetic-code");
     expect(messages.join("\n")).not.toContain("synthetic-code");
+    await manager.loginCliServer("docs");
+    await manager.close();
+    local.rejectRefresh();
+    manager = new McpManager(options);
+    await manager.initialize();
+    expect(manager.getServerSummaries()[0].lastError).toContain(
+      "authorization required",
+    );
+    expect((await options.credentialStore.load(key)).tokens).toBeUndefined();
   } finally {
     local.resume();
     await manager.close();
@@ -263,5 +303,44 @@ test("CLI errors are actionable for unknown, stdio and noninteractive login", as
     if (tty) Object.defineProperty(process.stdin, "isTTY", tty);
     else Reflect.deleteProperty(process.stdin, "isTTY");
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sandbox login and logout refuse before accessing credentials", async () => {
+  const fs = (await import("node:fs")).default;
+  const { syncBuiltinESMExports } = await import("node:module");
+  const { jest } = await import("@jest/globals");
+  const existsSync = fs.existsSync;
+  const probe = jest
+    .spyOn(fs, "existsSync")
+    .mockImplementation((path) => path === "/app/.propio" || existsSync(path));
+  syncBuiltinESMExports();
+  const store = {
+    load: jest.fn<import("../mcp/oauth.js").McpCredentialStore["load"]>(),
+    compareAndSet:
+      jest.fn<import("../mcp/oauth.js").McpCredentialStore["compareAndSet"]>(),
+    clear: jest.fn<import("../mcp/oauth.js").McpCredentialStore["clear"]>(),
+    withLock:
+      jest.fn<import("../mcp/oauth.js").McpCredentialStore["withLock"]>(),
+  };
+  const manager = new McpManager({
+    config: {
+      mcpServers: {
+        docs: { transport: "streamable-http", url: "http://127.0.0.1:1/mcp" },
+      },
+    },
+    credentialStore: store,
+  });
+  try {
+    await expect(manager.loginCliServer("docs")).rejects.toThrow("on the host");
+    expect(() => manager.clearServerCredentials("docs")).toThrow("on the host");
+    expect(store.clear).not.toHaveBeenCalled();
+    expect(store.load).not.toHaveBeenCalled();
+    expect(store.compareAndSet).not.toHaveBeenCalled();
+    expect(store.withLock).not.toHaveBeenCalled();
+  } finally {
+    probe.mockRestore();
+    syncBuiltinESMExports();
+    await manager.close();
   }
 });

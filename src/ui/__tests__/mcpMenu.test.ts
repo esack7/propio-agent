@@ -146,7 +146,7 @@ test("login explains how to enable a disabled server", async () => {
   expect(messages.join("\n")).toContain("sign-in saved; use /mcp enable");
 });
 
-test.each(["login", "logout"])(
+test.each(["login", "logout", "reconnect", "enable"])(
   "%s hides untrusted exceptions",
   async (command) => {
     const messages: string[] = [];
@@ -158,12 +158,18 @@ test.each(["login", "logout"])(
       {
         loginMcpServer: fail,
         logoutMcpServer: fail,
+        reconnectMcpServer: fail,
+        setMcpServerEnabled: fail,
       } as never,
       createUi(messages),
     );
     expect(messages.join("\n")).not.toContain("synthetic-secret");
     expect(messages.join("\n")).toContain(
-      command === "logout" ? "Could not clear" : "sign-in unavailable",
+      command === "logout"
+        ? "Could not clear"
+        : command === "login"
+          ? "sign-in unavailable"
+          : "check private storage permissions",
     );
   },
 );

@@ -10,6 +10,7 @@ export async function oauthFixture() {
   let origin = "";
   let disposal: (() => Promise<void>) | undefined;
   let refreshes = 0;
+  let rejectRefresh = false;
   let release: (() => void) | undefined;
   let started: (() => void) | undefined;
   const registrations = new Map<string, string[]>();
@@ -81,7 +82,11 @@ export async function oauthFixture() {
       return true;
     }
     if (req.url === "/token") {
-      json(await issueTokens(req));
+      if (rejectRefresh)
+        res
+          .writeHead(400, { "content-type": "application/json" })
+          .end(JSON.stringify({ error: "invalid_grant" }));
+      else json(await issueTokens(req));
       return true;
     }
     return false;
@@ -139,6 +144,10 @@ export async function oauthFixture() {
       disposal = hold;
     },
     refreshes: () => refreshes,
+    rejectRefresh: () => {
+      rejectRefresh = true;
+      tokens.clear();
+    },
     pause: () =>
       new Promise<void>((resolve) => {
         started = resolve;

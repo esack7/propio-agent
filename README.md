@@ -649,7 +649,7 @@ with a deny or ask rule that uses one, since that rule would match nothing.
 It is read through the link, and saving rewrites the file it points to and
 keeps the link. Sandbox mode copies in only its `permissions` object and `runtime.traceCaptureLevel`, and
 refuses to start if the link leads into a directory that holds credentials
-(`~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
+(`~/.propio/mcp-auth`, `~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
 or to something that is not a settings object, is an error natively and stops
 the sandbox before it starts.
 
@@ -1997,3 +1997,6 @@ MCP CLI login and logout require the optional `os-lock` native dependency for
 cross-process credential storage. If unavailable, reinstall with optional
 dependencies enabled and a native build toolchain before signing in. The CLI
 checks this requirement before opening the sign-in browser.
+
+MCP login and logout are refused in sandbox mode: run `/mcp login <server>` or
+`/mcp logout <server>` on the host to update the durable host grant.
