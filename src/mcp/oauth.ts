@@ -34,7 +34,11 @@ export interface McpCredentialStore {
     value: Omit<McpCredentialRecord, "revision">,
   ): Promise<boolean>;
   clear(key: McpCredentialKey): Promise<void>;
-  withLock<T>(key: McpCredentialKey, operation: () => Promise<T>): Promise<T>;
+  withLock<T>(
+    key: McpCredentialKey,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T>;
 }
 export interface McpOAuthInteraction {
   readonly redirectUrl: string;
@@ -81,14 +85,26 @@ export class InMemoryMcpCredentialStore implements McpCredentialStore {
   async withLock<T>(
     key: McpCredentialKey,
     operation: () => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<T> {
     const id = this.key(key);
     const pending = (this.locks.get(id) ?? Promise.resolve())
       .catch(() => {})
-      .then(operation);
+      .then(() => {
+        if (signal?.aborted) throw new McpLoginRequiredError();
+        return operation();
+      });
     this.locks.set(id, pending);
     try {
-      return await pending;
+      if (!signal) return await pending;
+      return await new Promise<T>((resolve, reject) => {
+        const abort = () => reject(new McpLoginRequiredError());
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+        pending
+          .then(resolve, reject)
+          .finally(() => signal.removeEventListener("abort", abort));
+      });
     } finally {
       if (this.locks.get(id) === pending) this.locks.delete(id);
     }
@@ -144,6 +160,7 @@ export class ScopedMcpOAuth {
     record: McpCredentialRecord,
     interaction?: McpOAuthInteraction,
     signal?: AbortSignal,
+    challenge: ReturnType<typeof extractWWWAuthenticateParams> = {},
   ): OAuthClientProvider {
     let verifier: string | undefined;
     const state = randomUUID();
@@ -183,18 +200,26 @@ export class ScopedMcpOAuth {
       },
       saveDiscoveryState: async (discovery) => {
         const wasBound = value.discovery !== undefined;
+        // SDK discovery falls back to the resource origin on metadata failure.
+        // That is not evidence that an existing issuer binding changed.
+        if (wasBound && !discovery.resourceMetadata)
+          throw new McpLoginRequiredError();
         if (
-          value.discovery?.authorizationServerUrl !==
-          discovery.authorizationServerUrl
+          !value.discovery ||
+          new URL(value.discovery.authorizationServerUrl).href !==
+            new URL(discovery.authorizationServerUrl).href
         ) {
           value.tokens = undefined;
           value.client = undefined;
           value.discovery = discovery;
-          if (wasBound) await commit();
+          if (wasBound && !interaction) await commit();
         }
         value.discovery = discovery;
       },
       invalidateCredentials: async (scope) => {
+        // A single-use authorization code must never be retried, and a failed
+        // login must not overwrite the previously usable grant.
+        if (interaction) throw new McpLoginRequiredError();
         if (scope === "all" || scope === "tokens") value.tokens = undefined;
         if (scope === "all" || scope === "client") value.client = undefined;
         await commit();
@@ -205,11 +230,17 @@ export class ScopedMcpOAuth {
         const callback = await interaction.authorize(url, signal);
         if (signal.aborted || callback.state !== state || !callback.code)
           throw new McpLoginRequiredError();
-        await auth(provider, {
-          serverUrl: this.key.resource,
-          authorizationCode: callback.code,
-          fetchFn,
-        });
+        await this.options.store.withLock(
+          this.key,
+          () =>
+            auth(provider, {
+              serverUrl: this.key.resource,
+              ...challenge,
+              authorizationCode: callback.code,
+              fetchFn,
+            }),
+          signal,
+        );
       },
     };
     // Commit the complete SDK transaction once; a logout wins against late responses.
@@ -224,21 +255,29 @@ export class ScopedMcpOAuth {
     interaction: McpOAuthInteraction,
     signal: AbortSignal,
   ): Promise<void> {
-    await this.options.store.withLock(this.key, async () => {
-      const record = await this.options.store.load(this.key);
-      if (signal.aborted) throw new McpLoginRequiredError();
-      const provider = this.makeProvider(
-        { ...record, tokens: undefined },
-        interaction,
-        signal,
+    if (signal.aborted) throw new McpLoginRequiredError();
+    const response = await safeFetch(this.key.resource, { signal });
+    const challenge = extractWWWAuthenticateParams(response);
+    await response.body?.cancel();
+    const record = await this.options.store.load(this.key);
+    if (!challenge.resourceMetadataUrl && record.discovery?.resourceMetadataUrl)
+      challenge.resourceMetadataUrl = new URL(
+        record.discovery.resourceMetadataUrl,
       );
-      await auth(provider, {
-        serverUrl: this.key.resource,
-        scope: this.requiredScope,
-        fetchFn: (input, init) => safeFetch(input, { ...init, signal }),
-      });
+    const provider = this.makeProvider(
+      { ...record, tokens: undefined },
+      interaction,
+      signal,
+      challenge,
+    );
+    await auth(provider, {
+      serverUrl: this.key.resource,
+      ...challenge,
+      scope: challenge.scope ?? this.requiredScope,
+      fetchFn: (input, init) => safeFetch(input, { ...init, signal }),
     });
   }
+
   private async rejectAuthorization(response: Response): Promise<never> {
     if (insufficientScope(response))
       this.requiredScope = extractWWWAuthenticateParams(response).scope;

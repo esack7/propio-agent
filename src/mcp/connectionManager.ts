@@ -825,17 +825,26 @@ export class McpConnectionManager {
     const config = this.getServerConfig(name);
     if (!this.oauth || config.transport !== "streamable-http")
       throw new Error("MCP OAuth is not configured for this server");
-    const boundedSignal = AbortSignal.any([
+    const controller = new AbortController();
+    const signals = [
       signal,
       this.oauthAbort.signal,
       AbortSignal.timeout(this.loginTimeoutMs),
-    ]);
+    ];
+    const abort = () => controller.abort();
+    for (const source of signals) {
+      if (source.aborted) abort();
+      else source.addEventListener("abort", abort, { once: true });
+    }
+    const boundedSignal = controller.signal;
     try {
       await this.createOAuth(name, config)!.login(interaction, boundedSignal);
       if (boundedSignal.aborted) throw new McpLoginRequiredError();
       return await this.reconnectServer(name);
     } catch {
       throw new McpLoginRequiredError();
+    } finally {
+      for (const source of signals) source.removeEventListener("abort", abort);
     }
   }
 

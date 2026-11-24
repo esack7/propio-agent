@@ -323,6 +323,8 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
   let issuer = origin;
   let requiredScope: string | undefined;
   let authorizations = 0;
+  let metadataFailure = false;
+  let rejectCode = false;
   const issueTokens = async (init?: RequestInit) => {
     const params = new URLSearchParams(String(init?.body));
     if (params.get("grant_type") === "refresh_token") {
@@ -359,7 +361,25 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       new Headers(init?.headers).get("authorization") ===
         `Bearer access-${sequence}`
       ? json({ ok: true })
-      : new Response(null, { status: 401 });
+      : new Response(null, {
+          status: 401,
+          headers: {
+            "www-authenticate": `Bearer resource_metadata="${origin}/custom-metadata"`,
+          },
+        });
+  };
+  const tokenResponse = async (init?: RequestInit) => {
+    if (
+      rejectCode &&
+      new URLSearchParams(String(init?.body)).get("grant_type") ===
+        "authorization_code"
+    )
+      return new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+      });
+    return new Response(JSON.stringify(await issueTokens(init)), {
+      headers: { "content-type": "application/json" },
+    });
   };
   const mock = jest
     .spyOn(globalThis, "fetch")
@@ -370,10 +390,14 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
           headers: { "content-type": "application/json" },
         });
       if (url.includes("oauth-protected-resource"))
-        return json({
-          resource: origin + "/mcp",
-          authorization_servers: [issuer],
-        });
+        return new Response(null, { status: 404 });
+      if (url.endsWith("/custom-metadata"))
+        return metadataFailure
+          ? new Response(null, { status: 503 })
+          : json({
+              resource: origin + "/mcp",
+              authorization_servers: [issuer],
+            });
       if (url.includes("oauth-authorization-server"))
         return json({
           issuer,
@@ -388,7 +412,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
           ...JSON.parse(String(init?.body)),
           client_id: "synthetic-client",
         });
-      if (url.endsWith("/token")) return json(await issueTokens(init));
+      if (url.endsWith("/token")) return tokenResponse(init);
       return resourceResponse(init);
     });
   const adapter = new ScopedMcpOAuth(
@@ -415,6 +439,22 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
     expect((await store.load(adapter.key)).tokens?.refresh_token).toBe(
       "refresh-1",
     );
+    const healthy = await store.load(adapter.key);
+    rejectCode = true;
+    await expect(
+      adapter.login(interaction, new AbortController().signal),
+    ).rejects.toThrow("authorization required");
+    expect(await store.load(adapter.key)).toEqual(healthy);
+    rejectCode = false;
+    metadataFailure = true;
+    validAccess = false;
+    await expect(
+      adapter.fetch(origin + "/mcp", {
+        headers: { authorization: "Bearer access-1" },
+      }),
+    ).rejects.toThrow("authorization required");
+    expect(await store.load(adapter.key)).toEqual(healthy);
+    metadataFailure = false;
     const sibling = new ScopedMcpOAuth(
       {
         owner: "one",
@@ -424,6 +464,29 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       "test",
       origin + "/mcp",
     );
+    let finishLogin!: () => void;
+    let enteredLogin!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredLogin = resolve;
+    });
+    const loginController = new AbortController();
+    const waiting = adapter.login(
+      {
+        ...interaction,
+        authorize: async (url) => {
+          enteredLogin();
+          await new Promise<void>((resolve) => {
+            finishLogin = resolve;
+          });
+          return { code: "synthetic", state: url.searchParams.get("state")! };
+        },
+      },
+      loginController.signal,
+    );
+    const staleLogin = expect(waiting).rejects.toThrow(
+      "authorization required",
+    );
+    await entered;
     validAccess = false;
     const controller = new AbortController();
     const init = { headers: { authorization: "Bearer access-1" } };
@@ -442,6 +505,9 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
     controller.abort();
     resume();
     await requests;
+    loginController.abort();
+    finishLogin();
+    await staleLogin;
     delay = undefined;
     notify = undefined;
     expect(
@@ -462,7 +528,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       }),
     ).rejects.toThrow("authorization required");
     await adapter.login(interaction, new AbortController().signal);
-    expect(authorizations).toBe(2);
+    expect(authorizations).toBe(3);
     requiredScope = undefined;
     validAccess = false;
     let release!: () => void;
@@ -499,12 +565,12 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
         new AbortController().signal,
       ),
     ).rejects.toThrow("authorization required");
-    expect((await store.load(adapter.key)).tokens).toBeUndefined();
+    expect((await store.load(adapter.key)).tokens).toBeDefined();
     const cancelled = AbortSignal.abort();
     await expect(adapter.login(interaction, cancelled)).rejects.toThrow(
       "authorization required",
     );
-    expect((await store.load(adapter.key)).tokens).toBeUndefined();
+    expect((await store.load(adapter.key)).tokens).toBeDefined();
   } finally {
     mock.mockRestore();
   }

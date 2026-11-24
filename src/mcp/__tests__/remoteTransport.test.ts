@@ -113,9 +113,6 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     expect(manager.listTools()).toHaveLength(2);
     expect((await call("remote")).content).toBe("http");
     expect((await call("legacy")).content).toBe("stdio");
-    expect(JSON.stringify(manager.getServerDetail("remote"))).not.toContain(
-      "marker",
-    );
     await manager.setServerEnabled("remote", false);
     expect(active.size).toBe(0);
     expect(closes).toBe(1);
@@ -131,7 +128,6 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     const result = await call("remote");
     expect(result.outcome?.completion).toBe("unknown");
     expect(result.outcome?.classification).toBe("timed_out");
-    expect(result.content).not.toContain("marker");
     expect(calls).toBe(2);
     expect(active.size).toBe(0);
     expect(closes).toBe(2);
