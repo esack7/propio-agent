@@ -62,12 +62,16 @@ function validateMcpServerConfig(
     throw new Error(`MCP server "${serverName}" must be an object`);
   }
 
+  validateUniqueMcpServerName(serverName, normalizedNames);
+  if (rawEntry.transport === "streamable-http") {
+    return validateHttpEntry(serverName, rawEntry);
+  }
   validateMcpServerTransport(serverName, rawEntry);
   validateMcpServerFields(serverName, rawEntry);
-  validateUniqueMcpServerName(serverName, normalizedNames);
 
   return {
-    command: rawEntry.command.trim(),
+    ...(rawEntry.transport === "stdio" ? { transport: "stdio" as const } : {}),
+    command: rawEntry.command!.trim(),
     ...(rawEntry.args ? { args: [...rawEntry.args] } : {}),
     ...(rawEntry.env ? { env: { ...rawEntry.env } } : {}),
     ...(rawEntry.enabled !== undefined ? { enabled: rawEntry.enabled } : {}),
@@ -78,12 +82,15 @@ function validateMcpServerTransport(
   serverName: string,
   rawEntry: Record<string, unknown>,
 ): void {
+  if (rawEntry.transport !== undefined && rawEntry.transport !== "stdio") {
+    throw new Error(`MCP server "${serverName}" has an unsupported transport`);
+  }
   const unsupportedFields = ["url", "http", "sse", "ws"].filter(
     (field) => field in rawEntry,
   );
   if (unsupportedFields.length > 0) {
     throw new Error(
-      `MCP server "${serverName}" uses ${unsupportedFields.join(", ")}, which is not yet supported in v1. Only stdio servers are supported.`,
+      `MCP server "${serverName}" uses ${unsupportedFields.join(", ")}, which requires an explicit supported transport; URLs require transport "streamable-http".`,
     );
   }
 }
@@ -133,4 +140,50 @@ function validateUniqueMcpServerName(
 
 export function isMcpServerEnabled(entry: McpServerConfigEntry): boolean {
   return entry.enabled !== false;
+}
+
+function validateHttpEntry(
+  serverName: string,
+  entry: Record<string, unknown>,
+): McpServerConfigEntry {
+  const invalid = () =>
+    new Error(
+      `MCP server "${serverName}" requires a credential-free HTTPS URL (HTTP is allowed on loopback) and no stdio fields or tool filters`,
+    );
+  if (
+    Object.keys(entry).some(
+      (key) => !["transport", "url", "enabled"].includes(key),
+    )
+  )
+    throw invalid();
+  if (typeof entry.url !== "string") throw invalid();
+  let url: URL;
+  try {
+    url = new URL(entry.url);
+  } catch {
+    throw invalid();
+  }
+  if (!isAllowedEndpoint(url)) throw invalid();
+  if (entry.enabled !== undefined && typeof entry.enabled !== "boolean")
+    throw invalid();
+  return {
+    transport: "streamable-http",
+    url: url.href,
+    ...(entry.enabled !== undefined
+      ? { enabled: entry.enabled as boolean }
+      : {}),
+  };
+}
+
+function isAllowedEndpoint(url: URL): boolean {
+  if (url.username || url.password || url.hash) return false;
+  if (url.protocol === "https:") return true;
+  return url.protocol === "http:" && isLoopback(url.hostname);
+}
+
+function isLoopback(hostname: string): boolean {
+  return (
+    ["localhost", "[::1]"].includes(hostname) ||
+    /^127\.\d+\.\d+\.\d+$/.test(hostname)
+  );
 }

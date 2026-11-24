@@ -432,7 +432,30 @@ never displayed.
 
 ### V1 config
 
-Only stdio servers are supported in v1:
+Command entries remain valid. Streamable HTTP entries can share the same file:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "transport": "streamable-http",
+      "url": "https://docs.example.com/mcp"
+    },
+    "legacy": { "command": "my-mcp-server" }
+  }
+}
+```
+
+Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
+Embedded URL credentials are rejected. Endpoint diagnostics show only the origin.
+OAuth login and tool filters are not supported yet. A `tools` field is rejected
+on HTTP entries. Legacy command entries continue to ignore that field. HTTP
+redirects are rejected. Timed-out calls and transport failures have unknown
+completion and are never automatically replayed; reconnect explicitly. Protocol
+rejections preserve the connection. Closing a connection attempts a bounded,
+best-effort session termination before releasing local resources.
+
+A legacy command example:
 
 ```json
 {
@@ -1127,6 +1150,10 @@ extraction and publication require separate repository and release decisions.
 
 ### Reusable MCP API (provisional)
 
+TypeScript migration: `McpServerConfigEntry` is now a union of
+`McpStdioConfigEntry` and `McpHttpConfigEntry`. Narrow with
+`entry.transport !== "streamable-http"` before reading command-specific fields.
+
 `@propio-ai/agent/mcp` exposes `McpConnectionManager`, configuration validation,
 stable tool naming, and public connection/tool/result types. It requires Node.js
 20+. Importing the entry point does not start the CLI, read configuration, scan
@@ -1165,7 +1192,7 @@ try {
   resolves with the disabled shutdown state; the saved preference is retained and
   no connection is restarted. Enable/disable writes
   are serialized; applications own cross-process coordination.
-- Only **stdio connections and tool listing/calling** are supported. HTTP, SSE,
+- **Stdio and Streamable HTTP tool listing/calling** are supported. SSE,
   resources APIs, prompts APIs, and automatic tool-list updates are not supported.
   Reconnect explicitly to refresh tools. Commands inherit the SDK's default
   environment and process working directory; callers should supply absolute

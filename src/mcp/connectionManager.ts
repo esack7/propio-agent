@@ -1,4 +1,6 @@
 import { closeClientBestEffort } from "./cleanup.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
@@ -34,6 +36,19 @@ function appendTail(existing: string | undefined, chunk: string): string {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function connectionError(config: McpServerConfigEntry, error: unknown): string {
+  if (config.transport !== "streamable-http") return toErrorMessage(error);
+  if (
+    error instanceof McpError &&
+    error.code !== ErrorCode.RequestTimeout &&
+    error.code !== ErrorCode.ConnectionClosed
+  )
+    return `MCP HTTP protocol rejection (code ${error.code})`;
+  return error instanceof Error && error.name === "TimeoutError"
+    ? "MCP HTTP connection timed out"
+    : "MCP HTTP request failed; reconnect explicitly before retrying an uncertain call";
 }
 
 function formatToolCallError(toolName: string, message: string): string {
@@ -353,18 +368,31 @@ export class McpConnectionManager {
     runtime: McpServerRuntime,
     config: McpServerConfigEntry,
     connectionId: number,
-  ): { client: Client; transport: StdioClientTransport } {
-    const transport = new StdioClientTransport({
-      command: config.command,
-      ...(config.args ? { args: [...config.args] } : {}),
-      ...(config.env ? { env: { ...config.env } } : {}),
-      stderr: "pipe",
-    });
-    transport.stderr?.on("data", (chunk) => {
-      if (runtime.connectionId === connectionId) {
-        runtime.stderrTail = appendTail(runtime.stderrTail, String(chunk));
-      }
-    });
+  ): { client: Client; transport: Transport } {
+    const transport =
+      config.transport === "streamable-http"
+        ? new StreamableHTTPClientTransport(new URL(config.url), {
+            fetch: (input, init) =>
+              fetch(input, { ...init, redirect: "error" }),
+            reconnectionOptions: {
+              maxRetries: 0,
+              initialReconnectionDelay: 1000,
+              maxReconnectionDelay: 1000,
+              reconnectionDelayGrowFactor: 1,
+            },
+          })
+        : new StdioClientTransport({
+            command: config.command,
+            ...(config.args ? { args: [...config.args] } : {}),
+            ...(config.env ? { env: { ...config.env } } : {}),
+            stderr: "pipe",
+          });
+    if (transport instanceof StdioClientTransport)
+      transport.stderr?.on("data", (chunk) => {
+        if (runtime.connectionId === connectionId) {
+          runtime.stderrTail = appendTail(runtime.stderrTail, String(chunk));
+        }
+      });
 
     const client = new Client(this.clientIdentity);
     runtime.client = client;
@@ -374,7 +402,7 @@ export class McpConnectionManager {
         return;
       }
 
-      runtime.lastError = error.message;
+      runtime.lastError = connectionError(runtime.config, error);
     };
     client.onclose = () => {
       if (runtime.connectionId !== connectionId) {
@@ -478,7 +506,7 @@ export class McpConnectionManager {
       runtime.remoteTools = [];
       runtime.tools = [];
       runtime.status = "failed";
-      const errorMessage = toErrorMessage(error);
+      const errorMessage = connectionError(config, error);
       const stderrTail = (
         runtime as {
           stderrTail?: string;
@@ -541,6 +569,7 @@ export class McpConnectionManager {
       };
     }
 
+    const connectionId = runtime.connectionId;
     const startedAt = performance.now();
     try {
       const result = await runtime.client.callTool(
@@ -561,9 +590,24 @@ export class McpConnectionManager {
       );
     } catch (error) {
       const failure = classifyMcpCallError(error);
+      if (
+        runtime.config.transport === "streamable-http" &&
+        failure.classification !== "remote_error" &&
+        runtime.connectionId === connectionId
+      ) {
+        runtime.connectionId++;
+        runtime.status = "failed";
+        runtime.lastError = connectionError(runtime.config, error);
+        runtime.tools = [];
+        runtime.remoteTools = [];
+        await this.disposeRuntimeConnection(runtime);
+      }
       return {
         status: "error",
-        content: formatToolCallError(toolName, toErrorMessage(error)),
+        content: formatToolCallError(
+          toolName,
+          connectionError(runtime.config, error),
+        ),
         outcome: {
           kind: "mcp_call",
           ...failure,
@@ -705,9 +749,7 @@ export class McpConnectionManager {
       name,
       enabled: runtime.enabled,
       status: runtime.status,
-      command: config.command,
-      args: [...(config.args ?? [])],
-      envKeys: Object.keys(config.env ?? {}),
+      ...transportDetail(config),
       ...(runtime.instructions ? { instructions: runtime.instructions } : {}),
       ...(runtime.lastError ? { lastError: runtime.lastError } : {}),
       tools: structuredClone(runtime.tools),
@@ -785,4 +827,22 @@ export class McpConnectionManager {
 
     return this.getServerSummaries().find((summary) => summary.name === name)!;
   }
+}
+
+function transportDetail(
+  config: McpServerConfigEntry,
+): Pick<McpServerDetail, "command" | "args" | "envKeys" | "transport" | "url"> {
+  if (config.transport === "streamable-http")
+    return {
+      transport: config.transport,
+      url: new URL(config.url).origin,
+      command: "",
+      args: [],
+      envKeys: [],
+    };
+  return {
+    command: config.command,
+    args: [...(config.args ?? [])],
+    envKeys: Object.keys(config.env ?? {}),
+  };
 }

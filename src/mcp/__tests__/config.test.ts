@@ -71,7 +71,7 @@ describe("mcp config", () => {
     expect(isMcpServerEnabled(config.mcpServers!.playwright)).toBe(true);
   });
 
-  it("rejects unsupported transports with a v1 error", () => {
+  it("requires an explicit transport for URL entries", () => {
     expect(() =>
       validateMcpConfig({
         mcpServers: {
@@ -80,7 +80,7 @@ describe("mcp config", () => {
           },
         },
       }),
-    ).toThrow(/not yet supported in v1/i);
+    ).toThrow(/URLs require transport "streamable-http"/i);
   });
 
   it("writes and updates the config atomically", () => {

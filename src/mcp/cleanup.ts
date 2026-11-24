@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 async function waitBestEffort(
   promise: Promise<unknown>,
@@ -36,12 +37,18 @@ async function waitBestEffort(
  */
 export async function closeClientBestEffort(
   client: Client,
-  transport: StdioClientTransport | undefined,
+  transport: Transport | undefined,
   timeoutMs: number,
 ): Promise<void> {
   const child = (
     transport as unknown as { _process?: ChildProcess } | undefined
   )?._process;
+  if (transport instanceof StreamableHTTPClientTransport) {
+    await waitBestEffort(
+      Promise.resolve().then(() => transport.terminateSession()),
+      timeoutMs,
+    );
+  }
   const closing = Promise.resolve().then(() => client.close());
   const completed = await waitBestEffort(closing, timeoutMs);
   if (!completed && child?.exitCode === null && child.signalCode === null) {

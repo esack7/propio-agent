@@ -1,4 +1,16 @@
-export interface McpServerConfigEntry {
+export type McpServerConfigEntry = McpStdioConfigEntry | McpHttpConfigEntry;
+
+export interface McpHttpConfigEntry {
+  readonly transport: "streamable-http";
+  readonly url: string;
+  readonly command?: never;
+  readonly args?: never;
+  readonly env?: never;
+  readonly enabled?: boolean;
+}
+
+export interface McpStdioConfigEntry {
+  readonly transport?: "stdio";
   readonly command: string;
   readonly args?: string[];
   readonly env?: Record<string, string>;
@@ -31,6 +43,8 @@ export interface McpServerDetail {
   readonly name: string;
   readonly enabled: boolean;
   readonly status: McpServerStatus;
+  readonly transport?: "stdio" | "streamable-http";
+  readonly url?: string;
   readonly command: string;
   readonly args: readonly string[];
   readonly envKeys: readonly string[];

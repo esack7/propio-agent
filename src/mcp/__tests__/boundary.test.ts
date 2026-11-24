@@ -406,7 +406,7 @@ it("validates supplied configuration and stable names without scanning", () => {
     validateMcpConfig({
       mcpServers: { web: { command: "node", url: "https://example.com" } },
     }),
-  ).toThrow("Only stdio");
+  ).toThrow('URLs require transport "streamable-http"');
   expect(buildMcpToolName("My Server", "My Tool")).toBe(
     "mcp__my_server__my_tool",
   );
