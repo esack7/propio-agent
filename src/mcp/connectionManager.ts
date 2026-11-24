@@ -384,8 +384,16 @@ export class McpConnectionManager {
       }
       seen.set(tool.name, remoteTool.name);
 
-      return [tool];
+      return this.isToolSelected(serverName, remoteTool.name) ? [tool] : [];
     });
+  }
+
+  private isToolSelected(serverName: string, remoteName: string): boolean {
+    const filters = this.config.mcpServers?.[serverName]?.tools;
+    return (
+      (filters?.allow === undefined || filters.allow.includes(remoteName)) &&
+      !filters?.deny?.includes(remoteName)
+    );
   }
 
   private createOAuth(
@@ -736,7 +744,12 @@ export class McpConnectionManager {
     }
 
     const runtime = this.getRuntimeForTool(name);
-    if (!runtime || !runtime.enabled || runtime.status !== "connected") {
+    if (
+      !runtime ||
+      !runtime.enabled ||
+      runtime.status !== "connected" ||
+      !this.isToolSelected(tool.serverName, tool.remoteToolName)
+    ) {
       return {
         status: "tool_disabled",
         content: `Tool not available: ${name}`,

@@ -1,6 +1,12 @@
 export type McpServerConfigEntry = McpStdioConfigEntry | McpHttpConfigEntry;
 
+export interface McpToolFilters {
+  readonly allow?: string[];
+  readonly deny?: string[];
+}
+
 export interface McpHttpConfigEntry {
+  readonly tools?: McpToolFilters;
   readonly transport: "streamable-http";
   readonly url: string;
   readonly command?: never;
@@ -10,6 +16,7 @@ export interface McpHttpConfigEntry {
 }
 
 export interface McpStdioConfigEntry {
+  readonly tools?: McpToolFilters;
   readonly transport?: "stdio";
   readonly command: string;
   readonly args?: string[];
