@@ -77,7 +77,9 @@ function renderDetail(
   ui.info(
     `State: ${detail.enabled ? "enabled" : "disabled"} / ${detail.status}`,
   );
-  ui.info(`Command: ${detail.command}`);
+  if (detail.transport === "streamable-http")
+    ui.info(`Endpoint: ${detail.url}`);
+  else ui.info(`Command: ${detail.command}`);
   ui.info(`Args: ${detail.args.length > 0 ? detail.args.join(" ") : "(none)"}`);
   ui.info(
     `Env keys: ${detail.envKeys.length > 0 ? detail.envKeys.join(", ") : "(none)"}`,

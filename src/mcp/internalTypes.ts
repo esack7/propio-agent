@@ -1,5 +1,5 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { Tool as McpSdkTool } from "@modelcontextprotocol/sdk/types.js";
 import type {
   McpServerConfigEntry,
@@ -17,7 +17,7 @@ export interface McpServerRuntime {
   instructions?: string;
   stderrTail?: string;
   client?: Client;
-  transport?: StdioClientTransport;
+  transport?: Transport;
   remoteTools: McpSdkTool[];
   tools: McpToolDescriptor[];
 }

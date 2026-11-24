@@ -432,7 +432,26 @@ never displayed.
 
 ### V1 config
 
-Only stdio servers are supported in v1:
+Command entries remain valid. Streamable HTTP entries can share the same file:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "transport": "streamable-http",
+      "url": "https://docs.example.com/mcp"
+    },
+    "legacy": { "command": "my-mcp-server" }
+  }
+}
+```
+
+Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
+Embedded URL credentials are rejected. Endpoint diagnostics show only the origin.
+OAuth login and tool filters are not supported yet. Failed or timed-out HTTP calls
+have unknown completion and are never automatically replayed; reconnect explicitly.
+
+A legacy command example:
 
 ```json
 {
@@ -1165,7 +1184,7 @@ try {
   resolves with the disabled shutdown state; the saved preference is retained and
   no connection is restarted. Enable/disable writes
   are serialized; applications own cross-process coordination.
-- Only **stdio connections and tool listing/calling** are supported. HTTP, SSE,
+- **Stdio and Streamable HTTP tool listing/calling** are supported. SSE,
   resources APIs, prompts APIs, and automatic tool-list updates are not supported.
   Reconnect explicitly to refresh tools. Commands inherit the SDK's default
   environment and process working directory; callers should supply absolute
