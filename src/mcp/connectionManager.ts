@@ -467,13 +467,12 @@ export class McpConnectionManager {
   }
 
   private async connectServer(name: string): Promise<void> {
-    if (this.clearingCredentials.has(name)) return;
+    await this.clearingCredentials.get(name);
     const runtime = this.getRuntime(name);
     const config = this.getServerConfig(name);
 
     runtime.config = config;
     runtime.enabled = isMcpServerEnabled(config);
-
     const connectionId = ++runtime.connectionId;
     await this.disposeRuntimeConnection(runtime);
     if (runtime.connectionId !== connectionId || this.closed) return;
@@ -810,7 +809,6 @@ export class McpConnectionManager {
     this.assertOpen();
     this.getServerConfig(name);
     const runtime = this.getRuntime(name);
-    runtime.lastError = undefined;
     await this.connectServer(name);
     return this.getServerSummaries().find((summary) => summary.name === name)!;
   }
@@ -849,7 +847,6 @@ export class McpConnectionManager {
   }
 
   // Public embedding API, exercised by the scoped OAuth acceptance suite.
-  // fallow-ignore-next-line unused-class-member
   clearServerCredentials(name: string): Promise<void> {
     const existing = this.clearingCredentials.get(name);
     if (existing) return existing;

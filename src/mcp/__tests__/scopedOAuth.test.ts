@@ -550,12 +550,6 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
     delay = undefined;
     notify = undefined;
     await adapter.login(interaction, new AbortController().signal);
-    issuer = "http://127.0.0.1:12346";
-    await expect(
-      adapter.fetch(origin + "/mcp", {
-        headers: { authorization: `Bearer access-${sequence}` },
-      }),
-    ).resolves.toBeDefined();
     await expect(
       adapter.login(
         {
@@ -571,6 +565,14 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       "authorization required",
     );
     expect((await store.load(adapter.key)).tokens).toBeDefined();
+    issuer = "http://127.0.0.1:12346";
+    validAccess = false;
+    await expect(
+      adapter.fetch(origin + "/mcp", {
+        headers: { authorization: `Bearer access-${sequence}` },
+      }),
+    ).rejects.toThrow("authorization required");
+    expect((await store.load(adapter.key)).tokens).toBeUndefined();
   } finally {
     mock.mockRestore();
   }

@@ -448,8 +448,11 @@ Command entries remain valid. Streamable HTTP entries can share the same file:
 
 Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
 URL credentials, query strings and fragments are rejected. Endpoint diagnostics show only the origin.
-The public primitive supports injected owner-scoped OAuth; CLI login and durable
-credential storage are deferred. Tool filters are not supported yet. A `tools` field is rejected
+Use `/mcp login <server>` in an interactive terminal to open browser sign-in.
+Later sessions reuse and refresh the grant from private `~/.propio/mcp-auth` storage.
+`/mcp logout <server>` disconnects and clears the current endpoint grant; historical
+endpoints under the same alias retain their separate grants. Non-interactive startup
+never opens a browser and reports when sign-in is required. Tool filters are not supported yet. A `tools` field is rejected
 on HTTP entries. Legacy command entries continue to ignore that field. HTTP
 redirects are rejected. Timed-out calls and transport failures have unknown
 completion and are never automatically replayed; reconnect explicitly. Protocol
@@ -1241,8 +1244,8 @@ must provide atomic revision checks and a shared per-grant authorization lock.
 `loginServer(name, interaction, signal)` explicitly starts SDK discovery,
 registration and PKCE. The injected interaction supplies a redirect URL and
 returns the code and state from its callback, honoring cancellation and owning
-callback cleanup. The manager validates state and bounds login by its connection
-deadline. Automatic connections never invoke interaction: missing or rejected
+callback cleanup. The manager validates state and bounds login with `loginTimeoutMs` (default
+300,000 ms), independently of the connection deadline. Automatic connections never invoke interaction: missing or rejected
 grants report that explicit sign-in is required. SDK refresh is serialized per
 grant, retains rotated refresh tokens, and revision checks reject late writes
 after `clearServerCredentials(name)`. Clearing also disconnects that manager's

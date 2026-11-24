@@ -133,6 +133,8 @@ type McpAgent = Pick<
   | "listMcpTools"
   | "reconnectMcpServer"
   | "setMcpServerEnabled"
+  | "loginMcpServer"
+  | "logoutMcpServer"
 >;
 
 function handleMcpGet(rest: string, agent: McpAgent, ui: McpUi): void {
@@ -201,6 +203,32 @@ async function handleMcpEnableDisable(
   }
 }
 
+async function handleMcpAuthorization(
+  subcommand: string,
+  rest: string,
+  agent: McpAgent,
+  ui: McpUi,
+): Promise<void> {
+  if (!rest) {
+    ui.error(`Usage: /mcp ${subcommand} <server>`);
+    return;
+  }
+  try {
+    const action =
+      subcommand === "login" ? agent.loginMcpServer : agent.logoutMcpServer;
+    await action.call(agent, rest);
+    ui.success(
+      subcommand === "login"
+        ? "MCP sign-in completed"
+        : "MCP authorization cleared",
+    );
+  } catch {
+    ui.error(
+      "MCP authorization unavailable; retry /mcp login <server> in an interactive terminal",
+    );
+  }
+}
+
 export async function handleMcpCommand(
   input: string,
   agent: McpAgent,
@@ -214,6 +242,8 @@ export async function handleMcpCommand(
     handleMcpGet(rest, agent, ui);
   } else if (subcommand === "tools") {
     handleMcpTools(rest, agent, ui);
+  } else if (subcommand === "login" || subcommand === "logout") {
+    await handleMcpAuthorization(subcommand, rest, agent, ui);
   } else if (subcommand === "reconnect") {
     await handleMcpReconnect(rest, agent, ui);
   } else if (subcommand === "enable" || subcommand === "disable") {

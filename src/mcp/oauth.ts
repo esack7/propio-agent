@@ -181,7 +181,12 @@ export class ScopedMcpOAuth {
         interaction?.redirectUrl ??
         this.options.clientMetadata.redirect_uris?.[0] ??
         "http://127.0.0.1/unused",
-      clientMetadata: this.options.clientMetadata,
+      clientMetadata: interaction
+        ? {
+            ...this.options.clientMetadata,
+            redirect_uris: [interaction.redirectUrl],
+          }
+        : this.options.clientMetadata,
       state: () => state,
       clientInformation: () => value.client,
       saveClientInformation: (client) => {
@@ -265,7 +270,7 @@ export class ScopedMcpOAuth {
         record.discovery.resourceMetadataUrl,
       );
     const provider = this.makeProvider(
-      { ...record, tokens: undefined },
+      { ...record, client: undefined, tokens: undefined },
       interaction,
       signal,
       challenge,

@@ -10,6 +10,9 @@ import type { McpConfigFile } from "./types.js";
 import type { ToolDisplay } from "../tools/display.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 
+import { FileMcpCredentialStore } from "../config/mcpCredentialStore.js";
+import { withMcpLogin } from "./login.js";
+
 interface McpManagerOptions {
   configPath?: string;
   config?: McpConfigFile;
@@ -27,6 +30,17 @@ export class McpManager extends McpConnectionManager {
     const config = options.config ?? loadMcpConfig(configPath);
     super({
       config,
+      oauth: {
+        owner: "local",
+        store: new FileMcpCredentialStore(),
+        clientMetadata: {
+          redirect_uris: [],
+          client_name: "Propio",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        },
+      },
       clientIdentity: {
         name: options.clientName ?? "propio-agent",
         version: options.clientVersion ?? "1.0.0",
@@ -40,6 +54,16 @@ export class McpManager extends McpConnectionManager {
         );
       },
     });
+  }
+
+  async loginCliServer(name: string): Promise<void> {
+    if (!process.stdin.isTTY)
+      throw new Error(
+        "Sign-in requires an interactive terminal; run /mcp login <server> interactively",
+      );
+    await withMcpLogin((interaction, signal) =>
+      this.loginServer(name, interaction, signal),
+    );
   }
 
   private getExecutableTools(): Map<string, McpExecutableTool> {
