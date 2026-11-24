@@ -15,6 +15,8 @@ function execute(workspace, home, prompt, timeoutMs, cliPath) {
     [
       cliPath,
       "--json",
+      "--trace-capture",
+      "standard",
       "--workspace-instructions-only",
       "--permissions",
       "accept-edits",
@@ -113,7 +115,9 @@ async function recordGrade(row, trial, state, options) {
   await options.beforeGrade({ ...trial, ...state });
   const grade = await options.gradeTrial(trial.workspace, row.task, state);
   row.outcome = grade.passed ? "passed" : "failed";
-  if (grade.reason) row.reason = grade.reason;
+  row.reason =
+    grade.reason ??
+    (grade.passed ? "workspace grade passed" : "workspace grade failed");
 }
 
 async function cleanupTrial(provider, root, row) {
@@ -126,6 +130,7 @@ async function cleanupTrial(provider, root, row) {
     } catch (error) {
       row.cleanupError = error.message;
       row.outcome = "error";
+      row.reason = "trial cleanup failed";
     }
   }
 }
@@ -157,6 +162,19 @@ async function executeTrial(row, root, provider, options) {
   await recordGrade(row, trial, state, options);
 }
 
+async function observeResult(root, row, options) {
+  if (!root || !options.observeTrial) return;
+  try {
+    row.trace = await options.observeTrial(join(root, "home"));
+  } catch {
+    row.trace = {
+      observedAt: new Date().toISOString(),
+      completeness: "unavailable",
+      runs: [],
+    };
+  }
+}
+
 async function runTrial(task, index, options) {
   const row = {
     task,
@@ -164,6 +182,7 @@ async function runTrial(task, index, options) {
     configuration:
       options.providerConfig === undefined ? "scripted" : "explicit-provider",
     outcome: "error",
+    startedAt: new Date().toISOString(),
   };
   let root;
   let provider;
@@ -175,12 +194,15 @@ async function runTrial(task, index, options) {
   } catch (error) {
     row.reason = `trial failed: ${error.message}`;
   } finally {
+    await observeResult(root, row, options);
     await cleanupTrial(provider, root, row);
+    row.endedAt = new Date().toISOString();
   }
   return row;
 }
 
 export async function runTrials(options = {}) {
+  validateProviderConfiguration(options.providerConfig);
   const {
     tasks = [
       "fix-media-type",
@@ -233,12 +255,46 @@ function isConfigurationObject(configuration) {
   );
 }
 
-async function readConfigurationJson(path) {
+export function validateProviderConfiguration(configuration) {
+  if (configuration === undefined) return;
+  if (!isConfigurationObject(configuration))
+    throw new Error("Expected a provider configuration object");
+  if (!validProviders(configuration.providers))
+    throw new Error(
+      "Expected provider configuration with provider and model arrays",
+    );
+}
+
+function validProviders(providers) {
+  return Array.isArray(providers) && providers.every(validProvider);
+}
+
+function validModel(model) {
+  return (
+    isConfigurationObject(model) &&
+    typeof model.key === "string" &&
+    Number.isFinite(model.contextWindowTokens) &&
+    model.contextWindowTokens > 0
+  );
+}
+
+function validProvider(provider) {
+  if (!isConfigurationObject(provider)) return false;
+  return (
+    typeof provider.name === "string" &&
+    typeof provider.type === "string" &&
+    validModels(provider.models)
+  );
+}
+
+function validModels(models) {
+  return Array.isArray(models) && models.every(validModel);
+}
+
+export async function readConfigurationJson(path) {
   try {
     const configuration = JSON.parse(await readFile(path, "utf8"));
-    if (!isConfigurationObject(configuration)) {
-      throw new Error("Expected a provider configuration object");
-    }
+    validateProviderConfiguration(configuration);
     return configuration;
   } catch {
     throw new Error("Unable to read provider configuration as JSON");
