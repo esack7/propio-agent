@@ -85,14 +85,12 @@ function validateMcpServerTransport(
   if (rawEntry.transport !== undefined && rawEntry.transport !== "stdio") {
     throw new Error(`MCP server "${serverName}" has an unsupported transport`);
   }
-  if ("tools" in rawEntry)
-    throw new Error("MCP tool filters are not supported yet");
   const unsupportedFields = ["url", "http", "sse", "ws"].filter(
     (field) => field in rawEntry,
   );
   if (unsupportedFields.length > 0) {
     throw new Error(
-      `MCP server "${serverName}" uses ${unsupportedFields.join(", ")}, which is not yet supported in v1. Only stdio servers are supported.`,
+      `MCP server "${serverName}" uses ${unsupportedFields.join(", ")}, which requires an explicit supported transport; URLs require transport "streamable-http".`,
     );
   }
 }
@@ -153,8 +151,8 @@ function validateHttpEntry(
       `MCP server "${serverName}" requires a credential-free HTTPS URL (HTTP is allowed on loopback) and no stdio fields or tool filters`,
     );
   if (
-    ["command", "args", "env", "http", "sse", "ws", "tools"].some(
-      (key) => key in entry,
+    Object.keys(entry).some(
+      (key) => !["transport", "url", "enabled"].includes(key),
     )
   )
     throw invalid();

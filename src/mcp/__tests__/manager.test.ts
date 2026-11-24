@@ -47,6 +47,29 @@ describe("McpManager", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("loads and connects legacy command entries with an ignored tools field", async () => {
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          fake: {
+            command: process.execPath,
+            args: [serverScriptPath],
+            tools: { allow: [] },
+          },
+        },
+      }),
+    );
+    const manager = new McpManager({ configPath });
+    managers.push(manager);
+    await manager.initialize();
+    expect(manager.getServerSummaries()[0]?.status).toBe("connected");
+    const result = await manager.executeToolWithStatus("mcp__fake__echo", {
+      message: "legacy",
+    });
+    expect(result.content).toContain("echo:legacy");
+  });
+
   it("connects to a stdio server and exposes tools", async () => {
     writeMcpConfig(configPath, {
       mcpServers: {

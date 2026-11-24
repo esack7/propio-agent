@@ -16,6 +16,8 @@ import { McpConnectionManager } from "../connectionManager.js";
 import { validateMcpConfig } from "../validation.js";
 
 it("lists and calls mixed transports, persists toggles, and never replays a timed-out call", async () => {
+  let hangDelete = false;
+  let deletes = 0;
   let calls = 0;
   let hang = false;
   let delay = 350;
@@ -41,6 +43,10 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     const existing =
       typeof session === "string" ? active.get(session) : undefined;
     if (existing) {
+      if (hangDelete && request.method === "DELETE") {
+        deletes++;
+        return;
+      }
       if (request.method === "POST") latestPostResponse = response;
       void existing.handleRequest(request, response);
       return;
@@ -166,6 +172,18 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     expect(calls).toBe(beforeLoss + 1);
     loseConnection = false;
     await manager.reconnectServer("remote");
+    hangDelete = true;
+    const cleanupStarted = Date.now();
+    await manager.setServerEnabled("remote", false);
+    expect(Date.now() - cleanupStarted).toBeLessThan(2_000);
+    expect(deletes).toBe(1);
+    expect((await call("legacy")).status).toBe("success");
+    hangDelete = false;
+    // The hung DELETE did not release server-side state; the fixture owns it.
+    await Promise.all(
+      [...active.values()].map((transport) => transport.close()),
+    );
+    active.clear();
     await manager.close();
     expect(active.size).toBe(0);
 
@@ -204,6 +222,7 @@ it.each([
   { transport: "streamable-http", url: "https://user:marker@example.com/mcp" },
   { transport: "streamable-http", url: "http://example.com/mcp" },
   { transport: "streamable-http", url: "https://example.com", command: "node" },
+  { transport: "streamable-http", url: "https://example.com", headers: {} },
   { transport: "sse", url: "https://example.com" },
   {
     transport: "streamable-http",

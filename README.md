@@ -449,7 +449,7 @@ Command entries remain valid. Streamable HTTP entries can share the same file:
 Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
 Embedded URL credentials are rejected. Endpoint diagnostics show only the origin.
 OAuth login and tool filters are not supported yet. A `tools` field is rejected
-on command entries too, rather than silently ignoring a requested filter. HTTP
+on HTTP entries. Legacy command entries continue to ignore that field. HTTP
 redirects are rejected. Timed-out calls and transport failures have unknown
 completion and are never automatically replayed; reconnect explicitly. Protocol
 rejections preserve the connection. Closing a connection attempts a bounded,
@@ -1149,6 +1149,10 @@ imports no agent internals, and retains Node.js 20+ requirements. Future standal
 extraction and publication require separate repository and release decisions.
 
 ### Reusable MCP API (provisional)
+
+TypeScript migration: `McpServerConfigEntry` is now a union of
+`McpStdioConfigEntry` and `McpHttpConfigEntry`. Narrow with
+`entry.transport !== "streamable-http"` before reading command-specific fields.
 
 `@propio-ai/agent/mcp` exposes `McpConnectionManager`, configuration validation,
 stable tool naming, and public connection/tool/result types. It requires Node.js
