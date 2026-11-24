@@ -6,19 +6,16 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 async function waitBestEffort(
   promise: Promise<unknown>,
   timeoutMs: number,
-): Promise<boolean> {
+): Promise<void> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  let completed = false;
 
   await new Promise<void>((resolve) => {
     timeout = setTimeout(resolve, timeoutMs);
     promise.then(
       () => {
-        completed = true;
         resolve();
       },
       () => {
-        completed = true;
         resolve();
       },
     );
@@ -27,8 +24,6 @@ async function waitBestEffort(
   if (timeout) {
     clearTimeout(timeout);
   }
-
-  return completed;
 }
 
 /** SDK 1.29.0 compatibility shim: capture the original child before close clears it.
@@ -50,8 +45,10 @@ export async function closeClientBestEffort(
     );
   }
   const closing = Promise.resolve().then(() => client.close());
-  const completed = await waitBestEffort(closing, timeoutMs);
-  if (!completed && child?.exitCode === null && child.signalCode === null) {
+  await waitBestEffort(closing, timeoutMs);
+  // A concurrent SDK close can resolve immediately after detaching its transport,
+  // while the original close is still waiting for this child to exit.
+  if (child?.exitCode === null && child.signalCode === null) {
     try {
       child.kill("SIGKILL");
     } catch {
