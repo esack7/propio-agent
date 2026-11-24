@@ -447,8 +447,9 @@ Command entries remain valid. Streamable HTTP entries can share the same file:
 ```
 
 Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
-Embedded URL credentials are rejected. Endpoint diagnostics show only the origin.
-OAuth login and tool filters are not supported yet. A `tools` field is rejected
+URL credentials, query strings and fragments are rejected. Endpoint diagnostics show only the origin.
+The public primitive supports injected owner-scoped OAuth; CLI login and durable
+credential storage are deferred. Tool filters are not supported yet. A `tools` field is rejected
 on HTTP entries. Legacy command entries continue to ignore that field. HTTP
 redirects are rejected. Timed-out calls and transport failures have unknown
 completion and are never automatically replayed; reconnect explicitly. Protocol
@@ -1232,6 +1233,21 @@ try {
   trees are not managed. `close()` is terminal; create a new manager to restart after shutdown.
   Individual failures remain visible in server summaries without aborting other
   servers' startup.
+
+For OAuth, pass `oauth: { owner, store, clientMetadata }` at construction. The
+opaque owner, server alias and canonical endpoint form the credential key.
+`InMemoryMcpCredentialStore` can be shared by multiple managers; custom stores
+must provide atomic revision checks and a shared per-grant authorization lock.
+`loginServer(name, interaction, signal)` explicitly starts SDK discovery,
+registration and PKCE. The injected interaction supplies a redirect URL and
+returns the code and state from its callback, honoring cancellation and owning
+callback cleanup. The manager validates state and bounds login by its connection
+deadline. Automatic connections never invoke interaction: missing or rejected
+grants report that explicit sign-in is required. SDK refresh is serialized per
+grant, retains rotated refresh tokens, and revision checks reject late writes
+after `clearServerCredentials(name)`. Clearing also disconnects that manager's
+selected server. Closing a manager preserves reusable grants. Applications own
+storage durability and must never put credentials in MCP configuration.
 
 Run `npm run example:mcp` for an empty in-memory catalog, or pass a stdio command
 and its arguments to discover real tools. The example is a standalone API consumer,

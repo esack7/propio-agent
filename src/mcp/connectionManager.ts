@@ -1,3 +1,8 @@
+import {
+  ScopedMcpOAuth,
+  McpLoginRequiredError,
+  type McpOAuthInteraction,
+} from "./oauth.js";
 import { closeClientBestEffort } from "./cleanup.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -39,6 +44,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 function connectionError(config: McpServerConfigEntry, error: unknown): string {
+  if (error instanceof McpLoginRequiredError) return error.message;
   if (config.transport !== "streamable-http") return toErrorMessage(error);
   if (
     error instanceof McpError &&
@@ -206,9 +212,12 @@ function positiveTimeout(value: number | undefined, fallback: number): number {
 }
 
 export class McpConnectionManager {
+  private readonly oauth?: McpConnectionOptions["oauth"];
   private config: McpConfigFile;
   private readonly runtimes = new Map<string, McpServerRuntime>();
   private readonly clientIdentity: { name: string; version: string };
+  private readonly loginTimeoutMs: number;
+  private readonly oauthAdapters = new Map<string, ScopedMcpOAuth>();
   private readonly connectTimeoutMs: number;
   private readonly callTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
@@ -219,11 +228,19 @@ export class McpConnectionManager {
   });
   private startupPromise: Promise<void> | null = null;
   private closed = false;
+  private readonly oauthAbort = new AbortController();
   private shutdownPromise: Promise<void> | null = null;
+  private readonly clearingCredentials = new Map<string, Promise<void>>();
   private mutation: Promise<unknown> = Promise.resolve();
 
   constructor(options: McpConnectionOptions) {
     this.config = validateMcpConfig(options.config);
+    if (options.oauth && !options.oauth.owner.trim())
+      throw new Error("MCP OAuth requires an owner");
+    this.oauth = options.oauth && {
+      ...options.oauth,
+      clientMetadata: structuredClone(options.oauth.clientMetadata),
+    };
     if (
       !options.clientIdentity.name.trim() ||
       !options.clientIdentity.version.trim()
@@ -235,6 +252,7 @@ export class McpConnectionManager {
       options.connectTimeoutMs,
       DEFAULT_CONNECT_TIMEOUT_MS,
     );
+    this.loginTimeoutMs = positiveTimeout(options.loginTimeoutMs, 300_000);
     this.callTimeoutMs = positiveTimeout(options.callTimeoutMs, 60_000);
     this.cleanupTimeoutMs = positiveTimeout(
       options.cleanupTimeoutMs,
@@ -260,6 +278,7 @@ export class McpConnectionManager {
 
   close(): Promise<void> {
     this.closed = true;
+    this.oauthAbort.abort();
     this.shutdownPromise ??= Promise.all(
       Array.from(this.runtimes.values()).map(async (runtime) => {
         runtime.enabled = false;
@@ -364,16 +383,33 @@ export class McpConnectionManager {
     });
   }
 
+  private createOAuth(
+    name: string,
+    config: McpServerConfigEntry,
+  ): ScopedMcpOAuth | undefined {
+    if (!this.oauth || config.transport !== "streamable-http") return undefined;
+    const key = JSON.stringify([name, config.url]);
+    let adapter = this.oauthAdapters.get(key);
+    if (!adapter) {
+      adapter = new ScopedMcpOAuth(this.oauth, name, config.url);
+      this.oauthAdapters.set(key, adapter);
+    }
+    return adapter;
+  }
+
   private createConnection(
     runtime: McpServerRuntime,
     config: McpServerConfigEntry,
     connectionId: number,
   ): { client: Client; transport: Transport } {
+    const oauth = this.createOAuth(runtime.name, config);
     const transport =
       config.transport === "streamable-http"
         ? new StreamableHTTPClientTransport(new URL(config.url), {
-            fetch: (input, init) =>
-              fetch(input, { ...init, redirect: "error" }),
+            authProvider: oauth?.provider,
+            fetch:
+              oauth?.fetch ??
+              ((input, init) => fetch(input, { ...init, redirect: "error" })),
             reconnectionOptions: {
               maxRetries: 0,
               initialReconnectionDelay: 1000,
@@ -431,6 +467,7 @@ export class McpConnectionManager {
   }
 
   private async connectServer(name: string): Promise<void> {
+    if (this.clearingCredentials.has(name)) return;
     const runtime = this.getRuntime(name);
     const config = this.getServerConfig(name);
 
@@ -776,6 +813,76 @@ export class McpConnectionManager {
     runtime.lastError = undefined;
     await this.connectServer(name);
     return this.getServerSummaries().find((summary) => summary.name === name)!;
+  }
+
+  // Public embedding API; CLI interaction is supplied in the cli-login slice.
+  async loginServer(
+    name: string,
+    interaction: McpOAuthInteraction,
+    signal: AbortSignal,
+  ): Promise<McpServerSummary> {
+    this.assertOpen();
+    const config = this.getServerConfig(name);
+    if (!this.oauth || config.transport !== "streamable-http")
+      throw new Error("MCP OAuth is not configured for this server");
+    const controller = new AbortController();
+    const signals = [
+      signal,
+      this.oauthAbort.signal,
+      AbortSignal.timeout(this.loginTimeoutMs),
+    ];
+    const abort = () => controller.abort();
+    for (const source of signals) {
+      if (source.aborted) abort();
+      else source.addEventListener("abort", abort, { once: true });
+    }
+    const boundedSignal = controller.signal;
+    try {
+      await this.createOAuth(name, config)!.login(interaction, boundedSignal);
+      if (boundedSignal.aborted) throw new McpLoginRequiredError();
+      return await this.reconnectServer(name);
+    } catch {
+      throw new McpLoginRequiredError();
+    } finally {
+      for (const source of signals) source.removeEventListener("abort", abort);
+    }
+  }
+
+  // Public embedding API, exercised by the scoped OAuth acceptance suite.
+  // fallow-ignore-next-line unused-class-member
+  clearServerCredentials(name: string): Promise<void> {
+    const existing = this.clearingCredentials.get(name);
+    if (existing) return existing;
+    const operation = this.clearCredentials(name).finally(() => {
+      this.clearingCredentials.delete(name);
+    });
+    this.clearingCredentials.set(name, operation);
+    return operation;
+  }
+
+  private async clearCredentials(name: string): Promise<void> {
+    this.assertOpen();
+    const config = this.getServerConfig(name);
+    if (!this.oauth || config.transport !== "streamable-http")
+      throw new Error("MCP OAuth is not configured for this server");
+    const runtime = this.getRuntime(name);
+    runtime.connectionId++;
+    runtime.status = runtime.enabled && !this.closed ? "failed" : "disabled";
+    runtime.lastError =
+      runtime.status === "failed"
+        ? new McpLoginRequiredError().message
+        : undefined;
+    runtime.tools = [];
+    runtime.remoteTools = [];
+    try {
+      await this.disposeRuntimeConnection(runtime);
+    } finally {
+      await this.oauth.store.clear({
+        owner: this.oauth.owner,
+        serverName: name,
+        resource: config.url,
+      });
+    }
   }
 
   setServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary> {

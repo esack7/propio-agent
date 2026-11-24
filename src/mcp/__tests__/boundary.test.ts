@@ -18,15 +18,15 @@ beforeAll(() => {
     script,
     `
 import fs from "node:fs";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema, CallToolRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 const [mode, pidFile, readyFile] = process.argv.slice(2);
 fs.writeFileSync(pidFile, String(process.pid));
 if (mode === "connect-hang") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000);
 } else {
+  const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
+  const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
+  const { ListToolsRequestSchema, CallToolRequestSchema, McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js");
   const server = new Server({ name: "fixture", version: "1" }, { capabilities: { tools: {} }, instructions: "Fixture instructions" });
   const tool = (name) => ({ name, description: "Fixture tool", inputSchema: { type: "object", properties: { hang: {}, invalidTimeout: {}, throw: {}, result: {}, message: { type: "string" } }, additionalProperties: false } });
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {

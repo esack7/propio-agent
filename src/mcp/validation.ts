@@ -176,7 +176,7 @@ function validateHttpEntry(
 }
 
 function isAllowedEndpoint(url: URL): boolean {
-  if (url.username || url.password || url.hash) return false;
+  if (url.username || url.password || url.hash || url.search) return false;
   if (url.protocol === "https:") return true;
   return url.protocol === "http:" && isLoopback(url.hostname);
 }
