@@ -148,7 +148,7 @@ async function fixture() {
 it("isolates owners, serializes rotated refresh, and rejects late responses after clearing", async () => {
   const local = await fixture();
   const store = new InMemoryMcpCredentialStore();
-  const create = (owner: string, path = "/mcp") =>
+  const create = (owner: string, path = "/mcp", loginTimeoutMs = 1000) =>
     new McpConnectionManager({
       config: {
         mcpServers: {
@@ -156,6 +156,8 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
         },
       },
       clientIdentity: { name: "test", version: "1" },
+      connectTimeoutMs: 100,
+      loginTimeoutMs,
       oauth: {
         owner,
         store,
@@ -171,6 +173,8 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
   const b = create("b");
   const sibling = create("a");
   const changed = create("a", "/other");
+  const slow = create("slow");
+  const expired = create("expired", "/mcp", 10);
   const interaction: McpOAuthInteraction = {
     redirectUrl: "http://127.0.0.1/callback",
     authorize: async (url) => ({
@@ -186,6 +190,28 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
   const call = (m: McpConnectionManager) =>
     m.executeToolWithStatus("mcp__protected__who", {});
   try {
+    const delayed: McpOAuthInteraction = {
+      ...interaction,
+      authorize: async (url, signal) => {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 150);
+          signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+        return { code: "synthetic", state: url.searchParams.get("state")! };
+      },
+    };
+    await slow.loginServer("protected", delayed, new AbortController().signal);
+    await slow.close();
+    await expect(
+      expired.loginServer("protected", delayed, new AbortController().signal),
+    ).rejects.toThrow("authorization required");
     await Promise.all([a.initialize(), b.initialize()]);
     expect(a.getServerSummaries()[0].lastError).toContain("sign in explicitly");
     await Promise.all([
@@ -208,6 +234,8 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
       sibling.reconnectServer("protected"),
     ]);
     await paused;
+    expect((await call(b)).status).toBe("success");
+    await a.close();
     local.resume();
     await reconnects;
     expect(local.refreshes()).toBe(1);
@@ -219,26 +247,41 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
     const current = (await store.load(key("a"))).tokens!;
     local.tokens.delete(current.access_token);
     const late = local.pause();
-    const pending = a.reconnectServer("protected");
+    const pending = sibling.reconnectServer("protected");
     await late;
-    await a.clearServerCredentials("protected");
+    await sibling.clearServerCredentials("protected");
     local.resume();
     await pending;
     expect((await store.load(key("a"))).tokens).toBeUndefined();
-    expect(a.listTools()).toHaveLength(0);
+    expect(sibling.listTools()).toHaveLength(0);
     expect((await call(b)).status).toBe("success");
     await a.close();
     expect((await call(b)).status).toBe("success");
+    let authorized = false;
     const wrong: McpOAuthInteraction = {
       ...interaction,
-      authorize: async () => ({ code: "secret-code", state: "wrong" }),
+      authorize: async () => {
+        authorized = true;
+        return { code: "secret-code", state: "wrong" };
+      },
     };
     await expect(
-      changed.loginServer("protected", wrong, new AbortController().signal),
+      b.loginServer("protected", wrong, new AbortController().signal),
     ).rejects.toThrow("authorization required");
+    expect(authorized).toBe(true);
+    const sessionCount = local.sessions.size;
+    await b.clearServerCredentials("protected");
+    expect(local.sessions.size).toBe(sessionCount - 1);
   } finally {
     local.resume();
-    await Promise.all([a.close(), b.close(), sibling.close(), changed.close()]);
+    await Promise.all([
+      a.close(),
+      b.close(),
+      sibling.close(),
+      changed.close(),
+      slow.close(),
+      expired.close(),
+    ]);
     await local.close();
   }
 });
@@ -254,6 +297,8 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
   let delay: Promise<void> | undefined;
   let notify: (() => void) | undefined;
   let issuer = origin;
+  let requiredScope: string | undefined;
+  let authorizations = 0;
   const issueTokens = async (init?: RequestInit) => {
     const params = new URLSearchParams(String(init?.body));
     if (params.get("grant_type") === "refresh_token") {
@@ -261,6 +306,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       expect(params.get("refresh_token")).toBe(`refresh-${sequence}`);
       notify?.();
       await delay;
+      expect(init?.signal?.aborted).toBe(false);
     } else {
       expect(params.get("code_verifier")?.length).toBeGreaterThan(20);
     }
@@ -271,6 +317,25 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       refresh_token: `refresh-${sequence}`,
       token_type: "Bearer",
     };
+  };
+  const resourceResponse = (init?: RequestInit) => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    if (requiredScope)
+      return new Response(null, {
+        status: 403,
+        headers: {
+          "www-authenticate":
+            'Bearer error="insufficient_scope", scope="expanded"',
+        },
+      });
+    return validAccess &&
+      new Headers(init?.headers).get("authorization") ===
+        `Bearer access-${sequence}`
+      ? json({ ok: true })
+      : new Response(null, { status: 401 });
   };
   const mock = jest
     .spyOn(globalThis, "fetch")
@@ -300,11 +365,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
           client_id: "synthetic-client",
         });
       if (url.endsWith("/token")) return json(await issueTokens(init));
-      return validAccess &&
-        new Headers(init?.headers).get("authorization") ===
-          `Bearer access-${sequence}`
-        ? json({ ok: true })
-        : new Response(null, { status: 401 });
+      return resourceResponse(init);
     });
   const adapter = new ScopedMcpOAuth(
     {
@@ -318,6 +379,9 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
   const interaction: McpOAuthInteraction = {
     redirectUrl: origin + "/callback",
     authorize: async (url) => {
+      authorizations++;
+      if (requiredScope)
+        expect(url.searchParams.get("scope")).toBe(requiredScope);
       expect(url.searchParams.get("code_challenge_method")).toBe("S256");
       return { code: "synthetic-code", state: url.searchParams.get("state")! };
     },
@@ -337,15 +401,45 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       origin + "/mcp",
     );
     validAccess = false;
+    const controller = new AbortController();
     const init = { headers: { authorization: "Bearer access-1" } };
-    await Promise.all([
-      adapter.fetch(origin + "/mcp", init),
+    let resume!: () => void;
+    delay = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const refreshing = new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+    const requests = Promise.all([
+      adapter.fetch(origin + "/mcp", { ...init, signal: controller.signal }),
       sibling.fetch(origin + "/mcp", init),
     ]);
+    await refreshing;
+    controller.abort();
+    resume();
+    await requests;
+    delay = undefined;
+    notify = undefined;
+    expect(
+      (
+        await sibling.fetch(origin + "/mcp", {
+          headers: { authorization: "Bearer access-2" },
+        })
+      ).ok,
+    ).toBe(true);
     expect(refreshes).toBe(1);
     expect((await store.load(adapter.key)).tokens?.refresh_token).toBe(
       "refresh-2",
     );
+    requiredScope = "expanded";
+    await expect(
+      adapter.fetch(origin + "/mcp", {
+        headers: { authorization: "Bearer access-2" },
+      }),
+    ).rejects.toThrow("authorization required");
+    await adapter.login(interaction, new AbortController().signal);
+    expect(authorizations).toBe(2);
+    requiredScope = undefined;
     validAccess = false;
     let release!: () => void;
     delay = new Promise<void>((resolve) => {
@@ -355,7 +449,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       notify = resolve;
     });
     const pending = adapter.fetch(origin + "/mcp", {
-      headers: { authorization: "Bearer access-2" },
+      headers: { authorization: "Bearer access-3" },
     });
     const rejected = expect(pending).rejects.toThrow("authorization required");
     await started;

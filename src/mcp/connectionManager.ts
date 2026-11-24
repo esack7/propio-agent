@@ -216,6 +216,8 @@ export class McpConnectionManager {
   private config: McpConfigFile;
   private readonly runtimes = new Map<string, McpServerRuntime>();
   private readonly clientIdentity: { name: string; version: string };
+  private readonly loginTimeoutMs: number;
+  private readonly oauthAdapters = new Map<string, ScopedMcpOAuth>();
   private readonly connectTimeoutMs: number;
   private readonly callTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
@@ -249,6 +251,7 @@ export class McpConnectionManager {
       options.connectTimeoutMs,
       DEFAULT_CONNECT_TIMEOUT_MS,
     );
+    this.loginTimeoutMs = positiveTimeout(options.loginTimeoutMs, 300_000);
     this.callTimeoutMs = positiveTimeout(options.callTimeoutMs, 60_000);
     this.cleanupTimeoutMs = positiveTimeout(
       options.cleanupTimeoutMs,
@@ -384,7 +387,13 @@ export class McpConnectionManager {
     config: McpServerConfigEntry,
   ): ScopedMcpOAuth | undefined {
     if (!this.oauth || config.transport !== "streamable-http") return undefined;
-    return new ScopedMcpOAuth(this.oauth, name, config.url);
+    const key = JSON.stringify([name, config.url]);
+    let adapter = this.oauthAdapters.get(key);
+    if (!adapter) {
+      adapter = new ScopedMcpOAuth(this.oauth, name, config.url);
+      this.oauthAdapters.set(key, adapter);
+    }
+    return adapter;
   }
 
   private createConnection(
@@ -818,17 +827,15 @@ export class McpConnectionManager {
     const boundedSignal = AbortSignal.any([
       signal,
       this.oauthAbort.signal,
-      AbortSignal.timeout(this.connectTimeoutMs),
+      AbortSignal.timeout(this.loginTimeoutMs),
     ]);
     try {
-      await new ScopedMcpOAuth(this.oauth, name, config.url).login(
-        interaction,
-        boundedSignal,
-      );
+      await this.createOAuth(name, config)!.login(interaction, boundedSignal);
       if (boundedSignal.aborted) throw new McpLoginRequiredError();
       return await this.reconnectServer(name);
-    } catch {
-      throw new McpLoginRequiredError();
+    } catch (error) {
+      if (boundedSignal.aborted) throw new McpLoginRequiredError();
+      throw error;
     }
   }
 
@@ -839,18 +846,24 @@ export class McpConnectionManager {
     const config = this.getServerConfig(name);
     if (!this.oauth || config.transport !== "streamable-http")
       throw new Error("MCP OAuth is not configured for this server");
-    await this.oauth.store.clear({
-      owner: this.oauth.owner,
-      serverName: name,
-      resource: config.url,
-    });
     const runtime = this.getRuntime(name);
     runtime.connectionId++;
-    runtime.status = "failed";
-    runtime.lastError = new McpLoginRequiredError().message;
+    runtime.status = runtime.enabled && !this.closed ? "failed" : "disabled";
+    runtime.lastError =
+      runtime.status === "failed"
+        ? new McpLoginRequiredError().message
+        : undefined;
     runtime.tools = [];
     runtime.remoteTools = [];
-    await this.disposeRuntimeConnection(runtime);
+    try {
+      await this.disposeRuntimeConnection(runtime);
+    } finally {
+      await this.oauth.store.clear({
+        owner: this.oauth.owner,
+        serverName: name,
+        resource: config.url,
+      });
+    }
   }
 
   setServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary> {

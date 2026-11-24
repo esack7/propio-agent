@@ -88,6 +88,8 @@ export interface McpConnectionOptions {
   clientIdentity: { name: string; version: string };
   /** Total connection and discovery deadline; default 10 seconds. */
   connectTimeoutMs?: number;
+  /** Explicit authorization deadline, independent of connection setup; default five minutes. */
+  loginTimeoutMs?: number;
   /** Tool request deadline; default 60 seconds (SDK default). */
   callTimeoutMs?: number;
   /** Grace before forcefully terminating the direct child; default 500 ms. */

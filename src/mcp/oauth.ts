@@ -48,6 +48,8 @@ export interface McpOAuthOptions {
   readonly owner: string;
   readonly store: McpCredentialStore;
   readonly clientMetadata: OAuthClientMetadata;
+  /** Grant refresh deadline, independent of connection cancellation; default 30 seconds. */
+  readonly refreshTimeoutMs?: number;
 }
 
 export class InMemoryMcpCredentialStore implements McpCredentialStore {
@@ -100,10 +102,18 @@ export class McpLoginRequiredError extends Error {
 const safeFetch: typeof fetch = (input, init) =>
   fetch(input, { ...init, redirect: "error" });
 
+function insufficientScope(response: Response): boolean {
+  return (
+    response.status === 403 &&
+    extractWWWAuthenticateParams(response).error === "insufficient_scope"
+  );
+}
+
 /** One adapter per connection. Only the injected store coordinates across managers. */
 export class ScopedMcpOAuth {
   readonly key: McpCredentialKey;
   readonly provider: OAuthClientProvider;
+  private requiredScope?: string;
   constructor(
     private readonly options: McpOAuthOptions,
     serverName: string,
@@ -125,7 +135,7 @@ export class ScopedMcpOAuth {
       -readonly [K in keyof McpCredentialRecord]: McpCredentialRecord[K];
     } = structuredClone(record);
     const commit = async () => {
-      if (signal?.aborted) throw new McpLoginRequiredError();
+      if (interaction && signal?.aborted) throw new McpLoginRequiredError();
       const { revision, ...grant } = value;
       if (!(await this.options.store.compareAndSet(this.key, revision, grant)))
         throw new McpLoginRequiredError();
@@ -188,7 +198,6 @@ export class ScopedMcpOAuth {
     // Commit the complete SDK transaction once; a logout wins against late responses.
     const originalSave = provider.saveTokens;
     provider.saveTokens = async (tokens) => {
-      if (signal?.aborted) throw new McpLoginRequiredError();
       await originalSave(tokens);
       await commit();
     };
@@ -201,40 +210,46 @@ export class ScopedMcpOAuth {
     await this.options.store.withLock(this.key, async () => {
       const record = await this.options.store.load(this.key);
       if (signal.aborted) throw new McpLoginRequiredError();
-      const provider = this.makeProvider(record, interaction, signal);
+      const provider = this.makeProvider(
+        { ...record, tokens: undefined },
+        interaction,
+        signal,
+      );
       await auth(provider, {
         serverUrl: this.key.resource,
+        scope: this.requiredScope,
         fetchFn: (input, init) => safeFetch(input, { ...init, signal }),
       });
     });
   }
+  private async rejectAuthorization(response: Response): Promise<never> {
+    if (insufficientScope(response))
+      this.requiredScope = extractWWWAuthenticateParams(response).scope;
+    await response.body?.cancel();
+    throw new McpLoginRequiredError();
+  }
   readonly fetch: typeof fetch = async (input, init) => {
     const response = await safeFetch(input, init);
     const challenge = extractWWWAuthenticateParams(response);
-    const upscope =
-      response.status === 403 && challenge.error === "insufficient_scope";
+    const upscope = insufficientScope(response);
     if (response.status !== 401 && !upscope) return response;
+    if (upscope) return this.rejectAuthorization(response);
     await response.body?.cancel();
     await this.options.store.withLock(this.key, async () => {
       const record = await this.options.store.load(this.key);
       const rejected = new Headers(init?.headers).get("authorization");
-      if (
-        !upscope &&
-        record.tokens &&
-        rejected !== `Bearer ${record.tokens.access_token}`
-      )
+      if (record.tokens && rejected !== `Bearer ${record.tokens.access_token}`)
         return;
       if (!record.tokens?.refresh_token) throw new McpLoginRequiredError();
-      const provider = this.makeProvider(
-        record,
-        undefined,
-        init?.signal ?? undefined,
+      const refreshSignal = AbortSignal.timeout(
+        this.options.refreshTimeoutMs ?? 30_000,
       );
+      const provider = this.makeProvider(record, undefined, refreshSignal);
       await auth(provider, {
         serverUrl: this.key.resource,
         ...challenge,
         fetchFn: (input, options) =>
-          safeFetch(input, { ...options, signal: init?.signal }),
+          safeFetch(input, { ...options, signal: refreshSignal }),
       });
     });
     const tokens = await this.provider.tokens();
@@ -242,13 +257,8 @@ export class ScopedMcpOAuth {
     const headers = new Headers(init?.headers);
     headers.set("authorization", `Bearer ${tokens.access_token}`);
     const retried = await safeFetch(input, { ...init, headers });
-    if (
-      retried.status === 401 ||
-      (retried.status === 403 &&
-        extractWWWAuthenticateParams(retried).error === "insufficient_scope")
-    ) {
-      await retried.body?.cancel();
-      throw new McpLoginRequiredError();
+    if (retried.status === 401 || insufficientScope(retried)) {
+      return this.rejectAuthorization(retried);
     }
     return retried;
   };
