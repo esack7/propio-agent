@@ -130,6 +130,7 @@ async function cleanupTrial(provider, root, row) {
     } catch (error) {
       row.cleanupError = error.message;
       row.outcome = "error";
+      row.reason = "trial cleanup failed";
     }
   }
 }

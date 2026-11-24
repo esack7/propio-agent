@@ -415,6 +415,26 @@ test("behavior settings distinguish identities without retaining endpoint secret
     (await report({ apiKey: "different-secret" })).configuration.identity,
     baseline.configuration.identity,
   );
+  const serverA = await report({ host: "gpu-a:11434" });
+  const serverB = await report({ host: "gpu-b:11434" });
+  assert.notEqual(
+    serverA.configuration.identity,
+    serverB.configuration.identity,
+  );
+  for (const [host, expected] of [
+    ["gpu-a:11434", "http://gpu-a:11434"],
+    ["127.0.0.1:11434", "http://127.0.0.1:11434"],
+    [":11434", "http://127.0.0.1:11434"],
+    ["gpu-a", "http://gpu-a:11434"],
+    ["user:SECRET_PASSWORD@gpu-a:11434", "http://gpu-a:11434"],
+  ]) {
+    const result = await report({ host });
+    assert.equal(
+      result.configuration.effective.settings.providers[0].host,
+      expected,
+    );
+    assert.equal(JSON.stringify(result).includes("SECRET_"), false);
+  }
 });
 
 test("empty provider path is rejected before trials or output creation", async () => {

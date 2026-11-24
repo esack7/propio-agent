@@ -15,10 +15,22 @@ const tasks = [
   "permission-denial",
 ];
 
-function endpointIdentity(value) {
+function ollamaEndpoint(value) {
+  if (value.includes("://")) return new URL(value);
+  if (value.startsWith(":")) return new URL(`http://127.0.0.1${value}`);
+  const endpoint = new URL(`http://${value}`);
+  if (!endpoint.port) endpoint.port = "11434";
+  return endpoint;
+}
+
+function parseEndpoint(value, ollamaHost) {
+  return ollamaHost ? ollamaEndpoint(value) : new URL(value);
+}
+
+function endpointIdentity(value, ollamaHost = false) {
   if (typeof value !== "string") return undefined;
   try {
-    const endpoint = new URL(value);
+    const endpoint = parseEndpoint(value, ollamaHost);
     return ["http:", "https:"].includes(endpoint.protocol)
       ? endpoint.origin
       : undefined;
@@ -58,7 +70,7 @@ function sanitizedProvider(provider) {
     })),
     region: typedValue(region, "string"),
     fallbackModels: stringList(fallbackModels),
-    host: endpointIdentity(provider.host),
+    host: endpointIdentity(provider.host, type === "ollama"),
     baseURL: endpointIdentity(provider.baseURL),
     provider: sanitizedRouting(provider.provider),
   };

@@ -33,6 +33,9 @@ jobs:
       - run: npm run format:check
       - run: npm run build
       - run: npm test
+      - run: npm run test:outcomes:runner
+      - run: npm run test:outcomes:safety
+      - run: npm run test:outcomes:report
 
   quality:
     name: fallow
