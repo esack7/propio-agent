@@ -14,6 +14,7 @@ import {
 
 async function fixture() {
   let origin = "";
+  let disposal: (() => Promise<void>) | undefined;
   let refreshes = 0;
   let release: (() => void) | undefined;
   let started: (() => void) | undefined;
@@ -97,6 +98,7 @@ async function fixture() {
         res.writeHead(403).end();
         return;
       }
+      if (req.method === "DELETE") await disposal?.();
       await sessions.get(id)!.handleRequest(req, res);
       return;
     }
@@ -128,6 +130,9 @@ async function fixture() {
     origin,
     tokens,
     sessions,
+    holdDisposal: (hold: () => Promise<void>) => {
+      disposal = hold;
+    },
     refreshes: () => refreshes,
     pause: () =>
       new Promise<void>((resolve) => {
@@ -270,7 +275,26 @@ it("isolates owners, serializes rotated refresh, and rejects late responses afte
     ).rejects.toThrow("authorization required");
     expect(authorized).toBe(true);
     const sessionCount = local.sessions.size;
-    await b.clearServerCredentials("protected");
+    let releaseDisposal!: () => void;
+    let notifyDisposal!: () => void;
+    const disposing = new Promise<void>((resolve) => {
+      notifyDisposal = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      releaseDisposal = resolve;
+    });
+    local.holdDisposal(async () => {
+      notifyDisposal();
+      await held;
+    });
+    const clearing = b.clearServerCredentials("protected");
+    await disposing;
+    await b.reconnectServer("protected");
+    await b.setServerEnabled("protected", true);
+    releaseDisposal();
+    await clearing;
+    expect(b.getServerSummaries()[0].status).not.toBe("connected");
+    expect(b.listTools()).toHaveLength(0);
     expect(local.sessions.size).toBe(sessionCount - 1);
   } finally {
     local.resume();
@@ -511,3 +535,95 @@ it("keeps revision updates atomic and preserves unrelated owners and endpoints",
   expect((await store.load(second)).tokens).toEqual(grant.tokens);
   expect((await store.load(moved)).tokens).toEqual(grant.tokens);
 });
+
+it.each([
+  "issuer",
+  "authorize",
+  "register",
+  "token",
+  "register-error",
+  "token-error",
+])(
+  "rejects unsafe OAuth %s without exposing response bodies",
+  async (failure) => {
+    const { jest } = await import("@jest/globals");
+    const origin = "https://protected.example";
+    const marker = "synthetic-secret-code-verifier";
+    const requested: string[] = [];
+    let authorized = false;
+    const endpoint = (name: string) =>
+      `${failure === name ? "http://unsafe.example" : origin}/${name}`;
+    const mock = jest
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        requested.push(url);
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("oauth-protected-resource"))
+          return json({
+            resource: origin + "/mcp",
+            authorization_servers: [
+              failure === "issuer" ? "http://unsafe.example" : origin,
+            ],
+          });
+        if (url.includes("oauth-authorization-server"))
+          return json({
+            issuer: origin,
+            authorization_endpoint: endpoint("authorize"),
+            token_endpoint: endpoint("token"),
+            registration_endpoint: endpoint("register"),
+            response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"],
+          });
+        if (url.endsWith("/register"))
+          return failure === "register-error"
+            ? new Response(marker, { status: 500 })
+            : json({
+                client_id: "synthetic-client",
+                redirect_uris: ["http://127.0.0.1/callback"],
+              });
+        return new Response(marker, { status: 500 });
+      });
+    const manager = new McpConnectionManager({
+      config: {
+        mcpServers: {
+          test: { transport: "streamable-http", url: origin + "/mcp" },
+        },
+      },
+      clientIdentity: { name: "test", version: "1" },
+      oauth: {
+        owner: "owner",
+        store: new InMemoryMcpCredentialStore(),
+        clientMetadata: { redirect_uris: ["http://127.0.0.1/callback"] },
+      },
+    });
+    try {
+      await expect(
+        manager.loginServer(
+          "test",
+          {
+            redirectUrl: "http://127.0.0.1/callback",
+            authorize: async (url) => {
+              authorized = true;
+              return { code: marker, state: url.searchParams.get("state")! };
+            },
+          },
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("MCP authorization required; sign in explicitly");
+      expect(
+        requested.some((url) => url.startsWith("http://unsafe.example")),
+      ).toBe(false);
+      if (["issuer", "authorize", "register"].includes(failure)) {
+        expect(authorized).toBe(false);
+        expect(requested.some((url) => url.endsWith("/token"))).toBe(false);
+      }
+    } finally {
+      await manager.close();
+      mock.mockRestore();
+    }
+  },
+);

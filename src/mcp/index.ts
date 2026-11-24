@@ -16,7 +16,7 @@ export type {
   McpCallOutcome,
 } from "./types.js";
 
-export { InMemoryMcpCredentialStore } from "./oauth.js";
+export { InMemoryMcpCredentialStore, McpLoginRequiredError } from "./oauth.js";
 export type {
   McpCredentialKey,
   McpCredentialRecord,

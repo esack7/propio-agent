@@ -230,6 +230,7 @@ export class McpConnectionManager {
   private closed = false;
   private readonly oauthAbort = new AbortController();
   private shutdownPromise: Promise<void> | null = null;
+  private readonly clearingCredentials = new Map<string, Promise<void>>();
   private mutation: Promise<unknown> = Promise.resolve();
 
   constructor(options: McpConnectionOptions) {
@@ -466,6 +467,7 @@ export class McpConnectionManager {
   }
 
   private async connectServer(name: string): Promise<void> {
+    if (this.clearingCredentials.has(name)) return;
     const runtime = this.getRuntime(name);
     const config = this.getServerConfig(name);
 
@@ -814,7 +816,6 @@ export class McpConnectionManager {
   }
 
   // Public embedding API; CLI interaction is supplied in the cli-login slice.
-  // fallow-ignore-next-line unused-class-member
   async loginServer(
     name: string,
     interaction: McpOAuthInteraction,
@@ -833,15 +834,24 @@ export class McpConnectionManager {
       await this.createOAuth(name, config)!.login(interaction, boundedSignal);
       if (boundedSignal.aborted) throw new McpLoginRequiredError();
       return await this.reconnectServer(name);
-    } catch (error) {
-      if (boundedSignal.aborted) throw new McpLoginRequiredError();
-      throw error;
+    } catch {
+      throw new McpLoginRequiredError();
     }
   }
 
   // Public embedding API, exercised by the scoped OAuth acceptance suite.
   // fallow-ignore-next-line unused-class-member
-  async clearServerCredentials(name: string): Promise<void> {
+  clearServerCredentials(name: string): Promise<void> {
+    const existing = this.clearingCredentials.get(name);
+    if (existing) return existing;
+    const operation = this.clearCredentials(name).finally(() => {
+      this.clearingCredentials.delete(name);
+    });
+    this.clearingCredentials.set(name, operation);
+    return operation;
+  }
+
+  private async clearCredentials(name: string): Promise<void> {
     this.assertOpen();
     const config = this.getServerConfig(name);
     if (!this.oauth || config.transport !== "streamable-http")

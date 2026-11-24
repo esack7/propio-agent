@@ -99,8 +99,24 @@ export class McpLoginRequiredError extends Error {
     super("MCP authorization required; sign in explicitly");
   }
 }
-const safeFetch: typeof fetch = (input, init) =>
-  fetch(input, { ...init, redirect: "error" });
+function assertSecureOAuthUrl(url: URL): void {
+  const loopback =
+    ["localhost", "[::1]"].includes(url.hostname) ||
+    /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
+  if (
+    url.username ||
+    url.password ||
+    url.hash ||
+    !(url.protocol === "https:" || (url.protocol === "http:" && loopback))
+  )
+    throw new McpLoginRequiredError();
+}
+const safeFetch: typeof fetch = async (input, init) => {
+  assertSecureOAuthUrl(
+    new URL(input instanceof Request ? input.url : String(input)),
+  );
+  return fetch(input, { ...init, redirect: "error" });
+};
 
 function insufficientScope(response: Response): boolean {
   return (
@@ -185,6 +201,7 @@ export class ScopedMcpOAuth {
       },
       redirectToAuthorization: async (url) => {
         if (!interaction || !signal) throw new McpLoginRequiredError();
+        assertSecureOAuthUrl(url);
         const callback = await interaction.authorize(url, signal);
         if (signal.aborted || callback.state !== state || !callback.code)
           throw new McpLoginRequiredError();
