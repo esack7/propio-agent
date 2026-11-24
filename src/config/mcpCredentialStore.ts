@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, chmod, readFile, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { withFileLock } from "./fileLock.js";
+import { isFileLockAvailable, withFileLock } from "./fileLock.js";
 import { writeJsonFileAtomic } from "./jsonFile.js";
 import { McpAuthorizationError } from "../mcp/oauth.js";
 import type {
@@ -16,6 +16,12 @@ export class FileMcpCredentialStore implements McpCredentialStore {
   constructor(
     private readonly directory = join(homedir(), ".propio", "mcp-auth"),
   ) {}
+  async assertAvailable(): Promise<void> {
+    if (!(await isFileLockAvailable()))
+      throw new McpAuthorizationError(
+        "MCP credential storage requires os-lock; reinstall with optional dependencies and a native build toolchain, then retry /mcp login or /mcp logout",
+      );
+  }
   private id(key: McpCredentialKey): string {
     return createHash("sha256")
       .update(JSON.stringify([key.owner, key.serverName, key.resource]))
@@ -59,6 +65,7 @@ export class FileMcpCredentialStore implements McpCredentialStore {
     change: (current: McpCredentialRecord) => McpCredentialRecord | undefined,
     recover = false,
   ): Promise<boolean> {
+    await this.assertAvailable();
     await this.prepare();
     const id = this.id(key);
     return withFileLock(join(this.directory, `${id}.write.lock`), async () => {
@@ -103,8 +110,10 @@ export class FileMcpCredentialStore implements McpCredentialStore {
     operation: () => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
+    await this.assertAvailable();
     await this.prepare();
-    return withFileLock(
+    signal?.throwIfAborted();
+    const pending = withFileLock(
       join(this.directory, `${this.id(key)}.grant.lock`),
       async () => {
         signal?.throwIfAborted();
@@ -112,5 +121,17 @@ export class FileMcpCredentialStore implements McpCredentialStore {
       },
       { timeoutMs: 310_000 },
     );
+    if (!signal) return pending;
+    let cancel = () => {};
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      cancel = () => reject(signal.reason);
+      signal.addEventListener("abort", cancel, { once: true });
+      if (signal.aborted) cancel();
+    });
+    try {
+      return await Promise.race([pending, cancelled]);
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
   }
 }

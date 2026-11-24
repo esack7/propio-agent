@@ -275,7 +275,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
     {
       owner: "one",
       store,
-      clientMetadata: { redirect_uris: [origin + "/callback"] },
+      clientMetadata: { redirect_uris: [] },
     },
     "test",
     origin + "/mcp",
@@ -315,7 +315,7 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       {
         owner: "one",
         store,
-        clientMetadata: { redirect_uris: [origin + "/callback"] },
+        clientMetadata: { redirect_uris: [] },
       },
       "test",
       origin + "/mcp",
@@ -421,6 +421,9 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       "authorization required",
     );
     expect((await store.load(adapter.key)).tokens).toBeDefined();
+    const registrations = mock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/register"),
+    ).length;
     issuer = "http://127.0.0.1:12346";
     validAccess = false;
     await expect(
@@ -429,6 +432,9 @@ it("uses SDK PKCE and refresh rotation with injected HTTP responses", async () =
       }),
     ).rejects.toThrow("authorization required");
     expect((await store.load(adapter.key)).tokens).toBeUndefined();
+    expect(
+      mock.mock.calls.filter(([url]) => String(url).endsWith("/register")),
+    ).toHaveLength(registrations);
   } finally {
     mock.mockRestore();
   }

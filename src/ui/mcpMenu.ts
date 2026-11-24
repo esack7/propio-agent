@@ -217,6 +217,10 @@ async function handleMcpAuthorization(
   try {
     if (subcommand === "login") {
       const summary = await agent.loginMcpServer(rest);
+      if (!summary.enabled) {
+        ui.success("MCP sign-in saved; use /mcp enable <server>");
+        return;
+      }
       if (summary.status !== "connected") {
         ui.error(
           summary.lastError ??

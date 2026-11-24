@@ -1992,3 +1992,8 @@ CLI estimates are supplied. New consumers should export provider/model, purpose,
 request/attempt identities, timestamps, token/cache metrics and completeness, then
 apply their own historical prices outside this CLI. Cache-write duration is not
 measured and must not be inferred.
+
+MCP CLI login and logout require the optional `os-lock` native dependency for
+cross-process credential storage. If unavailable, reinstall with optional
+dependencies enabled and a native build toolchain before signing in. The CLI
+checks this requirement before opening the sign-in browser.

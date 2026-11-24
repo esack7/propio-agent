@@ -192,7 +192,10 @@ export class ScopedMcpOAuth {
           }
         : this.options.clientMetadata,
       state: () => state,
-      clientInformation: () => value.client,
+      clientInformation: () => {
+        if (!interaction && !value.client) throw new McpLoginRequiredError();
+        return value.client;
+      },
       saveClientInformation: (client) => {
         value.client = client;
       },

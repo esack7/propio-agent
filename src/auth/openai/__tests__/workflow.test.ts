@@ -320,7 +320,7 @@ it("uses a scoped lifetime broker returning only access tokens and sanitized fai
 });
 
 it("excludes production and POC credentials from the sandbox configuration view", async () => {
-  for (const part of ["auth/openai", "poc/openai-subscription"]) {
+  for (const part of ["auth/openai", "poc/openai-subscription", "mcp-auth"]) {
     await mkdir(join(directory, part), { recursive: true });
     await writeFile(join(directory, part, "token.json"), "secret-sentinel");
   }
@@ -332,6 +332,7 @@ it("excludes production and POC credentials from the sandbox configuration view"
   const view = await createSandboxConfigView(directory);
   try {
     expect(await readdir(view)).not.toContain("poc");
+    expect(await readdir(view)).not.toContain("mcp-auth");
     expect(await readdir(view)).not.toContain("secret-alias");
     expect(await readdir(join(view, "auth"))).not.toContain("openai");
   } finally {
@@ -443,4 +444,19 @@ it("cancels only the selected account's local requests when signing out", async 
   } finally {
     await agent.close();
   }
+});
+
+it("rejects linked settings inside MCP credentials", async () => {
+  await mkdir(join(directory, "mcp-auth"), { recursive: true });
+  await writeFile(
+    join(directory, "mcp-auth", "grant.json"),
+    '{"access_token":"synthetic-mcp-grant"}',
+  );
+  await symlink(
+    join(directory, "mcp-auth", "grant.json"),
+    join(directory, "settings.json"),
+  );
+  await expect(createSandboxConfigView(directory)).rejects.toThrow(
+    "holds credentials",
+  );
 });

@@ -75,6 +75,7 @@ export async function withMcpLogin<T>(
           });
           try {
             return await Promise.race([
+              callback,
               openBrowser(url.href, authorizationSignal)
                 .catch(() => {
                   throw new McpAuthorizationError(

@@ -1,3 +1,4 @@
+import { createAbortStateController } from "../ui/abortState.js";
 import { request } from "node:http";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -201,13 +202,20 @@ test.each(["SIGINT", "close", "timeout"])(
         return new Promise<void>(() => {});
       },
     });
+    const abortState = createAbortStateController({
+      setMode() {},
+      warn() {},
+    } as never);
+    process.on("SIGINT", abortState.handleSigint);
     try {
       await expect(manager.loginCliServer("docs")).rejects.toThrow(
         "cancelled or timed out",
       );
+      expect(abortState.shouldExit()).toBe(false);
       expect(redirect).not.toBe("");
       await expect(fetch(redirect)).rejects.toThrow();
     } finally {
+      process.off("SIGINT", abortState.handleSigint);
       await manager.close();
       await local.close();
       if (tty) Object.defineProperty(process.stdin, "isTTY", tty);

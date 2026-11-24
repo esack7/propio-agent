@@ -40,7 +40,7 @@ function loadSandboxConfig(path: string) {
 const SETTINGS_FILE = "settings.json";
 
 /** Parts of ~/.propio that hold credentials and never enter the sandbox. */
-const EXCLUDED_CONFIG_PARTS = ["poc", "auth/openai"] as const;
+const EXCLUDED_CONFIG_PARTS = ["poc", "auth/openai", "mcp-auth"] as const;
 
 function isWithin(candidate: string, directory: string): boolean {
   const part = relative(directory, candidate);

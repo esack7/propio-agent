@@ -15,6 +15,12 @@ import type { ToolExecutionResult } from "../tools/types.js";
 import { FileMcpCredentialStore } from "../config/mcpCredentialStore.js";
 import { withMcpLogin } from "./login.js";
 
+let activeLogins = 0;
+
+export function isMcpLoginActive(): boolean {
+  return activeLogins > 0;
+}
+
 interface McpManagerOptions {
   openBrowser?: (url: string) => Promise<void>;
   credentialStore?: McpCredentialStore;
@@ -28,17 +34,20 @@ interface McpManagerOptions {
 
 /** Propio configuration and executable-tool adapter. */
 export class McpManager extends McpConnectionManager {
+  private readonly credentialStore: McpCredentialStore;
   private readonly openBrowser?: (url: string) => Promise<void>;
   private catalogVersion?: string;
   private adapters = new Map<string, McpExecutableTool>();
   constructor(options: McpManagerOptions = {}) {
     const configPath = options.configPath ?? getMcpConfigPath();
     const config = options.config ?? loadMcpConfig(configPath);
+    const credentialStore =
+      options.credentialStore ?? new FileMcpCredentialStore();
     super({
       config,
       oauth: {
         owner: "local",
-        store: options.credentialStore ?? new FileMcpCredentialStore(),
+        store: credentialStore,
         clientMetadata: {
           redirect_uris: [],
           client_name: "Propio",
@@ -62,6 +71,7 @@ export class McpManager extends McpConnectionManager {
       },
     });
     this.openBrowser = options.openBrowser;
+    this.credentialStore = credentialStore;
   }
 
   private assertHttpServer(name: string): void {
@@ -85,7 +95,10 @@ export class McpManager extends McpConnectionManager {
       throw new McpAuthorizationError(
         "Sign-in requires an interactive terminal; run /mcp login <server> interactively",
       );
+    if (this.credentialStore instanceof FileMcpCredentialStore)
+      await this.credentialStore.assertAvailable();
     const controller = new AbortController();
+    activeLogins++;
     const cancel = () => controller.abort();
     process.on("SIGINT", cancel);
     try {
@@ -95,6 +108,7 @@ export class McpManager extends McpConnectionManager {
         controller.signal,
       );
     } finally {
+      activeLogins--;
       process.removeListener("SIGINT", cancel);
     }
   }
