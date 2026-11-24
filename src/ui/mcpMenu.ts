@@ -204,6 +204,19 @@ async function handleMcpEnableDisable(
   }
 }
 
+function renderLoginResult(summary: McpServerSummary, ui: McpUi): void {
+  if (summary.enabled === false && summary.status === "disabled") {
+    ui.success("MCP sign-in saved; use /mcp enable <server>");
+  } else if (summary.status !== "connected") {
+    ui.error(
+      summary.lastError ??
+        "Sign-in saved, but connection failed; use /mcp reconnect <server>",
+    );
+  } else {
+    ui.success("MCP sign-in completed");
+  }
+}
+
 async function handleMcpAuthorization(
   subcommand: string,
   rest: string,
@@ -216,24 +229,11 @@ async function handleMcpAuthorization(
   }
   try {
     if (subcommand === "login") {
-      const summary = await agent.loginMcpServer(rest);
-      if (!summary.enabled) {
-        ui.success("MCP sign-in saved; use /mcp enable <server>");
-        return;
-      }
-      if (summary.status !== "connected") {
-        ui.error(
-          summary.lastError ??
-            "Sign-in saved, but connection failed; use /mcp reconnect <server>",
-        );
-        return;
-      }
-    } else await agent.logoutMcpServer(rest);
-    ui.success(
-      subcommand === "login"
-        ? "MCP sign-in completed"
-        : "MCP authorization cleared",
-    );
+      renderLoginResult(await agent.loginMcpServer(rest), ui);
+    } else {
+      await agent.logoutMcpServer(rest);
+      ui.success("MCP authorization cleared");
+    }
   } catch (error) {
     ui.error(
       error instanceof McpAuthorizationError

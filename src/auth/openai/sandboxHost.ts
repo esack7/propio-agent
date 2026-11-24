@@ -182,6 +182,7 @@ async function run(): Promise<void> {
   const source = join(homedir(), ".propio");
   const view = await createSandboxConfigView(source);
   let broker: Awaited<ReturnType<typeof startCredentialBroker>> | undefined;
+  const shutdown = new AbortController();
   const close = async () => {
     await broker?.close();
     await rm(view, { recursive: true, force: true });
@@ -212,14 +213,17 @@ async function run(): Promise<void> {
       );
     }
     await writeFile(join(channel, "config-path"), view, { mode: 0o600 });
+    // Install shutdown handlers before publishing readiness to the owner.
+    const ownerExited = waitForSandboxOwner(shutdown.signal);
     await writeFile(join(channel, "ready"), "ready", { mode: 0o600 });
-    await waitForSandboxOwner();
+    await ownerExited;
   } finally {
+    shutdown.abort();
     await close();
   }
 }
 
-export async function waitForSandboxOwner(): Promise<void> {
+export async function waitForSandboxOwner(signal?: AbortSignal): Promise<void> {
   const parent = process.ppid;
   await new Promise<void>((resolve) => {
     const timer = setInterval(() => {
@@ -235,10 +239,13 @@ export async function waitForSandboxOwner(): Promise<void> {
       clearInterval(timer);
       process.off("SIGTERM", finish);
       process.off("SIGINT", finish);
+      signal?.removeEventListener("abort", finish);
       resolve();
     };
     process.once("SIGTERM", finish);
     process.once("SIGINT", finish);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted) finish();
   });
 }
 

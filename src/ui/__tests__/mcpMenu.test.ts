@@ -114,20 +114,36 @@ function createUi(messages: string[]) {
   };
 }
 
-test("login renders reconnect failure rather than success", async () => {
+test.each([undefined, false, true])(
+  "login renders reconnect failure with enabled=%s rather than success",
+  async (enabled) => {
+    const messages: string[] = [];
+    await handleMcpCommand(
+      "/mcp login docs",
+      {
+        loginMcpServer: async () => ({
+          enabled,
+          status: "failed",
+          lastError: "Connection failed; reconnect explicitly",
+        }),
+      } as never,
+      createUi(messages),
+    );
+    expect(messages.join("\n")).toContain("Connection failed");
+    expect(messages.join("\n")).not.toContain("sign-in completed");
+  },
+);
+
+test("login explains how to enable a disabled server", async () => {
   const messages: string[] = [];
   await handleMcpCommand(
     "/mcp login docs",
     {
-      loginMcpServer: async () => ({
-        status: "failed",
-        lastError: "Connection failed; reconnect explicitly",
-      }),
+      loginMcpServer: async () => ({ enabled: false, status: "disabled" }),
     } as never,
     createUi(messages),
   );
-  expect(messages.join("\n")).toContain("Connection failed");
-  expect(messages.join("\n")).not.toContain("sign-in completed");
+  expect(messages.join("\n")).toContain("sign-in saved; use /mcp enable");
 });
 
 test.each(["login", "logout"])(

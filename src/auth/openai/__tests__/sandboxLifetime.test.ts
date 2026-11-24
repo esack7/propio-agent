@@ -267,6 +267,21 @@ it("keeps the channel alive beyond eight hours while its owner remains alive", a
   expect(finished).toBe(true);
 });
 
+it("releases owner shutdown handlers when readiness fails", async () => {
+  const before = [
+    process.listenerCount("SIGTERM"),
+    process.listenerCount("SIGINT"),
+  ];
+  const controller = new AbortController();
+  const pending = waitForSandboxOwner(controller.signal);
+  controller.abort();
+  await pending;
+  expect([
+    process.listenerCount("SIGTERM"),
+    process.listenerCount("SIGINT"),
+  ]).toEqual(before);
+});
+
 it.each(["missing-file", "api-default"])(
   "starts and cleans up an API sandbox host with %s",
   async (kind) => {
