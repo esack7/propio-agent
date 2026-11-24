@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
 
-export async function openSystemBrowser(url: string): Promise<void> {
+export async function openSystemBrowser(
+  url: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const command =
     process.platform === "darwin"
       ? "open"
@@ -10,7 +13,10 @@ export async function openSystemBrowser(url: string): Promise<void> {
   const args =
     process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "ignore" });
+    const child = spawn(command, args, {
+      stdio: "ignore",
+      ...(signal ? { signal } : {}),
+    });
     const fail = () =>
       reject(
         new Error(

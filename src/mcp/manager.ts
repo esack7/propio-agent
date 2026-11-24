@@ -6,7 +6,9 @@ import {
   updateMcpServerEnabledInFile,
 } from "./config.js";
 import { McpExecutableTool } from "./tool.js";
-import type { McpConfigFile } from "./types.js";
+import { McpAuthorizationError } from "./oauth.js";
+import type { McpCredentialStore } from "./oauth.js";
+import type { McpConfigFile, McpServerSummary } from "./types.js";
 import type { ToolDisplay } from "../tools/display.js";
 import type { ToolExecutionResult } from "../tools/types.js";
 
@@ -14,6 +16,9 @@ import { FileMcpCredentialStore } from "../config/mcpCredentialStore.js";
 import { withMcpLogin } from "./login.js";
 
 interface McpManagerOptions {
+  openBrowser?: (url: string) => Promise<void>;
+  credentialStore?: McpCredentialStore;
+  loginTimeoutMs?: number;
   configPath?: string;
   config?: McpConfigFile;
   connectTimeoutMs?: number;
@@ -23,6 +28,7 @@ interface McpManagerOptions {
 
 /** Propio configuration and executable-tool adapter. */
 export class McpManager extends McpConnectionManager {
+  private readonly openBrowser?: (url: string) => Promise<void>;
   private catalogVersion?: string;
   private adapters = new Map<string, McpExecutableTool>();
   constructor(options: McpManagerOptions = {}) {
@@ -32,7 +38,7 @@ export class McpManager extends McpConnectionManager {
       config,
       oauth: {
         owner: "local",
-        store: new FileMcpCredentialStore(),
+        store: options.credentialStore ?? new FileMcpCredentialStore(),
         clientMetadata: {
           redirect_uris: [],
           client_name: "Propio",
@@ -46,6 +52,7 @@ export class McpManager extends McpConnectionManager {
         version: options.clientVersion ?? "1.0.0",
       },
       connectTimeoutMs: options.connectTimeoutMs,
+      loginTimeoutMs: options.loginTimeoutMs,
       persistConfig: (_updated, change) => {
         updateMcpServerEnabledInFile(
           configPath,
@@ -54,16 +61,42 @@ export class McpManager extends McpConnectionManager {
         );
       },
     });
+    this.openBrowser = options.openBrowser;
   }
 
-  async loginCliServer(name: string): Promise<void> {
+  private assertHttpServer(name: string): void {
+    const detail = this.getServerDetail(name);
+    if (!detail)
+      throw new McpAuthorizationError("Unknown MCP server; use /mcp list");
+    if (detail.transport !== "streamable-http")
+      throw new McpAuthorizationError(
+        "Sign-in requires a Streamable HTTP server; use /mcp get <server>",
+      );
+  }
+
+  override clearServerCredentials(name: string): Promise<void> {
+    this.assertHttpServer(name);
+    return super.clearServerCredentials(name);
+  }
+
+  async loginCliServer(name: string): Promise<McpServerSummary> {
+    this.assertHttpServer(name);
     if (!process.stdin.isTTY)
-      throw new Error(
+      throw new McpAuthorizationError(
         "Sign-in requires an interactive terminal; run /mcp login <server> interactively",
       );
-    await withMcpLogin((interaction, signal) =>
-      this.loginServer(name, interaction, signal),
-    );
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    process.on("SIGINT", cancel);
+    try {
+      return await withMcpLogin(
+        (interaction, signal) => this.loginServer(name, interaction, signal),
+        this.openBrowser,
+        controller.signal,
+      );
+    } finally {
+      process.removeListener("SIGINT", cancel);
+    }
   }
 
   private getExecutableTools(): Map<string, McpExecutableTool> {

@@ -11,6 +11,8 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 
+export class McpAuthorizationError extends Error {}
+
 export interface McpCredentialKey {
   readonly owner: string;
   readonly serverName: string;
@@ -167,6 +169,8 @@ export class ScopedMcpOAuth {
     const value: {
       -readonly [K in keyof McpCredentialRecord]: McpCredentialRecord[K];
     } = structuredClone(record);
+    // Ephemeral callback ports require a matching registration on every explicit login.
+    if (interaction) value.client = undefined;
     const commit = async () => {
       if (interaction && signal?.aborted) throw new McpLoginRequiredError();
       const { revision, ...grant } = value;

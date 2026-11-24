@@ -1,3 +1,4 @@
+import { InMemoryMcpCredentialStore } from "../oauth.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -186,7 +187,10 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     const directory = mkdtempSync(join(tmpdir(), "mcp-mixed-"));
     const configPath = join(directory, "mcp.json");
     writeFileSync(configPath, JSON.stringify(config));
-    const cli = new McpManager({ configPath });
+    const cli = new McpManager({
+      configPath,
+      credentialStore: new InMemoryMcpCredentialStore(),
+    });
     try {
       await cli.initialize();
       await cli.setServerEnabled("remote", false);

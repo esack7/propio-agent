@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { withFileLock } from "./fileLock.js";
 import { writeJsonFileAtomic } from "./jsonFile.js";
+import { McpAuthorizationError } from "../mcp/oauth.js";
 import type {
   McpCredentialKey,
   McpCredentialRecord,
@@ -37,23 +38,41 @@ export class FileMcpCredentialStore implements McpCredentialStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
         return { revision: 0 };
-      throw new Error(
-        "Cannot read MCP credentials; restore or remove the private credential file and sign in again",
+      throw new McpAuthorizationError(
+        "Cannot read MCP credentials; run /mcp logout <server> to reset this endpoint, then sign in again",
       );
     }
   }
   async load(key: McpCredentialKey): Promise<McpCredentialRecord> {
-    await this.prepare();
+    try {
+      if ((await lstat(this.directory)).isSymbolicLink())
+        throw new McpAuthorizationError(
+          "MCP credential directory must not be a symbolic link",
+        );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     return this.read(this.id(key));
   }
   private async update(
     key: McpCredentialKey,
     change: (current: McpCredentialRecord) => McpCredentialRecord | undefined,
+    recover = false,
   ): Promise<boolean> {
     await this.prepare();
     const id = this.id(key);
     return withFileLock(join(this.directory, `${id}.write.lock`), async () => {
-      const next = change(await this.read(id));
+      let current: McpCredentialRecord;
+      try {
+        current = await this.read(id);
+      } catch (error) {
+        if (!recover || !(error instanceof McpAuthorizationError)) throw error;
+        // A fresh, non-reused revision invalidates every pre-corruption writer.
+        current = {
+          revision: Date.now() * 1024 + Math.floor(Math.random() * 1024),
+        };
+      }
+      const next = change(current);
       if (!next) return false;
       writeJsonFileAtomic(join(this.directory, `${id}.json`), id, next, {
         private: true,
@@ -73,7 +92,11 @@ export class FileMcpCredentialStore implements McpCredentialStore {
     );
   }
   async clear(key: McpCredentialKey): Promise<void> {
-    await this.update(key, (current) => ({ revision: current.revision + 1 }));
+    await this.update(
+      key,
+      (current) => ({ revision: current.revision + 1 }),
+      true,
+    );
   }
   async withLock<T>(
     key: McpCredentialKey,
@@ -87,6 +110,7 @@ export class FileMcpCredentialStore implements McpCredentialStore {
         signal?.throwIfAborted();
         return operation();
       },
+      { timeoutMs: 310_000 },
     );
   }
 }

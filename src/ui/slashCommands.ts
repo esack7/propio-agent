@@ -165,6 +165,8 @@ export const SLASH_COMMAND_GROUPS: ReadonlyArray<SlashCommandGroup> = [
       { command: "/mcp list", description: "list configured MCP servers" },
       { command: "/mcp get", description: "show one MCP server" },
       { command: "/mcp tools", description: "list discovered MCP tools" },
+      { command: "/mcp login", description: "sign in to one MCP server" },
+      { command: "/mcp logout", description: "clear local MCP authorization" },
       { command: "/mcp reconnect", description: "reconnect one MCP server" },
       { command: "/mcp enable", description: "enable one MCP server" },
       { command: "/mcp disable", description: "disable one MCP server" },

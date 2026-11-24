@@ -3291,14 +3291,19 @@ export class Agent {
   }
 
   // fallow-ignore-next-line unused-class-member
-  async loginMcpServer(name: string): Promise<void> {
-    await this.mcpManager.loginCliServer(name);
+  async loginMcpServer(name: string): Promise<McpServerSummary> {
+    const summary = await this.mcpManager.loginCliServer(name);
+    this.configurationOrigins.mcp = "runtime_change";
+    this.recordConfigurationChange(`mcp_server_login:${name}`, "mcp");
+    return summary;
   }
 
   // CLI methods are referenced through the menu Pick<Agent> adapter.
   // fallow-ignore-next-line unused-class-member
   async logoutMcpServer(name: string): Promise<void> {
     await this.mcpManager.clearServerCredentials(name);
+    this.configurationOrigins.mcp = "runtime_change";
+    this.recordConfigurationChange(`mcp_server_logout:${name}`, "mcp");
   }
 
   // fallow-ignore-next-line unused-class-member

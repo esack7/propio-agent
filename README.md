@@ -451,7 +451,10 @@ URL credentials, query strings and fragments are rejected. Endpoint diagnostics 
 Use `/mcp login <server>` in an interactive terminal to open browser sign-in.
 Later sessions reuse and refresh the grant from private `~/.propio/mcp-auth` storage.
 `/mcp logout <server>` disconnects and clears the current endpoint grant; historical
-endpoints under the same alias retain their separate grants. Non-interactive startup
+endpoints under the same alias retain their separate grants. To clear a historical
+endpoint, temporarily configure its original URL under that alias and run logout.
+Sandbox browser login and durable credential storage are unsupported; sign in from
+a native host session. Non-interactive startup
 never opens a browser and reports when sign-in is required. Tool filters are not supported yet. A `tools` field is rejected
 on HTTP entries. Legacy command entries continue to ignore that field. HTTP
 redirects are rejected. Timed-out calls and transport failures have unknown
@@ -489,15 +492,17 @@ The common headless variant adds `--headless` to `args`:
 
 ### MCP commands
 
-| Command           | Description                                     |
-| ----------------- | ----------------------------------------------- |
-| `/mcp`            | Show MCP server status                          |
-| `/mcp list`       | List configured MCP servers                     |
-| `/mcp get <name>` | Show one MCP server, including discovered tools |
-| `/mcp tools`      | List discovered MCP tools                       |
-| `/mcp reconnect`  | Reconnect one MCP server                        |
-| `/mcp enable`     | Enable one MCP server                           |
-| `/mcp disable`    | Disable one MCP server                          |
+| Command              | Description                                     |
+| -------------------- | ----------------------------------------------- |
+| `/mcp`               | Show MCP server status                          |
+| `/mcp list`          | List configured MCP servers                     |
+| `/mcp get <name>`    | Show one MCP server, including discovered tools |
+| `/mcp tools`         | List discovered MCP tools                       |
+| `/mcp login <name>`  | Sign in to a protected HTTP server              |
+| `/mcp logout <name>` | Clear the configured endpoint authorization     |
+| `/mcp reconnect`     | Reconnect one MCP server                        |
+| `/mcp enable`        | Enable one MCP server                           |
+| `/mcp disable`       | Disable one MCP server                          |
 
 `/tools` continues to manage only built-in tools. MCP tools are discovered and shown through `/mcp`, but they are still exposed to the model as normal tools during a turn when the server is connected.
 

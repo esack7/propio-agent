@@ -1,6 +1,7 @@
 import {
   ScopedMcpOAuth,
   McpLoginRequiredError,
+  McpAuthorizationError,
   type McpOAuthInteraction,
 } from "./oauth.js";
 import { closeClientBestEffort } from "./cleanup.js";
@@ -44,7 +45,11 @@ function toErrorMessage(error: unknown): string {
 }
 
 function connectionError(config: McpServerConfigEntry, error: unknown): string {
-  if (error instanceof McpLoginRequiredError) return error.message;
+  if (
+    error instanceof McpLoginRequiredError ||
+    error instanceof McpAuthorizationError
+  )
+    return error.message;
   if (config.transport !== "streamable-http") return toErrorMessage(error);
   if (
     error instanceof McpError &&
@@ -823,26 +828,24 @@ export class McpConnectionManager {
     const config = this.getServerConfig(name);
     if (!this.oauth || config.transport !== "streamable-http")
       throw new Error("MCP OAuth is not configured for this server");
-    const controller = new AbortController();
-    const signals = [
+    const boundedSignal = AbortSignal.any([
       signal,
       this.oauthAbort.signal,
       AbortSignal.timeout(this.loginTimeoutMs),
-    ];
-    const abort = () => controller.abort();
-    for (const source of signals) {
-      if (source.aborted) abort();
-      else source.addEventListener("abort", abort, { once: true });
-    }
-    const boundedSignal = controller.signal;
+    ]);
     try {
       await this.createOAuth(name, config)!.login(interaction, boundedSignal);
       if (boundedSignal.aborted) throw new McpLoginRequiredError();
       return await this.reconnectServer(name);
-    } catch {
-      throw new McpLoginRequiredError();
-    } finally {
-      for (const source of signals) source.removeEventListener("abort", abort);
+    } catch (error) {
+      if (boundedSignal.aborted)
+        throw new McpAuthorizationError(
+          "Sign-in cancelled or timed out; retry /mcp login <server>",
+        );
+      if (error instanceof McpAuthorizationError) throw error;
+      throw new McpAuthorizationError(
+        "MCP authorization required; sign in explicitly with /mcp login <server> (sign-in failed or was rejected)",
+      );
     }
   }
 

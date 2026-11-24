@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { openSystemBrowser } from "../auth/openai/browser.js";
+import { McpAuthorizationError } from "./oauth.js";
 import type { McpOAuthInteraction } from "./oauth.js";
 
 /** Listener lifetime includes discovery and exchange, even if the browser never returns. */
@@ -9,7 +10,10 @@ export async function withMcpLogin<T>(
     interaction: McpOAuthInteraction,
     signal: AbortSignal,
   ) => Promise<T>,
-  openBrowser: (url: string) => Promise<void> = openSystemBrowser,
+  openBrowser: (
+    url: string,
+    signal?: AbortSignal,
+  ) => Promise<void> = openSystemBrowser,
   signal: AbortSignal = AbortSignal.timeout(300_000),
 ): Promise<T> {
   const path = `/callback/${randomUUID()}`;
@@ -25,7 +29,13 @@ export async function withMcpLogin<T>(
   // Cancellation may precede authorize().
   void callback.catch(() => {});
   const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://127.0.0.1");
+    } catch {
+      response.writeHead(400).end("Invalid sign-in callback");
+      return;
+    }
     const state = url.searchParams.get("state");
     if (url.pathname !== path || !expectedState || state !== expectedState) {
       response.writeHead(400).end("Invalid sign-in callback");
@@ -49,10 +59,34 @@ export async function withMcpLogin<T>(
     return await operation(
       {
         redirectUrl: `http://127.0.0.1:${address.port}${path}`,
-        authorize: async (url) => {
+        authorize: async (url, authorizationSignal) => {
           expectedState = url.searchParams.get("state");
-          await openBrowser(url.href);
-          return callback;
+          let cancel = () => {};
+          const cancelled = new Promise<never>((_resolve, reject) => {
+            cancel = () =>
+              reject(
+                new Error("Sign-in cancelled or timed out; retry /mcp login"),
+              );
+            if (authorizationSignal.aborted) cancel();
+            else
+              authorizationSignal.addEventListener("abort", cancel, {
+                once: true,
+              });
+          });
+          try {
+            return await Promise.race([
+              openBrowser(url.href, authorizationSignal)
+                .catch(() => {
+                  throw new McpAuthorizationError(
+                    "Could not open the sign-in browser; check the system browser and retry /mcp login <server>",
+                  );
+                })
+                .then(() => callback),
+              cancelled,
+            ]);
+          } finally {
+            authorizationSignal.removeEventListener("abort", cancel);
+          }
         },
       },
       signal,

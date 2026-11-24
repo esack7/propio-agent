@@ -1,3 +1,4 @@
+import { McpAuthorizationError } from "../mcp/oauth.js";
 import { getMcpConfigPath } from "../mcp/config.js";
 import type {
   McpServerDetail,
@@ -214,17 +215,28 @@ async function handleMcpAuthorization(
     return;
   }
   try {
-    const action =
-      subcommand === "login" ? agent.loginMcpServer : agent.logoutMcpServer;
-    await action.call(agent, rest);
+    if (subcommand === "login") {
+      const summary = await agent.loginMcpServer(rest);
+      if (summary.status !== "connected") {
+        ui.error(
+          summary.lastError ??
+            "Sign-in saved, but connection failed; use /mcp reconnect <server>",
+        );
+        return;
+      }
+    } else await agent.logoutMcpServer(rest);
     ui.success(
       subcommand === "login"
         ? "MCP sign-in completed"
         : "MCP authorization cleared",
     );
-  } catch {
+  } catch (error) {
     ui.error(
-      "MCP authorization unavailable; retry /mcp login <server> in an interactive terminal",
+      error instanceof McpAuthorizationError
+        ? error.message
+        : subcommand === "logout"
+          ? "Could not clear MCP authorization; check private storage permissions and /mcp list"
+          : "MCP sign-in unavailable; check /mcp list and retry in an interactive terminal",
     );
   }
 }
@@ -253,7 +265,7 @@ export async function handleMcpCommand(
       `Unknown /mcp subcommand: "${subcommand}${rest ? ` ${rest}` : ""}"`,
     );
     ui.command(
-      "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server>]",
+      "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server> | login <server> | logout <server>]",
     );
   }
   ui.command("");
