@@ -1,5 +1,9 @@
 import { normalizeMcpNameSegment } from "./toolName.js";
-import type { McpConfigFile, McpServerConfigEntry } from "./types.js";
+import type {
+  McpConfigFile,
+  McpServerConfigEntry,
+  McpToolFilters,
+} from "./types.js";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,6 +67,7 @@ function validateMcpServerConfig(
   }
 
   validateUniqueMcpServerName(serverName, normalizedNames);
+  const tools = validateToolFilters(serverName, rawEntry.tools);
   if (rawEntry.transport === "streamable-http") {
     return validateHttpEntry(serverName, rawEntry);
   }
@@ -71,6 +76,7 @@ function validateMcpServerConfig(
 
   return {
     ...(rawEntry.transport === "stdio" ? { transport: "stdio" as const } : {}),
+    ...(tools ? { tools } : {}),
     command: rawEntry.command!.trim(),
     ...(rawEntry.args ? { args: [...rawEntry.args] } : {}),
     ...(rawEntry.env ? { env: { ...rawEntry.env } } : {}),
@@ -148,11 +154,11 @@ function validateHttpEntry(
 ): McpServerConfigEntry {
   const invalid = () =>
     new Error(
-      `MCP server "${serverName}" requires a credential-free HTTPS URL (HTTP is allowed on loopback) and no stdio fields or tool filters`,
+      `MCP server "${serverName}" requires a credential-free HTTPS URL (HTTP is allowed on loopback) and no stdio fields`,
     );
   if (
     Object.keys(entry).some(
-      (key) => !["transport", "url", "enabled"].includes(key),
+      (key) => !["transport", "url", "enabled", "tools"].includes(key),
     )
   )
     throw invalid();
@@ -169,6 +175,9 @@ function validateHttpEntry(
   return {
     transport: "streamable-http",
     url: url.href,
+    ...(entry.tools !== undefined
+      ? { tools: validateToolFilters(serverName, entry.tools) }
+      : {}),
     ...(entry.enabled !== undefined
       ? { enabled: entry.enabled as boolean }
       : {}),
@@ -186,4 +195,28 @@ function isLoopback(hostname: string): boolean {
     ["localhost", "[::1]"].includes(hostname) ||
     /^127\.\d+\.\d+\.\d+$/.test(hostname)
   );
+}
+
+function validateToolFilters(
+  serverName: string,
+  value: unknown,
+): McpToolFilters | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isPlainObject(value) ||
+    Object.keys(value).some((key) => !["allow", "deny"].includes(key)) ||
+    Object.values(value).some((list) => !isStringArray(list))
+  ) {
+    throw new Error(
+      `MCP server "${serverName}" field "tools" must contain only allow/deny arrays of non-empty strings`,
+    );
+  }
+  return {
+    ...(value.allow !== undefined
+      ? { allow: [...(value.allow as string[])] }
+      : {}),
+    ...(value.deny !== undefined
+      ? { deny: [...(value.deny as string[])] }
+      : {}),
+  };
 }

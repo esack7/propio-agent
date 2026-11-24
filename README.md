@@ -455,8 +455,13 @@ endpoints under the same alias retain their separate grants. To clear a historic
 endpoint, temporarily configure its original URL under that alias and run logout.
 Sandbox browser login and durable credential storage are unsupported; sign in from
 a native host session. Non-interactive startup
-never opens a browser and reports when sign-in is required. Tool filters are not supported yet. A `tools` field is rejected
-on HTTP entries. Legacy command entries continue to ignore that field. HTTP
+never opens a browser and reports when sign-in is required. Per-server `tools` filters apply to both transports: for example,
+`"tools": { "allow": ["search", "lookup"], "deny": ["lookup"] }` exposes only
+`search`. Names match exact remote names; an absent allow list admits all, an
+empty allow list admits none, and deny wins. Filtered tools cannot be invoked.
+Selection is independent of permissions: discoverable `mcp__docs__search` still
+asks for approval in the default mode. A permission rule `mcp__docs__search`
+allows that tool, while `mcp__docs` covers the selected server. HTTP
 redirects are rejected. Timed-out calls and transport failures have unknown
 completion and are never automatically replayed; reconnect explicitly. Protocol
 rejections preserve the connection. Closing a connection attempts a bounded,

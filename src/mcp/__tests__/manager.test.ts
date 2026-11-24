@@ -47,7 +47,7 @@ describe("McpManager", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("loads and connects legacy command entries with an ignored tools field", async () => {
+  it("loads legacy command entries and enforces an empty tool allow list", async () => {
     fs.writeFileSync(
       configPath,
       JSON.stringify({
@@ -64,10 +64,11 @@ describe("McpManager", () => {
     managers.push(manager);
     await manager.initialize();
     expect(manager.getServerSummaries()[0]?.status).toBe("connected");
+    expect(manager.listTools()).toEqual([]);
     const result = await manager.executeToolWithStatus("mcp__fake__echo", {
       message: "legacy",
     });
-    expect(result.content).toContain("echo:legacy");
+    expect(result.status).toBe("tool_not_found");
   });
 
   it("connects to a stdio server and exposes tools", async () => {
