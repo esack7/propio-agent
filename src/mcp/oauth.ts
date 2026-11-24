@@ -111,10 +111,14 @@ export class InMemoryMcpCredentialStore implements McpCredentialStore {
   }
 }
 export class McpLoginRequiredError extends Error {
-  constructor() {
-    super("MCP authorization required; sign in explicitly");
+  constructor(
+    message = "MCP authorization required; sign in explicitly with /mcp login <server>",
+  ) {
+    super(message);
   }
 }
+export class McpAuthorizationError extends McpLoginRequiredError {}
+
 function assertSecureOAuthUrl(url: URL): void {
   const loopback =
     ["localhost", "[::1]"].includes(url.hostname) ||
@@ -167,6 +171,8 @@ export class ScopedMcpOAuth {
     const value: {
       -readonly [K in keyof McpCredentialRecord]: McpCredentialRecord[K];
     } = structuredClone(record);
+    // Ephemeral callback ports require a matching registration on every explicit login.
+    if (interaction) value.client = undefined;
     const commit = async () => {
       if (interaction && signal?.aborted) throw new McpLoginRequiredError();
       const { revision, ...grant } = value;
@@ -181,9 +187,17 @@ export class ScopedMcpOAuth {
         interaction?.redirectUrl ??
         this.options.clientMetadata.redirect_uris?.[0] ??
         "http://127.0.0.1/unused",
-      clientMetadata: this.options.clientMetadata,
+      clientMetadata: interaction
+        ? {
+            ...this.options.clientMetadata,
+            redirect_uris: [interaction.redirectUrl],
+          }
+        : this.options.clientMetadata,
       state: () => state,
-      clientInformation: () => value.client,
+      clientInformation: () => {
+        if (!interaction && !value.client) throw new McpLoginRequiredError();
+        return value.client;
+      },
       saveClientInformation: (client) => {
         value.client = client;
       },
@@ -265,7 +279,7 @@ export class ScopedMcpOAuth {
         record.discovery.resourceMetadataUrl,
       );
     const provider = this.makeProvider(
-      { ...record, tokens: undefined },
+      { ...record, client: undefined, tokens: undefined },
       interaction,
       signal,
       challenge,

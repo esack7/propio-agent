@@ -1,3 +1,4 @@
+import { McpAuthorizationError } from "../mcp/oauth.js";
 import { getMcpConfigPath } from "../mcp/config.js";
 import type {
   McpServerDetail,
@@ -133,6 +134,8 @@ type McpAgent = Pick<
   | "listMcpTools"
   | "reconnectMcpServer"
   | "setMcpServerEnabled"
+  | "loginMcpServer"
+  | "logoutMcpServer"
 >;
 
 function handleMcpGet(rest: string, agent: McpAgent, ui: McpUi): void {
@@ -175,7 +178,11 @@ async function handleMcpReconnect(
       ui.success(`Reconnected ${summary.name}: ${formatSummary(summary)}.`);
     else ui.error(formatActionFailure("Reconnected", summary));
   } catch (error) {
-    ui.error(error instanceof Error ? error.message : String(error));
+    ui.error(
+      error instanceof McpAuthorizationError
+        ? error.message
+        : "MCP connection update failed; check private storage permissions and /mcp list",
+    );
   }
 }
 
@@ -197,7 +204,52 @@ async function handleMcpEnableDisable(
       ui.success(`${label} ${summary.name}: ${formatSummary(summary)}.`);
     else ui.error(formatActionFailure(label, summary));
   } catch (error) {
-    ui.error(error instanceof Error ? error.message : String(error));
+    ui.error(
+      error instanceof McpAuthorizationError
+        ? error.message
+        : "MCP connection update failed; check private storage permissions and /mcp list",
+    );
+  }
+}
+
+function renderLoginResult(summary: McpServerSummary, ui: McpUi): void {
+  if (summary.enabled === false && summary.status === "disabled") {
+    ui.success("MCP sign-in saved; use /mcp enable <server>");
+  } else if (summary.status !== "connected") {
+    ui.error(
+      summary.lastError ??
+        "Sign-in saved, but connection failed; use /mcp reconnect <server>",
+    );
+  } else {
+    ui.success("MCP sign-in completed");
+  }
+}
+
+async function handleMcpAuthorization(
+  subcommand: string,
+  rest: string,
+  agent: McpAgent,
+  ui: McpUi,
+): Promise<void> {
+  if (!rest) {
+    ui.error(`Usage: /mcp ${subcommand} <server>`);
+    return;
+  }
+  try {
+    if (subcommand === "login") {
+      renderLoginResult(await agent.loginMcpServer(rest), ui);
+    } else {
+      await agent.logoutMcpServer(rest);
+      ui.success("MCP authorization cleared");
+    }
+  } catch (error) {
+    ui.error(
+      error instanceof McpAuthorizationError
+        ? error.message
+        : subcommand === "logout"
+          ? "Could not clear MCP authorization; check private storage permissions and /mcp list"
+          : "MCP sign-in unavailable; check /mcp list and retry in an interactive terminal",
+    );
   }
 }
 
@@ -214,6 +266,8 @@ export async function handleMcpCommand(
     handleMcpGet(rest, agent, ui);
   } else if (subcommand === "tools") {
     handleMcpTools(rest, agent, ui);
+  } else if (subcommand === "login" || subcommand === "logout") {
+    await handleMcpAuthorization(subcommand, rest, agent, ui);
   } else if (subcommand === "reconnect") {
     await handleMcpReconnect(rest, agent, ui);
   } else if (subcommand === "enable" || subcommand === "disable") {
@@ -223,7 +277,7 @@ export async function handleMcpCommand(
       `Unknown /mcp subcommand: "${subcommand}${rest ? ` ${rest}` : ""}"`,
     );
     ui.command(
-      "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server>]",
+      "Usage: /mcp [list | get <server> | tools [server] | reconnect <server> | enable <server> | disable <server> | login <server> | logout <server>]",
     );
   }
   ui.command("");

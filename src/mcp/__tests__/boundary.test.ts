@@ -86,8 +86,8 @@ function fixture(mode = "normal", options: Partial<McpConnectionOptions> = {}) {
   return { manager, pidFile, readyFile, config };
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000;
+async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() >= deadline)
       throw new Error("Fixture did not reach expected state");
@@ -193,13 +193,16 @@ it("serializes concurrent persistence changes", async () => {
 it.each(["connect-hang", "list-hang"])(
   "kills a child that times out during %s",
   async (mode) => {
+    // Allow cold Node/SDK startup under full-suite load before testing cleanup.
+    const connectTimeoutMs = 5000;
     const { manager, pidFile, readyFile } = fixture(mode, {
-      connectTimeoutMs: 1000,
+      connectTimeoutMs,
       cleanupTimeoutMs: 100,
     });
     const starting = manager.initialize();
-    await waitFor(() =>
-      fs.existsSync(mode === "list-hang" ? readyFile : pidFile),
+    await waitFor(
+      () => fs.existsSync(mode === "list-hang" ? readyFile : pidFile),
+      connectTimeoutMs + 1000,
     );
     const pid = readPid(pidFile);
     await starting;
@@ -208,10 +211,11 @@ it.each(["connect-hang", "list-hang"])(
       toolCount: 0,
     });
     expect(manager.getServerSummaries()[0]?.lastError).toContain(
-      "Timed out after 1000ms",
+      `Timed out after ${connectTimeoutMs}ms`,
     );
     await waitFor(() => !isAlive(pid));
   },
+  15_000,
 );
 
 it.each(["collision"])(

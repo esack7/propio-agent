@@ -448,8 +448,14 @@ Command entries remain valid. Streamable HTTP entries can share the same file:
 
 Remote endpoints require HTTPS; HTTP is accepted on loopback for development.
 URL credentials, query strings and fragments are rejected. Endpoint diagnostics show only the origin.
-The public primitive supports injected owner-scoped OAuth; CLI login and durable
-credential storage are deferred. Tool filters are not supported yet. A `tools` field is rejected
+Use `/mcp login <server>` in an interactive terminal to open browser sign-in.
+Later sessions reuse and refresh the grant from private `~/.propio/mcp-auth` storage.
+`/mcp logout <server>` disconnects and clears the current endpoint grant; historical
+endpoints under the same alias retain their separate grants. To clear a historical
+endpoint, temporarily configure its original URL under that alias and run logout.
+Sandbox browser login and durable credential storage are unsupported; sign in from
+a native host session. Non-interactive startup
+never opens a browser and reports when sign-in is required. Tool filters are not supported yet. A `tools` field is rejected
 on HTTP entries. Legacy command entries continue to ignore that field. HTTP
 redirects are rejected. Timed-out calls and transport failures have unknown
 completion and are never automatically replayed; reconnect explicitly. Protocol
@@ -486,15 +492,17 @@ The common headless variant adds `--headless` to `args`:
 
 ### MCP commands
 
-| Command           | Description                                     |
-| ----------------- | ----------------------------------------------- |
-| `/mcp`            | Show MCP server status                          |
-| `/mcp list`       | List configured MCP servers                     |
-| `/mcp get <name>` | Show one MCP server, including discovered tools |
-| `/mcp tools`      | List discovered MCP tools                       |
-| `/mcp reconnect`  | Reconnect one MCP server                        |
-| `/mcp enable`     | Enable one MCP server                           |
-| `/mcp disable`    | Disable one MCP server                          |
+| Command              | Description                                     |
+| -------------------- | ----------------------------------------------- |
+| `/mcp`               | Show MCP server status                          |
+| `/mcp list`          | List configured MCP servers                     |
+| `/mcp get <name>`    | Show one MCP server, including discovered tools |
+| `/mcp tools`         | List discovered MCP tools                       |
+| `/mcp login <name>`  | Sign in to a protected HTTP server              |
+| `/mcp logout <name>` | Clear the configured endpoint authorization     |
+| `/mcp reconnect`     | Reconnect one MCP server                        |
+| `/mcp enable`        | Enable one MCP server                           |
+| `/mcp disable`       | Disable one MCP server                          |
 
 `/tools` continues to manage only built-in tools. MCP tools are discovered and shown through `/mcp`, but they are still exposed to the model as normal tools during a turn when the server is connected.
 
@@ -641,7 +649,7 @@ with a deny or ask rule that uses one, since that rule would match nothing.
 It is read through the link, and saving rewrites the file it points to and
 keeps the link. Sandbox mode copies in only its `permissions` object and `runtime.traceCaptureLevel`, and
 refuses to start if the link leads into a directory that holds credentials
-(`~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
+(`~/.propio/mcp-auth`, `~/.propio/auth/openai`, `~/.propio/poc`, or `~/.local/share/propio/openai-secrets`). A link that leads nowhere,
 or to something that is not a settings object, is an error natively and stops
 the sandbox before it starts.
 
@@ -1241,8 +1249,8 @@ must provide atomic revision checks and a shared per-grant authorization lock.
 `loginServer(name, interaction, signal)` explicitly starts SDK discovery,
 registration and PKCE. The injected interaction supplies a redirect URL and
 returns the code and state from its callback, honoring cancellation and owning
-callback cleanup. The manager validates state and bounds login by its connection
-deadline. Automatic connections never invoke interaction: missing or rejected
+callback cleanup. The manager validates state and bounds login with `loginTimeoutMs` (default
+300,000 ms), independently of the connection deadline. Automatic connections never invoke interaction: missing or rejected
 grants report that explicit sign-in is required. SDK refresh is serialized per
 grant, retains rotated refresh tokens, and revision checks reject late writes
 after `clearServerCredentials(name)`. Clearing also disconnects that manager's
@@ -1984,3 +1992,11 @@ CLI estimates are supplied. New consumers should export provider/model, purpose,
 request/attempt identities, timestamps, token/cache metrics and completeness, then
 apply their own historical prices outside this CLI. Cache-write duration is not
 measured and must not be inferred.
+
+MCP CLI login and logout require the optional `os-lock` native dependency for
+cross-process credential storage. If unavailable, reinstall with optional
+dependencies enabled and a native build toolchain before signing in. The CLI
+checks this requirement before opening the sign-in browser.
+
+MCP login and logout are refused in sandbox mode: run `/mcp login <server>` or
+`/mcp logout <server>` on the host to update the durable host grant.

@@ -1,6 +1,7 @@
 import {
   ScopedMcpOAuth,
   McpLoginRequiredError,
+  McpAuthorizationError,
   type McpOAuthInteraction,
 } from "./oauth.js";
 import { closeClientBestEffort } from "./cleanup.js";
@@ -44,7 +45,11 @@ function toErrorMessage(error: unknown): string {
 }
 
 function connectionError(config: McpServerConfigEntry, error: unknown): string {
-  if (error instanceof McpLoginRequiredError) return error.message;
+  if (
+    error instanceof McpLoginRequiredError ||
+    error instanceof McpAuthorizationError
+  )
+    return error.message;
   if (config.transport !== "streamable-http") return toErrorMessage(error);
   if (
     error instanceof McpError &&
@@ -467,13 +472,12 @@ export class McpConnectionManager {
   }
 
   private async connectServer(name: string): Promise<void> {
-    if (this.clearingCredentials.has(name)) return;
+    await this.clearingCredentials.get(name);
     const runtime = this.getRuntime(name);
     const config = this.getServerConfig(name);
 
     runtime.config = config;
     runtime.enabled = isMcpServerEnabled(config);
-
     const connectionId = ++runtime.connectionId;
     await this.disposeRuntimeConnection(runtime);
     if (runtime.connectionId !== connectionId || this.closed) return;
@@ -810,7 +814,6 @@ export class McpConnectionManager {
     this.assertOpen();
     this.getServerConfig(name);
     const runtime = this.getRuntime(name);
-    runtime.lastError = undefined;
     await this.connectServer(name);
     return this.getServerSummaries().find((summary) => summary.name === name)!;
   }
@@ -825,31 +828,28 @@ export class McpConnectionManager {
     const config = this.getServerConfig(name);
     if (!this.oauth || config.transport !== "streamable-http")
       throw new Error("MCP OAuth is not configured for this server");
-    const controller = new AbortController();
-    const signals = [
+    const boundedSignal = AbortSignal.any([
       signal,
       this.oauthAbort.signal,
       AbortSignal.timeout(this.loginTimeoutMs),
-    ];
-    const abort = () => controller.abort();
-    for (const source of signals) {
-      if (source.aborted) abort();
-      else source.addEventListener("abort", abort, { once: true });
-    }
-    const boundedSignal = controller.signal;
+    ]);
     try {
       await this.createOAuth(name, config)!.login(interaction, boundedSignal);
       if (boundedSignal.aborted) throw new McpLoginRequiredError();
       return await this.reconnectServer(name);
-    } catch {
-      throw new McpLoginRequiredError();
-    } finally {
-      for (const source of signals) source.removeEventListener("abort", abort);
+    } catch (error) {
+      if (boundedSignal.aborted)
+        throw new McpAuthorizationError(
+          "Sign-in cancelled or timed out; retry /mcp login <server>",
+        );
+      if (error instanceof McpAuthorizationError) throw error;
+      throw new McpAuthorizationError(
+        "MCP authorization required; sign in explicitly with /mcp login <server> (sign-in failed or was rejected)",
+      );
     }
   }
 
   // Public embedding API, exercised by the scoped OAuth acceptance suite.
-  // fallow-ignore-next-line unused-class-member
   clearServerCredentials(name: string): Promise<void> {
     const existing = this.clearingCredentials.get(name);
     if (existing) return existing;

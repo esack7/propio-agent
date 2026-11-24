@@ -1,3 +1,4 @@
+import { isMcpLoginActive } from "../mcp/manager.js";
 import type { TerminalUi } from "./terminal.js";
 import type { PromptComposer } from "./promptComposer.js";
 
@@ -55,6 +56,7 @@ export function createAbortStateController(
       return true;
     },
     handleSigint: () => {
+      if (isMcpLoginActive()) return;
       shouldExit = true;
       ui.setMode("error");
       activeComposer?.close();

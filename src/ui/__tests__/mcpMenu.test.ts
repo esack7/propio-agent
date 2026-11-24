@@ -113,3 +113,63 @@ function createUi(messages: string[]) {
     success: (text: string) => messages.push(text),
   };
 }
+
+test.each([undefined, false, true])(
+  "login renders reconnect failure with enabled=%s rather than success",
+  async (enabled) => {
+    const messages: string[] = [];
+    await handleMcpCommand(
+      "/mcp login docs",
+      {
+        loginMcpServer: async () => ({
+          enabled,
+          status: "failed",
+          lastError: "Connection failed; reconnect explicitly",
+        }),
+      } as never,
+      createUi(messages),
+    );
+    expect(messages.join("\n")).toContain("Connection failed");
+    expect(messages.join("\n")).not.toContain("sign-in completed");
+  },
+);
+
+test("login explains how to enable a disabled server", async () => {
+  const messages: string[] = [];
+  await handleMcpCommand(
+    "/mcp login docs",
+    {
+      loginMcpServer: async () => ({ enabled: false, status: "disabled" }),
+    } as never,
+    createUi(messages),
+  );
+  expect(messages.join("\n")).toContain("sign-in saved; use /mcp enable");
+});
+
+test.each(["login", "logout", "reconnect", "enable"])(
+  "%s hides untrusted exceptions",
+  async (command) => {
+    const messages: string[] = [];
+    const fail = async () => {
+      throw new Error("synthetic-secret");
+    };
+    await handleMcpCommand(
+      `/mcp ${command} docs`,
+      {
+        loginMcpServer: fail,
+        logoutMcpServer: fail,
+        reconnectMcpServer: fail,
+        setMcpServerEnabled: fail,
+      } as never,
+      createUi(messages),
+    );
+    expect(messages.join("\n")).not.toContain("synthetic-secret");
+    expect(messages.join("\n")).toContain(
+      command === "logout"
+        ? "Could not clear"
+        : command === "login"
+          ? "sign-in unavailable"
+          : "check private storage permissions",
+    );
+  },
+);
