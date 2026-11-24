@@ -8,18 +8,26 @@ import { validateMcpConfig } from "../validation.js";
 it("lists and calls mixed transports, persists toggles, and never replays a timed-out call", async () => {
   let calls = 0;
   let hang = false;
-  const remote = new McpServer({ name: "remote", version: "1" });
-  remote.registerTool("echo", {}, async () => {
-    calls++;
-    if (hang) await new Promise<void>(() => {});
-    return { content: [{ type: "text", text: "http" }] };
-  });
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-  });
-  await remote.connect(transport);
+  const active = new Set<McpServer>();
   const server = createServer((request, response) => {
-    void transport.handleRequest(request, response);
+    // SDK stateless transports serve one request; reconnects need fresh servers too.
+    const remote = new McpServer({ name: "remote", version: "1" });
+    remote.registerTool("echo", {}, async () => {
+      calls++;
+      if (hang) await new Promise<void>(() => {});
+      return { content: [{ type: "text", text: "http" }] };
+    });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
+    active.add(remote);
+    response.once("close", () => {
+      active.delete(remote);
+      void remote.close();
+    });
+    void remote
+      .connect(transport)
+      .then(() => transport.handleRequest(request, response));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -82,7 +90,7 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     expect(calls).toBe(3);
   } finally {
     await manager.close();
-    await remote.close();
+    await Promise.all([...active].map((remote) => remote.close()));
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

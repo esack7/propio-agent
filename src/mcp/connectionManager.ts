@@ -561,6 +561,7 @@ export class McpConnectionManager {
       };
     }
 
+    const connectionId = runtime.connectionId;
     const startedAt = performance.now();
     try {
       const result = await runtime.client.callTool(
@@ -581,7 +582,10 @@ export class McpConnectionManager {
       );
     } catch (error) {
       const failure = classifyMcpCallError(error);
-      if (runtime.config.transport === "streamable-http") {
+      if (
+        runtime.config.transport === "streamable-http" &&
+        runtime.connectionId === connectionId
+      ) {
         runtime.connectionId++;
         runtime.status = "failed";
         runtime.lastError = connectionError(runtime.config, error);
