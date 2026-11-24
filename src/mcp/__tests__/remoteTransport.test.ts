@@ -88,7 +88,7 @@ it("lists and calls mixed transports, persists toggles, and never replays a time
     mcpServers: {
       remote: {
         transport: "streamable-http" as const,
-        url: `http://127.0.0.1:${address.port}/mcp?secret=marker`,
+        url: `http://127.0.0.1:${address.port}/mcp`,
       },
       legacy: {
         command: process.execPath,
@@ -223,6 +223,7 @@ it.each([
   { transport: "streamable-http", url: "http://example.com/mcp" },
   { transport: "streamable-http", url: "https://example.com", command: "node" },
   { transport: "streamable-http", url: "https://example.com", headers: {} },
+  { transport: "streamable-http", url: "https://example.com/mcp?token=marker" },
   { transport: "sse", url: "https://example.com" },
   {
     transport: "streamable-http",

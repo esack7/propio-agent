@@ -83,6 +83,7 @@ export interface McpToolResult {
 }
 
 export interface McpConnectionOptions {
+  oauth?: import("./oauth.js").McpOAuthOptions;
   config: McpConfigFile;
   clientIdentity: { name: string; version: string };
   /** Total connection and discovery deadline; default 10 seconds. */

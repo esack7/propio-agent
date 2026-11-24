@@ -5,6 +5,8 @@ export type {
   McpConnectionOptions,
   McpConfigFile,
   McpServerConfigEntry,
+  McpHttpConfigEntry,
+  McpStdioConfigEntry,
   McpServerStatus,
   McpServerSummary,
   McpServerDetail,
@@ -13,3 +15,12 @@ export type {
   McpToolResult,
   McpCallOutcome,
 } from "./types.js";
+
+export { InMemoryMcpCredentialStore } from "./oauth.js";
+export type {
+  McpCredentialKey,
+  McpCredentialRecord,
+  McpCredentialStore,
+  McpOAuthInteraction,
+  McpOAuthOptions,
+} from "./oauth.js";

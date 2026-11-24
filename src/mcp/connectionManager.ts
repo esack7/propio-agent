@@ -1,3 +1,8 @@
+import {
+  ScopedMcpOAuth,
+  McpLoginRequiredError,
+  type McpOAuthInteraction,
+} from "./oauth.js";
 import { closeClientBestEffort } from "./cleanup.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -39,6 +44,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 function connectionError(config: McpServerConfigEntry, error: unknown): string {
+  if (error instanceof McpLoginRequiredError) return error.message;
   if (config.transport !== "streamable-http") return toErrorMessage(error);
   if (
     error instanceof McpError &&
@@ -206,6 +212,7 @@ function positiveTimeout(value: number | undefined, fallback: number): number {
 }
 
 export class McpConnectionManager {
+  private readonly oauth?: McpConnectionOptions["oauth"];
   private config: McpConfigFile;
   private readonly runtimes = new Map<string, McpServerRuntime>();
   private readonly clientIdentity: { name: string; version: string };
@@ -219,11 +226,18 @@ export class McpConnectionManager {
   });
   private startupPromise: Promise<void> | null = null;
   private closed = false;
+  private readonly oauthAbort = new AbortController();
   private shutdownPromise: Promise<void> | null = null;
   private mutation: Promise<unknown> = Promise.resolve();
 
   constructor(options: McpConnectionOptions) {
     this.config = validateMcpConfig(options.config);
+    if (options.oauth && !options.oauth.owner.trim())
+      throw new Error("MCP OAuth requires an owner");
+    this.oauth = options.oauth && {
+      ...options.oauth,
+      clientMetadata: structuredClone(options.oauth.clientMetadata),
+    };
     if (
       !options.clientIdentity.name.trim() ||
       !options.clientIdentity.version.trim()
@@ -260,6 +274,7 @@ export class McpConnectionManager {
 
   close(): Promise<void> {
     this.closed = true;
+    this.oauthAbort.abort();
     this.shutdownPromise ??= Promise.all(
       Array.from(this.runtimes.values()).map(async (runtime) => {
         runtime.enabled = false;
@@ -364,16 +379,27 @@ export class McpConnectionManager {
     });
   }
 
+  private createOAuth(
+    name: string,
+    config: McpServerConfigEntry,
+  ): ScopedMcpOAuth | undefined {
+    if (!this.oauth || config.transport !== "streamable-http") return undefined;
+    return new ScopedMcpOAuth(this.oauth, name, config.url);
+  }
+
   private createConnection(
     runtime: McpServerRuntime,
     config: McpServerConfigEntry,
     connectionId: number,
   ): { client: Client; transport: Transport } {
+    const oauth = this.createOAuth(runtime.name, config);
     const transport =
       config.transport === "streamable-http"
         ? new StreamableHTTPClientTransport(new URL(config.url), {
-            fetch: (input, init) =>
-              fetch(input, { ...init, redirect: "error" }),
+            authProvider: oauth?.provider,
+            fetch:
+              oauth?.fetch ??
+              ((input, init) => fetch(input, { ...init, redirect: "error" })),
             reconnectionOptions: {
               maxRetries: 0,
               initialReconnectionDelay: 1000,
@@ -776,6 +802,55 @@ export class McpConnectionManager {
     runtime.lastError = undefined;
     await this.connectServer(name);
     return this.getServerSummaries().find((summary) => summary.name === name)!;
+  }
+
+  // Public embedding API; CLI interaction is supplied in the cli-login slice.
+  // fallow-ignore-next-line unused-class-member
+  async loginServer(
+    name: string,
+    interaction: McpOAuthInteraction,
+    signal: AbortSignal,
+  ): Promise<McpServerSummary> {
+    this.assertOpen();
+    const config = this.getServerConfig(name);
+    if (!this.oauth || config.transport !== "streamable-http")
+      throw new Error("MCP OAuth is not configured for this server");
+    const boundedSignal = AbortSignal.any([
+      signal,
+      this.oauthAbort.signal,
+      AbortSignal.timeout(this.connectTimeoutMs),
+    ]);
+    try {
+      await new ScopedMcpOAuth(this.oauth, name, config.url).login(
+        interaction,
+        boundedSignal,
+      );
+      if (boundedSignal.aborted) throw new McpLoginRequiredError();
+      return await this.reconnectServer(name);
+    } catch {
+      throw new McpLoginRequiredError();
+    }
+  }
+
+  // Public embedding API, exercised by the scoped OAuth acceptance suite.
+  // fallow-ignore-next-line unused-class-member
+  async clearServerCredentials(name: string): Promise<void> {
+    this.assertOpen();
+    const config = this.getServerConfig(name);
+    if (!this.oauth || config.transport !== "streamable-http")
+      throw new Error("MCP OAuth is not configured for this server");
+    await this.oauth.store.clear({
+      owner: this.oauth.owner,
+      serverName: name,
+      resource: config.url,
+    });
+    const runtime = this.getRuntime(name);
+    runtime.connectionId++;
+    runtime.status = "failed";
+    runtime.lastError = new McpLoginRequiredError().message;
+    runtime.tools = [];
+    runtime.remoteTools = [];
+    await this.disposeRuntimeConnection(runtime);
   }
 
   setServerEnabled(name: string, enabled: boolean): Promise<McpServerSummary> {
