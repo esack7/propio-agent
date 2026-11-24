@@ -4,6 +4,14 @@ import { openSystemBrowser } from "../auth/openai/browser.js";
 import { McpAuthorizationError } from "./oauth.js";
 import type { McpOAuthInteraction } from "./oauth.js";
 
+function parseCallbackUrl(value: string | undefined): URL | undefined {
+  try {
+    return new URL(value ?? "/", "http://127.0.0.1");
+  } catch {
+    return undefined;
+  }
+}
+
 /** Listener lifetime includes discovery and exchange, even if the browser never returns. */
 export async function withMcpLogin<T>(
   operation: (
@@ -29,10 +37,8 @@ export async function withMcpLogin<T>(
   // Cancellation may precede authorize().
   void callback.catch(() => {});
   const server = createServer((request, response) => {
-    let url: URL;
-    try {
-      url = new URL(request.url ?? "/", "http://127.0.0.1");
-    } catch {
+    const url = parseCallbackUrl(request.url);
+    if (!url) {
       response.writeHead(400).end("Invalid sign-in callback");
       return;
     }
@@ -42,12 +48,13 @@ export async function withMcpLogin<T>(
       return;
     }
     const code = url.searchParams.get("code");
+    const accepted = code && !url.searchParams.has("error");
     response.end(
-      code && !url.searchParams.has("error")
+      accepted
         ? "Sign-in received. Return to Propio."
         : "Sign-in rejected. Return to Propio to retry /mcp login.",
     );
-    if (code && !url.searchParams.has("error")) complete!({ code, state });
+    if (accepted) complete!({ code, state });
     else fail!(new Error("Sign-in rejected; retry /mcp login"));
   });
   const abort = () =>
