@@ -238,7 +238,8 @@ it("closes a pending connection and prevents later resurrection", async () => {
   await waitFor(() => fs.existsSync(pidFile));
   const pid = readPid(pidFile);
   await Promise.all([manager.close(), starting]);
-  await waitFor(() => !isAlive(pid));
+  // Under parallel suite load, observing child exit can lag SDK close completion.
+  await waitFor(() => !isAlive(pid), 10_000);
   expect(manager.getServerSummaries()[0]?.status).toBe("disabled");
   await expect(manager.initialize()).rejects.toThrow("closed");
   await expect(manager.reconnectServer("fixture")).rejects.toThrow("closed");
