@@ -765,7 +765,10 @@ export class Agent {
       this.importSession(json);
       return;
     }
-    const { incoming, content } = this.normalizeSavedSessionIdentity(saved, json);
+    const { incoming, content } = this.normalizeSavedSessionIdentity(
+      saved,
+      json,
+    );
     json = content;
     if (incoming === this.sessionId) {
       this.importSession(json);
