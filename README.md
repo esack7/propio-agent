@@ -2005,3 +2005,57 @@ checks this requirement before opening the sign-in browser.
 
 MCP login and logout are refused in sandbox mode: run `/mcp login <server>` or
 `/mcp logout <server>` on the host to update the durable host grant.
+
+### Reusable session stores (provisional)
+
+`@propio-ai/agent/sessions` exports `SessionStore` and its snapshot, protocol-log,
+trace and scoped-handle contracts, plus `InMemorySessionStore` and
+`FileSessionStore`. Imports perform no discovery or I/O. Hosts choose opaque
+owner and workspace strings and a validated logical session ID:
+
+```typescript
+import { InMemorySessionStore } from "@propio-ai/agent/sessions";
+
+const store = new InMemorySessionStore();
+const handle = store.open({
+  owner: "application-user",
+  workspace: "project-identity",
+  sessionId: "conversation-1",
+});
+handle.snapshots.save({
+  content: encodedConversation,
+  savedAt: new Date().toISOString(),
+});
+// Supply handle.events as AgentSession's eventLog.
+// Supply handle.traces as a RunTraceRecorder sink.
+const records = handle.events.after(0);
+```
+
+Snapshot content is an opaque string encoded by the host. The CLI application
+codec can be used without changing its existing formats. `list({owner,
+workspace})` returns sessions with persisted data; opening an empty handle does
+not create a session. `latest` selects only snapshots by saved timestamp, newest
+first, breaking ties by ascending session ID. Returned snapshots and trace reads
+are detached. Protocol records are validated and immutable; appends must be
+contiguous after the first record, which may start above one for legacy history.
+Cursors are nonnegative safe integers and reads return records strictly after
+the cursor. The last sequence survives reopening the file adapter.
+
+`new FileSessionStore(absoluteRoot)` stores data beneath
+`<root>/<sha256(owner)>/<sha256(workspace)>/<sessionId>/`, using atomic
+`snapshot.json` replacement, append-only `events.jsonl`, and existing trace
+JSONL envelopes in `traces/<runId>.jsonl`. Newly created directories and files use
+private modes. Linked store directories and files are refused; the host owns
+and trusts the root's ancestors. Both adapters apply standard trace redaction,
+retain per-run ordering, and reject traces for another session. Trace material
+capture is not provided. Owner scoping prevents accidental cross-owner access;
+it is not authorization for callers that can choose another owner's identity.
+
+These are synchronous, sequential-writer contracts. Hosts own serialization
+across handles, instances and processes. This slice does not wire the CLI to
+these adapters, migrate its existing workspace files, acquire writer locks, or
+recover torn appends. Existing CLI storage and trace readers retain their current
+behavior. Session persistence does not depend on enabling trace capture. Run
+`npm run example:session-stores` after building for a credential-free
+public consumer using both adapters. The shared behavioral suite is
+`src/sessions/__tests__/sessionStoreContract.test.ts`.

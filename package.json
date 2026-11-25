@@ -38,6 +38,10 @@
     "./auth": {
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
+    },
+    "./sessions": {
+      "types": "./dist/sessions/index.d.ts",
+      "import": "./dist/sessions/index.js"
     }
   },
   "bin": {
@@ -89,7 +93,8 @@
     "docs/session-protocol.md",
     "examples/policy-consumer.mjs",
     "benchmarks/traceCapture.mjs",
-    "docs/openai-subscription.md"
+    "docs/openai-subscription.md",
+    "examples/session-stores-consumer.mjs"
   ],
   "engines": {
     "node": ">=20"
@@ -115,6 +120,7 @@
     "example:tools": "node examples/tools-consumer.mjs",
     "example:agent-core": "node examples/agent-core-consumer.mjs",
     "example:session-protocol": "node examples/session-protocol-consumer.mjs",
+    "example:session-stores": "node examples/session-stores-consumer.mjs",
     "example:policy": "node examples/policy-consumer.mjs",
     "benchmark:trace": "npm run build && node benchmarks/traceCapture.mjs",
     "sandbox:host": "node dist/auth/openai/sandboxHost.js",
