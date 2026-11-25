@@ -193,8 +193,10 @@ it("serializes concurrent persistence changes", async () => {
 it.each(["connect-hang", "list-hang"])(
   "kills a child that times out during %s",
   async (mode) => {
-    // Allow cold Node/SDK startup under full-suite load before testing cleanup.
-    const connectTimeoutMs = 5000;
+    // The deadline includes spawning Node: full-suite workers can delay even
+    // the PID marker on a cold machine. Leave room for that startup before
+    // asserting deadline handling and forced cleanup of the hung child.
+    const connectTimeoutMs = 15_000;
     const { manager, pidFile, readyFile } = fixture(mode, {
       connectTimeoutMs,
       cleanupTimeoutMs: 100,
@@ -215,7 +217,7 @@ it.each(["connect-hang", "list-hang"])(
     );
     await waitFor(() => !isAlive(pid));
   },
-  15_000,
+  30_000,
 );
 
 it.each(["collision"])(
