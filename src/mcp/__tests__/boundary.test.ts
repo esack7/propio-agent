@@ -428,16 +428,19 @@ it.each([0, -1, NaN, Infinity, 2 ** 31])(
 
 it("disables a pending connection and cleans up its child", async () => {
   const { manager, pidFile } = fixture("connect-hang", {
+    connectTimeoutMs: 15_000,
     cleanupTimeoutMs: 100,
   });
   const starting = manager.initialize();
-  await waitFor(() => fs.existsSync(pidFile));
+  await waitFor(() => fs.existsSync(pidFile), 10_000);
   const pid = readPid(pidFile);
   await manager.setServerEnabled("fixture", false);
   await starting;
-  await waitFor(() => !isAlive(pid));
+  // Under full-suite load the OS may take longer to report child termination.
+  // Keep the short runtime cleanup deadline; only widen fixture observation.
+  await waitFor(() => !isAlive(pid), 10_000);
   expect(manager.getServerSummaries()[0]?.status).toBe("disabled");
-});
+}, 25_000);
 
 it("shares shutdown work across concurrent closes", async () => {
   const { manager, pidFile } = fixture("connect-hang", {
