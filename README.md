@@ -86,6 +86,10 @@ rm -rf .propio  # optional cleanup
 
 ### Native mode
 
+CLI session persistence requires the optional native `os-lock` dependency. If it
+is unavailable, startup refuses to write sessions and reports how to reinstall
+with optional dependencies and a native build toolchain.
+
 Runs with full filesystem access — recommended for development on trusted codebases.
 
 ```bash

@@ -320,6 +320,19 @@ describe("sessionHistory", () => {
   // =================================================================
 
   describe("writeSnapshot", () => {
+    it("does not reuse an orphaned snapshot temporary path", () => {
+      const dir = freshDir();
+      const first = writeSnapshot(dir, minimalSessionJson());
+      const orphan = path.join(dir, `${first.snapshotFile}.tmp`);
+      fs.writeFileSync(orphan, "interrupted snapshot");
+      const next = writeSnapshot(dir, minimalSessionJson());
+      expect(fs.existsSync(path.join(dir, next.snapshotFile))).toBe(true);
+      expect(fs.readFileSync(orphan, "utf8")).toBe("interrupted snapshot");
+      expect(
+        fs.readdirSync(dir).filter((file) => file.endsWith(".tmp")),
+      ).toEqual([path.basename(orphan)]);
+    });
+
     function expectSnapshotAccepted(
       dir: string,
       json: string,

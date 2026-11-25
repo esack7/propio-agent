@@ -185,17 +185,25 @@ export function writeSnapshot(
 
   const snapshotFile = generateSnapshotFileName();
   const snapshotPath = path.join(sessionsDir, snapshotFile);
-  const tempPath = `${snapshotPath}.tmp`;
+  const tempPath = `${snapshotPath}.${crypto.randomUUID()}.tmp`;
 
   // Atomic write: temp file + rename
   const fd = fs.openSync(tempPath, "wx", 0o600);
   try {
     fs.writeFileSync(fd, sessionJson, "utf8");
     fs.fsyncSync(fd);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
   } finally {
     fs.closeSync(fd);
   }
-  fs.renameSync(tempPath, snapshotPath);
+  try {
+    fs.renameSync(tempPath, snapshotPath);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
   syncDirectory(sessionsDir);
 
   const entry: SessionIndexEntry = toSessionIndexEntry(

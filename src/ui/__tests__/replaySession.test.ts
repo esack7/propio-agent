@@ -1,3 +1,7 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { DurableEventLog } from "../../sessions/durableEventLog.js";
 import {
   AgentSession,
   parseProtocolEvent,
@@ -77,8 +81,14 @@ it.each([true, false])(
     const settings = { ...visibility, showToolCalls };
     let session: AgentSession<unknown>;
     let executions = 0;
+    let modelRequests = 0;
+    let approvalPrompts = 0;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "replay-durable-"));
+    const filename = path.join(directory, "events.jsonl");
+    const eventLog = new DurableEventLog(filename);
     const agent: AssistantTurnAgent = {
       streamChat: async (_submission, onToken, options) => {
+        modelRequests++;
         const emit = (event: AgentVisibilityEvent) => options?.onEvent?.(event);
         const call = async (
           id: string,
@@ -183,7 +193,7 @@ it.each([true, false])(
         throw new Error("not requested");
       },
     };
-    const turns = createCliTurnSession(agent, live.ui, settings);
+    const turns = createCliTurnSession(agent, live.ui, settings, { eventLog });
     session = turns.session as AgentSession<unknown>;
     const log: ProtocolEvent[] = [];
     const approvals =
@@ -202,13 +212,17 @@ it.each([true, false])(
       approvals(live.ui)(event);
     });
     answerApprovalsThrough(turns.session, {
-      request: async (request) => ({
-        requestId: request.id,
-        decision: request.id === "deny" ? "deny" : "allow_once",
-      }),
+      request: async (request) => {
+        approvalPrompts++;
+        return {
+          requestId: request.id,
+          decision: request.id === "deny" ? "deny" : "allow_once",
+        };
+      },
     });
     await turns.runTurn({ text: "Do the work" }, new AbortController().signal);
-    expect(executions).toBe(6);
+    await turns.runTurn({ text: "Continue" }, new AbortController().signal);
+    expect(executions).toBe(12);
     expect(log.map((event) => event.seq)).toEqual(
       log.map((_, index) => index + 1),
     );
@@ -219,8 +233,10 @@ it.each([true, false])(
         .map(
           ({ event }) => event.type === "approval_resolved" && event.resolution,
         ),
-    ).toEqual(["allow_once", "deny"]);
-    const decoded = JSON.parse(JSON.stringify(log));
+    ).toEqual(["allow_once", "deny", "allow_once", "deny"]);
+    const reopened = new DurableEventLog(filename);
+    const decoded = JSON.parse(JSON.stringify(reopened.after(0)));
+    expect(reopened.after(log[0].seq)).toEqual(log.slice(1));
     for (const event of decoded)
       expect(parseProtocolEvent(event)).toEqual(event);
     const replay = terminal();
@@ -231,7 +247,10 @@ it.each([true, false])(
     expect(replay.text()).toBe(live.text());
     expect(replay.text()).toContain("Use staging.");
     expect(replay.text()).toContain("needs approval");
-    expect(executions).toBe(6);
+    expect(executions).toBe(12);
+    expect(modelRequests).toBe(2);
+    expect(approvalPrompts).toBe(4);
+    fs.rmSync(directory, { recursive: true, force: true });
   },
 );
 

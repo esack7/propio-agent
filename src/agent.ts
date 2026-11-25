@@ -512,6 +512,13 @@ export class Agent {
   private readonly toolPermissions: ToolPermissions;
   private sessionsDir: string | null = null;
   private readonly configuredSessionsDir?: string;
+  private protocolStartTurnIndex = 0;
+
+  getReplayCoverageWarning(): string | undefined {
+    return this.protocolStartTurnIndex > 0
+      ? `Replay coverage: this session predates numbered protocol recording; the first ${this.protocolStartTurnIndex} snapshot turns have no numbered replay.`
+      : undefined;
+  }
   private turnScratchpadDir: string | undefined;
   private pendingToolResultBytes = 0;
   private modeState: AgentModeState = { mode: "execute" };
@@ -771,6 +778,13 @@ export class Agent {
     );
     json = content;
     if (incoming === this.sessionId) {
+      if (
+        (saved.metadata.protocolSequence ?? 0) >
+        (this.durableEvents?.lastSequence ?? 0)
+      )
+        throw new Error(
+          `Session ${incoming} checkpoint exceeds its durable protocol log`,
+        );
       this.importSession(json);
       return;
     }
@@ -794,13 +808,18 @@ export class Agent {
   }
 
   async initialize(): Promise<void> {
-    if (this.configuredSessionsDir) {
-      this.releaseSessionWriter = await this.openSessionWriter(this.sessionId);
-      this.durableEvents = new DurableEventLog(
-        path.join(this.configuredSessionsDir, `events-${this.sessionId}.jsonl`),
-      );
-    }
     try {
+      if (this.configuredSessionsDir) {
+        this.releaseSessionWriter = await this.openSessionWriter(
+          this.sessionId,
+        );
+        this.durableEvents = new DurableEventLog(
+          path.join(
+            this.configuredSessionsDir,
+            `events-${this.sessionId}.jsonl`,
+          ),
+        );
+      }
       await this.mcpManager.initialize();
     } catch (error) {
       await this.releaseSessionWriter?.();
@@ -3061,6 +3080,7 @@ export class Agent {
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
       protocolSequence: this.durableEvents?.lastSequence,
+      protocolStartTurnIndex: this.protocolStartTurnIndex,
       latestForegroundRunId: this.latestForegroundRunId,
       lastTraceRunId:
         this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
@@ -3211,6 +3231,11 @@ export class Agent {
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
     this.latestForegroundRunId = persisted.metadata.latestForegroundRunId;
 
+    this.protocolStartTurnIndex =
+      persisted.metadata.protocolStartTurnIndex ??
+      (persisted.metadata.protocolSequence === undefined
+        ? state.turns.length
+        : 0);
     this.contextManager.importState(state);
     this.recoveryCheckpointRequested =
       persisted.metadata.recoveryCheckpoint === true;

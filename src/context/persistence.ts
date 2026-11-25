@@ -40,6 +40,8 @@ export interface SessionMetadata {
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
   readonly protocolSequence?: number;
+  /** Snapshot turns that precede numbered protocol recording. */
+  readonly protocolStartTurnIndex?: number;
   readonly lastTraceRunId?: string;
   readonly latestForegroundRunId?: string;
   /** A tool-boundary checkpoint from an interrupted run. */
@@ -281,6 +283,12 @@ function validatePlanDraftMetadata(meta: Record<string, unknown>): void {
 }
 
 function validateProtocolSequence(meta: Record<string, unknown>): void {
+  if (
+    meta.protocolStartTurnIndex !== undefined &&
+    (!Number.isSafeInteger(meta.protocolStartTurnIndex) ||
+      (meta.protocolStartTurnIndex as number) < 0)
+  )
+    throw new SessionParseError("Invalid protocol recording start turn.");
   if (
     meta.protocolSequence !== undefined &&
     (!Number.isSafeInteger(meta.protocolSequence) ||

@@ -3,6 +3,8 @@ import { mkdir, open, realpath } from "node:fs/promises";
 import * as path from "node:path";
 import { isSafeSessionId } from "./sessionId.js";
 
+import { FileLockUnavailableError } from "../config/fileLock.js";
+
 const held = new Set<string>();
 
 /** OS-owned lock: the permanent lock file is never unlinked. */
@@ -12,7 +14,9 @@ export async function acquireSessionWriter(
 ): Promise<() => Promise<void>> {
   if (!isSafeSessionId(sessionId))
     throw new Error("Invalid session writer identity");
-  const { lock, unlock } = await import("os-lock");
+  const { lock, unlock } = await import("os-lock").catch(() => {
+    throw new FileLockUnavailableError();
+  });
   const lockDirectory = path.join(directory, "writers");
   await mkdir(lockDirectory, { recursive: true, mode: 0o700 });
   const canonicalDirectory = await realpath(directory);

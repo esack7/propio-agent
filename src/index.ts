@@ -1477,6 +1477,7 @@ async function createInitializedAgent(
     readOnlyReason: settingsLocation.readOnlyReason,
   });
   const agent = new agentModule.Agent({
+    sessionsDir,
     providersConfig,
     providerRuntimeOptions,
     mcpConfig,

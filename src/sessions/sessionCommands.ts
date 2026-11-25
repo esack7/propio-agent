@@ -28,6 +28,7 @@ export interface SessionCommandIO {
 export interface SessionAgent {
   getConversationState(): ConversationState;
   getRuntimeSessionId?(): string;
+  getReplayCoverageWarning?(): string | undefined;
   exportSession(): string;
   importSession(json: string): void;
   importSessionWithWriter?(json: string): Promise<void>;
@@ -136,7 +137,10 @@ async function confirmSessionReplacement(
 }
 
 function replayLoadedSession(agent: SessionAgent, io: SessionCommandIO): void {
+  const legacyWarning = agent.getReplayCoverageWarning?.();
+  if (legacyWarning) io.info(legacyWarning);
   if (
+    !legacyWarning &&
     agent.getSessionEventLog &&
     agent.getSessionEventLog()?.lastSequence === undefined
   )

@@ -43,14 +43,25 @@ it("does no historical reads as the initialized log grows", () => {
   const filename = path.join(directory, "events.jsonl");
   const log = new DurableEventLog(filename);
   const read = jest.spyOn(fs, "readFileSync");
+  const suffixRead = jest.spyOn(fs, "readSync");
   try {
     for (let seq = 1; seq <= 1000; seq++) {
       log.append(event(seq));
       expect(log.lastSequence).toBe(seq);
     }
+    const checkpointBytes = fs.statSync(filename).size;
+    let newBytes = 0;
+    for (let seq = 1001; seq <= 2000; seq++) {
+      const record = event(seq);
+      log.append(record);
+      newBytes += Buffer.byteLength(`${JSON.stringify(record)}\n`);
+    }
+    expect(fs.statSync(filename).size - checkpointBytes).toBe(newBytes);
     expect(read).not.toHaveBeenCalled();
+    expect(suffixRead).not.toHaveBeenCalled();
   } finally {
     read.mockRestore();
+    suffixRead.mockRestore();
   }
 });
 
@@ -86,4 +97,38 @@ it("a fresh process reads strictly after the cursor and continues the durable se
   });
   expect(result.lastSequence).toBe(23);
   expect(new DurableEventLog(filename).after(22)).toEqual([event(23)]);
+});
+
+it("preserves JSON prompt summaries and normalization losses across reopen", () => {
+  const filename = path.join(directory, "summary-events.jsonl");
+  const log = new DurableEventLog(filename);
+  const summary = createProtocolEvent(1, {
+    type: "prompt_plan_built",
+    snapshot: {
+      provider: "fixture",
+      model: "fixture",
+      iteration: 1,
+      contextWindowTokens: 1000,
+      availableInputBudget: 900,
+      plan: {
+        messages: [{ content: "private prompt" }],
+        estimatedPromptTokens: 42,
+        includedTurnIds: ["one"],
+        omittedTurnIds: ["two"],
+        retryLevel: 0,
+        usedRollingSummary: false,
+      },
+    },
+  });
+  const lossy = createProtocolEvent(2, { type: "fixture", value: 5n });
+  log.append(summary);
+  log.append(lossy);
+  const records = new DurableEventLog(filename).after(0);
+  expect(records).toEqual(JSON.parse(JSON.stringify([summary, lossy])));
+  expect(records[0].event).toMatchObject({
+    type: "prompt_plan_built",
+    snapshot: { estimatedPromptTokens: 42, includedTurns: 1, omittedTurns: 1 },
+  });
+  expect(JSON.stringify(records[0])).not.toContain("private prompt");
+  expect(records[1]).toMatchObject({ replacedValues: 1 });
 });
