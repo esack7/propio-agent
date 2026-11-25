@@ -1,3 +1,4 @@
+import { DurableEventLog } from "./durableEventLog.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,7 +22,7 @@ function checkPath(target: string, directory: boolean): boolean {
 }
 
 /** Explicit root only. Uses private snapshot JSON and append-only JSONL files.
- * No CLI discovery, migration, locking, or torn-write recovery is performed.
+ * No CLI discovery, migration, or writer locking is performed.
  * The host must serialize writers, including across store instances/processes.
  */
 export class FileSessionStore extends ScopedSessionStore {
@@ -68,7 +69,24 @@ export class FileSessionStore extends ScopedSessionStore {
       checkPath(target, false);
       return target;
     };
+    let eventLog: DurableEventLog | undefined;
+    const events = () => {
+      resolve("events.jsonl", false);
+      return (eventLog ??= new DurableEventLog(
+        path.join(directory, "events.jsonl"),
+      ));
+    };
     return {
+      events: {
+        get lastSequence() {
+          return events().lastSequence;
+        },
+        append: (event) => {
+          resolve("events.jsonl", true);
+          events().append(event);
+        },
+        after: (cursor) => events().after(cursor),
+      },
       read: (key) => {
         const target = resolve(key, false);
         return target && fs.existsSync(target)
@@ -79,8 +97,22 @@ export class FileSessionStore extends ScopedSessionStore {
         const target = resolve(key, true)!;
         const temporary = `${target}.${randomUUID()}.tmp`;
         try {
-          fs.writeFileSync(temporary, content, { mode: 0o600, flag: "wx" });
+          const fd = fs.openSync(temporary, "wx", 0o600);
+          try {
+            fs.writeFileSync(fd, content);
+            fs.fsyncSync(fd);
+          } finally {
+            fs.closeSync(fd);
+          }
           fs.renameSync(temporary, target);
+          if (process.platform !== "win32") {
+            const directoryFd = fs.openSync(path.dirname(target), "r");
+            try {
+              fs.fsyncSync(directoryFd);
+            } finally {
+              fs.closeSync(directoryFd);
+            }
+          }
         } finally {
           fs.rmSync(temporary, { force: true });
         }

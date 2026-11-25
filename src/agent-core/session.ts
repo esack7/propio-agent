@@ -126,6 +126,13 @@ export class AgentSession<TEvent = never> {
     this.eventLog = options.eventLog;
   }
 
+  /** Change the host-owned recording when switching an idle logical session. */
+  setEventLog(eventLog: SessionEventLog): void {
+    if (this.turn) throw new Error("Cannot switch recording during a turn");
+    this.eventLog = eventLog;
+    this.nextSequence = (eventLog.lastSequence ?? 0) + 1;
+  }
+
   get running(): boolean {
     return this.turn !== undefined;
   }

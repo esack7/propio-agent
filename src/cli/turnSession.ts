@@ -112,6 +112,8 @@ export function createCliTurnSession(
     },
   });
 
+  session.subscribeProtocol((event) => agent.recordSessionProtocol?.(event));
+
   session.subscribe((event) => {
     if (event.type === "session_turn_started") undelivered = [];
     if (event.type === "session_turn_ended")
@@ -127,6 +129,8 @@ export function createCliTurnSession(
     },
     async runTurn(submission, abortSignal) {
       if (abortSignal.aborted) throw new Error("Request cancelled");
+      const eventLog = agent.getSessionEventLog?.();
+      if (eventLog) session.setEventLog(eventLog);
       const commandId = randomUUID();
       const ended = new Promise<"completed" | "cancelled" | "failed">(
         (resolve) => {
@@ -144,29 +148,15 @@ export function createCliTurnSession(
       // Escape is the operator interrupting. Anything else, such as Ctrl+C,
       // is the CLI going away: the turn stops with that reason, so an
       // unanswered message is kept in the saved session as before.
-      const interrupt = (): void => {
-        if (abortSignal.reason === "escape") {
-          session.dispatch({ type: "interrupt", commandId: randomUUID() });
-        } else {
-          session.stop(String(abortSignal.reason ?? "aborted"));
-        }
-      };
+      const interrupt = () => interruptSession(session, abortSignal);
       abortSignal.addEventListener("abort", interrupt, { once: true });
       activeCliTurns++;
       try {
-        const images = submission.images?.map((image) =>
-          image instanceof Uint8Array ? encodeCommandImage(image) : image,
-        );
         original = {
           text: submission.text,
           ...(submission.images ? { images: submission.images } : {}),
         };
-        const accepted = session.dispatch({
-          type: "submit",
-          commandId,
-          text: submission.text,
-          ...(images && images.length > 0 ? { images } : {}),
-        });
+        const accepted = session.dispatch(submitCommand(submission, commandId));
         if (!accepted.accepted) {
           original = undefined;
           throw new Error(accepted.message);
@@ -180,6 +170,29 @@ export function createCliTurnSession(
       }
     },
   };
+}
+
+function submitCommand(submission: PromptSubmission, commandId: string) {
+  const images = submission.images?.map((image) =>
+    image instanceof Uint8Array ? encodeCommandImage(image) : image,
+  );
+  return {
+    type: "submit" as const,
+    commandId,
+    text: submission.text,
+    ...(images && images.length > 0 ? { images } : {}),
+  };
+}
+
+function interruptSession(
+  session: CliTurnSession["session"],
+  signal: AbortSignal,
+): void {
+  if (signal.reason === "escape") {
+    session.dispatch({ type: "interrupt", commandId: randomUUID() });
+  } else {
+    session.stop(String(signal.reason ?? "aborted"));
+  }
 }
 
 /**

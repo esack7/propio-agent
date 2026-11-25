@@ -28,7 +28,13 @@ export interface AssistantTurnVisibilityOptions {
 export type AssistantTurnVisibilitySource =
   AssistantTurnVisibilityOptions | (() => AssistantTurnVisibilityOptions);
 
-export type AssistantTurnAgent = Pick<
+export type AssistantTurnAgent = {
+  recordSessionProtocol?: (
+    event: import("../agent-core/protocol.js").ProtocolEvent,
+  ) => void;
+  getSessionEventLog?: () =>
+    import("../agent-core/protocol.js").SessionEventLog | undefined;
+} & Pick<
   Agent,
   "streamChat" | "getLastTurnReasoningSummary" | "getConversationState"
 >;

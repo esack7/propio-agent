@@ -46,8 +46,11 @@ or schema parse. Records supplied from elsewhere are validated and detached.
 It accepts any initial positive sequence, then requires contiguous appends.
 `lastSequence` supports session recreation, and cursor reads slice directly from
 the sequence offset. The
-log is unbounded and process-local; durable storage, retention and shared trace
-numbering belong to the later session-stores work.
+in-memory log is unbounded and process-local. The sessions entry point also
+exports `DurableEventLog`, an explicit-path, synced JSONL adapter. Open it while
+holding writer ownership, supply it as `eventLog`, and call `after(cursor)` for
+strict incremental replay. A fresh session starts after its last durable sequence.
+The CLI persists these logs independently of diagnostic trace capture.
 
 `parseProtocolEvent(unknown)` throws for malformed records, unknown variants or
 fields, invalid numbers, non-JSON values, cycles and nesting beyond 100 objects.

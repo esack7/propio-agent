@@ -1,3 +1,6 @@
+import * as path from "node:path";
+import { acquireSessionWriter } from "./sessions/sessionWriter.js";
+import { DurableEventLog } from "./sessions/durableEventLog.js";
 import type { ToolExecutionContext } from "./tools/execution.js";
 import type { ProviderRuntimeOptions } from "@propio-ai/providers";
 import { subscriptionAccountId } from "./auth/openai/runtime.js";
@@ -509,6 +512,15 @@ export class Agent {
   private readonly toolPermissions: ToolPermissions;
   private sessionsDir: string | null = null;
   private readonly configuredSessionsDir?: string;
+  private protocolStartTurnIndex = 0;
+
+  // Called through SessionAgent by the session command handler.
+  // fallow-ignore-next-line unused-class-member
+  getReplayCoverageWarning(): string | undefined {
+    return this.protocolStartTurnIndex > 0
+      ? `Replay coverage: this session predates numbered protocol recording; the first ${this.protocolStartTurnIndex} snapshot turns have no numbered replay.`
+      : undefined;
+  }
   private turnScratchpadDir: string | undefined;
   private pendingToolResultBytes = 0;
   private modeState: AgentModeState = { mode: "execute" };
@@ -699,14 +711,134 @@ export class Agent {
     };
   }
 
+  private releaseSessionWriter?: () => Promise<void>;
+  private durableEvents?: DurableEventLog;
+
+  // Called through the CLI adapter interface.
+  getSessionEventLog(): DurableEventLog | undefined {
+    return this.durableEvents;
+  }
+
+  // Called through the CLI adapter interface.
+  // fallow-ignore-next-line unused-class-member
+  recordSessionProtocol(
+    event: import("./agent-core/protocol.js").ProtocolEvent,
+  ): void {
+    this.activeTraceRun?.recorder.record({
+      component: "session",
+      type: "session_protocol",
+      payload: { sessionSequence: event.seq, eventType: event.event.type },
+    });
+  }
+
+  private async openSessionWriter(
+    sessionId: string,
+  ): Promise<() => Promise<void>> {
+    return acquireSessionWriter(this.configuredSessionsDir!, sessionId);
+  }
+
+  // Called through the CLI adapter interface.
+  async importSessionWithWriter(json: string): Promise<void> {
+    if (!this.configuredSessionsDir) {
+      this.importSession(json);
+      return;
+    }
+    const saved = parseSession(json);
+    return this.importParsedSessionWithWriter(saved, json);
+  }
+
+  private normalizeSavedSessionIdentity(
+    saved: ReturnType<typeof parseSession>,
+    json: string,
+  ): { incoming: string; content: string } {
+    const incoming =
+      saved.metadata.sessionId ??
+      `legacy-${createHash("sha256").update(json).digest("hex")}`;
+    if (!isSafeSessionId(incoming))
+      throw new Error("Saved session has no valid runtime identity");
+    const content = JSON.stringify({
+      ...saved,
+      metadata: { ...saved.metadata, sessionId: incoming },
+    });
+    return { incoming, content };
+  }
+
+  private async importParsedSessionWithWriter(
+    saved: ReturnType<typeof parseSession>,
+    json: string,
+  ): Promise<void> {
+    const sessionsDir = this.configuredSessionsDir;
+    if (!sessionsDir) {
+      this.importSession(json);
+      return;
+    }
+    const { incoming, content } = this.normalizeSavedSessionIdentity(
+      saved,
+      json,
+    );
+    json = content;
+    if (incoming === this.sessionId) {
+      this.assertProtocolCheckpoint(saved, this.durableEvents);
+      this.importSession(json);
+      return;
+    }
+    const release = await this.openSessionWriter(incoming);
+    try {
+      const events = new DurableEventLog(
+        path.join(sessionsDir, `events-${incoming}.jsonl`),
+      );
+      this.assertProtocolCheckpoint(saved, events);
+      this.importSession(json);
+      await this.releaseSessionWriter?.();
+      this.releaseSessionWriter = release;
+      this.durableEvents = events;
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  }
+
+  private assertProtocolCheckpoint(
+    saved: ReturnType<typeof parseSession>,
+    events: DurableEventLog | undefined,
+  ): void {
+    if ((saved.metadata.protocolSequence ?? 0) > (events?.lastSequence ?? 0)) {
+      throw new Error(
+        `Session ${saved.metadata.sessionId} checkpoint exceeds its durable protocol log`,
+      );
+    }
+  }
+
   async initialize(): Promise<void> {
-    await this.mcpManager.initialize();
+    try {
+      if (this.configuredSessionsDir) {
+        this.releaseSessionWriter = await this.openSessionWriter(
+          this.sessionId,
+        );
+        this.durableEvents = new DurableEventLog(
+          path.join(
+            this.configuredSessionsDir,
+            `events-${this.sessionId}.jsonl`,
+          ),
+        );
+      }
+      await this.mcpManager.initialize();
+    } catch (error) {
+      await this.releaseSessionWriter?.();
+      this.releaseSessionWriter = undefined;
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
     this.activeTraceRun?.close?.();
     this.activeTraceRun = undefined;
-    await this.mcpManager.close();
+    try {
+      await this.mcpManager.close();
+    } finally {
+      await this.releaseSessionWriter?.();
+      this.releaseSessionWriter = undefined;
+    }
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -2624,7 +2756,6 @@ export class Agent {
   }
 
   // Called through SessionAgent by the session command handler.
-  // fallow-ignore-next-line unused-class-member
   getRuntimeSessionId(): string {
     return this.sessionId;
   }
@@ -2949,6 +3080,8 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      protocolSequence: this.durableEvents?.lastSequence,
+      protocolStartTurnIndex: this.protocolStartTurnIndex,
       latestForegroundRunId: this.latestForegroundRunId,
       lastTraceRunId:
         this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,
@@ -3099,6 +3232,11 @@ export class Agent {
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
     this.latestForegroundRunId = persisted.metadata.latestForegroundRunId;
 
+    this.protocolStartTurnIndex =
+      persisted.metadata.protocolStartTurnIndex ??
+      (persisted.metadata.protocolSequence === undefined
+        ? state.turns.length
+        : 0);
     this.contextManager.importState(state);
     this.recoveryCheckpointRequested =
       persisted.metadata.recoveryCheckpoint === true;
@@ -3107,6 +3245,22 @@ export class Agent {
       : [];
     this.pendingRecoveredToolCallIds = this.createTraceRun ? unresolved : [];
 
+    this.restoreImportedMode(persisted, previousSkillInvocationIds);
+    this.pendingExecuteSwitchReminder = false;
+    this.restorePlanModeDraftTrackingFromImport(
+      persisted.metadata.planDraftSearchStartTurnIndex,
+    );
+    this.retireOutgoingRecoveryCheckpoint(
+      outgoingSessionId,
+      outgoingRecoveryRequested,
+      persisted.metadata.recoveryCheckpoint === true,
+    );
+  }
+
+  private restoreImportedMode(
+    persisted: ReturnType<typeof parseSession>,
+    previousSkillInvocationIds: string[],
+  ): void {
     const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
     const importedModeState: AgentModeState = {
@@ -3137,15 +3291,6 @@ export class Agent {
         "session",
       );
     }
-    this.pendingExecuteSwitchReminder = false;
-    this.restorePlanModeDraftTrackingFromImport(
-      persisted.metadata.planDraftSearchStartTurnIndex,
-    );
-    this.retireOutgoingRecoveryCheckpoint(
-      outgoingSessionId,
-      outgoingRecoveryRequested,
-      persisted.metadata.recoveryCheckpoint === true,
-    );
   }
 
   // -------------------------------------------------------------------

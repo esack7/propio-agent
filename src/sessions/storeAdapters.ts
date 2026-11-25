@@ -12,6 +12,7 @@ import type {
 } from "./stores.js";
 
 export interface StoreBackend {
+  readonly events?: import("./stores.js").SessionProtocolStore;
   read(key: string): string | undefined;
   replace(key: string, content: string): void;
   append(key: string, content: string): void;
@@ -71,7 +72,7 @@ function createHandle(
       save: (value) =>
         backend.replace("snapshot.json", JSON.stringify(snapshot(value))),
     },
-    events: {
+    events: backend.events ?? {
       get lastSequence() {
         const events = protocolRecords(backend);
         return events[events.length - 1]?.seq;
@@ -148,7 +149,7 @@ export abstract class ScopedSessionStore implements SessionStore {
       .sort(
         (a, b) =>
           Date.parse(b.snapshot!.savedAt) - Date.parse(a.snapshot!.savedAt) ||
-          a.sessionId.localeCompare(b.sessionId),
+          (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0),
       )[0];
   }
 }

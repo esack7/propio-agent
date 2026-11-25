@@ -1,3 +1,4 @@
+import { syncDirectory } from "../syncDirectory.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
@@ -97,12 +98,18 @@ export function readIndex(sessionsDir: string): SessionIndex | null {
 }
 
 export function writeIndex(sessionsDir: string, index: SessionIndex): void {
-  fs.mkdirSync(sessionsDir, { recursive: true });
-  fs.writeFileSync(
-    indexPath(sessionsDir),
-    JSON.stringify(index, null, 2),
-    "utf8",
-  );
+  fs.mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
+  const target = indexPath(sessionsDir);
+  const temporary = `${target}.${crypto.randomBytes(6).toString("hex")}.tmp`;
+  const fd = fs.openSync(temporary, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(index, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(temporary, target);
+  syncDirectory(sessionsDir);
 }
 
 /**
@@ -110,7 +117,10 @@ export function writeIndex(sessionsDir: string, index: SessionIndex): void {
  * Parses just enough of each file to extract metadata for the index entry.
  * Writes the rebuilt index to disk and returns it.
  */
-export function rebuildIndex(sessionsDir: string): SessionIndex {
+export function rebuildIndex(
+  sessionsDir: string,
+  persist = true,
+): SessionIndex {
   if (!fs.existsSync(sessionsDir)) {
     return { entries: [] };
   }
@@ -146,9 +156,9 @@ export function rebuildIndex(sessionsDir: string): SessionIndex {
     }
   }
 
-  entries.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  entries.sort(compareSessionEntries);
   const index: SessionIndex = { entries };
-  writeIndex(sessionsDir, index);
+  if (persist) writeIndex(sessionsDir, index);
   return index;
 }
 
@@ -166,7 +176,7 @@ export function writeSnapshot(
   sessionsDir: string,
   sessionJson: string,
 ): SessionIndexEntry {
-  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
 
   const parsedSnapshot = parseSnapshotObject(JSON.parse(sessionJson));
   if (!parsedSnapshot) {
@@ -175,11 +185,26 @@ export function writeSnapshot(
 
   const snapshotFile = generateSnapshotFileName();
   const snapshotPath = path.join(sessionsDir, snapshotFile);
-  const tempPath = `${snapshotPath}.tmp`;
+  const tempPath = `${snapshotPath}.${crypto.randomUUID()}.tmp`;
 
   // Atomic write: temp file + rename
-  fs.writeFileSync(tempPath, sessionJson, "utf8");
-  fs.renameSync(tempPath, snapshotPath);
+  const fd = fs.openSync(tempPath, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, sessionJson, "utf8");
+    fs.fsyncSync(fd);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tempPath, snapshotPath);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
+  syncDirectory(sessionsDir);
 
   const entry: SessionIndexEntry = toSessionIndexEntry(
     snapshotFile,
@@ -188,8 +213,10 @@ export function writeSnapshot(
     parsedSnapshot.context,
   );
 
-  const existing = readIndex(sessionsDir);
-  const currentEntries = existing ? [...existing.entries] : [];
+  const existing = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir, false);
+  const currentEntries = existing.entries.filter(
+    (saved) => saved.snapshotFile !== entry.snapshotFile,
+  );
   currentEntries.unshift(entry);
   writeIndex(sessionsDir, { entries: currentEntries });
 
@@ -413,7 +440,7 @@ export function findStaleMarkers(sessionsDir: string): StaleMarker[] {
 export function listSessions(sessionsDir: string): SessionIndexEntry[] {
   let index = readIndex(sessionsDir);
   if (!index) {
-    index = rebuildIndex(sessionsDir);
+    index = rebuildIndex(sessionsDir, false);
   }
   const saved = index.entries.filter(
     (entry) => !entry.snapshotFile.startsWith("recovery-"),
@@ -454,9 +481,7 @@ export function listSessions(sessionsDir: string): SessionIndexEntry[] {
       return [];
     }
   });
-  return [...saved, ...recovery].sort((a, b) =>
-    b.savedAt.localeCompare(a.savedAt),
-  );
+  return [...saved, ...recovery].sort(compareSessionEntries);
 }
 
 export function resolveLatestSession(
@@ -537,4 +562,14 @@ function toSessionIndexEntry(
       ? { recoveryCheckpoint: true }
       : {}),
   };
+}
+
+function compareSessionEntries(
+  a: SessionIndexEntry,
+  b: SessionIndexEntry,
+): number {
+  if (a.savedAt !== b.savedAt) return a.savedAt < b.savedAt ? 1 : -1;
+  const left = a.sessionId ?? "";
+  const right = b.sessionId ?? "";
+  return left < right ? -1 : left > right ? 1 : 0;
 }

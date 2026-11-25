@@ -233,17 +233,20 @@ it.each(["collision"])(
 
 it("closes a pending connection and prevents later resurrection", async () => {
   const { manager, pidFile } = fixture("connect-hang", {
+    connectTimeoutMs: 15_000,
     cleanupTimeoutMs: 100,
   });
   const starting = manager.initialize();
-  await waitFor(() => fs.existsSync(pidFile));
+  // Cold child startup can exceed three seconds under full-suite load.
+  // Observe startup before closing so this exercises a pending connection.
+  await waitFor(() => fs.existsSync(pidFile), 10_000);
   const pid = readPid(pidFile);
   await Promise.all([manager.close(), starting]);
   await waitFor(() => !isAlive(pid));
   expect(manager.getServerSummaries()[0]?.status).toBe("disabled");
   await expect(manager.initialize()).rejects.toThrow("closed");
   await expect(manager.reconnectServer("fixture")).rejects.toThrow("closed");
-});
+}, 20_000);
 
 it("handles unexpected exit and reconnects", async () => {
   const { manager, pidFile } = fixture();

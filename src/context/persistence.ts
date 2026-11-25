@@ -39,6 +39,9 @@ export interface SessionMetadata {
   readonly summaryPolicy: SummaryPolicy;
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
+  readonly protocolSequence?: number;
+  /** Snapshot turns that precede numbered protocol recording. */
+  readonly protocolStartTurnIndex?: number;
   readonly lastTraceRunId?: string;
   readonly latestForegroundRunId?: string;
   /** A tool-boundary checkpoint from an interrupted run. */
@@ -279,6 +282,21 @@ function validatePlanDraftMetadata(meta: Record<string, unknown>): void {
   }
 }
 
+function validateProtocolSequence(meta: Record<string, unknown>): void {
+  if (
+    meta.protocolStartTurnIndex !== undefined &&
+    (!Number.isSafeInteger(meta.protocolStartTurnIndex) ||
+      (meta.protocolStartTurnIndex as number) < 0)
+  )
+    throw new SessionParseError("Invalid protocol recording start turn.");
+  if (
+    meta.protocolSequence !== undefined &&
+    (!Number.isSafeInteger(meta.protocolSequence) ||
+      (meta.protocolSequence as number) < 0)
+  )
+    throw new SessionParseError("Invalid protocol checkpoint sequence.");
+}
+
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
   const meta = metadata as Record<string, unknown>;
@@ -295,6 +313,7 @@ function validateMetadata(metadata: unknown): void {
   assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
   assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
   assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
+  validateProtocolSequence(meta);
   if (meta.sessionId !== undefined) {
     assertString(meta.sessionId, "metadata.sessionId");
   }

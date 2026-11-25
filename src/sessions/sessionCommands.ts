@@ -20,13 +20,27 @@ export interface SessionCommandIO {
   success(message: string): void;
   command(message: string): void;
   promptConfirm(message: string): Promise<boolean>;
+  replay?(
+    records: readonly import("../agent-core/protocol.js").ProtocolEvent[],
+  ): void;
 }
 
 export interface SessionAgent {
   getConversationState(): ConversationState;
   getRuntimeSessionId?(): string;
+  getReplayCoverageWarning?(): string | undefined;
   exportSession(): string;
   importSession(json: string): void;
+  importSessionWithWriter?(json: string): Promise<void>;
+  getSessionEventLog?():
+    | {
+        readonly lastSequence?: number;
+        readonly coverageWarning?: string;
+        after(
+          cursor: number,
+        ): readonly import("../agent-core/protocol.js").ProtocolEvent[];
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +136,36 @@ async function confirmSessionReplacement(
   );
 }
 
+function replayLoadedSession(agent: SessionAgent, io: SessionCommandIO): void {
+  const recording = agent.getSessionEventLog?.();
+  reportReplayCoverage(agent, recording, io);
+  if (recording) io.replay?.(recording.after(0));
+}
+
+function reportReplayCoverage(
+  agent: SessionAgent,
+  recording: ReturnType<NonNullable<SessionAgent["getSessionEventLog"]>>,
+  io: SessionCommandIO,
+): void {
+  const legacyWarning = agent.getReplayCoverageWarning?.();
+  if (legacyWarning) io.info(legacyWarning);
+  if (!legacyWarning && agent.getSessionEventLog) {
+    reportMissingRecording(recording, io);
+  }
+  if (recording?.coverageWarning) io.info(recording.coverageWarning);
+}
+
+function reportMissingRecording(
+  recording: ReturnType<NonNullable<SessionAgent["getSessionEventLog"]>>,
+  io: SessionCommandIO,
+): void {
+  if (recording?.lastSequence === undefined) {
+    io.info(
+      "Replay coverage: this session predates numbered protocol recording; snapshot history is available.",
+    );
+  }
+}
+
 async function loadSavedSession(
   sessionId: string,
   agent: SessionAgent,
@@ -143,7 +187,11 @@ async function loadSavedSession(
   }
 
   try {
-    agent.importSession(readSnapshot(sessionsDir, entry.snapshotFile));
+    const json = readSnapshot(sessionsDir, entry.snapshotFile);
+    if (agent.importSessionWithWriter)
+      await agent.importSessionWithWriter(json);
+    else agent.importSession(json);
+    replayLoadedSession(agent, io);
     io.success(
       `Loaded ${entry.recoveryCheckpoint ? "recovery checkpoint" : "session"}: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );
