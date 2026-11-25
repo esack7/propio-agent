@@ -194,7 +194,10 @@ it("serializes concurrent persistence changes", async () => {
 it.each(["connect-hang", "list-hang"])(
   "kills a child that times out during %s",
   async (mode) => {
-    const connectTimeoutMs = 5_000;
+    // The deadline includes spawning Node. Full-suite workers can delay the
+    // fixture's first instruction, so allow startup headroom before testing
+    // that an unresponsive child is timed out and forcibly cleaned up.
+    const connectTimeoutMs = 15_000;
     const { manager, pidFile, readyFile } = fixture(mode, {
       connectTimeoutMs,
       cleanupTimeoutMs: 100,
@@ -215,7 +218,7 @@ it.each(["connect-hang", "list-hang"])(
     );
     await waitFor(() => !isAlive(pid));
   },
-  30_000,
+  45_000,
 );
 
 it.each(["collision"])(
