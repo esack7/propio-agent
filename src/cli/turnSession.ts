@@ -148,13 +148,7 @@ export function createCliTurnSession(
       // Escape is the operator interrupting. Anything else, such as Ctrl+C,
       // is the CLI going away: the turn stops with that reason, so an
       // unanswered message is kept in the saved session as before.
-      const interrupt = (): void => {
-        if (abortSignal.reason === "escape") {
-          session.dispatch({ type: "interrupt", commandId: randomUUID() });
-        } else {
-          session.stop(String(abortSignal.reason ?? "aborted"));
-        }
-      };
+      const interrupt = () => interruptSession(session, abortSignal);
       abortSignal.addEventListener("abort", interrupt, { once: true });
       activeCliTurns++;
       try {
@@ -184,6 +178,17 @@ export function createCliTurnSession(
       }
     },
   };
+}
+
+function interruptSession(
+  session: CliTurnSession["session"],
+  signal: AbortSignal,
+): void {
+  if (signal.reason === "escape") {
+    session.dispatch({ type: "interrupt", commandId: randomUUID() });
+  } else {
+    session.stop(String(signal.reason ?? "aborted"));
+  }
 }
 
 /**

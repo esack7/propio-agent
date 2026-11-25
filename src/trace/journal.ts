@@ -1,3 +1,4 @@
+import { syncDirectory } from "../syncDirectory.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -44,16 +45,6 @@ function materialBytes(value: unknown): {
   );
   const redacted = redactTraceValue(serializable, { preservePaths: true });
   return { bytes: Buffer.from(JSON.stringify(redacted)), encoding: "json" };
-}
-
-function syncDirectory(directory: string): void {
-  if (process.platform === "win32") return;
-  const fd = fs.openSync(directory, "r");
-  try {
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
 }
 
 /** Explicit-path, append-only local journal. Construction performs no discovery. */

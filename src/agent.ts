@@ -705,10 +705,14 @@ export class Agent {
   private releaseSessionWriter?: () => Promise<void>;
   private durableEvents?: DurableEventLog;
 
+  // Called through the CLI adapter interface.
+  // fallow-ignore-next-line unused-class-member
   getSessionEventLog(): DurableEventLog | undefined {
     return this.durableEvents;
   }
 
+  // Called through the CLI adapter interface.
+  // fallow-ignore-next-line unused-class-member
   recordSessionProtocol(
     event: import("./agent-core/protocol.js").ProtocolEvent,
   ): void {
@@ -725,12 +729,21 @@ export class Agent {
     return acquireSessionWriter(this.configuredSessionsDir!, sessionId);
   }
 
+  // Called through the CLI adapter interface.
+  // fallow-ignore-next-line unused-class-member
   async importSessionWithWriter(json: string): Promise<void> {
     if (!this.configuredSessionsDir) {
       this.importSession(json);
       return;
     }
     const saved = parseSession(json);
+    return this.importParsedSessionWithWriter(saved, json);
+  }
+
+  private async importParsedSessionWithWriter(
+    saved: ReturnType<typeof parseSession>,
+    json: string,
+  ): Promise<void> {
     const incoming =
       saved.metadata.sessionId ??
       `legacy-${createHash("sha256").update(json).digest("hex")}`;

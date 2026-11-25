@@ -280,6 +280,15 @@ function validatePlanDraftMetadata(meta: Record<string, unknown>): void {
   }
 }
 
+function validateProtocolSequence(meta: Record<string, unknown>): void {
+  if (
+    meta.protocolSequence !== undefined &&
+    (!Number.isSafeInteger(meta.protocolSequence) ||
+      (meta.protocolSequence as number) < 0)
+  )
+    throw new SessionParseError("Invalid protocol checkpoint sequence.");
+}
+
 function validateMetadata(metadata: unknown): void {
   assertObject(metadata, "metadata");
   const meta = metadata as Record<string, unknown>;
@@ -296,12 +305,7 @@ function validateMetadata(metadata: unknown): void {
   assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
   assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
   assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
-  if (
-    meta.protocolSequence !== undefined &&
-    (!Number.isSafeInteger(meta.protocolSequence) ||
-      (meta.protocolSequence as number) < 0)
-  )
-    throw new SessionParseError("Invalid protocol checkpoint sequence.");
+  validateProtocolSequence(meta);
   if (meta.sessionId !== undefined) {
     assertString(meta.sessionId, "metadata.sessionId");
   }

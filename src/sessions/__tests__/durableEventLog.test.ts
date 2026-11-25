@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import * as os from "node:os";
@@ -68,7 +69,7 @@ it("a fresh process reads strictly after the cursor and continues the durable se
     [
       "--import",
       "tsx",
-      path.resolve("src/sessions/__tests__/fixtures/eventLogChild.mjs"),
+      fileURLToPath(new URL("./fixtures/eventLogChild.mjs", import.meta.url)),
       filename,
       "21",
       JSON.stringify(event(23)),

@@ -66,6 +66,10 @@ export class DurableEventLog implements SessionEventLog {
     } finally {
       fs.closeSync(fd);
     }
+    this.acceptSuffix(suffix, size);
+  }
+
+  private acceptSuffix(suffix: Buffer, size: number): void {
     const lines = suffix.toString("utf8").split("\n");
     const tail = lines.pop()!;
     const added = lines.map((line) => parseProtocolEvent(JSON.parse(line)));

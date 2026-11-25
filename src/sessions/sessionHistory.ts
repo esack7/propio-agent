@@ -1,3 +1,4 @@
+import { syncDirectory } from "../syncDirectory.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
@@ -561,14 +562,4 @@ function compareSessionEntries(
   const left = a.sessionId ?? "";
   const right = b.sessionId ?? "";
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function syncDirectory(directory: string): void {
-  if (process.platform === "win32") return;
-  const fd = fs.openSync(directory, "r");
-  try {
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
 }

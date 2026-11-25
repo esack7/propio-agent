@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 function writer(id: string, marker: string) {
   const child = fork(
-    path.resolve("src/sessions/__tests__/fixtures/writerChild.mjs"),
+    new URL("./fixtures/writerChild.mjs", import.meta.url),
     [directory, id, path.join(directory, marker)],
     {
       execArgv: ["--import", "tsx"],

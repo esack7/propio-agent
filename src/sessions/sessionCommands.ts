@@ -135,6 +135,19 @@ async function confirmSessionReplacement(
   );
 }
 
+function replayLoadedSession(agent: SessionAgent, io: SessionCommandIO): void {
+  if (
+    agent.getSessionEventLog &&
+    agent.getSessionEventLog()?.lastSequence === undefined
+  )
+    io.info(
+      "Replay coverage: this session predates numbered protocol recording; snapshot history is available.",
+    );
+  const recording = agent.getSessionEventLog?.();
+  if (recording?.coverageWarning) io.info(recording.coverageWarning);
+  if (recording) io.replay?.(recording.after(0));
+}
+
 async function loadSavedSession(
   sessionId: string,
   agent: SessionAgent,
@@ -160,16 +173,7 @@ async function loadSavedSession(
     if (agent.importSessionWithWriter)
       await agent.importSessionWithWriter(json);
     else agent.importSession(json);
-    if (
-      agent.getSessionEventLog &&
-      agent.getSessionEventLog()?.lastSequence === undefined
-    )
-      io.info(
-        "Replay coverage: this session predates numbered protocol recording; snapshot history is available.",
-      );
-    const recording = agent.getSessionEventLog?.();
-    if (recording?.coverageWarning) io.info(recording.coverageWarning);
-    if (recording) io.replay?.(recording.after(0));
+    replayLoadedSession(agent, io);
     io.success(
       `Loaded ${entry.recoveryCheckpoint ? "recovery checkpoint" : "session"}: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );
