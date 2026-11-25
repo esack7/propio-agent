@@ -105,7 +105,14 @@ export class DurableEventLog implements SessionEventLog {
         "Protocol recording is degraded; reopen the session before recording again",
       );
     const event = parseProtocolEvent(JSON.parse(JSON.stringify(value)));
-    if (this.lastSequence !== undefined && event.seq !== this.lastSequence + 1)
+    let lastSequence: number | undefined;
+    try {
+      lastSequence = this.lastSequence;
+    } catch (error) {
+      this.markFailed();
+      throw error;
+    }
+    if (lastSequence !== undefined && event.seq !== lastSequence + 1)
       throw new Error("Event log sequence must be contiguous");
     let fd: number | undefined;
     try {
@@ -131,19 +138,22 @@ export class DurableEventLog implements SessionEventLog {
         }
       }
     } catch (error) {
-      this.failed = true;
-      try {
-        fs.writeFileSync(
-          `${this.filename}.gap`,
-          "Protocol recording failed\n",
-          { mode: 0o600, flag: "wx" },
-        );
-      } catch {
-        /* Preserve original failure. */
-      }
+      this.markFailed();
       throw error;
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+
+  private markFailed(): void {
+    this.failed = true;
+    try {
+      fs.writeFileSync(`${this.filename}.gap`, "Protocol recording failed\n", {
+        mode: 0o600,
+        flag: "wx",
+      });
+    } catch {
+      /* Preserve original failure. */
     }
   }
 }
