@@ -40,6 +40,10 @@ export interface SessionMetadata {
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
   readonly protocolSequence?: number;
+  readonly pendingGuidance?: ReadonlyArray<{
+    readonly id: string;
+    readonly text: string;
+  }>;
   /** Snapshot turns that precede numbered protocol recording. */
   readonly protocolStartTurnIndex?: number;
   readonly lastTraceRunId?: string;
@@ -283,6 +287,15 @@ function validatePlanDraftMetadata(meta: Record<string, unknown>): void {
 }
 
 function validateProtocolSequence(meta: Record<string, unknown>): void {
+  if (meta.pendingGuidance !== undefined) {
+    assertArray(meta.pendingGuidance, "metadata.pendingGuidance");
+    for (const message of meta.pendingGuidance as unknown[]) {
+      assertObject(message, "pending guidance");
+      const item = message as Record<string, unknown>;
+      assertString(item.id, "pending guidance id");
+      assertString(item.text, "pending guidance text");
+    }
+  }
   if (
     meta.protocolStartTurnIndex !== undefined &&
     (!Number.isSafeInteger(meta.protocolStartTurnIndex) ||

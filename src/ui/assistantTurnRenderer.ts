@@ -29,6 +29,7 @@ export type AssistantTurnVisibilitySource =
   AssistantTurnVisibilityOptions | (() => AssistantTurnVisibilityOptions);
 
 export type AssistantTurnAgent = {
+  takeRecoveredGuidance?: () => string[];
   recordSessionProtocol?: (
     event: import("../agent-core/protocol.js").ProtocolEvent,
   ) => void;

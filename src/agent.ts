@@ -1,3 +1,4 @@
+import { formatOperatorGuidance } from "./agent-core/runtime.js";
 import * as path from "node:path";
 import { acquireSessionWriter } from "./sessions/sessionWriter.js";
 import { DurableEventLog } from "./sessions/durableEventLog.js";
@@ -108,6 +109,7 @@ import {
 } from "./sessions/sessionHistory.js";
 import {
   appendRecoveryJournal,
+  readRecoveryJournal,
   writeRecoveryJournalBase,
   type RecoveryJournalPosition,
 } from "./sessions/recoveryJournal.js";
@@ -513,10 +515,11 @@ export class Agent {
   private sessionsDir: string | null = null;
   private readonly configuredSessionsDir?: string;
   private protocolStartTurnIndex = 0;
+  private checkpointCoverageWarning?: string;
 
   // Called through SessionAgent by the session command handler.
-  // fallow-ignore-next-line unused-class-member
   getReplayCoverageWarning(): string | undefined {
+    if (this.checkpointCoverageWarning) return this.checkpointCoverageWarning;
     return this.protocolStartTurnIndex > 0
       ? `Replay coverage: this session predates numbered protocol recording; the first ${this.protocolStartTurnIndex} snapshot turns have no numbered replay.`
       : undefined;
@@ -713,6 +716,14 @@ export class Agent {
 
   private releaseSessionWriter?: () => Promise<void>;
   private durableEvents?: DurableEventLog;
+  private lastKnownProtocolSequence?: number;
+  private pendingGuidance: Array<{ id: string; text: string }> = [];
+
+  takeRecoveredGuidance(): string[] {
+    const messages = this.pendingGuidance.map((message) => message.text);
+    this.pendingGuidance = [];
+    return messages;
+  }
 
   // Called through the CLI adapter interface.
   getSessionEventLog(): DurableEventLog | undefined {
@@ -720,10 +731,26 @@ export class Agent {
   }
 
   // Called through the CLI adapter interface.
-  // fallow-ignore-next-line unused-class-member
   recordSessionProtocol(
     event: import("./agent-core/protocol.js").ProtocolEvent,
   ): void {
+    if (event.event.type === "guidance_queued") {
+      this.pendingGuidance.push({ id: event.event.id, text: event.event.text });
+    } else if (event.event.type === "guidance_delivered") {
+      const deliveredId = event.event.id;
+      this.pendingGuidance = this.pendingGuidance.filter(
+        (message) => message.id !== deliveredId,
+      );
+    }
+    if (
+      event.event.type === "guidance_queued" ||
+      event.event.type === "guidance_delivered"
+    ) {
+      if (this.sessionsDir) {
+        this.recoveryCheckpointRequested = true;
+        this.writeSessionRecoveryCheckpoint();
+      }
+    }
     this.activeTraceRun?.recorder.record({
       component: "session",
       type: "session_protocol",
@@ -778,8 +805,10 @@ export class Agent {
     );
     json = content;
     if (incoming === this.sessionId) {
-      this.assertProtocolCheckpoint(saved, this.durableEvents);
+      json = this.newestRecoveryCheckpoint(json);
+      this.assertProtocolCheckpoint(parseSession(json), this.durableEvents);
       this.importSession(json);
+      this.reconcileCheckpointEvents(parseSession(json), this.durableEvents);
       return;
     }
     const release = await this.openSessionWriter(incoming);
@@ -787,8 +816,10 @@ export class Agent {
       const events = new DurableEventLog(
         path.join(sessionsDir, `events-${incoming}.jsonl`),
       );
-      this.assertProtocolCheckpoint(saved, events);
+      json = this.newestRecoveryCheckpoint(json);
+      this.assertProtocolCheckpoint(parseSession(json), events);
       this.importSession(json);
+      this.reconcileCheckpointEvents(parseSession(json), events);
       await this.releaseSessionWriter?.();
       this.releaseSessionWriter = release;
       this.durableEvents = events;
@@ -796,6 +827,49 @@ export class Agent {
       await release();
       throw error;
     }
+  }
+
+  private reconcileCheckpointEvents(
+    saved: ReturnType<typeof parseSession>,
+    events: DurableEventLog | undefined,
+  ): void {
+    const suffix = events?.after(saved.metadata.protocolSequence ?? 0) ?? [];
+    this.checkpointCoverageWarning = suffix.length
+      ? `Replay coverage: session ${this.sessionId} has ${suffix.length} recorded events after its conversation checkpoint. Uncheckpointed tool outcomes remain unknown and are never retried automatically.`
+      : undefined;
+    const waiting = new Map(
+      this.pendingGuidance.map((message) => [message.id, message]),
+    );
+    for (const { event } of suffix) {
+      if (event.type === "guidance_queued")
+        waiting.set(event.id, { id: event.id, text: event.text });
+      if (event.type === "guidance_delivered") {
+        waiting.delete(event.id);
+        if (this.contextManager.getConversationState().turns.length) {
+          this.contextManager.appendOperatorGuidance(
+            formatOperatorGuidance(event.text),
+          );
+        }
+      }
+    }
+    this.pendingGuidance = [...waiting.values()];
+  }
+
+  private newestRecoveryCheckpoint(json: string): string {
+    const saved = parseSession(json);
+    const id = saved.metadata.sessionId;
+    if (!id || !this.configuredSessionsDir) return json;
+    const filename = path.join(
+      this.configuredSessionsDir,
+      `recovery-${id}.jsonl`,
+    );
+    if (!fs.existsSync(filename)) return json;
+    const recovery = readRecoveryJournal(this.configuredSessionsDir, id);
+    if (!recovery)
+      throw new Error(`Session ${id} has no coherent recovery baseline`);
+    return parseSession(recovery.json).savedAt >= saved.savedAt
+      ? recovery.json
+      : json;
   }
 
   private assertProtocolCheckpoint(
@@ -2488,6 +2562,7 @@ export class Agent {
               summary: event.summary,
               source: event.source,
             };
+          this.checkpointRuntimeEvent(event);
           const formatted = this.formatRuntimeEvent(event);
           if (formatted) options?.onEvent?.(formatted);
           if (event.type === "tool_finished" || event.type === "tool_failed")
@@ -2596,7 +2671,12 @@ export class Agent {
         },
         processToolResult: (result) => this.maybePersistedResult(result),
         onToolResultCommitted: () => {
-          if (!this.createTraceRun && !this.recoveryCheckpointRequested) return;
+          if (
+            !this.configuredSessionsDir &&
+            !this.createTraceRun &&
+            !this.recoveryCheckpointRequested
+          )
+            return;
           this.recoveryCheckpointRequested = true;
           this.writeSessionRecoveryCheckpoint();
           try {
@@ -2703,6 +2783,16 @@ export class Agent {
     removeEmptyScratchpadDir(this.turnScratchpadDir);
   }
 
+  private checkpointRuntimeEvent(event: RuntimeEvent): void {
+    if (
+      this.configuredSessionsDir &&
+      (event.type === "prompt_plan_built" || event.type === "tool_started")
+    ) {
+      this.recoveryCheckpointRequested = true;
+      this.writeSessionRecoveryCheckpoint();
+    }
+  }
+
   private formatRuntimeEvent(
     event: RuntimeEvent,
   ): AgentVisibilityEvent | undefined {
@@ -2730,6 +2820,8 @@ export class Agent {
     this.summaryDirty = false;
     this.lastPromptPlanSnapshot = null;
     this.contextManager.clear();
+    this.pendingGuidance = [];
+    this.checkpointCoverageWarning = undefined;
     if (hadInvokedSkills) {
       this.recordConfigurationChange("skill_scope_cleared", "skill_scope");
     }
@@ -3064,6 +3156,16 @@ export class Agent {
     return serializeSession(state, this.sessionMetadata());
   }
 
+  private checkpointProtocolSequence(): number | undefined {
+    try {
+      this.lastKnownProtocolSequence = this.durableEvents?.lastSequence;
+    } catch {
+      this.checkpointCoverageWarning =
+        "Protocol recording is unreadable; conversation recovery remains available, but replay coverage is partial.";
+    }
+    return this.lastKnownProtocolSequence;
+  }
+
   private sessionMetadata(): SessionMetadata {
     const approvedPlan = getApprovedPlanPersistenceFields(this.modeState);
     return {
@@ -3080,7 +3182,8 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
-      protocolSequence: this.durableEvents?.lastSequence,
+      pendingGuidance: this.pendingGuidance,
+      protocolSequence: this.checkpointProtocolSequence(),
       protocolStartTurnIndex: this.protocolStartTurnIndex,
       latestForegroundRunId: this.latestForegroundRunId,
       lastTraceRunId:
@@ -3209,6 +3312,7 @@ export class Agent {
 
   importSession(json: string): void {
     const persisted = parseSession(json);
+    this.checkpointCoverageWarning = undefined;
     this.assertSessionAccount(persisted.metadata.accountId);
     const state = restoreConversationState(persisted);
     // A resumed session keeps its approvals; any other session starts with
@@ -3229,6 +3333,7 @@ export class Agent {
 
     this.adoptImportedSessionId(persisted.metadata.sessionId);
 
+    this.lastKnownProtocolSequence = persisted.metadata.protocolSequence;
     this.lastTraceRunId = persisted.metadata.lastTraceRunId;
     this.latestForegroundRunId = persisted.metadata.latestForegroundRunId;
 
@@ -3238,11 +3343,12 @@ export class Agent {
         ? state.turns.length
         : 0);
     this.contextManager.importState(state);
+    this.pendingGuidance = (persisted.metadata.pendingGuidance ?? []).map(
+      (message) => ({ ...message }),
+    );
     this.recoveryCheckpointRequested =
       persisted.metadata.recoveryCheckpoint === true;
-    const unresolved = persisted.metadata.recoveryCheckpoint
-      ? this.reconcileRecoveredToolCalls()
-      : [];
+    const unresolved = this.reconcileRecoveredToolCalls();
     this.pendingRecoveredToolCallIds = this.createTraceRun ? unresolved : [];
 
     this.restoreImportedMode(persisted, previousSkillInvocationIds);

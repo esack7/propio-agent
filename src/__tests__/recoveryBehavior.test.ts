@@ -123,7 +123,7 @@ describe("recovery checkpoint lifecycle", () => {
     );
   });
 
-  it("does not enable checkpoint storage for an embedder without tracing", async () => {
+  it("checkpoints explicitly configured session storage without tracing", async () => {
     const agent = createTestAgent(new ToolCallMockProvider("fixture_tool"), {
       sessionsDir,
     });
@@ -131,7 +131,7 @@ describe("recovery checkpoint lifecycle", () => {
 
     await agent.streamChat(userSubmission("Run a tool"), () => {});
 
-    expect(fs.readdirSync(sessionsDir)).not.toEqual(
+    expect(fs.readdirSync(sessionsDir)).toEqual(
       expect.arrayContaining([expect.stringMatching(/^recovery-.*\.jsonl$/)]),
     );
   });
@@ -235,7 +235,7 @@ describe("recovery checkpoint lifecycle", () => {
     );
     expect(
       fs.readFileSync(journalPath, "utf8").trimEnd().split("\n"),
-    ).toHaveLength(count + 1);
+    ).toHaveLength(2 * count + 3);
   });
 
   it("replays later turns and memory changes without rebasing the journal", async () => {

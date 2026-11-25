@@ -98,10 +98,23 @@ async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  // On Linux, kill(pid, 0) also succeeds for zombies. Container hosts can
+  // delay reaping an exited child; that is not a live server left by cleanup.
+  // The command field can contain spaces and parentheses, so read the state
+  // after its final closing parenthesis rather than splitting the whole row.
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ")) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return true;
 }
 
 function readPid(file: string): number {
@@ -428,16 +441,19 @@ it.each([0, -1, NaN, Infinity, 2 ** 31])(
 
 it("disables a pending connection and cleans up its child", async () => {
   const { manager, pidFile } = fixture("connect-hang", {
+    connectTimeoutMs: 15_000,
     cleanupTimeoutMs: 100,
   });
   const starting = manager.initialize();
-  await waitFor(() => fs.existsSync(pidFile));
+  await waitFor(() => fs.existsSync(pidFile), 10_000);
   const pid = readPid(pidFile);
   await manager.setServerEnabled("fixture", false);
   await starting;
-  await waitFor(() => !isAlive(pid));
+  // Under full-suite load the OS may take longer to report child termination.
+  // Keep the short runtime cleanup deadline; only widen fixture observation.
+  await waitFor(() => !isAlive(pid), 10_000);
   expect(manager.getServerSummaries()[0]?.status).toBe("disabled");
-});
+}, 25_000);
 
 it("shares shutdown work across concurrent closes", async () => {
   const { manager, pidFile } = fixture("connect-hang", {

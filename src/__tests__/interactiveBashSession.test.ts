@@ -114,6 +114,7 @@ function createMockAgent() {
       close: jest.fn(),
     })),
     streamChat: jest.fn(),
+    takeRecoveredGuidance: () => [],
     listUserInvocableSkills: () => [],
     setApprovalChannel: jest.fn(),
     getConversationState: () => ({
