@@ -701,6 +701,24 @@ describe("sessionHistory", () => {
       expect(sessions).toHaveLength(1);
     });
 
+    it.each(["missing", "corrupt"])(
+      "preserves older snapshots when saving with a %s index",
+      (state) => {
+        const dir = freshDir();
+        const old = writeSnapshot(dir, minimalSessionJson());
+        const indexPath = path.join(dir, "index.json");
+        if (state === "missing") fs.unlinkSync(indexPath);
+        else fs.writeFileSync(indexPath, "corrupt");
+        const next = writeSnapshot(dir, minimalSessionJson());
+        expect(
+          listSessions(dir)
+            .map((entry) => entry.snapshotFile)
+            .sort(),
+        ).toEqual([old.snapshotFile, next.snapshotFile].sort());
+        expect(readIndex(dir)?.entries).toHaveLength(2);
+      },
+    );
+
     it("should return empty array for nonexistent directory", () => {
       const dir = path.join(freshDir(), "nope");
       expect(listSessions(dir)).toEqual([]);

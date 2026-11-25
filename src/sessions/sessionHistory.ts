@@ -213,8 +213,10 @@ export function writeSnapshot(
     parsedSnapshot.context,
   );
 
-  const existing = readIndex(sessionsDir);
-  const currentEntries = existing ? [...existing.entries] : [];
+  const existing = readIndex(sessionsDir) ?? rebuildIndex(sessionsDir, false);
+  const currentEntries = existing.entries.filter(
+    (saved) => saved.snapshotFile !== entry.snapshotFile,
+  );
   currentEntries.unshift(entry);
   writeIndex(sessionsDir, { entries: currentEntries });
 

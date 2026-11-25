@@ -49,18 +49,11 @@ export async function closeClientBestEffort(
   // A concurrent SDK close can resolve immediately after detaching its transport,
   // while the original close is still waiting for this child to exit.
   if (child?.exitCode === null && child.signalCode === null) {
-    let onExit: () => void = () => {};
-    const exited = new Promise<void>((resolve) => {
-      onExit = resolve;
-      child.once("exit", onExit);
-    });
     try {
       child.kill("SIGKILL");
-      await waitBestEffort(exited, timeoutMs);
     } catch {
       /* Best-effort cleanup. */
-    } finally {
-      child.removeListener("exit", onExit);
     }
+    await waitBestEffort(closing, timeoutMs);
   }
 }

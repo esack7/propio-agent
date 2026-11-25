@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { jest } from "@jest/globals";
 import { DurableEventLog } from "../durableEventLog.js";
 import { createProtocolEvent } from "../../agent-core/protocol.js";
 
@@ -42,27 +41,18 @@ it("rejects interior corruption without modifying recoverable bytes", () => {
 it("does no historical reads as the initialized log grows", () => {
   const filename = path.join(directory, "events.jsonl");
   const log = new DurableEventLog(filename);
-  const read = jest.spyOn(fs, "readFileSync");
-  const suffixRead = jest.spyOn(fs, "readSync");
-  try {
-    for (let seq = 1; seq <= 1000; seq++) {
-      log.append(event(seq));
-      expect(log.lastSequence).toBe(seq);
-    }
-    const checkpointBytes = fs.statSync(filename).size;
-    let newBytes = 0;
-    for (let seq = 1001; seq <= 2000; seq++) {
-      const record = event(seq);
-      log.append(record);
-      newBytes += Buffer.byteLength(`${JSON.stringify(record)}\n`);
-    }
-    expect(fs.statSync(filename).size - checkpointBytes).toBe(newBytes);
-    expect(read).not.toHaveBeenCalled();
-    expect(suffixRead).not.toHaveBeenCalled();
-  } finally {
-    read.mockRestore();
-    suffixRead.mockRestore();
+  for (let seq = 1; seq <= 1000; seq++) log.append(event(seq));
+  const historicalBytes = fs.statSync(filename).size;
+  // Same-size corruption is invisible only if initialized history is never reread.
+  fs.writeFileSync(filename, "x".repeat(historicalBytes));
+  let newBytes = 0;
+  for (let seq = 1001; seq <= 2000; seq++) {
+    const record = event(seq);
+    log.append(record);
+    newBytes += Buffer.byteLength(`${JSON.stringify(record)}\n`);
+    expect(log.lastSequence).toBe(seq);
   }
+  expect(fs.statSync(filename).size - historicalBytes).toBe(newBytes);
 });
 
 it("a fresh process reads strictly after the cursor and continues the durable sequence", () => {

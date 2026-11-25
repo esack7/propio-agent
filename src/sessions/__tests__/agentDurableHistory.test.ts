@@ -14,6 +14,7 @@ import { createTestAgent } from "../../__tests__/testHelpers.js";
 import { createProtocolEvent } from "../../agent-core/protocol.js";
 import { AgentSession } from "../../agent-core/session.js";
 import { handleSessionCommand } from "../sessionCommands.js";
+import { DurableEventLog } from "../durableEventLog.js";
 import { writeSnapshot } from "../sessionHistory.js";
 
 let directory: string;
@@ -198,4 +199,68 @@ it("records CLI turns without resetting the durable cursor and correlates trace 
       }),
     );
   }
+});
+
+it("finishes a turn after recording fails and reports partial coverage on session load", async () => {
+  const original = makeAgent();
+  await original.initialize();
+  const log = original.getSessionEventLog()!;
+  const filename = path.join(
+    directory,
+    `events-${original.getRuntimeSessionId()}.jsonl`,
+  );
+  const session = new AgentSession({
+    eventLog: log,
+    runTurn: async (_submission, control) => {
+      // The turn-start record is durable; fail the next append without blocking
+      // creation of the sibling gap marker.
+      fs.renameSync(filename, `${filename}.saved`);
+      fs.mkdirSync(filename);
+      control.emit({
+        type: "assistant_text",
+        delta: "answer despite recording failure",
+      });
+      return "answer despite recording failure";
+    },
+  });
+  const events: unknown[] = [];
+  session.subscribe((event) => events.push(event));
+  session.dispatch({ type: "submit", commandId: "gap", text: "Continue" });
+  await session.settled();
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: "session_turn_ended",
+      outcome: "completed",
+    }),
+  );
+  expect(fs.existsSync(`${filename}.gap`)).toBe(true);
+  expect(() =>
+    log.append(
+      createProtocolEvent(100, { type: "assistant_text", delta: "no" }),
+    ),
+  ).toThrow(/degraded/);
+  fs.rmdirSync(filename);
+  fs.renameSync(`${filename}.saved`, filename);
+  expect(new DurableEventLog(filename).coverageWarning).toMatch(/partial/);
+  const entry = writeSnapshot(directory, original.exportSession());
+  await original.close();
+  const next = makeAgent();
+  await next.initialize();
+  const messages: string[] = [];
+  await handleSessionCommand(
+    `/session load ${entry.sessionId}`,
+    next,
+    directory,
+    {
+      info: (message) => messages.push(message),
+      error: (message) => {
+        throw new Error(message);
+      },
+      command: () => {},
+      success: () => {},
+      promptConfirm: async () => true,
+      replay: () => {},
+    },
+  );
+  expect(messages.join(" ")).toMatch(/replay coverage is partial/);
 });
