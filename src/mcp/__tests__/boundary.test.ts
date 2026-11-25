@@ -98,10 +98,23 @@ async function waitFor(check: () => boolean, timeoutMs = 3000): Promise<void> {
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  // On Linux, kill(pid, 0) also succeeds for zombies. Container hosts can
+  // delay reaping an exited child; that is not a live server left by cleanup.
+  // The command field can contain spaces and parentheses, so read the state
+  // after its final closing parenthesis rather than splitting the whole row.
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ")) return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return true;
 }
 
 function readPid(file: string): number {
