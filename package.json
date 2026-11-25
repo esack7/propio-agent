@@ -120,6 +120,7 @@
     "example:tools": "node examples/tools-consumer.mjs",
     "example:agent-core": "node examples/agent-core-consumer.mjs",
     "example:session-protocol": "node examples/session-protocol-consumer.mjs",
+    "example:session-stores": "node examples/session-stores-consumer.mjs",
     "example:policy": "node examples/policy-consumer.mjs",
     "benchmark:trace": "npm run build && node benchmarks/traceCapture.mjs",
     "sandbox:host": "node dist/auth/openai/sandboxHost.js",

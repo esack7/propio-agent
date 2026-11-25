@@ -2056,6 +2056,6 @@ across handles, instances and processes. This slice does not wire the CLI to
 these adapters, migrate its existing workspace files, acquire writer locks, or
 recover torn appends. Existing CLI storage and trace readers retain their current
 behavior. Session persistence does not depend on enabling trace capture. Run
-`node examples/session-stores-consumer.mjs` after building for a credential-free
+`npm run example:session-stores` after building for a credential-free
 public consumer using both adapters. The shared behavioral suite is
 `src/sessions/__tests__/sessionStoreContract.test.ts`.
