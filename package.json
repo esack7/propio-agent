@@ -38,6 +38,10 @@
     "./auth": {
       "types": "./dist/auth/index.d.ts",
       "import": "./dist/auth/index.js"
+    },
+    "./sessions": {
+      "types": "./dist/sessions/index.d.ts",
+      "import": "./dist/sessions/index.js"
     }
   },
   "bin": {
@@ -89,7 +93,8 @@
     "docs/session-protocol.md",
     "examples/policy-consumer.mjs",
     "benchmarks/traceCapture.mjs",
-    "docs/openai-subscription.md"
+    "docs/openai-subscription.md",
+    "examples/session-stores-consumer.mjs"
   ],
   "engines": {
     "node": ">=20"
