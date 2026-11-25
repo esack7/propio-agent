@@ -518,7 +518,6 @@ export class Agent {
   private checkpointCoverageWarning?: string;
 
   // Called through SessionAgent by the session command handler.
-  // fallow-ignore-next-line unused-class-member
   getReplayCoverageWarning(): string | undefined {
     if (this.checkpointCoverageWarning) return this.checkpointCoverageWarning;
     return this.protocolStartTurnIndex > 0
@@ -732,7 +731,6 @@ export class Agent {
   }
 
   // Called through the CLI adapter interface.
-  // fallow-ignore-next-line unused-class-member
   recordSessionProtocol(
     event: import("./agent-core/protocol.js").ProtocolEvent,
   ): void {
@@ -2564,14 +2562,7 @@ export class Agent {
               summary: event.summary,
               source: event.source,
             };
-          if (
-            this.configuredSessionsDir &&
-            (event.type === "prompt_plan_built" ||
-              event.type === "tool_started")
-          ) {
-            this.recoveryCheckpointRequested = true;
-            this.writeSessionRecoveryCheckpoint();
-          }
+          this.checkpointRuntimeEvent(event);
           const formatted = this.formatRuntimeEvent(event);
           if (formatted) options?.onEvent?.(formatted);
           if (event.type === "tool_finished" || event.type === "tool_failed")
@@ -2790,6 +2781,16 @@ export class Agent {
       }
     }
     removeEmptyScratchpadDir(this.turnScratchpadDir);
+  }
+
+  private checkpointRuntimeEvent(event: RuntimeEvent): void {
+    if (
+      this.configuredSessionsDir &&
+      (event.type === "prompt_plan_built" || event.type === "tool_started")
+    ) {
+      this.recoveryCheckpointRequested = true;
+      this.writeSessionRecoveryCheckpoint();
+    }
   }
 
   private formatRuntimeEvent(
