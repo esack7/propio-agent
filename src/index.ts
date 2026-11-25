@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import { acquireSessionWriter } from "./sessions/sessionWriter.js";
+import { formatApprovalRequest } from "./ui/approvalPrompt.js";
+import { visibleText } from "./ui/visibleText.js";
+import { replaySession } from "./ui/replaySession.js";
+import { withFileLock } from "./config/fileLock.js";
 import {
   sessionInspectionLines,
   foregroundTraceHint,
@@ -89,7 +94,7 @@ import {
   findStaleMarkers,
   clearInProgressMarker,
 } from "./sessions/sessionHistory.js";
-import { pruneStaleSessionStorage } from "./sessions/sessionStoragePrune.js";
+import { pruneSessionStorageWithWriters } from "./sessions/sessionStoragePrune.js";
 import {
   saveSessionOnExit,
   handleSessionCommand as handleSessionCmd,
@@ -385,8 +390,14 @@ export async function runNonInteractiveSession(
   }
 }
 
-function saveSessionSnapshot(agent: AgentType, ui: TerminalUi): void {
-  saveSessionOnExit(agent, getDefaultSessionsDir(), ui);
+async function saveSessionSnapshot(
+  agent: AgentType,
+  ui: TerminalUi,
+): Promise<void> {
+  const directory = getDefaultSessionsDir();
+  await withFileLock(path.join(directory, "index.lock"), async () => {
+    saveSessionOnExit(agent, directory, ui);
+  });
 }
 
 function createWorkspacePromptHistoryStore() {
@@ -402,6 +413,30 @@ async function handleSessionCommand(
   ui: TerminalUi,
 ): Promise<void> {
   await handleSessionCmd(input, agent, getDefaultSessionsDir(), {
+    replay: (records) =>
+      replaySession(
+        records,
+        ui,
+        {
+          showToolCalls: true,
+          showThinking: false,
+          showStatus: false,
+          showReasoningSummary: false,
+          showContextStats: false,
+          showPromptPlan: false,
+        },
+        {
+          onEvent: ({ event }) => {
+            if (event.type === "approval_requested")
+              for (const line of formatApprovalRequest(event.request))
+                ui.subtle(line);
+            if (event.type === "approval_resolved")
+              ui.subtle(
+                `Recorded approval ${visibleText(event.requestId)}: ${event.resolution}`,
+              );
+          },
+        },
+      ),
     info: (msg) => ui.info(msg),
     error: (msg) => ui.error(msg),
     success: (msg) => ui.success(msg),
@@ -543,7 +578,7 @@ async function handleExitSubmission(
     return undefined;
   }
 
-  saveSessionSnapshot(context.agent, context.ui);
+  await saveSessionSnapshot(context.agent, context.ui);
   context.ui.success("Goodbye!");
   return 0;
 }
@@ -1222,7 +1257,7 @@ export async function runInteractiveSession(
           return 130;
         }
 
-        saveSessionSnapshot(agent, ui);
+        await saveSessionSnapshot(agent, ui);
         ui.success("Goodbye!");
         return 0;
       }
@@ -1288,11 +1323,11 @@ export async function runInteractiveSession(
   }
 }
 
-function handleStaleMarkers(
+async function handleStaleMarkers(
   sessionsDir: string,
   ui: TerminalUi,
   diagnosticLogger: { onEvent: (event: AgentDiagnosticEvent) => void },
-): void {
+): Promise<void> {
   const staleMarkers = findStaleMarkers(sessionsDir);
   for (const { sessionId, marker, ageMs } of staleMarkers) {
     const ageHours = Math.round(ageMs / (60 * 60 * 1000));
@@ -1310,7 +1345,17 @@ function handleStaleMarkers(
       turnIndex: marker.turnIndex,
       ageMs,
     });
-    clearInProgressMarker(sessionsDir, sessionId);
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await acquireSessionWriter(sessionsDir, sessionId);
+    } catch {
+      continue;
+    }
+    try {
+      clearInProgressMarker(sessionsDir, sessionId);
+    } finally {
+      await release();
+    }
   }
 }
 
@@ -1560,7 +1605,7 @@ async function runConfiguredSession(options: {
 
   const workspaceRoot = resolveWorkspaceRoot();
   const sessionsDir = getWorkspaceSessionsDir(workspaceRoot);
-  handleStaleMarkers(sessionsDir, options.ui, options.diagnosticLogger);
+  await handleStaleMarkers(sessionsDir, options.ui, options.diagnosticLogger);
   const resolvedRuntimeConfig = loadRuntimeConfigWithOrigins({
     cliOverrides: {
       traceCaptureLevel: options.parsedArgs.flags.traceCaptureLevel,
@@ -1572,7 +1617,10 @@ async function runConfiguredSession(options: {
   });
   const { config: runtimeConfig, origins: runtimeConfigOrigins } =
     resolvedRuntimeConfig;
-  pruneStaleSessionStorage(sessionsDir, runtimeConfig.artifactRetentionDays);
+  await pruneSessionStorageWithWriters(
+    sessionsDir,
+    runtimeConfig.artifactRetentionDays,
+  );
   if (
     runtimeConfig.allowGlobalInstallsWithoutPrompt &&
     !options.ui.isJsonMode()

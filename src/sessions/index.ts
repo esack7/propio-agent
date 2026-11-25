@@ -12,3 +12,5 @@ export type {
 } from "./stores.js";
 export { InMemorySessionStore } from "./storeAdapters.js";
 export { FileSessionStore } from "./fileSessionStore.js";
+
+export { DurableEventLog } from "./durableEventLog.js";

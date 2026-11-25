@@ -112,6 +112,8 @@ export function createCliTurnSession(
     },
   });
 
+  session.subscribeProtocol((event) => agent.recordSessionProtocol?.(event));
+
   session.subscribe((event) => {
     if (event.type === "session_turn_started") undelivered = [];
     if (event.type === "session_turn_ended")
@@ -127,6 +129,8 @@ export function createCliTurnSession(
     },
     async runTurn(submission, abortSignal) {
       if (abortSignal.aborted) throw new Error("Request cancelled");
+      const eventLog = agent.getSessionEventLog?.();
+      if (eventLog) session.setEventLog(eventLog);
       const commandId = randomUUID();
       const ended = new Promise<"completed" | "cancelled" | "failed">(
         (resolve) => {

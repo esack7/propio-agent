@@ -39,6 +39,7 @@ export interface SessionMetadata {
   readonly summaryPolicy: SummaryPolicy;
   readonly contextWindowTokens: number;
   readonly sessionId?: string;
+  readonly protocolSequence?: number;
   readonly lastTraceRunId?: string;
   readonly latestForegroundRunId?: string;
   /** A tool-boundary checkpoint from an interrupted run. */
@@ -295,6 +296,12 @@ function validateMetadata(metadata: unknown): void {
   assertNumber(meta.contextWindowTokens, "metadata.contextWindowTokens");
   assertObject(meta.promptBudgetPolicy, "metadata.promptBudgetPolicy");
   assertObject(meta.summaryPolicy, "metadata.summaryPolicy");
+  if (
+    meta.protocolSequence !== undefined &&
+    (!Number.isSafeInteger(meta.protocolSequence) ||
+      (meta.protocolSequence as number) < 0)
+  )
+    throw new SessionParseError("Invalid protocol checkpoint sequence.");
   if (meta.sessionId !== undefined) {
     assertString(meta.sessionId, "metadata.sessionId");
   }

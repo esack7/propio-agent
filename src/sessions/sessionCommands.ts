@@ -20,6 +20,9 @@ export interface SessionCommandIO {
   success(message: string): void;
   command(message: string): void;
   promptConfirm(message: string): Promise<boolean>;
+  replay?(
+    records: readonly import("../agent-core/protocol.js").ProtocolEvent[],
+  ): void;
 }
 
 export interface SessionAgent {
@@ -27,6 +30,16 @@ export interface SessionAgent {
   getRuntimeSessionId?(): string;
   exportSession(): string;
   importSession(json: string): void;
+  importSessionWithWriter?(json: string): Promise<void>;
+  getSessionEventLog?():
+    | {
+        readonly lastSequence?: number;
+        readonly coverageWarning?: string;
+        after(
+          cursor: number,
+        ): readonly import("../agent-core/protocol.js").ProtocolEvent[];
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +156,20 @@ async function loadSavedSession(
   }
 
   try {
-    agent.importSession(readSnapshot(sessionsDir, entry.snapshotFile));
+    const json = readSnapshot(sessionsDir, entry.snapshotFile);
+    if (agent.importSessionWithWriter)
+      await agent.importSessionWithWriter(json);
+    else agent.importSession(json);
+    if (
+      agent.getSessionEventLog &&
+      agent.getSessionEventLog()?.lastSequence === undefined
+    )
+      io.info(
+        "Replay coverage: this session predates numbered protocol recording; snapshot history is available.",
+      );
+    const recording = agent.getSessionEventLog?.();
+    if (recording?.coverageWarning) io.info(recording.coverageWarning);
+    if (recording) io.replay?.(recording.after(0));
     io.success(
       `Loaded ${entry.recoveryCheckpoint ? "recovery checkpoint" : "session"}: ${entry.sessionId} (${entry.turnCount} turn${entry.turnCount === 1 ? "" : "s"})`,
     );

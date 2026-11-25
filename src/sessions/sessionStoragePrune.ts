@@ -1,3 +1,4 @@
+import { acquireSessionWriter } from "./sessionWriter.js";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -227,9 +228,11 @@ function removeTraceMaterialDirectory(directory: string): void {
 export function pruneStaleSessionStorage(
   sessionsDir: string,
   retentionDays: number,
+  skipSessionIds: ReadonlySet<string> = new Set(),
 ): void {
   const retentionMs = retentionDays * 24 * 60 * 60 * 1000;
   const activeInProgress = listActiveInProgressSessionIds(sessionsDir);
+  for (const id of skipSessionIds) activeInProgress.add(id);
   pruneRecoveryFiles(sessionsDir, retentionMs, activeInProgress);
   const anchoredIds = buildAnchoredSessionIds(sessionsDir);
 
@@ -237,6 +240,7 @@ export function pruneStaleSessionStorage(
     path.join(sessionsDir, "artifacts"),
     anchoredIds,
     retentionMs,
+    { skipSessionIds: activeInProgress },
   );
   pruneSessionStorageTree(
     path.join(sessionsDir, "scratchpads"),
@@ -249,4 +253,44 @@ export function pruneStaleSessionStorage(
     retentionMs,
     activeInProgress,
   );
+}
+
+/** Startup cleanup holds each candidate's writer ownership, skipping live sessions. */
+export async function pruneSessionStorageWithWriters(
+  directory: string,
+  days: number,
+): Promise<void> {
+  if (!fs.existsSync(directory)) return;
+  const ids = discoverCleanupSessionIds(directory);
+  const releases: (() => Promise<void>)[] = [];
+  const skip = new Set<string>();
+  try {
+    for (const id of ids) {
+      try {
+        releases.push(await acquireSessionWriter(directory, id));
+      } catch {
+        skip.add(id);
+      }
+    }
+    pruneStaleSessionStorage(directory, days, skip);
+  } finally {
+    for (const release of releases) await release();
+  }
+}
+
+function discoverCleanupSessionIds(directory: string): Set<string> {
+  const ids = new Set<string>();
+  for (const name of fs.readdirSync(directory)) {
+    const match = /^(?:recovery|events|inprogress)-(.+)\.(?:jsonl|json)$/.exec(
+      name,
+    );
+    if (match && isSafeSessionId(match[1])) ids.add(match[1]);
+  }
+  for (const tree of ["traces", "scratchpads", "artifacts"]) {
+    const root = path.join(directory, tree);
+    if (fs.existsSync(root))
+      for (const id of fs.readdirSync(root))
+        if (isSafeSessionId(id)) ids.add(id);
+  }
+  return ids;
 }

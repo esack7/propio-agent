@@ -659,7 +659,7 @@ describe("sessionHistory", () => {
       expect(sessions[2].providerName).toBe("oldest");
     });
 
-    it("should rebuild the index if it is missing", () => {
+    it("should discover snapshots without mutating a missing index", () => {
       const dir = freshDir();
 
       writeSnapshot(
@@ -671,8 +671,8 @@ describe("sessionHistory", () => {
       const sessions = listSessions(dir);
       expect(sessions).toHaveLength(1);
 
-      // Index should now be rebuilt on disk
-      expect(readIndex(dir)).not.toBeNull();
+      // Discovery is read-only; an owned save repairs the index.
+      expect(readIndex(dir)).toBeNull();
     });
 
     it("should rebuild the index if it is malformed", () => {

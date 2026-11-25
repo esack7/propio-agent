@@ -1,3 +1,6 @@
+import * as path from "node:path";
+import { acquireSessionWriter } from "./sessions/sessionWriter.js";
+import { DurableEventLog } from "./sessions/durableEventLog.js";
 import type { ToolExecutionContext } from "./tools/execution.js";
 import type { ProviderRuntimeOptions } from "@propio-ai/providers";
 import { subscriptionAccountId } from "./auth/openai/runtime.js";
@@ -699,14 +702,92 @@ export class Agent {
     };
   }
 
+  private releaseSessionWriter?: () => Promise<void>;
+  private durableEvents?: DurableEventLog;
+
+  getSessionEventLog(): DurableEventLog | undefined {
+    return this.durableEvents;
+  }
+
+  recordSessionProtocol(
+    event: import("./agent-core/protocol.js").ProtocolEvent,
+  ): void {
+    this.activeTraceRun?.recorder.record({
+      component: "session",
+      type: "session_protocol",
+      payload: { sessionSequence: event.seq, eventType: event.event.type },
+    });
+  }
+
+  private async openSessionWriter(
+    sessionId: string,
+  ): Promise<() => Promise<void>> {
+    return acquireSessionWriter(this.configuredSessionsDir!, sessionId);
+  }
+
+  async importSessionWithWriter(json: string): Promise<void> {
+    if (!this.configuredSessionsDir) {
+      this.importSession(json);
+      return;
+    }
+    const saved = parseSession(json);
+    const incoming =
+      saved.metadata.sessionId ??
+      `legacy-${createHash("sha256").update(json).digest("hex")}`;
+    if (!isSafeSessionId(incoming))
+      throw new Error("Saved session has no valid runtime identity");
+    json = JSON.stringify({
+      ...saved,
+      metadata: { ...saved.metadata, sessionId: incoming },
+    });
+    if (incoming === this.sessionId) {
+      this.importSession(json);
+      return;
+    }
+    const release = await this.openSessionWriter(incoming);
+    try {
+      const events = new DurableEventLog(
+        path.join(this.configuredSessionsDir, `events-${incoming}.jsonl`),
+      );
+      if ((saved.metadata.protocolSequence ?? 0) > (events.lastSequence ?? 0))
+        throw new Error(
+          `Session ${incoming} checkpoint exceeds its durable protocol log`,
+        );
+      this.importSession(json);
+      await this.releaseSessionWriter?.();
+      this.releaseSessionWriter = release;
+      this.durableEvents = events;
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  }
+
   async initialize(): Promise<void> {
-    await this.mcpManager.initialize();
+    if (this.configuredSessionsDir) {
+      this.releaseSessionWriter = await this.openSessionWriter(this.sessionId);
+      this.durableEvents = new DurableEventLog(
+        path.join(this.configuredSessionsDir, `events-${this.sessionId}.jsonl`),
+      );
+    }
+    try {
+      await this.mcpManager.initialize();
+    } catch (error) {
+      await this.releaseSessionWriter?.();
+      this.releaseSessionWriter = undefined;
+      throw error;
+    }
   }
 
   async close(): Promise<void> {
     this.activeTraceRun?.close?.();
     this.activeTraceRun = undefined;
-    await this.mcpManager.close();
+    try {
+      await this.mcpManager.close();
+    } finally {
+      await this.releaseSessionWriter?.();
+      this.releaseSessionWriter = undefined;
+    }
   }
 
   private emitDiagnostic(event: AgentDiagnosticEvent): void {
@@ -2949,6 +3030,7 @@ export class Agent {
       summaryPolicy: this.summaryPolicy,
       contextWindowTokens: this.resolveContextWindowTokens(),
       sessionId: this.sessionId,
+      protocolSequence: this.durableEvents?.lastSequence,
       latestForegroundRunId: this.latestForegroundRunId,
       lastTraceRunId:
         this.activeTraceRun?.recorder.identity.runId ?? this.lastTraceRunId,

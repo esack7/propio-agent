@@ -2052,10 +2052,24 @@ capture is not provided. Owner scoping prevents accidental cross-owner access;
 it is not authorization for callers that can choose another owner's identity.
 
 These are synchronous, sequential-writer contracts. Hosts own serialization
-across handles, instances and processes. This slice does not wire the CLI to
-these adapters, migrate its existing workspace files, acquire writer locks, or
-recover torn appends. Existing CLI storage and trace readers retain their current
-behavior. Session persistence does not depend on enabling trace capture. Run
+across handles, instances and processes. File protocol logs validate history once
+when opened, sync incremental appends, and recover the complete prefix of a torn
+final append. Interior corruption is refused with its path and line number.
+`DurableEventLog(absoluteFilename)` exposes the same cursor and append behavior.
+
+The CLI retains its workspace snapshot and trace layout and records protocol
+history separately in `events-<runtime-session-id>.jsonl`. It holds a permanent
+OS-backed writer lock under `writers/` until close or process death. Loading a
+snapshot acquires the underlying runtime session before replacing the active
+session; a conflict leaves the current session usable. This requires the optional
+`os-lock` native dependency. Index saves are serialized across CLI processes.
+`/session load` and `/session recover` replay recorded events without model calls,
+tool execution, or approval prompts. Legacy snapshots remain loadable and report
+that their earlier history lacks numbered replay coverage. Snapshots retain the
+last covered protocol sequence; an impossible checkpoint position is refused.
+Trace `session_protocol` records correlate observed events through
+`payload.sessionSequence` while preserving per-run trace numbering. A `.gap`
+sidecar reports earlier recording failure as partial replay coverage. Session persistence does not depend on enabling trace capture. Run
 `npm run example:session-stores` after building for a credential-free
 public consumer using both adapters. The shared behavioral suite is
 `src/sessions/__tests__/sessionStoreContract.test.ts`.
