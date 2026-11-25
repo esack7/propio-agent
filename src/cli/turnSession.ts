@@ -123,7 +123,8 @@ export function createCliTurnSession(
   return {
     session,
     takeUndelivered() {
-      const taken = undelivered;
+      const recovered = agent.takeRecoveredGuidance?.() ?? [];
+      const taken = undelivered.length ? undelivered : recovered;
       undelivered = [];
       return taken;
     },

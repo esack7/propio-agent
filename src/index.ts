@@ -395,9 +395,15 @@ async function saveSessionSnapshot(
   ui: TerminalUi,
 ): Promise<void> {
   const directory = getDefaultSessionsDir();
-  await withFileLock(path.join(directory, "index.lock"), async () => {
-    saveSessionOnExit(agent, directory, ui);
-  });
+  try {
+    await withFileLock(path.join(directory, "index.lock"), async () => {
+      saveSessionOnExit(agent, directory, ui);
+    });
+  } catch (error) {
+    ui.error(
+      `Session could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function createWorkspacePromptHistoryStore() {
@@ -1227,6 +1233,12 @@ export async function runInteractiveSession(
     const shellRunOptions =
       createShellRunOptionsFromRuntimeConfig(runtimeConfig);
     while (!abortState.shouldExit()) {
+      const recoveredGuidance = agent.takeRecoveredGuidance();
+      if (recoveredGuidance.length) {
+        restoredInput = [restoredInput, ...recoveredGuidance]
+          .filter(Boolean)
+          .join("\n");
+      }
       ui.setMode("awaitingInput");
       if (!shownReadyPromptMessage) {
         ui.info("AI Agent started. Type your message.");
