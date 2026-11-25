@@ -19,11 +19,12 @@ beforeAll(() => {
     `
 import fs from "node:fs";
 const [mode, pidFile, readyFile] = process.argv.slice(2);
-fs.writeFileSync(pidFile, String(process.pid));
 if (mode === "connect-hang") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000);
+  fs.writeFileSync(pidFile, String(process.pid));
 } else {
+  fs.writeFileSync(pidFile, String(process.pid));
   const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
   const { ListToolsRequestSchema, CallToolRequestSchema, McpError, ErrorCode } = await import("@modelcontextprotocol/sdk/types.js");
@@ -426,15 +427,17 @@ it.each([0, -1, NaN, Infinity, 2 ** 31])(
 it("disables a pending connection and cleans up its child", async () => {
   const { manager, pidFile } = fixture("connect-hang", {
     cleanupTimeoutMs: 100,
+    connectTimeoutMs: 30_000,
   });
   const starting = manager.initialize();
-  await waitFor(() => fs.existsSync(pidFile));
+  // Process startup can exceed three seconds when the full suite spawns children.
+  await waitFor(() => fs.existsSync(pidFile), 10_000);
   const pid = readPid(pidFile);
   await manager.setServerEnabled("fixture", false);
   await starting;
   await waitFor(() => !isAlive(pid));
   expect(manager.getServerSummaries()[0]?.status).toBe("disabled");
-});
+}, 15_000);
 
 it("shares shutdown work across concurrent closes", async () => {
   const { manager, pidFile } = fixture("connect-hang", {
