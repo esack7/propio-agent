@@ -2566,7 +2566,8 @@ export class Agent {
             };
           if (
             this.configuredSessionsDir &&
-            (event.type === "prompt_plan" || event.type === "tool_started")
+            (event.type === "prompt_plan_built" ||
+              event.type === "tool_started")
           ) {
             this.recoveryCheckpointRequested = true;
             this.writeSessionRecoveryCheckpoint();

@@ -72,17 +72,22 @@ it("restores structured context, mode, grants and ordered undelivered input with
     expect(agent.takeRecoveredGuidance()).toEqual([]);
     await agent.streamChat({ text: "continue" }, () => {});
     const messages = requests[0]!.messages;
+    const toolResults = messages.flatMap(
+      (message) => message.toolResults ?? [],
+    );
     for (const text of [
       "earlier user message",
       "committed tool result",
       "delivered guidance",
     ]) {
       expect(
-        messages.filter((message) => message.content?.includes(text)),
+        [...messages, ...toolResults].filter((message) =>
+          message.content?.includes(text),
+        ),
       ).toHaveLength(1);
     }
     expect(
-      messages.filter((message) => message.toolCallId === "committed-call"),
+      toolResults.filter((result) => result.toolCallId === "committed-call"),
     ).toHaveLength(1);
     const other = JSON.parse(empty);
     other.metadata.sessionId = "different-session";

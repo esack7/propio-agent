@@ -71,26 +71,23 @@ it.each(["completed", "pending"])(
       expect(requests).toHaveLength(0);
       await agent.streamChat({ text: "continue" }, () => {});
       const messages = requests[0]!.messages;
+      const toolResults = messages.flatMap(
+        (message) => message.toolResults ?? [],
+      );
       expect(
         messages.filter((message) =>
           message.content?.includes("original user task"),
         ),
       ).toHaveLength(1);
       expect(
-        messages.filter(
-          (message) =>
-            message.role === "tool" && message.toolCallId === "completed",
-        ),
+        toolResults.filter((result) => result.toolCallId === "completed"),
       ).toEqual([
         expect.objectContaining({
           content: expect.stringContaining("durable completed result"),
         }),
       ]);
       expect(
-        messages.filter(
-          (message) =>
-            message.role === "tool" && message.toolCallId === "pending",
-        ),
+        toolResults.filter((result) => result.toolCallId === "pending"),
       ).toEqual([
         expect.objectContaining({
           content: expect.stringContaining("Completion is unknown"),
