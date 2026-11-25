@@ -152,19 +152,11 @@ export function createCliTurnSession(
       abortSignal.addEventListener("abort", interrupt, { once: true });
       activeCliTurns++;
       try {
-        const images = submission.images?.map((image) =>
-          image instanceof Uint8Array ? encodeCommandImage(image) : image,
-        );
         original = {
           text: submission.text,
           ...(submission.images ? { images: submission.images } : {}),
         };
-        const accepted = session.dispatch({
-          type: "submit",
-          commandId,
-          text: submission.text,
-          ...(images && images.length > 0 ? { images } : {}),
-        });
+        const accepted = session.dispatch(submitCommand(submission, commandId));
         if (!accepted.accepted) {
           original = undefined;
           throw new Error(accepted.message);
@@ -177,6 +169,18 @@ export function createCliTurnSession(
         if (activeCliTurns === 0) flushObservationWarning();
       }
     },
+  };
+}
+
+function submitCommand(submission: PromptSubmission, commandId: string) {
+  const images = submission.images?.map((image) =>
+    image instanceof Uint8Array ? encodeCommandImage(image) : image,
+  );
+  return {
+    type: "submit" as const,
+    commandId,
+    text: submission.text,
+    ...(images && images.length > 0 ? { images } : {}),
   };
 }
 

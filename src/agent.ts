@@ -740,6 +740,22 @@ export class Agent {
     return this.importParsedSessionWithWriter(saved, json);
   }
 
+  private normalizeSavedSessionIdentity(
+    saved: ReturnType<typeof parseSession>,
+    json: string,
+  ): { incoming: string; content: string } {
+    const incoming =
+      saved.metadata.sessionId ??
+      `legacy-${createHash("sha256").update(json).digest("hex")}`;
+    if (!isSafeSessionId(incoming))
+      throw new Error("Saved session has no valid runtime identity");
+    const content = JSON.stringify({
+      ...saved,
+      metadata: { ...saved.metadata, sessionId: incoming },
+    });
+    return { incoming, content };
+  }
+
   private async importParsedSessionWithWriter(
     saved: ReturnType<typeof parseSession>,
     json: string,
@@ -749,15 +765,8 @@ export class Agent {
       this.importSession(json);
       return;
     }
-    const incoming =
-      saved.metadata.sessionId ??
-      `legacy-${createHash("sha256").update(json).digest("hex")}`;
-    if (!isSafeSessionId(incoming))
-      throw new Error("Saved session has no valid runtime identity");
-    json = JSON.stringify({
-      ...saved,
-      metadata: { ...saved.metadata, sessionId: incoming },
-    });
+    const { incoming, content } = this.normalizeSavedSessionIdentity(saved, json);
+    json = content;
     if (incoming === this.sessionId) {
       this.importSession(json);
       return;
