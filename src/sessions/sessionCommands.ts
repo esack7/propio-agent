@@ -137,14 +137,22 @@ async function confirmSessionReplacement(
 }
 
 function replayLoadedSession(agent: SessionAgent, io: SessionCommandIO): void {
+  const recording = agent.getSessionEventLog?.();
+  reportReplayCoverage(agent, recording, io);
+  if (recording) io.replay?.(recording.after(0));
+}
+
+function reportReplayCoverage(
+  agent: SessionAgent,
+  recording: ReturnType<NonNullable<SessionAgent["getSessionEventLog"]>>,
+  io: SessionCommandIO,
+): void {
   const legacyWarning = agent.getReplayCoverageWarning?.();
   if (legacyWarning) io.info(legacyWarning);
-  const recording = agent.getSessionEventLog?.();
   if (!legacyWarning && agent.getSessionEventLog) {
     reportMissingRecording(recording, io);
   }
   if (recording?.coverageWarning) io.info(recording.coverageWarning);
-  if (recording) io.replay?.(recording.after(0));
 }
 
 function reportMissingRecording(
