@@ -514,6 +514,8 @@ export class Agent {
   private readonly configuredSessionsDir?: string;
   private protocolStartTurnIndex = 0;
 
+  // Called through SessionAgent by the session command handler.
+  // fallow-ignore-next-line unused-class-member
   getReplayCoverageWarning(): string | undefined {
     return this.protocolStartTurnIndex > 0
       ? `Replay coverage: this session predates numbered protocol recording; the first ${this.protocolStartTurnIndex} snapshot turns have no numbered replay.`
@@ -713,7 +715,6 @@ export class Agent {
   private durableEvents?: DurableEventLog;
 
   // Called through the CLI adapter interface.
-  // fallow-ignore-next-line unused-class-member
   getSessionEventLog(): DurableEventLog | undefined {
     return this.durableEvents;
   }
@@ -737,7 +738,6 @@ export class Agent {
   }
 
   // Called through the CLI adapter interface.
-  // fallow-ignore-next-line unused-class-member
   async importSessionWithWriter(json: string): Promise<void> {
     if (!this.configuredSessionsDir) {
       this.importSession(json);
@@ -778,13 +778,7 @@ export class Agent {
     );
     json = content;
     if (incoming === this.sessionId) {
-      if (
-        (saved.metadata.protocolSequence ?? 0) >
-        (this.durableEvents?.lastSequence ?? 0)
-      )
-        throw new Error(
-          `Session ${incoming} checkpoint exceeds its durable protocol log`,
-        );
+      this.assertProtocolCheckpoint(saved, this.durableEvents);
       this.importSession(json);
       return;
     }
@@ -793,10 +787,7 @@ export class Agent {
       const events = new DurableEventLog(
         path.join(sessionsDir, `events-${incoming}.jsonl`),
       );
-      if ((saved.metadata.protocolSequence ?? 0) > (events.lastSequence ?? 0))
-        throw new Error(
-          `Session ${incoming} checkpoint exceeds its durable protocol log`,
-        );
+      this.assertProtocolCheckpoint(saved, events);
       this.importSession(json);
       await this.releaseSessionWriter?.();
       this.releaseSessionWriter = release;
@@ -804,6 +795,17 @@ export class Agent {
     } catch (error) {
       await release();
       throw error;
+    }
+  }
+
+  private assertProtocolCheckpoint(
+    saved: ReturnType<typeof parseSession>,
+    events: DurableEventLog | undefined,
+  ): void {
+    if ((saved.metadata.protocolSequence ?? 0) > (events?.lastSequence ?? 0)) {
+      throw new Error(
+        `Session ${saved.metadata.sessionId} checkpoint exceeds its durable protocol log`,
+      );
     }
   }
 
@@ -2754,7 +2756,6 @@ export class Agent {
   }
 
   // Called through SessionAgent by the session command handler.
-  // fallow-ignore-next-line unused-class-member
   getRuntimeSessionId(): string {
     return this.sessionId;
   }
@@ -3244,6 +3245,22 @@ export class Agent {
       : [];
     this.pendingRecoveredToolCallIds = this.createTraceRun ? unresolved : [];
 
+    this.restoreImportedMode(persisted, previousSkillInvocationIds);
+    this.pendingExecuteSwitchReminder = false;
+    this.restorePlanModeDraftTrackingFromImport(
+      persisted.metadata.planDraftSearchStartTurnIndex,
+    );
+    this.retireOutgoingRecoveryCheckpoint(
+      outgoingSessionId,
+      outgoingRecoveryRequested,
+      persisted.metadata.recoveryCheckpoint === true,
+    );
+  }
+
+  private restoreImportedMode(
+    persisted: ReturnType<typeof parseSession>,
+    previousSkillInvocationIds: string[],
+  ): void {
     const previousModeState = this.modeState;
     const importedMode = persisted.metadata.agentMode ?? "execute";
     const importedModeState: AgentModeState = {
@@ -3274,15 +3291,6 @@ export class Agent {
         "session",
       );
     }
-    this.pendingExecuteSwitchReminder = false;
-    this.restorePlanModeDraftTrackingFromImport(
-      persisted.metadata.planDraftSearchStartTurnIndex,
-    );
-    this.retireOutgoingRecoveryCheckpoint(
-      outgoingSessionId,
-      outgoingRecoveryRequested,
-      persisted.metadata.recoveryCheckpoint === true,
-    );
   }
 
   // -------------------------------------------------------------------

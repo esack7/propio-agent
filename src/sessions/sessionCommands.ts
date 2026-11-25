@@ -139,17 +139,23 @@ async function confirmSessionReplacement(
 function replayLoadedSession(agent: SessionAgent, io: SessionCommandIO): void {
   const legacyWarning = agent.getReplayCoverageWarning?.();
   if (legacyWarning) io.info(legacyWarning);
-  if (
-    !legacyWarning &&
-    agent.getSessionEventLog &&
-    agent.getSessionEventLog()?.lastSequence === undefined
-  )
+  const recording = agent.getSessionEventLog?.();
+  if (!legacyWarning && agent.getSessionEventLog) {
+    reportMissingRecording(recording, io);
+  }
+  if (recording?.coverageWarning) io.info(recording.coverageWarning);
+  if (recording) io.replay?.(recording.after(0));
+}
+
+function reportMissingRecording(
+  recording: ReturnType<NonNullable<SessionAgent["getSessionEventLog"]>>,
+  io: SessionCommandIO,
+): void {
+  if (recording?.lastSequence === undefined) {
     io.info(
       "Replay coverage: this session predates numbered protocol recording; snapshot history is available.",
     );
-  const recording = agent.getSessionEventLog?.();
-  if (recording?.coverageWarning) io.info(recording.coverageWarning);
-  if (recording) io.replay?.(recording.after(0));
+  }
 }
 
 async function loadSavedSession(
