@@ -744,6 +744,11 @@ export class Agent {
     saved: ReturnType<typeof parseSession>,
     json: string,
   ): Promise<void> {
+    const sessionsDir = this.configuredSessionsDir;
+    if (!sessionsDir) {
+      this.importSession(json);
+      return;
+    }
     const incoming =
       saved.metadata.sessionId ??
       `legacy-${createHash("sha256").update(json).digest("hex")}`;
@@ -760,7 +765,7 @@ export class Agent {
     const release = await this.openSessionWriter(incoming);
     try {
       const events = new DurableEventLog(
-        path.join(this.configuredSessionsDir, `events-${incoming}.jsonl`),
+        path.join(sessionsDir, `events-${incoming}.jsonl`),
       );
       if ((saved.metadata.protocolSequence ?? 0) > (events.lastSequence ?? 0))
         throw new Error(
